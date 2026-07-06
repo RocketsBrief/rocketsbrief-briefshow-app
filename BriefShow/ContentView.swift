@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @State private var selectedPhotoURLs: [URL] = []
+    @State private var selectedMusicURL: URL?
 
     var body: some View {
         ZStack {
@@ -16,13 +17,15 @@ struct ContentView: View {
                 HStack(spacing: 14) {
                     LeftImportPanel(
                         selectedPhotoCount: selectedPhotoURLs.count,
-                        onAddPhotos: openPhotoPicker
+                        selectedMusicURL: selectedMusicURL,
+                        onAddPhotos: openPhotoPicker,
+                        onAddMusic: openMusicPicker
                     )
                     CenterPreviewPanel(firstPhotoURL: selectedPhotoURLs.first)
                     RightExportPanel()
                 }
 
-                TimelinePanel(photoURLs: selectedPhotoURLs)
+                TimelinePanel(photoURLs: selectedPhotoURLs, musicURL: selectedMusicURL)
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
@@ -40,6 +43,19 @@ struct ContentView: View {
 
         if panel.runModal() == .OK {
             selectedPhotoURLs = panel.urls
+        }
+    }
+
+    private func openMusicPicker() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.resolvesAliases = true
+
+        if panel.runModal() == .OK {
+            selectedMusicURL = panel.url
         }
     }
 }
@@ -78,7 +94,9 @@ struct HeaderView: View {
 
 struct LeftImportPanel: View {
     let selectedPhotoCount: Int
+    let selectedMusicURL: URL?
     let onAddPhotos: () -> Void
+    let onAddMusic: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -93,11 +111,14 @@ struct LeftImportPanel: View {
             }
             .buttonStyle(.plain)
 
-            DropCard(
-                icon: "music.note",
-                title: "Add Music",
-                subtitle: "MP3, WAV or M4A soundtrack"
-            )
+            Button(action: onAddMusic) {
+                DropCard(
+                    icon: "music.note",
+                    title: "Add Music",
+                    subtitle: selectedMusicURL?.lastPathComponent ?? "MP3, WAV or M4A soundtrack"
+                )
+            }
+            .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("Slideshow Settings")
@@ -250,10 +271,11 @@ struct RightExportPanel: View {
 
 struct TimelinePanel: View {
     let photoURLs: [URL]
+    let musicURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            PanelTitle(title: "Timeline", subtitle: "Photos will be arranged here")
+            PanelTitle(title: "Timeline", subtitle: timelineSubtitle)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
@@ -279,6 +301,14 @@ struct TimelinePanel: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 34))
         
+    }
+
+    private var timelineSubtitle: String {
+        if let musicURL {
+            return "Photos arranged with \(musicURL.lastPathComponent)"
+        }
+
+        return "Photos will be arranged here"
     }
 }
 

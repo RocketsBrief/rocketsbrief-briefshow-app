@@ -1,6 +1,10 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @State private var selectedPhotoURLs: [URL] = []
+
     var body: some View {
         ZStack {
             Color(red: 0.957, green: 0.937, blue: 0.910)
@@ -10,17 +14,33 @@ struct ContentView: View {
                 HeaderView()
 
                 HStack(spacing: 14) {
-                    LeftImportPanel()
-                    CenterPreviewPanel()
+                    LeftImportPanel(
+                        selectedPhotoCount: selectedPhotoURLs.count,
+                        onAddPhotos: openPhotoPicker
+                    )
+                    CenterPreviewPanel(firstPhotoURL: selectedPhotoURLs.first)
                     RightExportPanel()
                 }
 
-                TimelinePanel()
+                TimelinePanel(photoURLs: selectedPhotoURLs)
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
         .frame(minWidth: 980, minHeight: 640)
+    }
+
+    private func openPhotoPicker() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.resolvesAliases = true
+
+        if panel.runModal() == .OK {
+            selectedPhotoURLs = panel.urls
+        }
     }
 }
 
@@ -57,15 +77,21 @@ struct HeaderView: View {
 }
 
 struct LeftImportPanel: View {
+    let selectedPhotoCount: Int
+    let onAddPhotos: () -> Void
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             PanelTitle(title: "Media", subtitle: "Add photos and music")
 
-            DropCard(
-                icon: "photo.on.rectangle.angled",
-                title: "Add Photos",
-                subtitle: "Drag images here or choose files"
-            )
+            Button(action: onAddPhotos) {
+                DropCard(
+                    icon: "photo.on.rectangle.angled",
+                    title: "Add Photos",
+                    subtitle: selectedPhotoCount == 0 ? "Choose multiple image files" : "\(selectedPhotoCount) photo\(selectedPhotoCount == 1 ? "" : "s") selected"
+                )
+            }
+            .buttonStyle(.plain)
 
             DropCard(
                 icon: "music.note",
@@ -105,6 +131,8 @@ struct LeftImportPanel: View {
 }
 
 struct CenterPreviewPanel: View {
+    let firstPhotoURL: URL?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             PanelTitle(title: "Preview", subtitle: "Your slideshow will appear here")
@@ -113,18 +141,43 @@ struct CenterPreviewPanel: View {
                 RoundedRectangle(cornerRadius: 34)
                     .fill(Color.black)
 
-                VStack(spacing: 16) {
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.system(size: 42))
-                        .foregroundColor(Color(red: 0.957, green: 0.863, blue: 0.545))
+                if let firstPhotoURL, let image = NSImage(contentsOf: firstPhotoURL) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .clipShape(RoundedRectangle(cornerRadius: 28))
 
-                    Text("No slideshow yet")
-                        .font(.custom("Figtree", size: 13).weight(.medium))
-                        .foregroundColor(.white)
+                    VStack {
+                        Spacer()
 
-                    Text("Add photos and music to generate a preview.")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.white.opacity(0.65))
+                        HStack {
+                            Text(firstPhotoURL.lastPathComponent)
+                                .font(.custom("Figtree", size: 12).weight(.medium))
+                                .foregroundColor(.white.opacity(0.88))
+                                .lineLimit(1)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(Color.black.opacity(0.42))
+                                .clipShape(RoundedRectangle(cornerRadius: 999))
+
+                            Spacer()
+                        }
+                        .padding(16)
+                    }
+                } else {
+                    VStack(spacing: 16) {
+                        Image(systemName: "play.rectangle.fill")
+                            .font(.system(size: 42))
+                            .foregroundColor(Color(red: 0.957, green: 0.863, blue: 0.545))
+
+                        Text("No slideshow yet")
+                            .font(.custom("Figtree", size: 13).weight(.medium))
+                            .foregroundColor(.white)
+
+                        Text("Add photos and music to generate a preview.")
+                            .font(.custom("Figtree", size: 14).weight(.medium))
+                            .foregroundColor(.white.opacity(0.65))
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -196,33 +249,26 @@ struct RightExportPanel: View {
 }
 
 struct TimelinePanel: View {
+    let photoURLs: [URL]
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             PanelTitle(title: "Timeline", subtitle: "Photos will be arranged here")
 
-            HStack(spacing: 12) {
-                ForEach(0..<6) { index in
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(Color(red: 0.957, green: 0.937, blue: 0.910))
-                        .frame(width: 92, height: 56)
-                        .overlay(
-                            VStack(spacing: 6) {
-                                Image(systemName: "photo")
-                                    .font(.system(size: 18))
-                                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.65))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    if photoURLs.isEmpty {
+                        ForEach(0..<6) { index in
+                            TimelinePlaceholder(index: index)
+                        }
+                    } else {
+                        ForEach(Array(photoURLs.enumerated()), id: \.offset) { index, url in
+                            TimelinePhotoThumb(index: index, url: url)
+                        }
+                    }
 
-                                Text("Photo \(index + 1)")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.65))
-                            }
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14)
-                                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 3)
-                        )
+                    Spacer(minLength: 0)
                 }
-
-                Spacer()
             }
         }
         .padding(14)
@@ -233,6 +279,71 @@ struct TimelinePanel: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 34))
         
+    }
+}
+
+
+struct TimelinePlaceholder: View {
+    let index: Int
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 14)
+            .fill(Color(red: 0.957, green: 0.937, blue: 0.910))
+            .frame(width: 92, height: 56)
+            .overlay(
+                VStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 18))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.65))
+
+                    Text("Photo \(index + 1)")
+                        .font(.custom("Figtree", size: 11).weight(.medium))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.65))
+                }
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 3)
+            )
+    }
+}
+
+struct TimelinePhotoThumb: View {
+    let index: Int
+    let url: URL
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(red: 0.930, green: 0.900, blue: 0.850))
+
+            if let image = NSImage(contentsOf: url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 92, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 18))
+                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.65))
+                    .frame(width: 92, height: 56)
+            }
+
+            Text("\(index + 1)")
+                .font(.custom("Figtree", size: 10).weight(.medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.45))
+                .clipShape(RoundedRectangle(cornerRadius: 999))
+                .padding(6)
+        }
+        .frame(width: 92, height: 56)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 3)
+        )
     }
 }
 

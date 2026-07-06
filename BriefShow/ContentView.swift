@@ -3,6 +3,8 @@ import AppKit
 import UniformTypeIdentifiers
 import Combine
 import AVFoundation
+import ImageIO
+import CoreGraphics
 
 enum SlideshowTimingMode: String {
     case followMusic = "Follow Music"
@@ -29,6 +31,8 @@ struct ContentView: View {
     @State private var shouldLoopPreview: Bool = false
     @State private var transitionStyle: SlideshowTransitionStyle = .fade
     @State private var selectedExportResolution: String = "4K"
+    @State private var isExportingVideo: Bool = false
+    @State private var exportStatusText: String?
     @State private var activePhotoIndex: Int = 0
     @State private var previousPhotoIndex: Int?
     @State private var transitionProgress: Double = 1
@@ -72,13 +76,20 @@ struct ContentView: View {
                         onTogglePreview: togglePreview,
                         onStartFromBeginning: startPreviewFromBeginning
                     )
-                    RightExportPanel(selectedResolution: $selectedExportResolution)
+                    RightExportPanel(
+                        selectedResolution: $selectedExportResolution,
+                        canExport: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
+                        isExporting: isExportingVideo,
+                        exportStatusText: exportStatusText,
+                        onExportVideo: openExportSavePanel
+                    )
                 }
 
                 TimelinePanel(
-                    photoURLs: selectedPhotoURLs,
+                    photoURLs: $selectedPhotoURLs,
+                    previewImages: $previewImages,
                     musicURL: selectedMusicURL,
-                    activePhotoIndex: activePhotoIndex
+                    activePhotoIndex: $activePhotoIndex
                 )
             }
             .padding(.horizontal, 22)
@@ -366,6 +377,81 @@ struct ContentView: View {
         }
     }
 
+    private func openExportSavePanel() {
+        guard !selectedPhotoURLs.isEmpty, !isPreparingPhotos else {
+            exportStatusText = "Add photos before exporting."
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.mpeg4Movie]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = "BriefShow-\(selectedExportResolution).mp4"
+
+        if panel.runModal() == .OK, let outputURL = panel.url {
+            startVideoExport(to: outputURL)
+        }
+    }
+
+    private func startVideoExport(to outputURL: URL) {
+        guard !selectedPhotoURLs.isEmpty else {
+            exportStatusText = "Add photos before exporting."
+            return
+        }
+
+        isExportingVideo = true
+        exportStatusText = "Exporting video…"
+        isPreviewPlaying = false
+        audioPlayer?.pause()
+
+        let photoURLs = selectedPhotoURLs
+        let resolution = selectedExportResolution
+        let durationPerPhoto = max(0.25, currentPhotoDuration)
+        let selectedTransitionStyle = transitionStyle
+        let selectedFadeDuration = fadeDuration
+        let musicURL = selectedMusicURL
+        let selectedMusicFadeIn = musicFadeInSeconds
+        let selectedMusicFadeOut = musicFadeOutSeconds
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let videoOnlyURL = musicURL == nil ? outputURL : temporaryVideoURL(for: outputURL)
+
+                try renderSlideshowVideo(
+                    photoURLs: photoURLs,
+                    outputURL: videoOnlyURL,
+                    resolutionName: resolution,
+                    secondsPerPhoto: durationPerPhoto,
+                    transitionStyle: selectedTransitionStyle,
+                    fadeDuration: selectedFadeDuration
+                )
+
+                if let musicURL {
+                    try muxVideoWithMusic(
+                        videoURL: videoOnlyURL,
+                        musicURL: musicURL,
+                        outputURL: outputURL,
+                        fadeInSeconds: selectedMusicFadeIn,
+                        fadeOutSeconds: selectedMusicFadeOut
+                    )
+
+                    try? FileManager.default.removeItem(at: videoOnlyURL)
+                }
+
+                DispatchQueue.main.async {
+                    isExportingVideo = false
+                    exportStatusText = "Export complete: \(outputURL.lastPathComponent)"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isExportingVideo = false
+                    exportStatusText = "Export failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     private func prepareAudioPlayer(for url: URL?) {
         guard let url else {
             audioPlayer = nil
@@ -384,6 +470,465 @@ struct ContentView: View {
     }
 }
 
+
+private func renderSlideshowVideo(
+    photoURLs: [URL],
+    outputURL: URL,
+    resolutionName: String,
+    secondsPerPhoto: Double,
+    transitionStyle: SlideshowTransitionStyle,
+    fadeDuration: Double
+) throws {
+    if FileManager.default.fileExists(atPath: outputURL.path) {
+        try FileManager.default.removeItem(at: outputURL)
+    }
+
+    let renderSize = exportRenderSize(for: resolutionName, photoURLs: photoURLs)
+    let fps: Int32 = 30
+    let frameDuration = CMTime(value: 1, timescale: fps)
+    let framesPerPhoto = max(1, Int(round(secondsPerPhoto * Double(fps))))
+    let fadeFrames = max(1, min(
+        Int(round(fadeDuration * Double(fps))),
+        max(1, Int(Double(framesPerPhoto) * 0.45))
+    ))
+
+    let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+
+    let videoSettings: [String: Any] = [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: Int(renderSize.width),
+        AVVideoHeightKey: Int(renderSize.height),
+        AVVideoCompressionPropertiesKey: [
+            AVVideoAverageBitRateKey: exportBitrate(for: renderSize),
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
+        ]
+    ]
+
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+    input.expectsMediaDataInRealTime = false
+
+    let pixelBufferAttributes: [String: Any] = [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        kCVPixelBufferWidthKey as String: Int(renderSize.width),
+        kCVPixelBufferHeightKey as String: Int(renderSize.height),
+        kCVPixelBufferCGImageCompatibilityKey as String: true,
+        kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
+    ]
+
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+        assetWriterInput: input,
+        sourcePixelBufferAttributes: pixelBufferAttributes
+    )
+
+    guard writer.canAdd(input) else {
+        throw BriefShowExportError.cannotAddVideoInput
+    }
+
+    writer.add(input)
+
+    guard writer.startWriting() else {
+        throw writer.error ?? BriefShowExportError.couldNotStartWriter
+    }
+
+    writer.startSession(atSourceTime: .zero)
+
+    var frameNumber: Int64 = 0
+
+    var previousImage: CGImage?
+
+    for url in photoURLs {
+        guard let cgImage = makeCGImage(from: url) else {
+            continue
+        }
+
+        for frameIndex in 0..<framesPerPhoto {
+            while !input.isReadyForMoreMediaData {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+
+            let fadeProgress: CGFloat?
+
+            if transitionStyle == .fade,
+               let previousImage,
+               frameIndex < fadeFrames {
+                fadeProgress = CGFloat(frameIndex + 1) / CGFloat(fadeFrames)
+            } else {
+                fadeProgress = nil
+            }
+
+            guard let pixelBuffer = makePixelBuffer(
+                from: cgImage,
+                previousImage: previousImage,
+                fadeProgress: fadeProgress,
+                renderSize: renderSize,
+                pixelBufferPool: adaptor.pixelBufferPool
+            ) else {
+                throw BriefShowExportError.couldNotCreatePixelBuffer
+            }
+
+            let presentationTime = CMTimeMultiply(frameDuration, multiplier: Int32(frameNumber))
+            guard adaptor.append(pixelBuffer, withPresentationTime: presentationTime) else {
+                throw writer.error ?? BriefShowExportError.couldNotAppendFrame
+            }
+
+            frameNumber += 1
+        }
+
+        previousImage = cgImage
+    }
+
+    input.markAsFinished()
+
+    let semaphore = DispatchSemaphore(value: 0)
+    writer.finishWriting {
+        semaphore.signal()
+    }
+    semaphore.wait()
+
+    if writer.status == .failed {
+        throw writer.error ?? BriefShowExportError.writerFailed
+    }
+}
+
+private func exportRenderSize(for resolutionName: String, photoURLs: [URL]) -> CGSize {
+    if resolutionName == "480p" {
+        return CGSize(width: 854, height: 480)
+    }
+
+    if resolutionName == "720p" {
+        return CGSize(width: 1280, height: 720)
+    }
+
+    if resolutionName == "1080p" {
+        return CGSize(width: 1920, height: 1080)
+    }
+
+    if resolutionName == "4K" {
+        return CGSize(width: 3840, height: 2160)
+    }
+
+    if resolutionName == "Original",
+       let firstURL = photoURLs.first,
+       let image = makeCGImage(from: firstURL) {
+        return evenSize(width: image.width, height: image.height)
+    }
+
+    return CGSize(width: 3840, height: 2160)
+}
+
+private func evenSize(width: Int, height: Int) -> CGSize {
+    CGSize(
+        width: max(2, width - (width % 2)),
+        height: max(2, height - (height % 2))
+    )
+}
+
+private func exportBitrate(for size: CGSize) -> Int {
+    let pixels = size.width * size.height
+
+    if pixels >= 3840 * 2160 {
+        return 45_000_000
+    }
+
+    if pixels >= 1920 * 1080 {
+        return 16_000_000
+    }
+
+    if pixels >= 1280 * 720 {
+        return 8_000_000
+    }
+
+    return 4_000_000
+}
+
+private func makeCGImage(from url: URL) -> CGImage? {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+        return nil
+    }
+
+    let sourceProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+    let pixelWidth = sourceProperties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+    let pixelHeight = sourceProperties?[kCGImagePropertyPixelHeight] as? Int ?? 0
+    let maxPixelSize = max(pixelWidth, pixelHeight, 1)
+
+    guard let orientedImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        kCGImageSourceShouldCache: true,
+        kCGImageSourceShouldAllowFloat: false
+    ] as CFDictionary) else {
+        return nil
+    }
+
+    let width = orientedImage.width
+    let height = orientedImage.height
+
+    guard width > 0, height > 0 else {
+        return nil
+    }
+
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        return orientedImage
+    }
+
+    context.interpolationQuality = .high
+    context.draw(orientedImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+    return context.makeImage() ?? orientedImage
+}
+
+private func makePixelBuffer(
+    from cgImage: CGImage,
+    previousImage: CGImage?,
+    fadeProgress: CGFloat?,
+    renderSize: CGSize,
+    pixelBufferPool: CVPixelBufferPool?
+) -> CVPixelBuffer? {
+    guard let pixelBufferPool else {
+        return nil
+    }
+
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferPoolCreatePixelBuffer(nil, pixelBufferPool, &pixelBuffer)
+
+    guard status == kCVReturnSuccess, let pixelBuffer else {
+        return nil
+    }
+
+    CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    defer {
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+    }
+
+    guard let context = CGContext(
+        data: CVPixelBufferGetBaseAddress(pixelBuffer),
+        width: Int(renderSize.width),
+        height: Int(renderSize.height),
+        bitsPerComponent: 8,
+        bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+    ) else {
+        return nil
+    }
+
+    context.setFillColor(NSColor.black.cgColor)
+    context.fill(CGRect(origin: .zero, size: renderSize))
+    context.interpolationQuality = .high
+
+    if let previousImage, let fadeProgress {
+        let previousRect = aspectFitRect(
+            imageSize: CGSize(width: previousImage.width, height: previousImage.height),
+            canvasSize: renderSize
+        )
+
+        context.saveGState()
+        context.setAlpha(1)
+        context.draw(previousImage, in: previousRect)
+        context.restoreGState()
+
+        let drawRect = aspectFitRect(
+            imageSize: CGSize(width: cgImage.width, height: cgImage.height),
+            canvasSize: renderSize
+        )
+
+        context.saveGState()
+        context.setAlpha(fadeProgress)
+        context.draw(cgImage, in: drawRect)
+        context.restoreGState()
+    } else {
+        let drawRect = aspectFitRect(
+            imageSize: CGSize(width: cgImage.width, height: cgImage.height),
+            canvasSize: renderSize
+        )
+
+        context.draw(cgImage, in: drawRect)
+    }
+
+    return pixelBuffer
+}
+
+private func aspectFitRect(imageSize: CGSize, canvasSize: CGSize) -> CGRect {
+    guard imageSize.width > 0, imageSize.height > 0 else {
+        return CGRect(origin: .zero, size: canvasSize)
+    }
+
+    let imageAspect = imageSize.width / imageSize.height
+    let canvasAspect = canvasSize.width / canvasSize.height
+
+    let drawSize: CGSize
+
+    if imageAspect > canvasAspect {
+        drawSize = CGSize(
+            width: canvasSize.width,
+            height: canvasSize.width / imageAspect
+        )
+    } else {
+        drawSize = CGSize(
+            width: canvasSize.height * imageAspect,
+            height: canvasSize.height
+        )
+    }
+
+    return CGRect(
+        x: (canvasSize.width - drawSize.width) / 2,
+        y: (canvasSize.height - drawSize.height) / 2,
+        width: drawSize.width,
+        height: drawSize.height
+    )
+}
+
+
+private func temporaryVideoURL(for outputURL: URL) -> URL {
+    let tempName = "BriefShow-video-only-\(UUID().uuidString).mp4"
+    return FileManager.default.temporaryDirectory.appendingPathComponent(tempName)
+}
+
+private func muxVideoWithMusic(
+    videoURL: URL,
+    musicURL: URL,
+    outputURL: URL,
+    fadeInSeconds: Double,
+    fadeOutSeconds: Double
+) throws {
+    if FileManager.default.fileExists(atPath: outputURL.path) {
+        try FileManager.default.removeItem(at: outputURL)
+    }
+
+    let videoAsset = AVURLAsset(url: videoURL)
+    let musicAsset = AVURLAsset(url: musicURL)
+    let composition = AVMutableComposition()
+
+    guard let sourceVideoTrack = videoAsset.tracks(withMediaType: .video).first,
+          let compositionVideoTrack = composition.addMutableTrack(
+              withMediaType: .video,
+              preferredTrackID: kCMPersistentTrackID_Invalid
+          ) else {
+        throw BriefShowExportError.couldNotExportWithAudio
+    }
+
+    let videoDuration = videoAsset.duration
+    try compositionVideoTrack.insertTimeRange(
+        CMTimeRange(start: .zero, duration: videoDuration),
+        of: sourceVideoTrack,
+        at: .zero
+    )
+    compositionVideoTrack.preferredTransform = sourceVideoTrack.preferredTransform
+
+    var audioMix: AVMutableAudioMix?
+
+    if let sourceAudioTrack = musicAsset.tracks(withMediaType: .audio).first,
+       let compositionAudioTrack = composition.addMutableTrack(
+           withMediaType: .audio,
+           preferredTrackID: kCMPersistentTrackID_Invalid
+       ) {
+        let audioDuration = minCMTime(videoDuration, musicAsset.duration)
+
+        try compositionAudioTrack.insertTimeRange(
+            CMTimeRange(start: .zero, duration: audioDuration),
+            of: sourceAudioTrack,
+            at: .zero
+        )
+
+        let audioParameters = AVMutableAudioMixInputParameters(track: compositionAudioTrack)
+        audioParameters.setVolume(1, at: .zero)
+
+        let fadeInDuration = minCMTime(
+            CMTime(seconds: max(0, fadeInSeconds), preferredTimescale: 600),
+            audioDuration
+        )
+
+        if fadeInDuration > .zero {
+            audioParameters.setVolumeRamp(
+                fromStartVolume: 0,
+                toEndVolume: 1,
+                timeRange: CMTimeRange(start: .zero, duration: fadeInDuration)
+            )
+        }
+
+        let fadeOutDuration = minCMTime(
+            CMTime(seconds: max(0, fadeOutSeconds), preferredTimescale: 600),
+            audioDuration
+        )
+
+        if fadeOutDuration > .zero {
+            let fadeOutStart = maxCMTime(.zero, CMTimeSubtract(audioDuration, fadeOutDuration))
+            audioParameters.setVolumeRamp(
+                fromStartVolume: 1,
+                toEndVolume: 0,
+                timeRange: CMTimeRange(start: fadeOutStart, duration: fadeOutDuration)
+            )
+        }
+
+        audioMix = AVMutableAudioMix()
+        audioMix?.inputParameters = [audioParameters]
+    }
+
+    guard let exportSession = AVAssetExportSession(
+        asset: composition,
+        presetName: AVAssetExportPresetHighestQuality
+    ) else {
+        throw BriefShowExportError.couldNotExportWithAudio
+    }
+
+    exportSession.outputURL = outputURL
+    exportSession.outputFileType = .mp4
+    exportSession.audioMix = audioMix
+    exportSession.shouldOptimizeForNetworkUse = true
+
+    let semaphore = DispatchSemaphore(value: 0)
+    exportSession.exportAsynchronously {
+        semaphore.signal()
+    }
+    semaphore.wait()
+
+    if exportSession.status != .completed {
+        throw exportSession.error ?? BriefShowExportError.couldNotExportWithAudio
+    }
+}
+
+private func minCMTime(_ first: CMTime, _ second: CMTime) -> CMTime {
+    CMTimeCompare(first, second) <= 0 ? first : second
+}
+
+private func maxCMTime(_ first: CMTime, _ second: CMTime) -> CMTime {
+    CMTimeCompare(first, second) >= 0 ? first : second
+}
+
+enum BriefShowExportError: LocalizedError {
+    case cannotAddVideoInput
+    case couldNotStartWriter
+    case couldNotCreatePixelBuffer
+    case couldNotAppendFrame
+    case writerFailed
+    case couldNotExportWithAudio
+
+    var errorDescription: String? {
+        switch self {
+        case .cannotAddVideoInput:
+            return "Could not add video input."
+        case .couldNotStartWriter:
+            return "Could not start video writer."
+        case .couldNotCreatePixelBuffer:
+            return "Could not create video frame."
+        case .couldNotAppendFrame:
+            return "Could not write video frame."
+        case .writerFailed:
+            return "Video writer failed."
+        case .couldNotExportWithAudio:
+            return "Could not add music to exported video."
+        }
+    }
+}
 
 private func makePreviewImage(from url: URL) -> NSImage? {
     guard let sourceImage = NSImage(contentsOf: url) else {
@@ -613,7 +1158,7 @@ struct CenterPreviewPanel: View {
                 PanelTitle(title: "Preview", subtitle: "Your slideshow will appear here")
                 ZStack {
                     RoundedRectangle(cornerRadius: 34)
-                        .fill(Color.black)
+                        .fill(activePreviewImage == nil && !isPreparingPhotos && NSImage(named: "ScreenSketch") != nil ? Color.clear : Color.black)
 
                     if let activePreviewImage {
                         if transitionStyle == .fade, let previousPreviewImage {
@@ -662,18 +1207,26 @@ struct CenterPreviewPanel: View {
                                 .foregroundColor(.white.opacity(0.65))
                         }
                     } else {
-                        VStack(spacing: 16) {
-                            Image(systemName: "play.rectangle.fill")
-                                .font(.system(size: 42))
-                                .foregroundColor(Color(red: 0.957, green: 0.863, blue: 0.545))
+                        if NSImage(named: "ScreenSketch") != nil {
+                            Image("ScreenSketch")
+                                .resizable()
+                                .scaledToFill()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .clipShape(RoundedRectangle(cornerRadius: 28))
+                        } else {
+                            VStack(spacing: 16) {
+                                Image(systemName: "play.rectangle.fill")
+                                    .font(.system(size: 42))
+                                    .foregroundColor(Color(red: 0.957, green: 0.863, blue: 0.545))
 
-                            Text("No slideshow yet")
-                                .font(.custom("Figtree", size: 13).weight(.medium))
-                                .foregroundColor(.white)
+                                Text("No slideshow yet")
+                                    .font(.custom("Figtree", size: 13).weight(.medium))
+                                    .foregroundColor(.white)
 
-                            Text("Add photos and music to generate a preview.")
-                                .font(.custom("Figtree", size: 14).weight(.medium))
-                                .foregroundColor(.white.opacity(0.65))
+                                Text("Add photos and music to generate a preview.")
+                                    .font(.custom("Figtree", size: 14).weight(.medium))
+                                    .foregroundColor(.white.opacity(0.65))
+                            }
                         }
                     }
                 }
@@ -759,6 +1312,12 @@ struct CenterPreviewPanel: View {
 
 struct RightExportPanel: View {
     @Binding var selectedResolution: String
+    let canExport: Bool
+    let isExporting: Bool
+    let exportStatusText: String?
+    let onExportVideo: () -> Void
+
+    @State private var isShowingExportConfirmation: Bool = false
 
     private let resolutions = ["480p", "720p", "1080p", "4K", "Original"]
 
@@ -799,7 +1358,7 @@ struct RightExportPanel: View {
                 }
                 .padding(.top, 2)
 
-                Text(exportHelperText)
+                Text(exportStatusText ?? exportHelperText)
                     .font(.custom("Figtree", size: 11).weight(.regular))
                     .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
                     .fixedSize(horizontal: false, vertical: true)
@@ -813,6 +1372,7 @@ struct RightExportPanel: View {
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 18))
                     .padding(.top, 2)
+
             }
             .padding(14)
             .background(Color(red: 0.957, green: 0.937, blue: 0.910))
@@ -831,6 +1391,60 @@ struct RightExportPanel: View {
                 .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
         )
         .clipShape(RoundedRectangle(cornerRadius: 34))
+        .popover(isPresented: $isShowingExportConfirmation, arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Export Video")
+                    .font(.custom("Figtree", size: 14).weight(.medium))
+                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                VStack(alignment: .leading, spacing: 7) {
+                    SettingRow(label: "Resolution", value: selectedResolution)
+                    SettingRow(label: "Size", value: exportSizeText(for: selectedResolution))
+                    SettingRow(label: "Format", value: "MP4")
+                    SettingRow(label: "Audio", value: "Silent for now")
+                }
+
+                Text("Choose where to save this \(selectedResolution) slideshow video.")
+                    .font(.custom("Figtree", size: 11).weight(.regular))
+                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Button("Cancel") {
+                        isShowingExportConfirmation = false
+                    }
+                    .buttonStyle(.plain)
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 8)
+                    .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                    .clipShape(RoundedRectangle(cornerRadius: 999))
+
+                    Button {
+                        isShowingExportConfirmation = false
+                        onExportVideo()
+                    } label: {
+                        Text(isExporting ? "Exporting…" : "Export Video")
+                            .font(.custom("Figtree", size: 11).weight(.medium))
+                            .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 8)
+                            .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 999)
+                                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 1.7)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 999))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canExport || isExporting)
+                }
+            }
+            .padding(16)
+            .frame(width: 260)
+            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        }
         
     }
 
@@ -840,6 +1454,27 @@ struct RightExportPanel: View {
             isSelected: selectedResolution == resolution
         ) {
             selectedResolution = resolution
+
+            if canExport && !isExporting {
+                isShowingExportConfirmation = true
+            }
+        }
+    }
+
+    private func exportSizeText(for resolution: String) -> String {
+        switch resolution {
+        case "480p":
+            return "854 × 480"
+        case "720p":
+            return "1280 × 720"
+        case "1080p":
+            return "1920 × 1080"
+        case "4K":
+            return "3840 × 2160"
+        case "Original":
+            return "Source image size"
+        default:
+            return resolution
         }
     }
 
@@ -849,9 +1484,12 @@ struct RightExportPanel: View {
 }
 
 struct TimelinePanel: View {
-    let photoURLs: [URL]
+    @Binding var photoURLs: [URL]
+    @Binding var previewImages: [NSImage]
     let musicURL: URL?
-    let activePhotoIndex: Int
+    @Binding var activePhotoIndex: Int
+
+    @State private var draggedPhotoURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -862,11 +1500,25 @@ struct TimelinePanel: View {
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(Array(photoURLs.enumerated()), id: \.offset) { index, url in
+                        ForEach(Array(photoURLs.enumerated()), id: \.element) { index, url in
                             TimelinePhotoThumb(
                                 index: index,
                                 url: url,
                                 isActive: index == activePhotoIndex
+                            )
+                            .onDrag {
+                                draggedPhotoURL = url
+                                return NSItemProvider(object: url.absoluteString as NSString)
+                            }
+                            .onDrop(
+                                of: [.text],
+                                delegate: TimelinePhotoDropDelegate(
+                                    targetURL: url,
+                                    draggedPhotoURL: $draggedPhotoURL,
+                                    photoURLs: $photoURLs,
+                                    previewImages: $previewImages,
+                                    activePhotoIndex: $activePhotoIndex
+                                )
                             )
                         }
 
@@ -890,7 +1542,7 @@ struct TimelinePanel: View {
             return "Photos arranged with \(musicURL.lastPathComponent)"
         }
 
-        return "Add photos to build your timeline"
+        return "Drag photos to rearrange your timeline"
     }
 }
 
@@ -946,17 +1598,45 @@ enum EmptyTimelineSceneKind: Int, CaseIterable, Identifiable {
 }
 
 struct EmptyTimelineStoryboard: View {
+    private var dummyImageNames: [String] {
+        (1...8)
+            .map { "DummyTimeline\($0)" }
+            .filter { NSImage(named: $0) != nil }
+    }
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
-                ForEach(EmptyTimelineSceneKind.allCases) { scene in
-                    EmptyTimelineSceneThumb(scene: scene)
+                if dummyImageNames.isEmpty {
+                    ForEach(EmptyTimelineSceneKind.allCases) { scene in
+                        EmptyTimelineSceneThumb(scene: scene)
+                    }
+                } else {
+                    ForEach(dummyImageNames, id: \.self) { imageName in
+                        EmptyTimelineImageThumb(imageName: imageName)
+                    }
                 }
 
                 Spacer(minLength: 0)
             }
         }
         .frame(height: 66)
+    }
+}
+
+struct EmptyTimelineImageThumb: View {
+    let imageName: String
+
+    var body: some View {
+        Image(imageName)
+            .resizable()
+            .aspectRatio(contentMode: .fill)
+            .frame(width: 132, height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.88), lineWidth: 2.4)
+            )
     }
 }
 
@@ -1177,6 +1857,56 @@ struct TimelinePhotoThumb: View {
     }
 }
 
+
+struct TimelinePhotoDropDelegate: DropDelegate {
+    let targetURL: URL
+    @Binding var draggedPhotoURL: URL?
+    @Binding var photoURLs: [URL]
+    @Binding var previewImages: [NSImage]
+    @Binding var activePhotoIndex: Int
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedPhotoURL,
+              draggedPhotoURL != targetURL,
+              let fromIndex = photoURLs.firstIndex(of: draggedPhotoURL),
+              let toIndex = photoURLs.firstIndex(of: targetURL)
+        else {
+            return
+        }
+
+        let activeURL = photoURLs.indices.contains(activePhotoIndex) ? photoURLs[activePhotoIndex] : nil
+
+        withAnimation(.easeInOut(duration: 0.16)) {
+            photoURLs.move(
+                fromOffsets: IndexSet(integer: fromIndex),
+                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+            )
+
+            if previewImages.indices.contains(fromIndex), previewImages.indices.contains(toIndex) {
+                previewImages.move(
+                    fromOffsets: IndexSet(integer: fromIndex),
+                    toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+                )
+            }
+
+            if let activeURL, let newActiveIndex = photoURLs.firstIndex(of: activeURL) {
+                activePhotoIndex = newActiveIndex
+            } else {
+                activePhotoIndex = min(activePhotoIndex, max(0, photoURLs.count - 1))
+            }
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedPhotoURL = nil
+        return true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+}
+
 struct PanelTitle: View {
     let title: String
     let subtitle: String
@@ -1200,16 +1930,19 @@ struct DropCard: View {
     let subtitle: String
     var isLoading: Bool = false
 
+    @State private var isHovered = false
+
     var body: some View {
         VStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.system(size: 18, weight: .regular))
-                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                .foregroundColor(activeColor)
 
             VStack(spacing: 2) {
                 Text(title)
                     .font(.custom("Figtree", size: 12).weight(.medium))
-                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                    .foregroundColor(activeColor)
+                    .scaleEffect(isHovered ? 1.035 : 1)
 
                 HStack(spacing: 6) {
                     if isLoading {
@@ -1221,7 +1954,7 @@ struct DropCard: View {
 
                     Text(subtitle)
                         .font(.custom("Figtree", size: 10).weight(.regular))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                        .foregroundColor(isHovered ? activeColor.opacity(0.82) : Color(red: 0.390, green: 0.390, blue: 0.390))
                         .lineLimit(1)
                         .multilineTextAlignment(.center)
                 }
@@ -1229,12 +1962,20 @@ struct DropCard: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 9)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(isHovered ? Color(red: 0.930, green: 0.900, blue: 0.850) : Color(red: 0.957, green: 0.937, blue: 0.910))
         .overlay(
             RoundedRectangle(cornerRadius: 22)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 3)
+                .stroke(isHovered ? activeColor : Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: isHovered ? 3.4 : 3)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22))
+        .animation(.linear(duration: 0.10), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+
+    private var activeColor: Color {
+        isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390)
     }
 }
 

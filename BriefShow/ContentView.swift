@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import Combine
+import AVFoundation
 
 enum SlideshowTimingMode: String {
     case followMusic = "Follow Music"
@@ -16,39 +17,42 @@ enum SlideshowTransitionStyle: String {
 struct ContentView: View {
     @State private var selectedPhotoURLs: [URL] = []
     @State private var previewImages: [NSImage] = []
+    @State private var isPreparingPhotos: Bool = false
+    @State private var preparedPhotoCount: Int = 0
     @State private var selectedMusicURL: URL?
+    @State private var audioPlayer: AVAudioPlayer?
     @State private var timingMode: SlideshowTimingMode = .followMusic
     @State private var secondsPerPhoto: Double = 5
     @State private var fadeDuration: Double = 1
+    @State private var musicFadeInSeconds: Double = 4
     @State private var musicFadeOutSeconds: Double = 4
     @State private var shouldLoopPreview: Bool = false
     @State private var transitionStyle: SlideshowTransitionStyle = .fade
+    @State private var selectedExportResolution: String = "4K"
     @State private var activePhotoIndex: Int = 0
     @State private var previousPhotoIndex: Int?
-    @State private var isTransitioning: Bool = false
+    @State private var transitionProgress: Double = 1
     @State private var isPreviewPlaying: Bool = false
     @State private var previewElapsedSeconds: Double = 0
+    @State private var previewTotalElapsedSeconds: Double = 0
 
     var body: some View {
         ZStack {
             Color(red: 0.957, green: 0.937, blue: 0.910)
                 .ignoresSafeArea()
 
-            VStack(spacing: 14) {
+            VStack(spacing: 10) {
                 HeaderView()
 
                 HStack(alignment: .top, spacing: 14) {
                     LeftImportPanel(
-                        selectedPhotoCount: selectedPhotoURLs.count,
-                        selectedMusicURL: selectedMusicURL,
                         timingMode: $timingMode,
                         secondsPerPhoto: $secondsPerPhoto,
                         fadeDuration: $fadeDuration,
+                        musicFadeInSeconds: $musicFadeInSeconds,
                         musicFadeOutSeconds: $musicFadeOutSeconds,
                         shouldLoopPreview: $shouldLoopPreview,
-                        transitionStyle: $transitionStyle,
-                        onAddPhotos: openPhotoPicker,
-                        onAddMusic: openMusicPicker
+                        transitionStyle: $transitionStyle
                     )
                     CenterPreviewPanel(
                         activePreviewImage: activePreviewImage,
@@ -56,13 +60,19 @@ struct ContentView: View {
                         activePhotoName: activePhotoName,
                         activePhotoIndex: activePhotoIndex,
                         photoCount: selectedPhotoURLs.count,
+                        isPreparingPhotos: isPreparingPhotos,
+                        preparedPhotoCount: preparedPhotoCount,
+                        selectedMusicURL: selectedMusicURL,
+                        timeCounterText: timeCounterText,
                         transitionStyle: transitionStyle,
-                        isTransitioning: isTransitioning,
+                        transitionProgress: transitionProgress,
                         isPreviewPlaying: isPreviewPlaying,
+                        onAddPhotos: openPhotoPicker,
+                        onAddMusic: openMusicPicker,
                         onTogglePreview: togglePreview,
                         onStartFromBeginning: startPreviewFromBeginning
                     )
-                    RightExportPanel()
+                    RightExportPanel(selectedResolution: $selectedExportResolution)
                 }
 
                 TimelinePanel(
@@ -72,11 +82,18 @@ struct ContentView: View {
                 )
             }
             .padding(.horizontal, 22)
-            .padding(.vertical, 14)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
-        .frame(minWidth: 980, minHeight: 640)
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            advancePreviewIfNeeded()
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(
+            minWidth: 980,
+            idealWidth: 1180,
+            maxWidth: .infinity,
+            alignment: .top
+        )
+        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
+            advancePreviewIfNeeded(delta: 0.1)
         }
     }
 
@@ -107,27 +124,70 @@ struct ContentView: View {
     private var currentPhotoDuration: Double {
         switch timingMode {
         case .followMusic:
-            return max(1, secondsPerPhoto)
+            guard selectedPhotoURLs.count > 0, let audioPlayer else {
+                return max(1, secondsPerPhoto)
+            }
+
+            return max(0.5, audioPlayer.duration / Double(selectedPhotoURLs.count))
         case .customSpeed:
             return max(1, secondsPerPhoto)
         }
     }
 
-    private func togglePreview() {
+    private var totalPreviewDuration: Double {
         guard !selectedPhotoURLs.isEmpty else {
+            return 0
+        }
+
+        if timingMode == .followMusic, let audioPlayer {
+            return max(0, audioPlayer.duration)
+        }
+
+        return currentPhotoDuration * Double(selectedPhotoURLs.count)
+    }
+
+    private var timeCounterText: String {
+        guard !selectedPhotoURLs.isEmpty else {
+            return "00:00 / 00:00"
+        }
+
+        let elapsed = min(previewTotalElapsedSeconds, totalPreviewDuration)
+        return "\(formatTime(elapsed)) / \(formatTime(totalPreviewDuration)) · Photo \(activePhotoIndex + 1) / \(selectedPhotoURLs.count)"
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        let safeSeconds = max(0, Int(seconds.rounded()))
+        let minutes = safeSeconds / 60
+        let remainingSeconds = safeSeconds % 60
+
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
+    }
+
+    private func togglePreview() {
+        guard !selectedPhotoURLs.isEmpty, !isPreparingPhotos, !previewImages.isEmpty else {
             return
         }
 
         isPreviewPlaying.toggle()
         previewElapsedSeconds = 0
+
+        if isPreviewPlaying {
+            let fadeInDuration = max(musicFadeInSeconds, 0.1)
+            audioPlayer?.volume = Float(min(previewTotalElapsedSeconds / fadeInDuration, 1))
+            audioPlayer?.play()
+        } else {
+            audioPlayer?.pause()
+        }
     }
 
-    private func advancePreviewIfNeeded() {
+    private func advancePreviewIfNeeded(delta: Double) {
         guard isPreviewPlaying, !selectedPhotoURLs.isEmpty else {
             return
         }
 
-        previewElapsedSeconds += 1
+        previewElapsedSeconds += delta
+        previewTotalElapsedSeconds += delta
+        updateAudioFadeOut()
 
         guard previewElapsedSeconds >= currentPhotoDuration else {
             return
@@ -139,9 +199,15 @@ struct ContentView: View {
 
         if nextIndex >= selectedPhotoURLs.count {
             if shouldLoopPreview {
+                previewTotalElapsedSeconds = 0
+                audioPlayer?.volume = 0
+                audioPlayer?.currentTime = 0
+                audioPlayer?.play()
                 moveToPhoto(at: 0)
             } else {
                 isPreviewPlaying = false
+                previewTotalElapsedSeconds = totalPreviewDuration
+                audioPlayer?.pause()
                 moveToPhoto(at: selectedPhotoURLs.count - 1)
             }
             return
@@ -151,15 +217,45 @@ struct ContentView: View {
     }
 
     private func startPreviewFromBeginning() {
-        guard !selectedPhotoURLs.isEmpty else {
+        guard !selectedPhotoURLs.isEmpty, !isPreparingPhotos, !previewImages.isEmpty else {
             return
         }
 
         previousPhotoIndex = nil
-        isTransitioning = false
+        transitionProgress = 1
         activePhotoIndex = 0
         previewElapsedSeconds = 0
+        previewTotalElapsedSeconds = 0
         isPreviewPlaying = true
+        audioPlayer?.volume = 0
+        audioPlayer?.currentTime = 0
+        audioPlayer?.play()
+    }
+
+    private func updateAudioFadeOut() {
+        guard let audioPlayer, isPreviewPlaying, totalPreviewDuration > 0 else {
+            return
+        }
+
+        let fadeInDuration = min(max(musicFadeInSeconds, 0), max(totalPreviewDuration, 0))
+        let fadeOutDuration = min(max(musicFadeOutSeconds, 0), max(totalPreviewDuration, 0))
+
+        var fadeInVolume = 1.0
+        if fadeInDuration > 0, previewTotalElapsedSeconds < fadeInDuration {
+            fadeInVolume = min(1, max(0, previewTotalElapsedSeconds / fadeInDuration))
+        }
+
+        var fadeOutVolume = 1.0
+        if fadeOutDuration > 0 {
+            let fadeStart = max(0, totalPreviewDuration - fadeOutDuration)
+
+            if previewTotalElapsedSeconds >= fadeStart {
+                let fadeProgress = min(1, max(0, (previewTotalElapsedSeconds - fadeStart) / fadeOutDuration))
+                fadeOutVolume = max(0, 1 - fadeProgress)
+            }
+        }
+
+        audioPlayer.volume = Float(min(fadeInVolume, fadeOutVolume))
     }
 
     private func moveToPhoto(at newIndex: Int) {
@@ -169,24 +265,26 @@ struct ContentView: View {
 
         if transitionStyle == .fade {
             previousPhotoIndex = activePhotoIndex
-            isTransitioning = false
+            transitionProgress = 0
             activePhotoIndex = newIndex
 
-            let duration = min(max(fadeDuration, 0.15), 3)
+            let safeFadeDuration = min(max(fadeDuration, 0.15), max(0.15, currentPhotoDuration * 0.45))
 
             DispatchQueue.main.async {
-                withAnimation(.easeInOut(duration: duration)) {
-                    isTransitioning = true
+                withAnimation(.easeInOut(duration: safeFadeDuration)) {
+                    transitionProgress = 1
                 }
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-                previousPhotoIndex = nil
-                isTransitioning = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + safeFadeDuration + 0.02) {
+                if activePhotoIndex == newIndex {
+                    previousPhotoIndex = nil
+                    transitionProgress = 1
+                }
             }
         } else {
             previousPhotoIndex = nil
-            isTransitioning = false
+            transitionProgress = 1
             activePhotoIndex = newIndex
         }
     }
@@ -194,9 +292,13 @@ struct ContentView: View {
     private func resetPreviewState() {
         activePhotoIndex = 0
         previousPhotoIndex = nil
-        isTransitioning = false
+        transitionProgress = 1
         previewElapsedSeconds = 0
+        previewTotalElapsedSeconds = 0
         isPreviewPlaying = false
+        audioPlayer?.pause()
+        audioPlayer?.currentTime = 0
+        audioPlayer?.volume = 1
     }
 
     private func openPhotoPicker() {
@@ -213,41 +315,40 @@ struct ContentView: View {
             }
 
             selectedPhotoURLs = sortedURLs
-            previewImages = sortedURLs.compactMap { makePreviewImage(from: $0) }
+            previewImages = []
+            preparedPhotoCount = 0
+            isPreparingPhotos = true
             resetPreviewState()
+
+            let preparationStartedAt = Date()
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                var preparedImages: [NSImage] = []
+
+                for url in sortedURLs {
+                    if let image = makePreviewImage(from: url) {
+                        preparedImages.append(image)
+                    }
+
+                    let currentCount = preparedImages.count
+                    DispatchQueue.main.async {
+                        preparedPhotoCount = currentCount
+                    }
+                }
+
+                DispatchQueue.main.async {
+                    let elapsed = Date().timeIntervalSince(preparationStartedAt)
+                    let remainingLoadingTime = max(0, 0.7 - elapsed)
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + remainingLoadingTime) {
+                        previewImages = preparedImages
+                        preparedPhotoCount = preparedImages.count
+                        isPreparingPhotos = false
+                        resetPreviewState()
+                    }
+                }
+            }
         }
-    }
-
-    private func makePreviewImage(from url: URL) -> NSImage? {
-        guard let sourceImage = NSImage(contentsOf: url) else {
-            return nil
-        }
-
-        let maxSide: CGFloat = 1400
-        let originalSize = sourceImage.size
-        let largestSide = max(originalSize.width, originalSize.height)
-
-        guard largestSide > maxSide else {
-            return sourceImage
-        }
-
-        let scale = maxSide / largestSide
-        let previewSize = NSSize(
-            width: originalSize.width * scale,
-            height: originalSize.height * scale
-        )
-
-        let previewImage = NSImage(size: previewSize)
-        previewImage.lockFocus()
-        sourceImage.draw(
-            in: NSRect(origin: .zero, size: previewSize),
-            from: NSRect(origin: .zero, size: originalSize),
-            operation: .copy,
-            fraction: 1
-        )
-        previewImage.unlockFocus()
-
-        return previewImage
     }
 
     private func openMusicPicker() {
@@ -260,8 +361,60 @@ struct ContentView: View {
 
         if panel.runModal() == .OK {
             selectedMusicURL = panel.url
+            prepareAudioPlayer(for: panel.url)
+            resetPreviewState()
         }
     }
+
+    private func prepareAudioPlayer(for url: URL?) {
+        guard let url else {
+            audioPlayer = nil
+            return
+        }
+
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.volume = 1
+            player.prepareToPlay()
+            audioPlayer = player
+        } catch {
+            audioPlayer = nil
+            print("Could not load audio file:", error.localizedDescription)
+        }
+    }
+}
+
+
+private func makePreviewImage(from url: URL) -> NSImage? {
+    guard let sourceImage = NSImage(contentsOf: url) else {
+        return nil
+    }
+
+    let maxSide: CGFloat = 1400
+    let originalSize = sourceImage.size
+    let largestSide = max(originalSize.width, originalSize.height)
+
+    guard largestSide > maxSide else {
+        return sourceImage
+    }
+
+    let scale = maxSide / largestSide
+    let previewSize = NSSize(
+        width: originalSize.width * scale,
+        height: originalSize.height * scale
+    )
+
+    let previewImage = NSImage(size: previewSize)
+    previewImage.lockFocus()
+    sourceImage.draw(
+        in: NSRect(origin: .zero, size: previewSize),
+        from: NSRect(origin: .zero, size: originalSize),
+        operation: .copy,
+        fraction: 1
+    )
+    previewImage.unlockFocus()
+
+    return previewImage
 }
 
 struct HeaderView: View {
@@ -290,45 +443,23 @@ struct HeaderView: View {
             Button("New Project") {}
                 .buttonStyle(BrutalButtonStyle())
 
-            Button("Export Video") {}
-                .buttonStyle(PrimaryBrutalButtonStyle())
+
         }
     }
 }
 
 struct LeftImportPanel: View {
-    let selectedPhotoCount: Int
-    let selectedMusicURL: URL?
     @Binding var timingMode: SlideshowTimingMode
     @Binding var secondsPerPhoto: Double
     @Binding var fadeDuration: Double
+    @Binding var musicFadeInSeconds: Double
     @Binding var musicFadeOutSeconds: Double
     @Binding var shouldLoopPreview: Bool
     @Binding var transitionStyle: SlideshowTransitionStyle
-    let onAddPhotos: () -> Void
-    let onAddMusic: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            PanelTitle(title: "Media", subtitle: "Add photos and music")
-
-            Button(action: onAddPhotos) {
-                DropCard(
-                    icon: "photo.on.rectangle.angled",
-                    title: "Add Photos",
-                    subtitle: selectedPhotoCount == 0 ? "Choose multiple image files" : "\(selectedPhotoCount) photo\(selectedPhotoCount == 1 ? "" : "s") selected"
-                )
-            }
-            .buttonStyle(.plain)
-
-            Button(action: onAddMusic) {
-                DropCard(
-                    icon: "music.note",
-                    title: "Add Music",
-                    subtitle: selectedMusicURL?.lastPathComponent ?? "MP3, WAV or M4A soundtrack"
-                )
-            }
-            .buttonStyle(.plain)
+            PanelTitle(title: "Settings", subtitle: "Timing and transitions")
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Slideshow Settings")
@@ -370,9 +501,17 @@ struct LeftImportPanel: View {
                 )
 
                 CompactStepperRow(
+                    label: "Music Fade In",
+                    value: $musicFadeInSeconds,
+                    range: 0...10,
+                    step: 1,
+                    suffix: "s"
+                )
+
+                CompactStepperRow(
                     label: "Music Fade Out",
                     value: $musicFadeOutSeconds,
-                    range: 1...10,
+                    range: 0...10,
                     step: 1,
                     suffix: "s"
                 )
@@ -428,8 +567,6 @@ struct LeftImportPanel: View {
                     .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 24))
-
-            Spacer()
         }
         .padding(14)
         .frame(width: 290)
@@ -445,9 +582,9 @@ struct LeftImportPanel: View {
     private var timingModeHelperText: String {
         switch timingMode {
         case .followMusic:
-            return "Automatically spaces photos to match the music length, then fades the music out at the end."
+            return "Automatically spaces photos to match the music length, with music fade-in at the start and fade-out at the end."
         case .customSpeed:
-            return "Use your own seconds per photo. Fade controls image transitions, and music fades out in the final seconds."
+            return "Use your own seconds per photo. Fade controls image transitions, with music fade-in and fade-out applied."
         }
     }
 }
@@ -458,96 +595,236 @@ struct CenterPreviewPanel: View {
     let activePhotoName: String
     let activePhotoIndex: Int
     let photoCount: Int
+    let isPreparingPhotos: Bool
+    let preparedPhotoCount: Int
+    let selectedMusicURL: URL?
+    let timeCounterText: String
     let transitionStyle: SlideshowTransitionStyle
-    let isTransitioning: Bool
+    let transitionProgress: Double
     let isPreviewPlaying: Bool
+    let onAddPhotos: () -> Void
+    let onAddMusic: () -> Void
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            PanelTitle(title: "Preview", subtitle: "Your slideshow will appear here")
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
+                PanelTitle(title: "Preview", subtitle: "Your slideshow will appear here")
+                ZStack {
+                    RoundedRectangle(cornerRadius: 34)
+                        .fill(Color.black)
 
-            ZStack {
-                RoundedRectangle(cornerRadius: 34)
-                    .fill(Color.black)
+                    if let activePreviewImage {
+                        if transitionStyle == .fade, let previousPreviewImage {
+                            Image(nsImage: previousPreviewImage)
+                                .resizable()
+                                .scaledToFit()
+                                .opacity(max(0, 1 - transitionProgress))
+                                .clipShape(RoundedRectangle(cornerRadius: 28))
+                        }
 
-                if let activePreviewImage {
-                    if transitionStyle == .fade, let previousPreviewImage {
-                        Image(nsImage: previousPreviewImage)
+                        Image(nsImage: activePreviewImage)
                             .resizable()
                             .scaledToFit()
-                            .opacity(isTransitioning ? 0 : 1)
+                            .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
                             .clipShape(RoundedRectangle(cornerRadius: 28))
-                    }
 
-                    Image(nsImage: activePreviewImage)
-                        .resizable()
-                        .scaledToFit()
-                        .opacity(transitionStyle == .fade && previousPreviewImage != nil ? (isTransitioning ? 1 : 0) : 1)
-                        .clipShape(RoundedRectangle(cornerRadius: 28))
-
-                    VStack {
-                        Spacer()
-
-                        HStack {
-                            Text(activePhotoName)
-                                .font(.custom("Figtree", size: 12).weight(.medium))
-                                .foregroundColor(.white.opacity(0.88))
-                                .lineLimit(1)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .background(Color.black.opacity(0.42))
-                                .clipShape(RoundedRectangle(cornerRadius: 999))
-
+                        VStack {
                             Spacer()
+
+                            HStack {
+                                Text(activePhotoName)
+                                    .font(.custom("Figtree", size: 12).weight(.medium))
+                                    .foregroundColor(.white.opacity(0.88))
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(Color.black.opacity(0.42))
+                                    .clipShape(RoundedRectangle(cornerRadius: 999))
+
+                                Spacer()
+                            }
+                            .padding(16)
                         }
-                        .padding(16)
-                    }
-                } else {
-                    VStack(spacing: 16) {
-                        Image(systemName: "play.rectangle.fill")
-                            .font(.system(size: 42))
-                            .foregroundColor(Color(red: 0.957, green: 0.863, blue: 0.545))
+                    } else if isPreparingPhotos {
+                        VStack(spacing: 14) {
+                            ProgressView()
+                                .controlSize(.large)
+                                .scaleEffect(0.9)
 
-                        Text("No slideshow yet")
-                            .font(.custom("Figtree", size: 13).weight(.medium))
-                            .foregroundColor(.white)
+                            Text("Preparing photo previews…")
+                                .font(.custom("Figtree", size: 13).weight(.semibold))
+                                .foregroundColor(.white)
 
-                        Text("Add photos and music to generate a preview.")
-                            .font(.custom("Figtree", size: 14).weight(.medium))
-                            .foregroundColor(.white.opacity(0.65))
+                            Text("Optimizing images for smooth playback.")
+                                .font(.custom("Figtree", size: 13).weight(.medium))
+                                .foregroundColor(.white.opacity(0.65))
+                        }
+                    } else {
+                        VStack(spacing: 16) {
+                            Image(systemName: "play.rectangle.fill")
+                                .font(.system(size: 42))
+                                .foregroundColor(Color(red: 0.957, green: 0.863, blue: 0.545))
+
+                            Text("No slideshow yet")
+                                .font(.custom("Figtree", size: 13).weight(.medium))
+                                .foregroundColor(.white)
+
+                            Text("Add photos and music to generate a preview.")
+                                .font(.custom("Figtree", size: 14).weight(.medium))
+                                .foregroundColor(.white.opacity(0.65))
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 260)
+                .clipShape(RoundedRectangle(cornerRadius: 34))
+
+                HStack {
+                    PreviewControlButton(
+                        title: isPreviewPlaying ? "Stop Preview" : "Play Preview",
+                        isDisabled: photoCount == 0 || isPreparingPhotos,
+                        action: onTogglePreview
+                    )
+
+                    PreviewControlButton(
+                        title: "Play From Beginning",
+                        isDisabled: photoCount == 0 || isPreparingPhotos,
+                        action: onStartFromBeginning
+                    )
+
+                    Spacer()
+
+                    Text(timeCounterText)
+                        .font(.custom("Figtree", size: 12).weight(.regular))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                        .lineLimit(1)
+                }
             }
-            .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 260)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .top)
+            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
             .overlay(
                 RoundedRectangle(cornerRadius: 34)
                     .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
             )
+            .clipShape(RoundedRectangle(cornerRadius: 34))
 
-            HStack {
-                PreviewControlButton(
-                    title: isPreviewPlaying ? "Stop Preview" : "Play Preview",
-                    isDisabled: photoCount == 0,
-                    action: onTogglePreview
-                )
+            HStack(spacing: 10) {
+                Button(action: onAddPhotos) {
+                    DropCard(
+                        icon: "photo.on.rectangle.angled",
+                        title: "Add Photos",
+                        subtitle: photoStatusText,
+                        isLoading: isPreparingPhotos
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
 
-                PreviewControlButton(
-                    title: "Play From Beginning",
-                    isDisabled: photoCount == 0,
-                    action: onStartFromBeginning
-                )
-
-                Spacer()
-
-                Text(photoCount == 0 ? "00:00 / 00:00" : "Photo \(activePhotoIndex + 1) / \(photoCount)")
-                    .font(.custom("Figtree", size: 12).weight(.regular))
-                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                Button(action: onAddMusic) {
+                    DropCard(
+                        icon: "music.note",
+                        title: "Add Music",
+                        subtitle: musicStatusText
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
             }
+            .padding(12)
+            .frame(maxWidth: .infinity)
+            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+            .overlay(
+                RoundedRectangle(cornerRadius: 34)
+                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 34))
+        
+        }
+    }
+
+    private var photoStatusText: String {
+        if isPreparingPhotos {
+            return "Preparing previews… \(preparedPhotoCount) / \(photoCount)"
+        }
+
+        return photoCount == 0 ? "Choose multiple image files" : "\(photoCount) photo\(photoCount == 1 ? "" : "s") selected"
+    }
+
+    private var musicStatusText: String {
+        selectedMusicURL?.lastPathComponent ?? "MP3, WAV or M4A soundtrack"
+    }
+}
+
+struct RightExportPanel: View {
+    @Binding var selectedResolution: String
+
+    private let resolutions = ["480p", "720p", "1080p", "4K", "Original"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            PanelTitle(title: "Export", subtitle: "Render your video")
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Video Settings")
+                    .font(.custom("Figtree", size: 13).weight(.medium))
+                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                SettingRow(label: "Format", value: "MP4")
+                SettingRow(label: "Codec", value: "H.264")
+                SettingRow(label: "Resolution", value: selectedResolution)
+                SettingRow(label: "FPS", value: "30")
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Export Size")
+                        .font(.custom("Figtree", size: 12).weight(.regular))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            exportResolutionButton("480p")
+                            exportResolutionButton("720p")
+                        }
+
+                        HStack(spacing: 8) {
+                            exportResolutionButton("1080p")
+                            exportResolutionButton("4K")
+                        }
+
+                        HStack(spacing: 8) {
+                            exportResolutionButton("Original")
+                        }
+                    }
+                }
+                .padding(.top, 2)
+
+                Text(exportHelperText)
+                    .font(.custom("Figtree", size: 11).weight(.regular))
+                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18)
+                            .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 2)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .padding(.top, 2)
+            }
+            .padding(14)
+            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24)
+                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 24))
+
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .top)
+        .frame(width: 290)
         .background(Color(red: 0.957, green: 0.937, blue: 0.910))
         .overlay(
             RoundedRectangle(cornerRadius: 34)
@@ -557,41 +834,17 @@ struct CenterPreviewPanel: View {
         
     }
 
-}
-
-struct RightExportPanel: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            PanelTitle(title: "Export", subtitle: "Render your video")
-
-            VStack(alignment: .leading, spacing: 10) {
-                SettingRow(label: "Format", value: "MP4")
-                SettingRow(label: "Codec", value: "H.264")
-                SettingRow(label: "Quality", value: "High")
-                SettingRow(label: "Resolution", value: "4K")
-                SettingRow(label: "FPS", value: "30")
-            }
-            .padding(16)
-            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
-            .overlay(
-                RoundedRectangle(cornerRadius: 24)
-                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 24))
-            Spacer()
-
-            Button("Export High Resolution Video") {}
-                .buttonStyle(PrimaryBrutalButtonStyle())
+    private func exportResolutionButton(_ resolution: String) -> some View {
+        TimingModeButton(
+            title: resolution,
+            isSelected: selectedResolution == resolution
+        ) {
+            selectedResolution = resolution
         }
-        .padding(14)
-        .frame(width: 260)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
-        .overlay(
-            RoundedRectangle(cornerRadius: 34)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 34))
-        
+    }
+
+    private var exportHelperText: String {
+        "Choose a smaller size for quick sharing, 4K for crisp video, or Original to use the source image size."
     }
 }
 
@@ -604,13 +857,11 @@ struct TimelinePanel: View {
         VStack(alignment: .leading, spacing: 12) {
             PanelTitle(title: "Timeline", subtitle: timelineSubtitle)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    if photoURLs.isEmpty {
-                        ForEach(0..<6) { index in
-                            TimelinePlaceholder(index: index)
-                        }
-                    } else {
+            if photoURLs.isEmpty {
+                EmptyTimelineStoryboard()
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
                         ForEach(Array(photoURLs.enumerated()), id: \.offset) { index, url in
                             TimelinePhotoThumb(
                                 index: index,
@@ -618,9 +869,9 @@ struct TimelinePanel: View {
                                 isActive: index == activePhotoIndex
                             )
                         }
-                    }
 
-                    Spacer(minLength: 0)
+                        Spacer(minLength: 0)
+                    }
                 }
             }
         }
@@ -639,33 +890,244 @@ struct TimelinePanel: View {
             return "Photos arranged with \(musicURL.lastPathComponent)"
         }
 
-        return "Photos will be arranged here"
+        return "Add photos to build your timeline"
     }
 }
 
 
-struct TimelinePlaceholder: View {
-    let index: Int
+enum EmptyTimelineSceneKind: Int, CaseIterable, Identifiable {
+    case coupleSideBySide
+    case coupleLooking
+    case beachWalk
+    case womanSolo
+    case manSolo
+    case poolCouple
+    case palmWoman
+
+    var id: Int { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .coupleSideBySide:
+            return "person.2"
+        case .coupleLooking:
+            return "heart"
+        case .beachWalk:
+            return "figure.walk"
+        case .womanSolo:
+            return "person.crop.circle"
+        case .manSolo:
+            return "person.crop.circle"
+        case .poolCouple:
+            return "water.waves"
+        case .palmWoman:
+            return "leaf"
+        }
+    }
+
+    var detailSymbol: String? {
+        switch self {
+        case .coupleSideBySide:
+            return "sparkles"
+        case .coupleLooking:
+            return "person.2"
+        case .beachWalk:
+            return "sun.max"
+        case .womanSolo:
+            return "sparkle"
+        case .manSolo:
+            return "camera"
+        case .poolCouple:
+            return "building.2"
+        case .palmWoman:
+            return "camera.aperture"
+        }
+    }
+}
+
+struct EmptyTimelineStoryboard: View {
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(EmptyTimelineSceneKind.allCases) { scene in
+                    EmptyTimelineSceneThumb(scene: scene)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(height: 66)
+    }
+}
+
+struct EmptyTimelineSceneThumb: View {
+    let scene: EmptyTimelineSceneKind
+
+    private let ink = Color(red: 0.315, green: 0.340, blue: 0.390)
+    private let paper = Color(red: 0.930, green: 0.900, blue: 0.850)
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 14)
-            .fill(Color(red: 0.957, green: 0.937, blue: 0.910))
-            .frame(width: 92, height: 56)
-            .overlay(
-                VStack(spacing: 6) {
-                    Image(systemName: "photo")
-                        .font(.system(size: 18))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.65))
+        ZStack {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(paper.opacity(0.54))
 
-                    Text("Photo \(index + 1)")
-                        .font(.custom("Figtree", size: 11).weight(.medium))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.65))
-                }
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 3)
-            )
+            SketchSceneBackground(scene: scene)
+
+            Image(systemName: scene.symbol)
+                .font(.system(size: 22, weight: .regular))
+                .foregroundColor(ink.opacity(0.78))
+                .offset(mainSymbolOffset)
+
+            if let detailSymbol = scene.detailSymbol {
+                Image(systemName: detailSymbol)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(ink.opacity(0.45))
+                    .offset(detailSymbolOffset)
+            }
+
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.88), lineWidth: 2.4)
+        }
+        .frame(width: 92, height: 56)
+    }
+
+    private var mainSymbolOffset: CGSize {
+        switch scene {
+        case .beachWalk:
+            return CGSize(width: -14, height: 3)
+        case .poolCouple:
+            return CGSize(width: -12, height: 5)
+        case .palmWoman:
+            return CGSize(width: 14, height: 4)
+        default:
+            return CGSize(width: 0, height: 0)
+        }
+    }
+
+    private var detailSymbolOffset: CGSize {
+        switch scene {
+        case .coupleSideBySide:
+            return CGSize(width: 25, height: -16)
+        case .coupleLooking:
+            return CGSize(width: -24, height: 13)
+        case .beachWalk:
+            return CGSize(width: 25, height: -16)
+        case .womanSolo:
+            return CGSize(width: 24, height: -15)
+        case .manSolo:
+            return CGSize(width: 24, height: -15)
+        case .poolCouple:
+            return CGSize(width: 22, height: -13)
+        case .palmWoman:
+            return CGSize(width: -22, height: -13)
+        }
+    }
+}
+
+struct SketchSceneBackground: View {
+    let scene: EmptyTimelineSceneKind
+
+    private let ink = Color(red: 0.315, green: 0.340, blue: 0.390)
+    private let blue = Color(red: 0.000, green: 0.610, blue: 0.760)
+
+    var body: some View {
+        ZStack {
+            commonSketchLines
+
+            switch scene {
+            case .coupleSideBySide, .coupleLooking:
+                portraitFrame
+
+            case .beachWalk:
+                beachLines
+                palmTree
+                    .offset(x: 24, y: -2)
+
+            case .womanSolo:
+                portraitFrame
+                softOval
+                    .offset(x: 15, y: -2)
+
+            case .manSolo:
+                portraitFrame
+                softOval
+                    .offset(x: -15, y: -2)
+
+            case .poolCouple:
+                poolLines
+
+            case .palmWoman:
+                palmTree
+                    .rotationEffect(.degrees(-10))
+                    .offset(x: -20, y: 3)
+                beachLines
+            }
+        }
+        .frame(width: 92, height: 56)
+        .clipped()
+    }
+
+    private var commonSketchLines: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 10, y: 45))
+            path.addCurve(to: CGPoint(x: 82, y: 45), control1: CGPoint(x: 25, y: 39), control2: CGPoint(x: 60, y: 52))
+
+            path.move(to: CGPoint(x: 15, y: 12))
+            path.addCurve(to: CGPoint(x: 76, y: 13), control1: CGPoint(x: 32, y: 8), control2: CGPoint(x: 58, y: 18))
+        }
+        .stroke(ink.opacity(0.18), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+    }
+
+    private var portraitFrame: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .stroke(ink.opacity(0.18), lineWidth: 1.5)
+            .frame(width: 58, height: 38)
+    }
+
+    private var softOval: some View {
+        Ellipse()
+            .stroke(ink.opacity(0.16), lineWidth: 1.5)
+            .frame(width: 30, height: 38)
+    }
+
+    private var beachLines: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 8, y: 40))
+            path.addCurve(to: CGPoint(x: 84, y: 40), control1: CGPoint(x: 28, y: 34), control2: CGPoint(x: 58, y: 48))
+
+            path.move(to: CGPoint(x: 12, y: 48))
+            path.addLine(to: CGPoint(x: 86, y: 48))
+        }
+        .stroke(ink.opacity(0.22), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+    }
+
+    private var poolLines: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 8, y: 38))
+            path.addCurve(to: CGPoint(x: 84, y: 38), control1: CGPoint(x: 24, y: 28), control2: CGPoint(x: 58, y: 48))
+
+            path.move(to: CGPoint(x: 8, y: 47))
+            path.addCurve(to: CGPoint(x: 84, y: 47), control1: CGPoint(x: 24, y: 37), control2: CGPoint(x: 58, y: 57))
+        }
+        .stroke(blue.opacity(0.42), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+    }
+
+    private var palmTree: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 30, y: 50))
+            path.addQuadCurve(to: CGPoint(x: 42, y: 16), control: CGPoint(x: 26, y: 31))
+
+            path.move(to: CGPoint(x: 42, y: 16))
+            path.addLine(to: CGPoint(x: 24, y: 21))
+            path.move(to: CGPoint(x: 42, y: 16))
+            path.addLine(to: CGPoint(x: 60, y: 20))
+            path.move(to: CGPoint(x: 42, y: 16))
+            path.addLine(to: CGPoint(x: 33, y: 8))
+            path.move(to: CGPoint(x: 42, y: 16))
+            path.addLine(to: CGPoint(x: 51, y: 8))
+        }
+        .stroke(ink.opacity(0.30), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+        .frame(width: 70, height: 52)
     }
 }
 
@@ -736,6 +1198,7 @@ struct DropCard: View {
     let icon: String
     let title: String
     let subtitle: String
+    var isLoading: Bool = false
 
     var body: some View {
         VStack(spacing: 6) {
@@ -748,11 +1211,20 @@ struct DropCard: View {
                     .font(.custom("Figtree", size: 12).weight(.medium))
                     .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
 
-                Text(subtitle)
-                    .font(.custom("Figtree", size: 10).weight(.regular))
-                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
-                    .lineLimit(1)
-                    .multilineTextAlignment(.center)
+                HStack(spacing: 6) {
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.55)
+                            .frame(width: 12, height: 12)
+                    }
+
+                    Text(subtitle)
+                        .font(.custom("Figtree", size: 10).weight(.regular))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                        .lineLimit(1)
+                        .multilineTextAlignment(.center)
+                }
             }
         }
         .frame(maxWidth: .infinity)

@@ -13,5 +13,8 @@ struct BriefShowApp: App {
         WindowGroup {
             ContentView()
         }
+        .defaultSize(width: 1180, height: 560)
+        .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
     }
 }

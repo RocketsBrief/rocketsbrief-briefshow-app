@@ -1,19 +1,33 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import Combine
 
 enum SlideshowTimingMode: String {
     case followMusic = "Follow Music"
     case customSpeed = "Custom Speed"
 }
 
+enum SlideshowTransitionStyle: String {
+    case fade = "Fade"
+    case blink = "Blink"
+}
+
 struct ContentView: View {
     @State private var selectedPhotoURLs: [URL] = []
+    @State private var previewImages: [NSImage] = []
     @State private var selectedMusicURL: URL?
     @State private var timingMode: SlideshowTimingMode = .followMusic
     @State private var secondsPerPhoto: Double = 5
     @State private var fadeDuration: Double = 1
     @State private var musicFadeOutSeconds: Double = 4
+    @State private var shouldLoopPreview: Bool = false
+    @State private var transitionStyle: SlideshowTransitionStyle = .fade
+    @State private var activePhotoIndex: Int = 0
+    @State private var previousPhotoIndex: Int?
+    @State private var isTransitioning: Bool = false
+    @State private var isPreviewPlaying: Bool = false
+    @State private var previewElapsedSeconds: Double = 0
 
     var body: some View {
         ZStack {
@@ -31,19 +45,158 @@ struct ContentView: View {
                         secondsPerPhoto: $secondsPerPhoto,
                         fadeDuration: $fadeDuration,
                         musicFadeOutSeconds: $musicFadeOutSeconds,
+                        shouldLoopPreview: $shouldLoopPreview,
+                        transitionStyle: $transitionStyle,
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: openMusicPicker
                     )
-                    CenterPreviewPanel(firstPhotoURL: selectedPhotoURLs.first)
+                    CenterPreviewPanel(
+                        activePreviewImage: activePreviewImage,
+                        previousPreviewImage: previousPreviewImage,
+                        activePhotoName: activePhotoName,
+                        activePhotoIndex: activePhotoIndex,
+                        photoCount: selectedPhotoURLs.count,
+                        transitionStyle: transitionStyle,
+                        isTransitioning: isTransitioning,
+                        isPreviewPlaying: isPreviewPlaying,
+                        onTogglePreview: togglePreview,
+                        onStartFromBeginning: startPreviewFromBeginning
+                    )
                     RightExportPanel()
                 }
 
-                TimelinePanel(photoURLs: selectedPhotoURLs, musicURL: selectedMusicURL)
+                TimelinePanel(
+                    photoURLs: selectedPhotoURLs,
+                    musicURL: selectedMusicURL,
+                    activePhotoIndex: activePhotoIndex
+                )
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 14)
         }
         .frame(minWidth: 980, minHeight: 640)
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            advancePreviewIfNeeded()
+        }
+    }
+
+    private var activePreviewImage: NSImage? {
+        guard previewImages.indices.contains(activePhotoIndex) else {
+            return previewImages.first
+        }
+
+        return previewImages[activePhotoIndex]
+    }
+
+    private var previousPreviewImage: NSImage? {
+        guard let previousPhotoIndex, previewImages.indices.contains(previousPhotoIndex) else {
+            return nil
+        }
+
+        return previewImages[previousPhotoIndex]
+    }
+
+    private var activePhotoName: String {
+        guard selectedPhotoURLs.indices.contains(activePhotoIndex) else {
+            return selectedPhotoURLs.first?.lastPathComponent ?? "Photo"
+        }
+
+        return selectedPhotoURLs[activePhotoIndex].lastPathComponent
+    }
+
+    private var currentPhotoDuration: Double {
+        switch timingMode {
+        case .followMusic:
+            return max(1, secondsPerPhoto)
+        case .customSpeed:
+            return max(1, secondsPerPhoto)
+        }
+    }
+
+    private func togglePreview() {
+        guard !selectedPhotoURLs.isEmpty else {
+            return
+        }
+
+        isPreviewPlaying.toggle()
+        previewElapsedSeconds = 0
+    }
+
+    private func advancePreviewIfNeeded() {
+        guard isPreviewPlaying, !selectedPhotoURLs.isEmpty else {
+            return
+        }
+
+        previewElapsedSeconds += 1
+
+        guard previewElapsedSeconds >= currentPhotoDuration else {
+            return
+        }
+
+        previewElapsedSeconds = 0
+
+        let nextIndex = activePhotoIndex + 1
+
+        if nextIndex >= selectedPhotoURLs.count {
+            if shouldLoopPreview {
+                moveToPhoto(at: 0)
+            } else {
+                isPreviewPlaying = false
+                moveToPhoto(at: selectedPhotoURLs.count - 1)
+            }
+            return
+        }
+
+        moveToPhoto(at: nextIndex)
+    }
+
+    private func startPreviewFromBeginning() {
+        guard !selectedPhotoURLs.isEmpty else {
+            return
+        }
+
+        previousPhotoIndex = nil
+        isTransitioning = false
+        activePhotoIndex = 0
+        previewElapsedSeconds = 0
+        isPreviewPlaying = true
+    }
+
+    private func moveToPhoto(at newIndex: Int) {
+        guard selectedPhotoURLs.indices.contains(newIndex), newIndex != activePhotoIndex else {
+            return
+        }
+
+        if transitionStyle == .fade {
+            previousPhotoIndex = activePhotoIndex
+            isTransitioning = false
+            activePhotoIndex = newIndex
+
+            let duration = min(max(fadeDuration, 0.15), 3)
+
+            DispatchQueue.main.async {
+                withAnimation(.easeInOut(duration: duration)) {
+                    isTransitioning = true
+                }
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
+                previousPhotoIndex = nil
+                isTransitioning = false
+            }
+        } else {
+            previousPhotoIndex = nil
+            isTransitioning = false
+            activePhotoIndex = newIndex
+        }
+    }
+
+    private func resetPreviewState() {
+        activePhotoIndex = 0
+        previousPhotoIndex = nil
+        isTransitioning = false
+        previewElapsedSeconds = 0
+        isPreviewPlaying = false
     }
 
     private func openPhotoPicker() {
@@ -55,8 +208,46 @@ struct ContentView: View {
         panel.resolvesAliases = true
 
         if panel.runModal() == .OK {
-            selectedPhotoURLs = panel.urls
+            let sortedURLs = panel.urls.sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
+
+            selectedPhotoURLs = sortedURLs
+            previewImages = sortedURLs.compactMap { makePreviewImage(from: $0) }
+            resetPreviewState()
         }
+    }
+
+    private func makePreviewImage(from url: URL) -> NSImage? {
+        guard let sourceImage = NSImage(contentsOf: url) else {
+            return nil
+        }
+
+        let maxSide: CGFloat = 1400
+        let originalSize = sourceImage.size
+        let largestSide = max(originalSize.width, originalSize.height)
+
+        guard largestSide > maxSide else {
+            return sourceImage
+        }
+
+        let scale = maxSide / largestSide
+        let previewSize = NSSize(
+            width: originalSize.width * scale,
+            height: originalSize.height * scale
+        )
+
+        let previewImage = NSImage(size: previewSize)
+        previewImage.lockFocus()
+        sourceImage.draw(
+            in: NSRect(origin: .zero, size: previewSize),
+            from: NSRect(origin: .zero, size: originalSize),
+            operation: .copy,
+            fraction: 1
+        )
+        previewImage.unlockFocus()
+
+        return previewImage
     }
 
     private func openMusicPicker() {
@@ -112,6 +303,8 @@ struct LeftImportPanel: View {
     @Binding var secondsPerPhoto: Double
     @Binding var fadeDuration: Double
     @Binding var musicFadeOutSeconds: Double
+    @Binding var shouldLoopPreview: Bool
+    @Binding var transitionStyle: SlideshowTransitionStyle
     let onAddPhotos: () -> Void
     let onAddMusic: () -> Void
 
@@ -184,6 +377,35 @@ struct LeftImportPanel: View {
                     suffix: "s"
                 )
 
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Transition Style")
+                        .font(.custom("Figtree", size: 12).weight(.regular))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+
+                    HStack(spacing: 8) {
+                        TimingModeButton(
+                            title: "Fade",
+                            isSelected: transitionStyle == .fade
+                        ) {
+                            transitionStyle = .fade
+                        }
+
+                        TimingModeButton(
+                            title: "Blink",
+                            isSelected: transitionStyle == .blink
+                        ) {
+                            transitionStyle = .blink
+                        }
+                    }
+                }
+                .padding(.top, 2)
+
+                Toggle("Loop Preview", isOn: $shouldLoopPreview)
+                    .toggleStyle(.checkbox)
+                    .font(.custom("Figtree", size: 12).weight(.medium))
+                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                    .padding(.top, 2)
+
                 Text(timingModeHelperText)
                     .font(.custom("Figtree", size: 11).weight(.regular))
                     .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
@@ -231,7 +453,16 @@ struct LeftImportPanel: View {
 }
 
 struct CenterPreviewPanel: View {
-    let firstPhotoURL: URL?
+    let activePreviewImage: NSImage?
+    let previousPreviewImage: NSImage?
+    let activePhotoName: String
+    let activePhotoIndex: Int
+    let photoCount: Int
+    let transitionStyle: SlideshowTransitionStyle
+    let isTransitioning: Bool
+    let isPreviewPlaying: Bool
+    let onTogglePreview: () -> Void
+    let onStartFromBeginning: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -241,17 +472,26 @@ struct CenterPreviewPanel: View {
                 RoundedRectangle(cornerRadius: 34)
                     .fill(Color.black)
 
-                if let firstPhotoURL, let image = NSImage(contentsOf: firstPhotoURL) {
-                    Image(nsImage: image)
+                if let activePreviewImage {
+                    if transitionStyle == .fade, let previousPreviewImage {
+                        Image(nsImage: previousPreviewImage)
+                            .resizable()
+                            .scaledToFit()
+                            .opacity(isTransitioning ? 0 : 1)
+                            .clipShape(RoundedRectangle(cornerRadius: 28))
+                    }
+
+                    Image(nsImage: activePreviewImage)
                         .resizable()
                         .scaledToFit()
+                        .opacity(transitionStyle == .fade && previousPreviewImage != nil ? (isTransitioning ? 1 : 0) : 1)
                         .clipShape(RoundedRectangle(cornerRadius: 28))
 
                     VStack {
                         Spacer()
 
                         HStack {
-                            Text(firstPhotoURL.lastPathComponent)
+                            Text(activePhotoName)
                                 .font(.custom("Figtree", size: 12).weight(.medium))
                                 .foregroundColor(.white.opacity(0.88))
                                 .lineLimit(1)
@@ -287,12 +527,21 @@ struct CenterPreviewPanel: View {
             )
 
             HStack {
-                Button("Play Preview") {}
-                    .buttonStyle(BrutalButtonStyle())
+                PreviewControlButton(
+                    title: isPreviewPlaying ? "Stop Preview" : "Play Preview",
+                    isDisabled: photoCount == 0,
+                    action: onTogglePreview
+                )
+
+                PreviewControlButton(
+                    title: "Play From Beginning",
+                    isDisabled: photoCount == 0,
+                    action: onStartFromBeginning
+                )
 
                 Spacer()
 
-                Text("00:00 / 00:00")
+                Text(photoCount == 0 ? "00:00 / 00:00" : "Photo \(activePhotoIndex + 1) / \(photoCount)")
                     .font(.custom("Figtree", size: 12).weight(.regular))
                     .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
             }
@@ -307,6 +556,7 @@ struct CenterPreviewPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 34))
         
     }
+
 }
 
 struct RightExportPanel: View {
@@ -348,6 +598,7 @@ struct RightExportPanel: View {
 struct TimelinePanel: View {
     let photoURLs: [URL]
     let musicURL: URL?
+    let activePhotoIndex: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -361,7 +612,11 @@ struct TimelinePanel: View {
                         }
                     } else {
                         ForEach(Array(photoURLs.enumerated()), id: \.offset) { index, url in
-                            TimelinePhotoThumb(index: index, url: url)
+                            TimelinePhotoThumb(
+                                index: index,
+                                url: url,
+                                isActive: index == activePhotoIndex
+                            )
                         }
                     }
 
@@ -417,6 +672,7 @@ struct TimelinePlaceholder: View {
 struct TimelinePhotoThumb: View {
     let index: Int
     let url: URL
+    let isActive: Bool
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -448,8 +704,14 @@ struct TimelinePhotoThumb: View {
         .frame(width: 92, height: 56)
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 3)
+                .stroke(borderColor, lineWidth: isActive ? 4 : 3)
         )
+    }
+
+    private var borderColor: Color {
+        isActive
+            ? Color(red: 0.000, green: 0.610, blue: 0.760)
+            : Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85)
     }
 }
 
@@ -476,30 +738,31 @@ struct DropCard: View {
     let subtitle: String
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 6) {
             Image(systemName: icon)
-                .font(.system(size: 24, weight: .regular))
+                .font(.system(size: 18, weight: .regular))
                 .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
 
-            VStack(spacing: 4) {
+            VStack(spacing: 2) {
                 Text(title)
-                    .font(.custom("Figtree", size: 13).weight(.medium))
+                    .font(.custom("Figtree", size: 12).weight(.medium))
                     .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
 
                 Text(subtitle)
-                    .font(.custom("Figtree", size: 11).weight(.regular))
+                    .font(.custom("Figtree", size: 10).weight(.regular))
                     .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                    .lineLimit(1)
                     .multilineTextAlignment(.center)
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
+        .padding(.vertical, 9)
         .background(Color(red: 0.957, green: 0.937, blue: 0.910))
         .overlay(
-            RoundedRectangle(cornerRadius: 26)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 3)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 26))
+        .clipShape(RoundedRectangle(cornerRadius: 22))
     }
 }
 
@@ -538,6 +801,48 @@ struct TimingModeButton: View {
 
     private var activeColor: Color {
         if isSelected || isHovered {
+            return Color(red: 0.000, green: 0.610, blue: 0.760)
+        }
+
+        return Color(red: 0.315, green: 0.340, blue: 0.390)
+    }
+}
+
+struct PreviewControlButton: View {
+    let title: String
+    let isDisabled: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.custom("Figtree", size: 11).weight(.medium))
+                .foregroundColor(activeColor)
+                .lineLimit(1)
+                .scaleEffect(isHovered && !isDisabled ? 1.035 : 1)
+                .animation(.linear(duration: 0.10), value: isHovered)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .frame(width: 150)
+                .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 999)
+                        .stroke(activeColor.opacity(isHovered && !isDisabled ? 1 : 0.7), lineWidth: isHovered && !isDisabled ? 2.2 : 1.6)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 999))
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.55 : 1)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+
+    private var activeColor: Color {
+        if isHovered && !isDisabled {
             return Color(red: 0.000, green: 0.610, blue: 0.760)
         }
 
@@ -628,17 +933,18 @@ struct HoverButtonLabel: View {
 
     var body: some View {
         configuration.label
-            .font(.custom("Figtree", size: 14).weight(.medium))
+            .font(.custom("Figtree", size: 11).weight(.medium))
             .foregroundColor(textColor)
-            .scaleEffect(configuration.isPressed ? 0.985 : (isHovered ? 1.045 : 1))
-            .animation(.linear(duration: 0.11), value: isHovered)
+            .lineLimit(1)
+            .scaleEffect(configuration.isPressed ? 0.985 : (isHovered ? 1.035 : 1))
+            .animation(.linear(duration: 0.10), value: isHovered)
             .animation(.linear(duration: 0.08), value: configuration.isPressed)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
             .background(Color(red: 0.930, green: 0.900, blue: 0.850))
             .overlay(
                 RoundedRectangle(cornerRadius: 999)
-                    .stroke(borderColor, lineWidth: isHovered ? 2.4 : 2)
+                    .stroke(borderColor, lineWidth: isHovered ? 2.2 : 1.6)
             )
             .clipShape(RoundedRectangle(cornerRadius: 999))
             .onHover { hovering in

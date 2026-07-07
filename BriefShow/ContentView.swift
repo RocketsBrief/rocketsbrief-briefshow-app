@@ -46,7 +46,7 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 10) {
-                HeaderView()
+                HeaderView(onClearImages: clearImages)
 
                 HStack(alignment: .top, spacing: 14) {
                     LeftImportPanel(
@@ -73,6 +73,7 @@ struct ContentView: View {
                         isPreviewPlaying: isPreviewPlaying,
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: openMusicPicker,
+                        onDropPhotos: importPhotoURLs,
                         onTogglePreview: togglePreview,
                         onStartFromBeginning: startPreviewFromBeginning
                     )
@@ -90,6 +91,7 @@ struct ContentView: View {
                     previewImages: $previewImages,
                     musicURL: selectedMusicURL,
                     isPreparingPhotos: isPreparingPhotos,
+                    onDropPhotos: importPhotoURLs,
                     activePhotoIndex: $activePhotoIndex
                 )
             }
@@ -313,6 +315,14 @@ struct ContentView: View {
         audioPlayer?.volume = 1
     }
 
+    private func clearImages() {
+        selectedPhotoURLs = []
+        previewImages = []
+        preparedPhotoCount = 0
+        isPreparingPhotos = false
+        resetPreviewState()
+    }
+
     private func openPhotoPicker() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
@@ -322,42 +332,54 @@ struct ContentView: View {
         panel.resolvesAliases = true
 
         if panel.runModal() == .OK {
-            let sortedURLs = panel.urls.sorted {
+            importPhotoURLs(panel.urls)
+        }
+    }
+
+    private func importPhotoURLs(_ urls: [URL]) {
+        let sortedURLs = urls
+            .filter { url in
+                UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+            }
+            .sorted {
                 $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
             }
 
-            selectedPhotoURLs = sortedURLs
-            previewImages = []
-            preparedPhotoCount = 0
-            isPreparingPhotos = true
-            resetPreviewState()
+        guard !sortedURLs.isEmpty else {
+            return
+        }
 
-            let preparationStartedAt = Date()
+        selectedPhotoURLs = sortedURLs
+        previewImages = []
+        preparedPhotoCount = 0
+        isPreparingPhotos = true
+        resetPreviewState()
 
-            DispatchQueue.global(qos: .userInitiated).async {
-                var preparedImages: [NSImage] = []
+        let preparationStartedAt = Date()
 
-                for url in sortedURLs {
-                    if let image = makePreviewImage(from: url) {
-                        preparedImages.append(image)
-                    }
+        DispatchQueue.global(qos: .userInitiated).async {
+            var preparedImages: [NSImage] = []
 
-                    let currentCount = preparedImages.count
-                    DispatchQueue.main.async {
-                        preparedPhotoCount = currentCount
-                    }
+            for url in sortedURLs {
+                if let image = makePreviewImage(from: url) {
+                    preparedImages.append(image)
                 }
 
+                let currentCount = preparedImages.count
                 DispatchQueue.main.async {
-                    let elapsed = Date().timeIntervalSince(preparationStartedAt)
-                    let remainingLoadingTime = max(0, 0.7 - elapsed)
+                    preparedPhotoCount = currentCount
+                }
+            }
 
-                    DispatchQueue.main.asyncAfter(deadline: .now() + remainingLoadingTime) {
-                        previewImages = preparedImages
-                        preparedPhotoCount = preparedImages.count
-                        isPreparingPhotos = false
-                        resetPreviewState()
-                    }
+            DispatchQueue.main.async {
+                let elapsed = Date().timeIntervalSince(preparationStartedAt)
+                let remainingLoadingTime = max(0, 0.7 - elapsed)
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + remainingLoadingTime) {
+                    previewImages = preparedImages
+                    preparedPhotoCount = preparedImages.count
+                    isPreparingPhotos = false
+                    resetPreviewState()
                 }
             }
         }
@@ -1033,19 +1055,65 @@ private func makePreviewImage(from url: URL) -> NSImage? {
     return previewImage
 }
 
+private func loadDroppedFileURLs(
+    from providers: [NSItemProvider],
+    completion: @escaping ([URL]) -> Void
+) -> Bool {
+    let fileURLType = UTType.fileURL.identifier
+    let group = DispatchGroup()
+    let lock = NSLock()
+    var urls: [URL] = []
+
+    for provider in providers where provider.hasItemConformingToTypeIdentifier(fileURLType) {
+        group.enter()
+
+        provider.loadItem(forTypeIdentifier: fileURLType, options: nil) { item, _ in
+            defer {
+                group.leave()
+            }
+
+            let url: URL?
+
+            if let fileURL = item as? URL {
+                url = fileURL
+            } else if let data = item as? Data {
+                url = URL(dataRepresentation: data, relativeTo: nil)
+            } else if let string = item as? String {
+                url = URL(string: string)
+            } else {
+                url = nil
+            }
+
+            if let url {
+                lock.lock()
+                urls.append(url)
+                lock.unlock()
+            }
+        }
+    }
+
+    group.notify(queue: .main) {
+        completion(urls)
+    }
+
+    return true
+}
+
 struct HeaderView: View {
+    let onClearImages: () -> Void
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 0) {
                     Text("Brief")
                         .font(.custom("Unbounded", size: 28).weight(.black))
-                        .foregroundColor(Color(red: 0.180, green: 0.205, blue: 0.245))
+                        .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
                         .tracking(-2.4)
 
                     Text("Show")
                         .font(.custom("Unbounded", size: 28).weight(.black))
-                        .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+                        .foregroundColor(Color(red: 0.500, green: 0.525, blue: 0.575))
                         .tracking(-2.4)
                 }
 
@@ -1056,7 +1124,7 @@ struct HeaderView: View {
 
             Spacer()
 
-            Button("New Project") {}
+            Button("Clear Images", action: onClearImages)
                 .buttonStyle(BrutalButtonStyle())
 
 
@@ -1220,6 +1288,7 @@ struct CenterPreviewPanel: View {
     let isPreviewPlaying: Bool
     let onAddPhotos: () -> Void
     let onAddMusic: () -> Void
+    let onDropPhotos: ([URL]) -> Void
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
 
@@ -1303,6 +1372,9 @@ struct CenterPreviewPanel: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 260)
                 .clipShape(RoundedRectangle(cornerRadius: 34))
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    loadDroppedFileURLs(from: providers, completion: onDropPhotos)
+                }
 
                 HStack {
                     PreviewControlButton(
@@ -1591,6 +1663,7 @@ struct TimelinePanel: View {
     @Binding var previewImages: [NSImage]
     let musicURL: URL?
     let isPreparingPhotos: Bool
+    let onDropPhotos: ([URL]) -> Void
     @Binding var activePhotoIndex: Int
 
     @State private var draggedPhotoURL: URL?
@@ -1650,6 +1723,9 @@ struct TimelinePanel: View {
                 .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
         )
         .clipShape(RoundedRectangle(cornerRadius: 34))
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            loadDroppedFileURLs(from: providers, completion: onDropPhotos)
+        }
         
     }
 

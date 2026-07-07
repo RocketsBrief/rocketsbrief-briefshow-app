@@ -46,7 +46,7 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 10) {
-                HeaderView(onClearImages: clearImages)
+                HeaderView()
 
                 HStack(alignment: .top, spacing: 14) {
                     LeftImportPanel(
@@ -74,11 +74,13 @@ struct ContentView: View {
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: openMusicPicker,
                         onDropPhotos: importPhotoURLs,
+                        onDropMusic: importMusicURLs,
                         onTogglePreview: togglePreview,
                         onStartFromBeginning: startPreviewFromBeginning
                     )
                     RightExportPanel(
                         selectedResolution: $selectedExportResolution,
+                        selectedMusicURL: selectedMusicURL,
                         canExport: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
                         isExporting: isExportingVideo,
                         exportStatusText: exportStatusText,
@@ -92,8 +94,22 @@ struct ContentView: View {
                     musicURL: selectedMusicURL,
                     isPreparingPhotos: isPreparingPhotos,
                     onDropPhotos: importPhotoURLs,
+                    onDropMusic: importMusicURLs,
+                    onClearImages: clearImages,
                     activePhotoIndex: $activePhotoIndex
                 )
+
+                HStack {
+                    Spacer()
+
+                    Text("© 2026 RocketsBrief. All rights reserved.")
+                        .font(.custom("Figtree", size: 10.5).weight(.regular))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.62))
+                        .lineLimit(1)
+
+                    Spacer()
+                }
+                .padding(.top, -2)
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 8)
@@ -394,10 +410,20 @@ struct ContentView: View {
         panel.resolvesAliases = true
 
         if panel.runModal() == .OK {
-            selectedMusicURL = panel.url
-            prepareAudioPlayer(for: panel.url)
-            resetPreviewState()
+            importMusicURLs(panel.urls)
         }
+    }
+
+    private func importMusicURLs(_ urls: [URL]) {
+        guard let musicURL = urls.first(where: { url in
+            UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true
+        }) else {
+            return
+        }
+
+        selectedMusicURL = musicURL
+        prepareAudioPlayer(for: musicURL)
+        resetPreviewState()
     }
 
     private func openExportSavePanel() {
@@ -1100,7 +1126,8 @@ private func loadDroppedFileURLs(
 }
 
 struct HeaderView: View {
-    let onClearImages: () -> Void
+    @State private var isRocketsBriefHovered = false
+    @State private var isFundMissionHovered = false
 
     var body: some View {
         HStack {
@@ -1124,11 +1151,123 @@ struct HeaderView: View {
 
             Spacer()
 
-            Button("Clear Images", action: onClearImages)
-                .buttonStyle(BrutalButtonStyle())
+            VStack(alignment: .trailing, spacing: 6) {
+                HStack(spacing: 12) {
+                    Button {
+                        if let url = URL(string: "https://www.rocketsbrief.com") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image("RocketsBriefButtonLogo")
+                                .renderingMode(.template)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 15, height: 15)
 
+                            Text("RocketsBrief")
+                        }
+                    }
+                    .buttonStyle(HeaderLinkButtonStyle())
+                .overlay(alignment: .topTrailing) {
+                    if isRocketsBriefHovered {
+                        RocketsBriefHoverCard()
+                            .offset(x: -6, y: 48)
+                            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
+                            .zIndex(300)
+                    }
+                }
+                .onHover { hovering in
+                    withAnimation(.linear(duration: 0.12)) {
+                        isRocketsBriefHovered = hovering
+                    }
+                }
 
+                Button {
+                    if let url = URL(string: "https://www.paypal.com/ncp/payment/GUZARDB67QEDU#checkoutModal") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Text("Fund Mission")
+                        .frame(height: 15)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .buttonStyle(HeaderLinkButtonStyle())
+                .overlay(alignment: .topTrailing) {
+                    if isFundMissionHovered {
+                        FundMissionHoverCard()
+                            .offset(x: -6, y: 48)
+                            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
+                            .zIndex(300)
+                    }
+                }
+                .onHover { hovering in
+                    withAnimation(.linear(duration: 0.12)) {
+                        isFundMissionHovered = hovering
+                    }
+                }
+                }
+            }
         }
+        .zIndex(300)
+    }
+}
+
+struct RocketsBriefHoverCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Need a website, web app, or mobile app?")
+                .font(.custom("Figtree", size: 14).weight(.medium))
+                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+            Text("Visit RocketsBrief and turn your idea into a hosted preview from just $5.")
+                .font(.custom("Figtree", size: 11).weight(.regular))
+                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Click RocketsBrief to open the site.")
+                .font(.custom("Figtree", size: 10.5).weight(.medium))
+                .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: 270, alignment: .leading)
+        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .overlay(
+            RoundedRectangle(cornerRadius: 26)
+                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 3)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 26))
+        .shadow(color: Color.black.opacity(0.13), radius: 18, x: 0, y: 10)
+    }
+}
+
+struct FundMissionHoverCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Enjoying BriefShow?")
+                .font(.custom("Figtree", size: 14).weight(.medium))
+                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+            Text("BriefShow is free to use. If you enjoy it and want to support the mission, you can help us build more free creative apps.")
+                .font(.custom("Figtree", size: 11).weight(.regular))
+                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Click Fund Mission to support RocketsBrief.")
+                .font(.custom("Figtree", size: 10.5).weight(.medium))
+                .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: 285, alignment: .leading)
+        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .overlay(
+            RoundedRectangle(cornerRadius: 26)
+                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 3)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 26))
+        .shadow(color: Color.black.opacity(0.13), radius: 18, x: 0, y: 10)
     }
 }
 
@@ -1169,7 +1308,13 @@ struct LeftImportPanel: View {
                 if timingMode == .customSpeed {
                     CompactStepperRow(
                         label: "Seconds / Photo",
-                        value: $secondsPerPhoto,
+                        value: Binding(
+                            get: { secondsPerPhoto },
+                            set: { newValue in
+                                secondsPerPhoto = newValue
+                                enforceFadeLimit()
+                            }
+                        ),
                         range: 1...20,
                         step: 1,
                         suffix: "s"
@@ -1178,11 +1323,19 @@ struct LeftImportPanel: View {
 
                 CompactStepperRow(
                     label: "Fade",
-                    value: $fadeDuration,
-                    range: 0.5...3,
+                    value: Binding(
+                        get: { fadeDuration },
+                        set: { newValue in
+                            fadeDuration = min(newValue, maxAllowedFadeDuration)
+                            enforceFadeLimit()
+                        }
+                    ),
+                    range: fadeStepperRange,
                     step: 0.5,
                     suffix: "s"
                 )
+                .opacity(isFadeControlDisabled ? 0.55 : 1)
+                .disabled(isFadeControlDisabled)
 
                 CompactStepperRow(
                     label: "Music Fade In",
@@ -1210,8 +1363,12 @@ struct LeftImportPanel: View {
                             title: "Fade",
                             isSelected: transitionStyle == .fade
                         ) {
-                            transitionStyle = .fade
+                            if maxAllowedFadeDuration > 0 {
+                                transitionStyle = .fade
+                            }
                         }
+                        .opacity(maxAllowedFadeDuration == 0 ? 0.55 : 1)
+                        .disabled(maxAllowedFadeDuration == 0)
 
                         TimingModeButton(
                             title: "Blink",
@@ -1263,12 +1420,54 @@ struct LeftImportPanel: View {
         
     }
 
+    private var maxAllowedFadeDuration: Double {
+        guard timingMode == .customSpeed else {
+            return 3
+        }
+
+        return max(0, min(3, secondsPerPhoto - 1))
+    }
+
+    private var fadeStepperRange: ClosedRange<Double> {
+        maxAllowedFadeDuration == 0 ? 0...0 : 0.5...maxAllowedFadeDuration
+    }
+
+    private var isFadeControlDisabled: Bool {
+        transitionStyle == .blink || maxAllowedFadeDuration == 0
+    }
+
+    private func enforceFadeLimit() {
+        let maxFade = maxAllowedFadeDuration
+
+        if maxFade == 0 {
+            fadeDuration = 0
+            transitionStyle = .blink
+            return
+        }
+
+        if fadeDuration == 0 {
+            fadeDuration = min(0.5, maxFade)
+        }
+
+        if fadeDuration > maxFade {
+            fadeDuration = maxFade
+        }
+    }
+
     private var timingModeHelperText: String {
         switch timingMode {
         case .followMusic:
             return "Automatically spaces photos to match the music length, with music fade-in at the start and fade-out at the end."
         case .customSpeed:
-            return "Use your own seconds per photo. Fade controls image transitions, with music fade-in and fade-out applied."
+            if maxAllowedFadeDuration == 0 {
+                return "At 1 second per photo, fade is disabled and Blink is used for a cleaner fast slideshow."
+            }
+
+            if transitionStyle == .blink {
+                return "Blink is active, so image fade is disabled. Switch back to Fade if you want soft transitions."
+            }
+
+            return "Fade is limited to stay shorter than each photo duration, so the slideshow stays clean and professional."
         }
     }
 }
@@ -1289,6 +1488,7 @@ struct CenterPreviewPanel: View {
     let onAddPhotos: () -> Void
     let onAddMusic: () -> Void
     let onDropPhotos: ([URL]) -> Void
+    let onDropMusic: ([URL]) -> Void
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
 
@@ -1373,7 +1573,21 @@ struct CenterPreviewPanel: View {
                 .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 260)
                 .clipShape(RoundedRectangle(cornerRadius: 34))
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                    loadDroppedFileURLs(from: providers, completion: onDropPhotos)
+                    loadDroppedFileURLs(from: providers) { urls in
+                        let musicURLs = urls.filter { url in
+                            UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true
+                        }
+
+                        let photoURLs = urls.filter { url in
+                            UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+                        }
+
+                        if !musicURLs.isEmpty {
+                            onDropMusic(musicURLs)
+                        } else if !photoURLs.isEmpty {
+                            onDropPhotos(photoURLs)
+                        }
+                    }
                 }
 
                 HStack {
@@ -1418,24 +1632,43 @@ struct CenterPreviewPanel: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(action: onAddMusic) {
-                    DropCard(
-                        icon: "music.note",
-                        title: "Add Music",
-                        subtitle: musicStatusText
-                    )
-                    .frame(maxWidth: .infinity)
+                DropCard(
+                    icon: "music.note",
+                    title: "Add Music",
+                    subtitle: musicStatusText
+                )
+                .frame(maxWidth: .infinity)
+                .contentShape(RoundedRectangle(cornerRadius: 22))
+                .onTapGesture {
+                    onAddMusic()
                 }
-                .buttonStyle(.plain)
             }
             .padding(12)
             .frame(maxWidth: .infinity)
+            .contentShape(RoundedRectangle(cornerRadius: 34))
             .background(Color(red: 0.957, green: 0.937, blue: 0.910))
             .overlay(
                 RoundedRectangle(cornerRadius: 34)
                     .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 34))
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                loadDroppedFileURLs(from: providers) { urls in
+                    let musicURLs = urls.filter { url in
+                        UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true
+                    }
+
+                    let photoURLs = urls.filter { url in
+                        UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+                    }
+
+                    if !musicURLs.isEmpty {
+                        onDropMusic(musicURLs)
+                    } else if !photoURLs.isEmpty {
+                        onDropPhotos(photoURLs)
+                    }
+                }
+            }
         
         }
     }
@@ -1455,6 +1688,7 @@ struct CenterPreviewPanel: View {
 
 struct RightExportPanel: View {
     @Binding var selectedResolution: String
+    let selectedMusicURL: URL?
     let canExport: Bool
     let isExporting: Bool
     let exportStatusText: String?
@@ -1576,7 +1810,7 @@ struct RightExportPanel: View {
                     SettingRow(label: "Resolution", value: selectedResolution)
                     SettingRow(label: "Size", value: exportSizeText(for: selectedResolution))
                     SettingRow(label: "Format", value: "MP4")
-                    SettingRow(label: "Audio", value: "Silent for now")
+                    SettingRow(label: "Audio", value: exportAudioText)
                 }
 
                 Text("Choose where to save this \(selectedResolution) slideshow video.")
@@ -1636,6 +1870,10 @@ struct RightExportPanel: View {
         }
     }
 
+    private var exportAudioText: String {
+        selectedMusicURL?.lastPathComponent ?? "Silent for now"
+    }
+
     private func exportSizeText(for resolution: String) -> String {
         switch resolution {
         case "480p":
@@ -1664,6 +1902,8 @@ struct TimelinePanel: View {
     let musicURL: URL?
     let isPreparingPhotos: Bool
     let onDropPhotos: ([URL]) -> Void
+    let onDropMusic: ([URL]) -> Void
+    let onClearImages: () -> Void
     @Binding var activePhotoIndex: Int
 
     @State private var draggedPhotoURL: URL?
@@ -1675,13 +1915,20 @@ struct TimelinePanel: View {
 
                 Spacer()
 
-                if isPreparingPhotos {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.75)
-                        .frame(width: 18, height: 18)
-                        .padding(.top, 4)
+                HStack(spacing: 10) {
+                    if isPreparingPhotos {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.75)
+                            .frame(width: 18, height: 18)
+                    }
+
+                    if !photoURLs.isEmpty {
+                        Button("Clear Images", action: onClearImages)
+                            .buttonStyle(BrutalButtonStyle())
+                    }
                 }
+                .padding(.top, 2)
             }
 
             if photoURLs.isEmpty {
@@ -1724,7 +1971,21 @@ struct TimelinePanel: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 34))
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            loadDroppedFileURLs(from: providers, completion: onDropPhotos)
+            loadDroppedFileURLs(from: providers) { urls in
+                let musicURLs = urls.filter { url in
+                    UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true
+                }
+
+                let photoURLs = urls.filter { url in
+                    UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+                }
+
+                if !musicURLs.isEmpty {
+                    onDropMusic(musicURLs)
+                } else if !photoURLs.isEmpty {
+                    onDropPhotos(photoURLs)
+                }
+            }
         }
         
     }
@@ -2058,26 +2319,35 @@ struct TimelinePhotoDropDelegate: DropDelegate {
     @Binding var activePhotoIndex: Int
 
     func dropEntered(info: DropInfo) {
+        // Keep timeline stable while dragging. Reorder only once on drop.
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer {
+            draggedPhotoURL = nil
+        }
+
         guard let draggedPhotoURL,
               draggedPhotoURL != targetURL,
               let fromIndex = photoURLs.firstIndex(of: draggedPhotoURL),
               let toIndex = photoURLs.firstIndex(of: targetURL)
         else {
-            return
+            return true
         }
 
         let activeURL = photoURLs.indices.contains(activePhotoIndex) ? photoURLs[activePhotoIndex] : nil
+        let moveToOffset = toIndex > fromIndex ? toIndex + 1 : toIndex
 
-        withAnimation(.easeInOut(duration: 0.16)) {
+        withAnimation(.easeInOut(duration: 0.14)) {
             photoURLs.move(
                 fromOffsets: IndexSet(integer: fromIndex),
-                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+                toOffset: moveToOffset
             )
 
             if previewImages.indices.contains(fromIndex), previewImages.indices.contains(toIndex) {
                 previewImages.move(
                     fromOffsets: IndexSet(integer: fromIndex),
-                    toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+                    toOffset: moveToOffset
                 )
             }
 
@@ -2087,10 +2357,7 @@ struct TimelinePhotoDropDelegate: DropDelegate {
                 activePhotoIndex = min(activePhotoIndex, max(0, photoURLs.count - 1))
             }
         }
-    }
 
-    func performDrop(info: DropInfo) -> Bool {
-        draggedPhotoURL = nil
         return true
     }
 
@@ -2312,6 +2579,51 @@ struct SettingRow: View {
     }
 }
 
+struct HeaderLinkButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HeaderLinkButtonLabel(configuration: configuration)
+    }
+}
+
+struct HeaderLinkButtonLabel: View {
+    let configuration: ButtonStyle.Configuration
+
+    @State private var isHovered = false
+
+    var body: some View {
+        configuration.label
+            .font(.custom("Figtree", size: 11).weight(.medium))
+            .foregroundColor(textColor)
+            .lineLimit(1)
+            .scaleEffect(configuration.isPressed ? 0.985 : (isHovered ? 1.025 : 1))
+            .animation(.linear(duration: 0.10), value: isHovered)
+            .animation(.linear(duration: 0.08), value: configuration.isPressed)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+            .overlay(
+                RoundedRectangle(cornerRadius: 999)
+                    .stroke(borderColor, lineWidth: isHovered ? 2.2 : 1.6)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 999))
+            .onHover { hovering in
+                isHovered = hovering
+            }
+    }
+
+    private var textColor: Color {
+        isHovered
+            ? Color(red: 0.000, green: 0.610, blue: 0.760)
+            : Color(red: 0.315, green: 0.340, blue: 0.390)
+    }
+
+    private var borderColor: Color {
+        isHovered
+            ? Color(red: 0.000, green: 0.610, blue: 0.760)
+            : Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.7)
+    }
+}
+
 struct BrutalButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         HoverButtonLabel(
@@ -2366,7 +2678,7 @@ struct HoverButtonLabel: View {
     private var borderColor: Color {
         isHovered
             ? Color(red: 0.000, green: 0.610, blue: 0.760)
-            : Color(red: 0.760, green: 0.720, blue: 0.650)
+            : Color(red: 0.820, green: 0.780, blue: 0.710)
     }
 }
 

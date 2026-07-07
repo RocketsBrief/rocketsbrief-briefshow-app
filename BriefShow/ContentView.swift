@@ -89,6 +89,7 @@ struct ContentView: View {
                     photoURLs: $selectedPhotoURLs,
                     previewImages: $previewImages,
                     musicURL: selectedMusicURL,
+                    isPreparingPhotos: isPreparingPhotos,
                     activePhotoIndex: $activePhotoIndex
                 )
             }
@@ -433,7 +434,8 @@ struct ContentView: View {
                         musicURL: musicURL,
                         outputURL: outputURL,
                         fadeInSeconds: selectedMusicFadeIn,
-                        fadeOutSeconds: selectedMusicFadeOut
+                        fadeOutSeconds: selectedMusicFadeOut,
+                        preferHEVC: resolution == "Original"
                     )
 
                     try? FileManager.default.removeItem(at: videoOnlyURL)
@@ -494,15 +496,39 @@ private func renderSlideshowVideo(
 
     let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
 
+    let pixelCount = renderSize.width * renderSize.height
+    let shouldUseHEVC = resolutionName.trimmingCharacters(in: .whitespacesAndNewlines) == "Original" || pixelCount > 8_294_400
+    let selectedCodec: AVVideoCodecType = shouldUseHEVC ? .hevc : .h264
+
+    let compressionProperties: [String: Any]
+    if selectedCodec == .hevc {
+        compressionProperties = [
+            AVVideoAverageBitRateKey: exportBitrate(for: renderSize),
+            AVVideoMaxKeyFrameIntervalKey: 30,
+            AVVideoExpectedSourceFrameRateKey: 30
+        ]
+    } else {
+        compressionProperties = [
+            AVVideoAverageBitRateKey: exportBitrate(for: renderSize),
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+            AVVideoMaxKeyFrameIntervalKey: 30,
+            AVVideoExpectedSourceFrameRateKey: 30
+        ]
+    }
+
     let videoSettings: [String: Any] = [
-        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoCodecKey: selectedCodec,
         AVVideoWidthKey: Int(renderSize.width),
         AVVideoHeightKey: Int(renderSize.height),
-        AVVideoCompressionPropertiesKey: [
-            AVVideoAverageBitRateKey: exportBitrate(for: renderSize),
-            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
-        ]
+        AVVideoCompressionPropertiesKey: compressionProperties
     ]
+
+    print("BriefShow export codec:", selectedCodec.rawValue, "resolution:", resolutionName, "size:", Int(renderSize.width), "x", Int(renderSize.height))
+
+    guard writer.canApply(outputSettings: videoSettings, forMediaType: .video) else {
+        print("BriefShow export error: codec settings rejected", videoSettings)
+        throw BriefShowExportError.cannotAddVideoInput
+    }
 
     let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
     input.expectsMediaDataInRealTime = false
@@ -536,7 +562,7 @@ private func renderSlideshowVideo(
 
     var previousImage: CGImage?
 
-    for url in photoURLs {
+    for (photoIndex, url) in photoURLs.enumerated() {
         guard let cgImage = makeCGImage(from: url) else {
             continue
         }
@@ -547,6 +573,7 @@ private func renderSlideshowVideo(
             }
 
             let fadeProgress: CGFloat?
+            var imageAlpha: CGFloat = 1
 
             if transitionStyle == .fade,
                let previousImage,
@@ -556,10 +583,26 @@ private func renderSlideshowVideo(
                 fadeProgress = nil
             }
 
+            if transitionStyle == .fade {
+                let fadeDenominator = CGFloat(max(1, fadeFrames - 1))
+
+                if photoIndex == 0, frameIndex < fadeFrames {
+                    let fadeInAlpha = CGFloat(frameIndex) / fadeDenominator
+                    imageAlpha = min(imageAlpha, max(0, min(1, fadeInAlpha)))
+                }
+
+                if photoIndex == photoURLs.count - 1, frameIndex >= framesPerPhoto - fadeFrames {
+                    let fadeOutFrame = framesPerPhoto - 1 - frameIndex
+                    let fadeOutAlpha = CGFloat(fadeOutFrame) / fadeDenominator
+                    imageAlpha = min(imageAlpha, max(0, min(1, fadeOutAlpha)))
+                }
+            }
+
             guard let pixelBuffer = makePixelBuffer(
                 from: cgImage,
                 previousImage: previousImage,
                 fadeProgress: fadeProgress,
+                imageAlpha: imageAlpha,
                 renderSize: renderSize,
                 pixelBufferPool: adaptor.pixelBufferPool
             ) else {
@@ -690,6 +733,7 @@ private func makePixelBuffer(
     from cgImage: CGImage,
     previousImage: CGImage?,
     fadeProgress: CGFloat?,
+    imageAlpha: CGFloat = 1,
     renderSize: CGSize,
     pixelBufferPool: CVPixelBufferPool?
 ) -> CVPixelBuffer? {
@@ -742,7 +786,7 @@ private func makePixelBuffer(
         )
 
         context.saveGState()
-        context.setAlpha(fadeProgress)
+        context.setAlpha(fadeProgress * imageAlpha)
         context.draw(cgImage, in: drawRect)
         context.restoreGState()
     } else {
@@ -751,7 +795,10 @@ private func makePixelBuffer(
             canvasSize: renderSize
         )
 
+        context.saveGState()
+        context.setAlpha(imageAlpha)
         context.draw(cgImage, in: drawRect)
+        context.restoreGState()
     }
 
     return pixelBuffer
@@ -798,7 +845,8 @@ private func muxVideoWithMusic(
     musicURL: URL,
     outputURL: URL,
     fadeInSeconds: Double,
-    fadeOutSeconds: Double
+    fadeOutSeconds: Double,
+    preferHEVC: Bool
 ) throws {
     if FileManager.default.fileExists(atPath: outputURL.path) {
         try FileManager.default.removeItem(at: outputURL)
@@ -842,9 +890,17 @@ private func muxVideoWithMusic(
         let audioParameters = AVMutableAudioMixInputParameters(track: compositionAudioTrack)
         audioParameters.setVolume(1, at: .zero)
 
-        let fadeInDuration = minCMTime(
-            CMTime(seconds: max(0, fadeInSeconds), preferredTimescale: 600),
-            audioDuration
+        let audioDurationSeconds = max(0, CMTimeGetSeconds(audioDuration))
+        let requestedFadeInSeconds = max(0, fadeInSeconds)
+        let requestedFadeOutSeconds = max(0, fadeOutSeconds)
+        let requestedFadeTotal = requestedFadeInSeconds + requestedFadeOutSeconds
+        let fadeScale = requestedFadeTotal > audioDurationSeconds && requestedFadeTotal > 0
+            ? audioDurationSeconds / requestedFadeTotal
+            : 1
+
+        let fadeInDuration = CMTime(
+            seconds: requestedFadeInSeconds * fadeScale,
+            preferredTimescale: 600
         )
 
         if fadeInDuration > .zero {
@@ -855,27 +911,42 @@ private func muxVideoWithMusic(
             )
         }
 
-        let fadeOutDuration = minCMTime(
-            CMTime(seconds: max(0, fadeOutSeconds), preferredTimescale: 600),
-            audioDuration
+        let fadeOutDuration = CMTime(
+            seconds: requestedFadeOutSeconds * fadeScale,
+            preferredTimescale: 600
         )
 
         if fadeOutDuration > .zero {
-            let fadeOutStart = maxCMTime(.zero, CMTimeSubtract(audioDuration, fadeOutDuration))
-            audioParameters.setVolumeRamp(
-                fromStartVolume: 1,
-                toEndVolume: 0,
-                timeRange: CMTimeRange(start: fadeOutStart, duration: fadeOutDuration)
-            )
+            let fadeOutStart = maxCMTime(fadeInDuration, CMTimeSubtract(audioDuration, fadeOutDuration))
+            let safeFadeOutDuration = minCMTime(fadeOutDuration, CMTimeSubtract(audioDuration, fadeOutStart))
+
+            if safeFadeOutDuration > .zero {
+                audioParameters.setVolumeRamp(
+                    fromStartVolume: 1,
+                    toEndVolume: 0,
+                    timeRange: CMTimeRange(start: fadeOutStart, duration: safeFadeOutDuration)
+                )
+            }
         }
 
         audioMix = AVMutableAudioMix()
         audioMix?.inputParameters = [audioParameters]
     }
 
+    let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: composition)
+    let preferredPreset: String
+
+    if preferHEVC, compatiblePresets.contains(AVAssetExportPresetHEVCHighestQuality) {
+        preferredPreset = AVAssetExportPresetHEVCHighestQuality
+    } else {
+        preferredPreset = AVAssetExportPresetHighestQuality
+    }
+
+    print("BriefShow mux preset:", preferredPreset, "preferHEVC:", preferHEVC)
+
     guard let exportSession = AVAssetExportSession(
         asset: composition,
-        presetName: AVAssetExportPresetHighestQuality
+        presetName: preferredPreset
     ) else {
         throw BriefShowExportError.couldNotExportWithAudio
     }
@@ -1331,7 +1402,7 @@ struct RightExportPanel: View {
                     .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
 
                 SettingRow(label: "Format", value: "MP4")
-                SettingRow(label: "Codec", value: "H.264")
+                SettingRow(label: "Codec", value: selectedResolution == "Original" ? "H.265" : "H.264")
                 SettingRow(label: "Resolution", value: selectedResolution)
                 SettingRow(label: "FPS", value: "30")
 
@@ -1358,20 +1429,30 @@ struct RightExportPanel: View {
                 }
                 .padding(.top, 2)
 
-                Text(exportStatusText ?? exportHelperText)
-                    .font(.custom("Figtree", size: 11).weight(.regular))
-                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(red: 0.930, green: 0.900, blue: 0.850))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18)
-                            .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 2)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                    .padding(.top, 2)
+                HStack(spacing: 8) {
+                    Text(exportStatusText ?? exportHelperText)
+                        .font(.custom("Figtree", size: 11).weight(.regular))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if isExporting {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                            .frame(width: 16, height: 16)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 2)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+                .padding(.top, 2)
 
             }
             .padding(14)
@@ -1396,6 +1477,28 @@ struct RightExportPanel: View {
                 Text("Export Video")
                     .font(.custom("Figtree", size: 14).weight(.medium))
                     .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                if selectedResolution == "Original" {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Important")
+                            .font(.custom("Figtree", size: 11).weight(.semibold))
+                            .foregroundColor(Color(red: 0.620, green: 0.180, blue: 0.160))
+
+                        Text("Original export uses H.265/HEVC to keep full source size smooth. Newer Macs should export normally. Older Macs without HEVC support may not export Original smoothly — use 4K or 1080p instead.")
+                            .font(.custom("Figtree", size: 10.5).weight(.regular))
+                            .foregroundColor(Color(red: 0.390, green: 0.220, blue: 0.200).opacity(0.86))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(red: 1.000, green: 0.925, blue: 0.900))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color(red: 0.820, green: 0.300, blue: 0.240).opacity(0.42), lineWidth: 1.6)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
 
                 VStack(alignment: .leading, spacing: 7) {
                     SettingRow(label: "Resolution", value: selectedResolution)
@@ -1487,18 +1590,31 @@ struct TimelinePanel: View {
     @Binding var photoURLs: [URL]
     @Binding var previewImages: [NSImage]
     let musicURL: URL?
+    let isPreparingPhotos: Bool
     @Binding var activePhotoIndex: Int
 
     @State private var draggedPhotoURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            PanelTitle(title: "Timeline", subtitle: timelineSubtitle)
+            HStack(alignment: .top) {
+                PanelTitle(title: "Timeline", subtitle: timelineSubtitle)
+
+                Spacer()
+
+                if isPreparingPhotos {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.75)
+                        .frame(width: 18, height: 18)
+                        .padding(.top, 4)
+                }
+            }
 
             if photoURLs.isEmpty {
                 EmptyTimelineStoryboard()
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView(.horizontal, showsIndicators: true) {
                     HStack(spacing: 12) {
                         ForEach(Array(photoURLs.enumerated()), id: \.element) { index, url in
                             TimelinePhotoThumb(

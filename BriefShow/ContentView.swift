@@ -1128,6 +1128,8 @@ private func loadDroppedFileURLs(
 struct HeaderView: View {
     @State private var isRocketsBriefHovered = false
     @State private var isFundMissionHovered = false
+    @State private var isDisclaimerHovered = false
+    @State private var isDisclaimerNoticePresented = false
 
     var body: some View {
         HStack {
@@ -1189,8 +1191,8 @@ struct HeaderView: View {
                     }
                 } label: {
                     Text("Fund Mission")
-                        .frame(height: 15)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(width: 86, height: 15)
+                        .fixedSize(horizontal: false, vertical: false)
                 }
                 .buttonStyle(HeaderLinkButtonStyle())
                 .overlay(alignment: .topTrailing) {
@@ -1206,8 +1208,33 @@ struct HeaderView: View {
                         isFundMissionHovered = hovering
                     }
                 }
+
+                Button {
+                    isDisclaimerNoticePresented = true
+                } label: {
+                    Text("Disclaimer")
+                        .frame(width: 86, height: 15)
+                        .fixedSize(horizontal: false, vertical: false)
+                }
+                .buttonStyle(HeaderLinkButtonStyle())
+                .overlay(alignment: .topTrailing) {
+                    if isDisclaimerHovered {
+                        DisclaimerHoverCard()
+                            .offset(x: -6, y: 48)
+                            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
+                            .zIndex(300)
+                    }
+                }
+                .onHover { hovering in
+                    withAnimation(.linear(duration: 0.12)) {
+                        isDisclaimerHovered = hovering
+                    }
+                }
                 }
             }
+        }
+        .sheet(isPresented: $isDisclaimerNoticePresented) {
+            DisclaimerNoticeModal()
         }
         .zIndex(300)
     }
@@ -1249,7 +1276,7 @@ struct FundMissionHoverCard: View {
                 .font(.custom("Figtree", size: 14).weight(.medium))
                 .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
 
-            Text("BriefShow is free to use. If you enjoy it and want to support the mission, you can help us build more free creative apps.")
+            Text("BriefShow is free to use. Your support helps RocketsBrief build more AI-powered tools, creative apps, and digital products — including some that may stay free for the community.")
                 .font(.custom("Figtree", size: 11).weight(.regular))
                 .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
                 .fixedSize(horizontal: false, vertical: true)
@@ -1268,6 +1295,125 @@ struct FundMissionHoverCard: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 26))
         .shadow(color: Color.black.opacity(0.13), radius: 18, x: 0, y: 10)
+    }
+}
+
+struct DisclaimerHoverCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Disclaimer & Usage Notice")
+                .font(.custom("Figtree", size: 14).weight(.medium))
+                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+            Text("Read the usage notice for BriefShow and RocketsBrief products, including user responsibility, voluntary support terms, limitations, and prohibited use.")
+                .font(.custom("Figtree", size: 11).weight(.regular))
+                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Click Disclaimer to read the full notice.")
+                .font(.custom("Figtree", size: 10.5).weight(.medium))
+                .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: 315, alignment: .leading)
+        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .overlay(
+            RoundedRectangle(cornerRadius: 26)
+                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 3)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 26))
+        .shadow(color: Color.black.opacity(0.13), radius: 18, x: 0, y: 10)
+    }
+}
+
+struct DisclaimerNoticeModal: View {
+    @Environment(\.dismiss) private var dismiss
+
+    private let noticeSections: [(String, String)] = [
+        (
+            "Free creative tool",
+            "BriefShow is provided as a free creative tool by RocketsBrief. It is offered “as is” and “as available,” without guarantees that it will always be error-free, uninterrupted, or suitable for every specific purpose."
+        ),
+        (
+            "User responsibility",
+            "You are responsible for the images, music, files, prompts, content, exports, and any other materials you upload, create, process, publish, share, or use through BriefShow or any RocketsBrief product."
+        ),
+        (
+            "Prohibited use",
+            "You may not use BriefShow, RocketsBrief, or any related tool to create, promote, distribute, or support unlawful, harmful, fraudulent, abusive, infringing, or prohibited activity. This includes scams, phishing, malware, spam, impersonation, copyright infringement, illegal products or services, or any activity that violates applicable laws, third-party rights, platform rules, or payment processor policies."
+        ),
+        (
+            "Review before use",
+            "Any output created with BriefShow should be reviewed by you before publishing, selling, sharing, or relying on it. RocketsBrief does not guarantee legal compliance, business results, earnings, conversions, or that any output will meet a specific requirement."
+        ),
+        (
+            "Fund Mission support",
+            "Fund Mission contributions are voluntary support payments. They help support the development of RocketsBrief apps, AI-powered tools, digital products, and community resources, including some products that may be available for free. A Fund Mission contribution does not purchase a specific service, subscription, custom work, investment, ownership rights, or guaranteed deliverable."
+        ),
+        (
+            "Right to limit access",
+            "RocketsBrief may refuse, limit, suspend, or remove access to any product or service if it believes a user is violating these terms, applicable law, third-party rights, payment processor rules, or creating risk for RocketsBrief, other users, or the public."
+        )
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Disclaimer & Usage Notice")
+                        .font(.custom("Figtree", size: 24).weight(.semibold))
+                        .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                    Text("For BriefShow and RocketsBrief products")
+                        .font(.custom("Figtree", size: 12.5).weight(.regular))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                }
+
+                Spacer()
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(HeaderLinkButtonStyle())
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 14)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(noticeSections, id: \.0) { section in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(section.0)
+                                .font(.custom("Figtree", size: 14).weight(.semibold))
+                                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                            Text(section.1)
+                                .font(.custom("Figtree", size: 12).weight(.regular))
+                                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                                .lineSpacing(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    Text("By using BriefShow or supporting RocketsBrief, you agree that you are responsible for your own use of the tool and any content or output you create with it.")
+                        .font(.custom("Figtree", size: 12).weight(.medium))
+                        .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
+            }
+        }
+        .frame(width: 640, height: 620)
+        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
     }
 }
 

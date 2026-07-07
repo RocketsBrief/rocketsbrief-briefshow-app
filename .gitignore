@@ -1,0 +1,9 @@
+# Xcode local user data
+BriefShow.xcodeproj/xcuserdata/
+
+# Build/package outputs
+build/
+dist/
+
+# macOS
+.DS_Store

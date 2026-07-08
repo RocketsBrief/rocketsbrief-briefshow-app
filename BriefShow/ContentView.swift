@@ -2481,7 +2481,6 @@ struct TimelinePhotoDropDelegate: DropDelegate {
             return true
         }
 
-        let activeURL = photoURLs.indices.contains(activePhotoIndex) ? photoURLs[activePhotoIndex] : nil
         let moveToOffset = toIndex > fromIndex ? toIndex + 1 : toIndex
 
         withAnimation(.easeInOut(duration: 0.14)) {
@@ -2497,10 +2496,10 @@ struct TimelinePhotoDropDelegate: DropDelegate {
                 )
             }
 
-            if let activeURL, let newActiveIndex = photoURLs.firstIndex(of: activeURL) {
-                activePhotoIndex = newActiveIndex
+            if let movedPhotoIndex = photoURLs.firstIndex(of: draggedPhotoURL) {
+                activePhotoIndex = movedPhotoIndex
             } else {
-                activePhotoIndex = min(activePhotoIndex, max(0, photoURLs.count - 1))
+                activePhotoIndex = min(toIndex, max(0, photoURLs.count - 1))
             }
         }
 

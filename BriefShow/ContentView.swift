@@ -51,6 +51,14 @@ struct ContentView: View {
     @State private var isPreviewPlaying: Bool = false
     @State private var previewElapsedSeconds: Double = 0
     @State private var previewTotalElapsedSeconds: Double = 0
+    @State private var isFullScreenPreviewPresented: Bool = false
+    @State private var savedWindowFrame: NSRect?
+    @State private var savedPresentationOptions: NSApplication.PresentationOptions = []
+    @State private var savedTitlebarAppearsTransparent: Bool = false
+    @State private var savedTitleVisibility: NSWindow.TitleVisibility = .visible
+    @State private var savedWindowStyleMask: NSWindow.StyleMask = []
+    @State private var savedWindowLevel: NSWindow.Level = .normal
+    @State private var savedCollectionBehavior: NSWindow.CollectionBehavior = []
 
     var body: some View {
         ZStack {
@@ -77,6 +85,8 @@ struct ContentView: View {
                         activePhotoName: activePhotoName,
                         activePhotoIndex: activePhotoIndex,
                         photoCount: selectedPhotoURLs.count,
+                        previewImages: previewImages,
+                        visualTheme: visualTheme,
                         isPreparingPhotos: isPreparingPhotos,
                         preparedPhotoCount: preparedPhotoCount,
                         selectedMusicURL: selectedMusicURL,
@@ -89,7 +99,10 @@ struct ContentView: View {
                         onDropPhotos: importPhotoURLs,
                         onDropMusic: importMusicURLs,
                         onTogglePreview: togglePreview,
-                        onStartFromBeginning: startPreviewFromBeginning
+                        onStartFromBeginning: startPreviewFromBeginning,
+                        onOpenFullScreen: {
+                            openCinemaFullScreenPreview()
+                        }
                     )
                     RightExportPanel(
                         selectedResolution: $selectedExportResolution,
@@ -127,6 +140,31 @@ struct ContentView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .top)
+
+            if isFullScreenPreviewPresented {
+                FullScreenPreviewSheet(
+                    activePreviewImage: activePreviewImage,
+                    previousPreviewImage: previousPreviewImage,
+                    activePhotoName: activePhotoName,
+                    activePhotoIndex: activePhotoIndex,
+                    photoCount: selectedPhotoURLs.count,
+                    isPreparingPhotos: isPreparingPhotos,
+                    previewImages: previewImages,
+                    visualTheme: visualTheme,
+                    timeCounterText: timeCounterText,
+                    transitionStyle: transitionStyle,
+                    transitionProgress: transitionProgress,
+                    isPreviewPlaying: isPreviewPlaying,
+                    onTogglePreview: togglePreview,
+                    onStartFromBeginning: startPreviewFromBeginning,
+                    onClose: {
+                        closeCinemaFullScreenPreview()
+                    }
+                )
+                .ignoresSafeArea()
+                .zIndex(9999)
+                .transition(.opacity)
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
         .frame(
@@ -138,6 +176,75 @@ struct ContentView: View {
         .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
             advancePreviewIfNeeded(delta: 0.1)
         }
+    }
+
+    private func openCinemaFullScreenPreview() {
+        guard !selectedPhotoURLs.isEmpty, !isPreparingPhotos else {
+            return
+        }
+
+        savedPresentationOptions = NSApp.presentationOptions
+
+        if let window = NSApp.keyWindow ?? NSApp.windows.first, let screen = window.screen ?? NSScreen.main {
+            savedWindowFrame = window.frame
+            savedTitlebarAppearsTransparent = window.titlebarAppearsTransparent
+            savedTitleVisibility = window.titleVisibility
+            savedWindowStyleMask = window.styleMask
+            savedWindowLevel = window.level
+            savedCollectionBehavior = window.collectionBehavior
+
+            NSApp.activate(ignoringOtherApps: true)
+
+            window.level = .screenSaver
+            window.collectionBehavior.insert(.canJoinAllSpaces)
+            window.collectionBehavior.insert(.fullScreenAuxiliary)
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.styleMask.insert(.fullSizeContentView)
+            window.styleMask.remove(.resizable)
+            window.standardWindowButton(.closeButton)?.isHidden = true
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            window.standardWindowButton(.zoomButton)?.isHidden = true
+            window.makeKeyAndOrderFront(nil)
+
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                window.animator().setFrame(screen.frame, display: true)
+            }
+        }
+
+        NSApp.presentationOptions.insert(.hideDock)
+        NSApp.presentationOptions.insert(.hideMenuBar)
+
+        withAnimation(.easeInOut(duration: 0.16)) {
+            isFullScreenPreviewPresented = true
+        }
+    }
+
+    private func closeCinemaFullScreenPreview() {
+        withAnimation(.easeInOut(duration: 0.12)) {
+            isFullScreenPreviewPresented = false
+        }
+
+        NSApp.presentationOptions = savedPresentationOptions
+
+        if let window = NSApp.keyWindow ?? NSApp.windows.first, let savedWindowFrame {
+            window.level = savedWindowLevel
+            window.collectionBehavior = savedCollectionBehavior
+            window.styleMask = savedWindowStyleMask
+            window.titlebarAppearsTransparent = savedTitlebarAppearsTransparent
+            window.titleVisibility = savedTitleVisibility
+            window.standardWindowButton(.closeButton)?.isHidden = false
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = false
+            window.standardWindowButton(.zoomButton)?.isHidden = false
+
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.14
+                window.animator().setFrame(savedWindowFrame, display: true)
+            }
+        }
+
+        savedWindowFrame = nil
     }
 
     private var activePreviewImage: NSImage? {
@@ -1927,12 +2034,372 @@ struct ThemePickerOption: View {
     }
 }
 
+struct FullScreenPreviewSheet: View {
+    let activePreviewImage: NSImage?
+    let previousPreviewImage: NSImage?
+    let activePhotoName: String
+    let activePhotoIndex: Int
+    let photoCount: Int
+    let isPreparingPhotos: Bool
+    let previewImages: [NSImage]
+    let visualTheme: SlideshowVisualTheme
+    let timeCounterText: String
+    let transitionStyle: SlideshowTransitionStyle
+    let transitionProgress: Double
+    let isPreviewPlaying: Bool
+    let onTogglePreview: () -> Void
+    let onStartFromBeginning: () -> Void
+    let onClose: () -> Void
+
+    private var usesMagazinePreview: Bool {
+        visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
+    }
+
+    private var themedPreviewImages: [NSImage] {
+        guard !previewImages.isEmpty else {
+            return activePreviewImage.map { [$0] } ?? []
+        }
+
+        let safeIndex = previewImages.indices.contains(activePhotoIndex) ? activePhotoIndex : 0
+        let ordered = Array(previewImages[safeIndex...]) + Array(previewImages[..<safeIndex])
+        return Array(ordered.prefix(6))
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.black
+                    .ignoresSafeArea()
+
+                fittedPreviewContent(in: proxy.size)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .background(Color.black)
+                    .ignoresSafeArea()
+
+                fullscreenCloseButton
+                    .position(x: proxy.size.width - 44, y: 44)
+                    .zIndex(1000)
+
+                fullscreenBottomControls
+                    .frame(width: max(420, proxy.size.width - 56))
+                    .position(x: proxy.size.width / 2, y: proxy.size.height - 74)
+                    .zIndex(1000)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .background(Color.black)
+        }
+        .frame(
+            width: NSScreen.main?.frame.width ?? 1400,
+            height: NSScreen.main?.frame.height ?? 900
+        )
+        .background(Color.black)
+        .ignoresSafeArea()
+        .onExitCommand {
+            onClose()
+        }
+    }
+
+    @ViewBuilder
+    private func fittedPreviewContent(in size: CGSize) -> some View {
+        if let activePreviewImage {
+            if usesMagazinePreview {
+                MagazinePreviewPage(
+                    images: themedPreviewImages,
+                    theme: visualTheme,
+                    activePhotoName: activePhotoName
+                )
+                .frame(width: size.width, height: size.height)
+                .background(Color.black)
+                .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
+            } else if visualTheme == .origami {
+                OrigamiPreviewPage(
+                    images: themedPreviewImages,
+                    activePhotoName: activePhotoName
+                )
+                .frame(width: size.width, height: size.height)
+                .background(Color.black)
+                .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
+            } else {
+                ZStack {
+                    Color.black
+
+                    if transitionStyle == .fade, let previousPreviewImage {
+                        FittedFullscreenImage(image: previousPreviewImage)
+                            .opacity(max(0, 1 - transitionProgress))
+                    }
+
+                    FittedFullscreenImage(image: activePreviewImage)
+                        .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
+                }
+                .frame(width: size.width, height: size.height)
+                .background(Color.black)
+            }
+        } else {
+            ZStack {
+                Color.black
+
+                Text("Add photos to preview your slideshow.")
+                    .font(.custom("Figtree", size: 18).weight(.medium))
+                    .foregroundColor(.white.opacity(0.78))
+            }
+            .frame(width: size.width, height: size.height)
+        }
+    }
+
+    private var fullscreenCloseButton: some View {
+        Button {
+            onClose()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                .frame(width: 34, height: 34)
+                .background(Color(red: 0.957, green: 0.937, blue: 0.910).opacity(0.96))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 999)
+                        .stroke(Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.75), lineWidth: 1.5)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 999))
+                .shadow(color: Color.black.opacity(0.34), radius: 8, x: 0, y: 3)
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(.escape, modifiers: [])
+    }
+
+    private var fullscreenBottomControls: some View {
+        HStack(alignment: .center, spacing: 10) {
+            HStack(spacing: 10) {
+                PreviewControlButton(
+                    title: isPreviewPlaying ? "Stop Preview" : "Play Preview",
+                    isDisabled: photoCount == 0 || isPreparingPhotos,
+                    action: onTogglePreview
+                )
+
+                PreviewControlButton(
+                    title: "Play From Beginning",
+                    isDisabled: photoCount == 0 || isPreparingPhotos,
+                    action: onStartFromBeginning
+                )
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(Color.black.opacity(0.62))
+            .clipShape(RoundedRectangle(cornerRadius: 999))
+            .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
+
+            Spacer()
+
+            Text(timeCounterText)
+                .font(.custom("Figtree", size: 12).weight(.medium))
+                .foregroundColor(.white.opacity(0.96))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.68))
+                .clipShape(RoundedRectangle(cornerRadius: 999))
+                .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
+        }
+    }
+}
+
+struct FittedFullscreenImage: View {
+    let image: NSImage
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+    }
+}
+
+struct MagazinePreviewPage: View {
+    let images: [NSImage]
+    let theme: SlideshowVisualTheme
+    let activePhotoName: String
+
+    var body: some View {
+        ZStack {
+            magazineBackground
+
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    if let first = images.first {
+                        MagazineImageTile(image: first, heightWeight: 1.0)
+                            .frame(maxWidth: .infinity)
+                    }
+
+                    VStack(spacing: 10) {
+                        ForEach(Array(images.dropFirst().prefix(2).enumerated()), id: \.offset) { _, image in
+                            MagazineImageTile(image: image, heightWeight: 0.5)
+                        }
+                    }
+                    .frame(maxWidth: images.count > 1 ? 170 : 0)
+                    .opacity(images.count > 1 ? 1 : 0)
+                }
+
+                if images.count > 3 {
+                    HStack(spacing: 10) {
+                        MagazineImageTile(image: images[3], heightWeight: 0.38)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(themeTitle)
+                                .font(.custom("Figtree", size: 13).weight(.semibold))
+                                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                            Text("Magazine preview")
+                                .font(.custom("Figtree", size: 10.5).weight(.regular))
+                                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(red: 0.930, green: 0.900, blue: 0.850).opacity(0.82))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+                    .frame(height: 58)
+                }
+            }
+            .padding(14)
+
+            VStack {
+                Spacer()
+
+                HStack {
+                    Text(activePhotoName)
+                        .font(.custom("Figtree", size: 11.5).weight(.medium))
+                        .foregroundColor(.white.opacity(0.92))
+                        .lineLimit(1)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Color.black.opacity(0.38))
+                        .clipShape(RoundedRectangle(cornerRadius: 999))
+
+                    Spacer()
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    private var themeTitle: String {
+        switch theme {
+        case .magazineFamily:
+            return "Family Layout"
+        case .magazineCouples:
+            return "Couples Layout"
+        default:
+            return "Editorial Layout"
+        }
+    }
+
+    private var magazineBackground: some View {
+        LinearGradient(
+            colors: [
+                Color(red: 0.957, green: 0.937, blue: 0.910),
+                Color(red: 0.900, green: 0.870, blue: 0.810)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+}
+
+struct MagazineImageTile: View {
+    let image: NSImage
+    let heightWeight: CGFloat
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFill()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(Color.white.opacity(0.45), lineWidth: 1.5)
+            )
+            .shadow(color: Color.black.opacity(0.16), radius: 8, x: 0, y: 4)
+    }
+}
+
+struct OrigamiPreviewPage: View {
+    let images: [NSImage]
+    let activePhotoName: String
+
+    var body: some View {
+        ZStack {
+            Color.black
+
+            HStack(spacing: 0) {
+                ForEach(Array(images.prefix(4).enumerated()), id: \.offset) { index, image in
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                        .clipShape(OrigamiPanelShape(index: index))
+                        .overlay(
+                            OrigamiPanelShape(index: index)
+                                .stroke(Color.white.opacity(0.35), lineWidth: 1.2)
+                        )
+                        .rotation3DEffect(
+                            .degrees(index.isMultiple(of: 2) ? -5 : 5),
+                            axis: (x: 0, y: 1, z: 0)
+                        )
+                }
+            }
+
+            VStack {
+                Spacer()
+
+                HStack {
+                    Text(activePhotoName)
+                        .font(.custom("Figtree", size: 11.5).weight(.medium))
+                        .foregroundColor(.white.opacity(0.92))
+                        .lineLimit(1)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Color.black.opacity(0.40))
+                        .clipShape(RoundedRectangle(cornerRadius: 999))
+
+                    Spacer()
+                }
+                .padding(16)
+            }
+        }
+    }
+}
+
+struct OrigamiPanelShape: Shape {
+    let index: Int
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let inset: CGFloat = 6
+        let topShift: CGFloat = index.isMultiple(of: 2) ? 0 : 14
+        let bottomShift: CGFloat = index.isMultiple(of: 2) ? 14 : 0
+
+        path.move(to: CGPoint(x: rect.minX + inset, y: rect.minY + inset + topShift))
+        path.addLine(to: CGPoint(x: rect.maxX - inset, y: rect.minY + inset))
+        path.addLine(to: CGPoint(x: rect.maxX - inset, y: rect.maxY - inset - bottomShift))
+        path.addLine(to: CGPoint(x: rect.minX + inset, y: rect.maxY - inset))
+        path.closeSubpath()
+
+        return path
+    }
+}
+
 struct CenterPreviewPanel: View {
     let activePreviewImage: NSImage?
     let previousPreviewImage: NSImage?
     let activePhotoName: String
     let activePhotoIndex: Int
     let photoCount: Int
+    let previewImages: [NSImage]
+    let visualTheme: SlideshowVisualTheme
     let isPreparingPhotos: Bool
     let preparedPhotoCount: Int
     let selectedMusicURL: URL?
@@ -1946,6 +2413,21 @@ struct CenterPreviewPanel: View {
     let onDropMusic: ([URL]) -> Void
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
+    let onOpenFullScreen: () -> Void
+
+    private var usesMagazinePreview: Bool {
+        visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
+    }
+
+    private var themedPreviewImages: [NSImage] {
+        guard !previewImages.isEmpty else {
+            return activePreviewImage.map { [$0] } ?? []
+        }
+
+        let safeIndex = previewImages.indices.contains(activePhotoIndex) ? activePhotoIndex : 0
+        let ordered = Array(previewImages[safeIndex...]) + Array(previewImages[..<safeIndex])
+        return Array(ordered.prefix(4))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1956,36 +2438,53 @@ struct CenterPreviewPanel: View {
                         .fill(activePreviewImage == nil && !isPreparingPhotos && NSImage(named: "ScreenSketch") != nil ? Color.clear : Color.black)
 
                     if let activePreviewImage {
-                        if transitionStyle == .fade, let previousPreviewImage {
-                            Image(nsImage: previousPreviewImage)
-                                .resizable()
-                                .scaledToFit()
-                                .opacity(max(0, 1 - transitionProgress))
-                                .clipShape(RoundedRectangle(cornerRadius: 28))
-                        }
-
-                        Image(nsImage: activePreviewImage)
-                            .resizable()
-                            .scaledToFit()
+                        if usesMagazinePreview {
+                            MagazinePreviewPage(
+                                images: themedPreviewImages,
+                                theme: visualTheme,
+                                activePhotoName: activePhotoName
+                            )
                             .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
                             .clipShape(RoundedRectangle(cornerRadius: 28))
-
-                        VStack {
-                            Spacer()
-
-                            HStack {
-                                Text(activePhotoName)
-                                    .font(.custom("Figtree", size: 12).weight(.medium))
-                                    .foregroundColor(.white.opacity(0.88))
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 7)
-                                    .background(Color.black.opacity(0.42))
-                                    .clipShape(RoundedRectangle(cornerRadius: 999))
-
-                                Spacer()
+                        } else if visualTheme == .origami {
+                            OrigamiPreviewPage(
+                                images: themedPreviewImages,
+                                activePhotoName: activePhotoName
+                            )
+                            .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
+                            .clipShape(RoundedRectangle(cornerRadius: 28))
+                        } else {
+                            if transitionStyle == .fade, let previousPreviewImage {
+                                Image(nsImage: previousPreviewImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .opacity(max(0, 1 - transitionProgress))
+                                    .clipShape(RoundedRectangle(cornerRadius: 28))
                             }
-                            .padding(16)
+
+                            Image(nsImage: activePreviewImage)
+                                .resizable()
+                                .scaledToFit()
+                                .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
+                                .clipShape(RoundedRectangle(cornerRadius: 28))
+
+                            VStack {
+                                Spacer()
+
+                                HStack {
+                                    Text(activePhotoName)
+                                        .font(.custom("Figtree", size: 12).weight(.medium))
+                                        .foregroundColor(.white.opacity(0.88))
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 7)
+                                        .background(Color.black.opacity(0.42))
+                                        .clipShape(RoundedRectangle(cornerRadius: 999))
+
+                                    Spacer()
+                                }
+                                .padding(16)
+                            }
                         }
                     } else if isPreparingPhotos {
                         VStack(spacing: 14) {
@@ -2056,6 +2555,12 @@ struct CenterPreviewPanel: View {
                         title: "Play From Beginning",
                         isDisabled: photoCount == 0 || isPreparingPhotos,
                         action: onStartFromBeginning
+                    )
+
+                    PreviewControlButton(
+                        title: "Full Screen",
+                        isDisabled: photoCount == 0 || isPreparingPhotos,
+                        action: onOpenFullScreen
                     )
 
                     Spacer()

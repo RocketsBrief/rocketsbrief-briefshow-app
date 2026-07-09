@@ -222,29 +222,47 @@ struct ContentView: View {
     }
 
     private func closeCinemaFullScreenPreview() {
-        withAnimation(.easeInOut(duration: 0.12)) {
-            isFullScreenPreviewPresented = false
+        guard isFullScreenPreviewPresented || savedWindowFrame != nil else {
+            return
         }
 
+        if isPreviewPlaying {
+            isPreviewPlaying = false
+            audioPlayer?.pause()
+        }
+
+        isFullScreenPreviewPresented = false
         NSApp.presentationOptions = savedPresentationOptions
 
-        if let window = NSApp.keyWindow ?? NSApp.windows.first, let savedWindowFrame {
-            window.level = savedWindowLevel
-            window.collectionBehavior = savedCollectionBehavior
-            window.styleMask = savedWindowStyleMask
-            window.titlebarAppearsTransparent = savedTitlebarAppearsTransparent
-            window.titleVisibility = savedTitleVisibility
+        let frameToRestore = savedWindowFrame
+        let levelToRestore = savedWindowLevel
+        let behaviorToRestore = savedCollectionBehavior
+        let styleMaskToRestore = savedWindowStyleMask
+        let titlebarToRestore = savedTitlebarAppearsTransparent
+        let titleVisibilityToRestore = savedTitleVisibility
+
+        savedWindowFrame = nil
+
+        DispatchQueue.main.async {
+            guard let window = NSApp.keyWindow ?? NSApp.windows.first else {
+                return
+            }
+
+            window.level = levelToRestore
+            window.collectionBehavior = behaviorToRestore
+            window.styleMask = styleMaskToRestore
+            window.titlebarAppearsTransparent = titlebarToRestore
+            window.titleVisibility = titleVisibilityToRestore
             window.standardWindowButton(.closeButton)?.isHidden = false
             window.standardWindowButton(.miniaturizeButton)?.isHidden = false
             window.standardWindowButton(.zoomButton)?.isHidden = false
 
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.14
-                window.animator().setFrame(savedWindowFrame, display: true)
+            if let frameToRestore {
+                window.setFrame(frameToRestore, display: true, animate: true)
             }
-        }
 
-        savedWindowFrame = nil
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     private var activePreviewImage: NSImage? {
@@ -2106,7 +2124,9 @@ struct FullScreenPreviewSheet: View {
                 MagazinePreviewPage(
                     images: themedPreviewImages,
                     theme: visualTheme,
-                    activePhotoName: activePhotoName
+                    activePhotoName: activePhotoName,
+                    activePhotoIndex: activePhotoIndex,
+                    transitionProgress: transitionProgress
                 )
                 .frame(width: size.width, height: size.height)
                 .background(Color.black)
@@ -2218,97 +2238,135 @@ struct MagazinePreviewPage: View {
     let images: [NSImage]
     let theme: SlideshowVisualTheme
     let activePhotoName: String
+    let activePhotoIndex: Int
+    let transitionProgress: Double
+
+    private var layoutVariant: Int {
+        activePhotoIndex % 4
+    }
 
     var body: some View {
-        ZStack {
-            magazineBackground
+        GeometryReader { proxy in
+            let isCinemaSize = proxy.size.width > 900 || proxy.size.height > 520
+            let reservedControlsHeight: CGFloat = isCinemaSize ? 150 : 0
+            let availableWidth = max(360, proxy.size.width - 56)
+            let availableHeight = max(220, proxy.size.height - 48 - reservedControlsHeight)
+            let pageWidth = min(availableWidth, availableHeight * 16 / 9)
+            let pageHeight = pageWidth * 9 / 16
+            let gap: CGFloat = max(10, min(20, pageWidth * 0.012))
+            let pagePadding: CGFloat = gap
 
-            VStack(spacing: 10) {
-                HStack(spacing: 10) {
-                    if let first = images.first {
-                        MagazineImageTile(image: first, heightWeight: 1.0)
-                            .frame(maxWidth: .infinity)
-                    }
+            ZStack {
+                Color.black
+                    .ignoresSafeArea()
 
-                    VStack(spacing: 10) {
-                        ForEach(Array(images.dropFirst().prefix(2).enumerated()), id: \.offset) { _, image in
-                            MagazineImageTile(image: image, heightWeight: 0.5)
-                        }
-                    }
-                    .frame(maxWidth: images.count > 1 ? 170 : 0)
-                    .opacity(images.count > 1 ? 1 : 0)
-                }
-
-                if images.count > 3 {
-                    HStack(spacing: 10) {
-                        MagazineImageTile(image: images[3], heightWeight: 0.38)
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(themeTitle)
-                                .font(.custom("Figtree", size: 13).weight(.semibold))
-                                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
-
-                            Text("Magazine preview")
-                                .font(.custom("Figtree", size: 10.5).weight(.regular))
-                                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(red: 0.930, green: 0.900, blue: 0.850).opacity(0.82))
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                    }
-                    .frame(height: 58)
-                }
+                magazineTemplate(
+                    width: pageWidth - pagePadding * 2,
+                    height: pageHeight - pagePadding * 2,
+                    gap: gap
+                )
+                .padding(pagePadding)
+                .frame(width: pageWidth, height: pageHeight)
+                .background(Color.white)
             }
-            .padding(14)
-
-            VStack {
-                Spacer()
-
-                HStack {
-                    Text(activePhotoName)
-                        .font(.custom("Figtree", size: 11.5).weight(.medium))
-                        .foregroundColor(.white.opacity(0.92))
-                        .lineLimit(1)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background(Color.black.opacity(0.38))
-                        .clipShape(RoundedRectangle(cornerRadius: 999))
-
-                    Spacer()
-                }
-                .padding(16)
-            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
     }
 
-    private var themeTitle: String {
-        switch theme {
-        case .magazineFamily:
-            return "Family Layout"
-        case .magazineCouples:
-            return "Couples Layout"
+    @ViewBuilder
+    private func magazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        switch layoutVariant {
+        case 1:
+            VStack(spacing: gap) {
+                HStack(spacing: gap) {
+                    tile(at: 1)
+                    tile(at: 2)
+                    tile(at: 3)
+                    tile(at: 4)
+                }
+                .frame(height: height * 0.30)
+
+                HStack(spacing: gap) {
+                    tile(at: 0)
+                    tile(at: 5)
+                }
+            }
+
+        case 2:
+            HStack(spacing: gap) {
+                tile(at: 0)
+                    .frame(width: width * 0.72)
+
+                VStack(spacing: gap) {
+                    tile(at: 1)
+                    tile(at: 2)
+                    tile(at: 3)
+                }
+            }
+
+        case 3:
+            VStack(spacing: gap) {
+                HStack(spacing: gap) {
+                    tile(at: 0)
+                    tile(at: 1)
+                }
+
+                HStack(spacing: gap) {
+                    tile(at: 2)
+                    tile(at: 3)
+                    tile(at: 4)
+                }
+                .frame(height: height * 0.32)
+            }
+
         default:
-            return "Editorial Layout"
+            VStack(spacing: gap) {
+                HStack(spacing: gap) {
+                    tile(at: 1)
+                    tile(at: 2)
+                    tile(at: 3)
+                    tile(at: 4)
+                }
+                .frame(height: height * 0.27)
+
+                HStack(spacing: gap) {
+                    tile(at: 0)
+                        .frame(width: width * 0.50)
+                    tile(at: 5)
+                }
+            }
         }
     }
 
-    private var magazineBackground: some View {
-        LinearGradient(
-            colors: [
-                Color(red: 0.957, green: 0.937, blue: 0.910),
-                Color(red: 0.900, green: 0.870, blue: 0.810)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+    @ViewBuilder
+    private func tile(at index: Int) -> some View {
+        if let image = imageForTile(index) {
+            MagazineImageTile(
+                image: image,
+                appearAmount: appearAmount(for: index)
+            )
+        } else {
+            Color.white
+        }
+    }
+
+    private func imageForTile(_ index: Int) -> NSImage? {
+        guard !images.isEmpty else {
+            return nil
+        }
+
+        return images[index % images.count]
+    }
+
+    private func appearAmount(for index: Int) -> Double {
+        let raw = (transitionProgress - (Double(index) * 0.055)) / 0.72
+        return min(1, max(0, raw))
     }
 }
 
 struct MagazineImageTile: View {
     let image: NSImage
-    let heightWeight: CGFloat
+    let appearAmount: Double
 
     var body: some View {
         Image(nsImage: image)
@@ -2316,12 +2374,10 @@ struct MagazineImageTile: View {
             .scaledToFill()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: 18))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18)
-                    .stroke(Color.white.opacity(0.45), lineWidth: 1.5)
-            )
-            .shadow(color: Color.black.opacity(0.16), radius: 8, x: 0, y: 4)
+            .opacity(appearAmount)
+            .offset(x: CGFloat(1 - appearAmount) * -16)
+            .background(Color.white)
+            .animation(.easeOut(duration: 0.20), value: appearAmount)
     }
 }
 
@@ -2442,7 +2498,9 @@ struct CenterPreviewPanel: View {
                             MagazinePreviewPage(
                                 images: themedPreviewImages,
                                 theme: visualTheme,
-                                activePhotoName: activePhotoName
+                                activePhotoName: activePhotoName,
+                                activePhotoIndex: activePhotoIndex,
+                                transitionProgress: transitionProgress
                             )
                             .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
                             .clipShape(RoundedRectangle(cornerRadius: 28))

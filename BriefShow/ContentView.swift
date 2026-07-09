@@ -2369,15 +2369,23 @@ struct MagazineImageTile: View {
     let appearAmount: Double
 
     var body: some View {
-        Image(nsImage: image)
-            .resizable()
-            .scaledToFill()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        GeometryReader { proxy in
+            ZStack {
+                Color.white
+
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
             .opacity(appearAmount)
             .offset(x: CGFloat(1 - appearAmount) * -16)
-            .background(Color.white)
             .animation(.easeOut(duration: 0.20), value: appearAmount)
+        }
+        .clipped()
     }
 }
 

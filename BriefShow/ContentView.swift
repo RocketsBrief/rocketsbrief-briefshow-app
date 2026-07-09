@@ -37,8 +37,8 @@ struct ContentView: View {
     @State private var timingMode: SlideshowTimingMode = .followMusic
     @State private var secondsPerPhoto: Double = 5
     @State private var fadeDuration: Double = 1
-    @State private var magazineImageFadeSeconds: Double = 1.0
-    @State private var magazineImageDelaySeconds: Double = 1.0
+    @State private var magazineImageFadeSeconds: Double = 0.6
+    @State private var magazineImageDelaySeconds: Double = 0.4
     @State private var musicFadeInSeconds: Double = 4
     @State private var musicFadeOutSeconds: Double = 4
     @State private var shouldLoopPreview: Bool = false
@@ -51,6 +51,7 @@ struct ContentView: View {
     @State private var previousPhotoIndex: Int?
     @State private var transitionProgress: Double = 1
     @State private var magazineRevealElapsedSeconds: Double = 0
+    @State private var magazinePageIndex: Int = 0
     @State private var isPreviewPlaying: Bool = false
     @State private var previewElapsedSeconds: Double = 0
     @State private var previewTotalElapsedSeconds: Double = 0
@@ -100,6 +101,7 @@ struct ContentView: View {
                         transitionProgress: usesMagazineTheme ? magazineRevealProgress : transitionProgress,
                         magazineImageFadeSeconds: magazineImageFadeSeconds,
                         magazineImageDelaySeconds: magazineImageDelaySeconds,
+                        magazineLayoutSeed: magazinePageIndex,
                         isPreviewPlaying: isPreviewPlaying,
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: openMusicPicker,
@@ -163,6 +165,7 @@ struct ContentView: View {
                     transitionProgress: usesMagazineTheme ? magazineRevealProgress : transitionProgress,
                     magazineImageFadeSeconds: magazineImageFadeSeconds,
                     magazineImageDelaySeconds: magazineImageDelaySeconds,
+                    magazineLayoutSeed: magazinePageIndex,
                     isPreviewPlaying: isPreviewPlaying,
                     onTogglePreview: togglePreview,
                     onStartFromBeginning: startPreviewFromBeginning,
@@ -287,6 +290,14 @@ struct ContentView: View {
         // image 1 starts at 0, each next image starts after Start Delay.
         // Seconds / Page is extra hold time after all images are visible.
         return max(1, fadeSeconds + (delaySeconds * 5) + pageHoldSeconds)
+    }
+
+    private var magazineLayoutVariant: Int {
+        magazinePageIndex % 2
+    }
+
+    private var currentMagazinePageSlotCount: Int {
+        min(6, max(1, selectedPhotoURLs.count - activePhotoIndex))
     }
 
     private var magazineRevealProgress: Double {
@@ -419,7 +430,7 @@ struct ContentView: View {
             magazineRevealElapsedSeconds = 0
         }
 
-        let nextIndex = activePhotoIndex + (usesMagazineTheme ? 6 : 1)
+        let nextIndex = activePhotoIndex + (usesMagazineTheme ? currentMagazinePageSlotCount : 1)
 
         if nextIndex >= selectedPhotoURLs.count {
             if shouldLoopPreview {
@@ -432,7 +443,16 @@ struct ContentView: View {
                 isPreviewPlaying = false
                 previewTotalElapsedSeconds = totalPreviewDuration
                 audioPlayer?.pause()
-                moveToPhoto(at: selectedPhotoURLs.count - 1)
+
+                if usesMagazineTheme {
+                    transitionProgress = 1
+                    magazineRevealElapsedSeconds = max(
+                        0.05,
+                        magazineImageFadeSeconds + (magazineImageDelaySeconds * 5)
+                    )
+                } else {
+                    moveToPhoto(at: selectedPhotoURLs.count - 1)
+                }
             }
             return
         }
@@ -447,6 +467,7 @@ struct ContentView: View {
 
         previousPhotoIndex = nil
         activePhotoIndex = 0
+        magazinePageIndex = 0
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
         isPreviewPlaying = true
@@ -496,6 +517,7 @@ struct ContentView: View {
         if usesMagazineTheme {
             previousPhotoIndex = nil
             activePhotoIndex = newIndex
+            magazinePageIndex = newIndex == 0 ? 0 : magazinePageIndex + 1
             transitionProgress = 1
             magazineRevealElapsedSeconds = 0
             return
@@ -539,6 +561,7 @@ struct ContentView: View {
         previousPhotoIndex = nil
         transitionProgress = 1
         magazineRevealElapsedSeconds = 0
+        magazinePageIndex = 0
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
         isPreviewPlaying = false
@@ -2175,6 +2198,7 @@ struct FullScreenPreviewSheet: View {
     let transitionProgress: Double
     let magazineImageFadeSeconds: Double
     let magazineImageDelaySeconds: Double
+    let magazineLayoutSeed: Int
     let isPreviewPlaying: Bool
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
@@ -2239,7 +2263,8 @@ struct FullScreenPreviewSheet: View {
                     activePhotoIndex: activePhotoIndex,
                     transitionProgress: transitionProgress,
                     imageFadeSeconds: magazineImageFadeSeconds,
-                    imageDelaySeconds: magazineImageDelaySeconds
+                    imageDelaySeconds: magazineImageDelaySeconds,
+                    layoutSeed: magazineLayoutSeed
                 )
                 .frame(width: size.width, height: size.height)
                 .background(Color.black)
@@ -2354,9 +2379,18 @@ struct MagazinePreviewPage: View {
     let transitionProgress: Double
     let imageFadeSeconds: Double
     let imageDelaySeconds: Double
+    let layoutSeed: Int
+
+    private var pageImages: [NSImage] {
+        Array(images.prefix(6))
+    }
+
+    private var pagePhotoCount: Int {
+        pageImages.count
+    }
 
     private var layoutVariant: Int {
-        activePhotoIndex % 4
+        layoutSeed % 2
     }
 
     var body: some View {
@@ -2389,87 +2423,139 @@ struct MagazinePreviewPage: View {
 
     @ViewBuilder
     private func magazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        switch layoutVariant {
-        case 1:
-            VStack(spacing: gap) {
-                HStack(spacing: gap) {
-                    tile(at: 1, revealOrder: 1)
-                    tile(at: 2, revealOrder: 2)
-                    tile(at: 3, revealOrder: 3)
-                    tile(at: 4, revealOrder: 4)
-                }
-                .frame(height: height * 0.30)
+        switch pagePhotoCount {
+        case 0:
+            Color.white
 
-                HStack(spacing: gap) {
-                    tile(at: 0, revealOrder: 0)
-                    tile(at: 5, revealOrder: 5)
-                }
-            }
+        case 1:
+            tile(at: 0, revealOrder: 0)
 
         case 2:
             HStack(spacing: gap) {
                 tile(at: 0, revealOrder: 0)
-                    .frame(width: width * 0.72)
+                tile(at: 1, revealOrder: 1)
+            }
+
+        case 3:
+            HStack(spacing: gap) {
+                tile(at: 0, revealOrder: 0)
+                    .frame(width: (width - gap) * 0.66)
 
                 VStack(spacing: gap) {
                     tile(at: 1, revealOrder: 1)
                     tile(at: 2, revealOrder: 2)
-                    tile(at: 3, revealOrder: 3)
                 }
             }
 
-        case 3:
-            VStack(spacing: gap) {
-                HStack(spacing: gap) {
-                    tile(at: 0, revealOrder: 0)
-                    tile(at: 1, revealOrder: 1)
-                }
+        case 4:
+            if layoutVariant == 0 {
+                fourImageFeatureTemplate(width: width, height: height, gap: gap)
+            } else {
+                fourImageStackTemplate(width: width, height: height, gap: gap)
+            }
 
-                HStack(spacing: gap) {
-                    tile(at: 2, revealOrder: 2)
-                    tile(at: 3, revealOrder: 3)
-                    tile(at: 4, revealOrder: 4)
+        case 5:
+            HStack(spacing: gap) {
+                tile(at: 0, revealOrder: 0)
+                    .frame(width: (width - gap) * 0.58)
+
+                VStack(spacing: gap) {
+                    HStack(spacing: gap) {
+                        tile(at: 1, revealOrder: 1)
+                        tile(at: 2, revealOrder: 2)
+                    }
+
+                    HStack(spacing: gap) {
+                        tile(at: 3, revealOrder: 3)
+                        tile(at: 4, revealOrder: 4)
+                    }
                 }
-                .frame(height: height * 0.32)
             }
 
         default:
+            if layoutVariant == 0 {
+                sixImageTopFourBottomTwoTemplate(width: width, height: height, gap: gap)
+            } else {
+                sixImageHeroLeftStackRightTemplate(width: width, height: height, gap: gap)
+            }
+        }
+    }
+
+    private func sixImageTopFourBottomTwoTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        VStack(spacing: gap) {
+            HStack(spacing: gap) {
+                tile(at: 0, revealOrder: 0)
+                tile(at: 1, revealOrder: 1)
+                tile(at: 2, revealOrder: 2)
+                tile(at: 3, revealOrder: 3)
+            }
+            .frame(height: (height - gap) * 0.35)
+
+            HStack(spacing: gap) {
+                tile(at: 4, revealOrder: 4)
+                tile(at: 5, revealOrder: 5)
+            }
+        }
+    }
+
+    private func sixImageHeroLeftStackRightTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        HStack(spacing: gap) {
+            tile(at: 0, revealOrder: 0)
+                .frame(width: (width - gap) * 0.58)
+
             VStack(spacing: gap) {
-                HStack(spacing: gap) {
-                    tile(at: 1, revealOrder: 1)
-                    tile(at: 2, revealOrder: 2)
-                    tile(at: 3, revealOrder: 3)
-                    tile(at: 4, revealOrder: 4)
-                }
-                .frame(height: height * 0.27)
+                tile(at: 1, revealOrder: 1)
 
                 HStack(spacing: gap) {
-                    tile(at: 0, revealOrder: 0)
-                        .frame(width: width * 0.50)
+                    tile(at: 2, revealOrder: 2)
+                    tile(at: 3, revealOrder: 3)
+                }
+
+                HStack(spacing: gap) {
+                    tile(at: 4, revealOrder: 4)
                     tile(at: 5, revealOrder: 5)
                 }
+            }
+        }
+    }
+
+    private func fourImageFeatureTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        HStack(spacing: gap) {
+            tile(at: 0, revealOrder: 0)
+                .frame(width: (width - gap) * 0.62)
+
+            VStack(spacing: gap) {
+                tile(at: 1, revealOrder: 1)
+                tile(at: 2, revealOrder: 2)
+                tile(at: 3, revealOrder: 3)
+            }
+        }
+    }
+
+    private func fourImageStackTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        VStack(spacing: gap) {
+            HStack(spacing: gap) {
+                tile(at: 0, revealOrder: 0)
+                tile(at: 1, revealOrder: 1)
+            }
+
+            HStack(spacing: gap) {
+                tile(at: 2, revealOrder: 2)
+                tile(at: 3, revealOrder: 3)
             }
         }
     }
 
     @ViewBuilder
     private func tile(at index: Int, revealOrder: Int) -> some View {
-        if let image = imageForTile(index) {
+        if pageImages.indices.contains(index) {
             MagazineImageTile(
-                image: image,
+                image: pageImages[index],
                 appearAmount: appearAmount(forRevealOrder: revealOrder)
             )
         } else {
             Color.white
         }
-    }
-
-    private func imageForTile(_ index: Int) -> NSImage? {
-        guard !images.isEmpty else {
-            return nil
-        }
-
-        return images[index % images.count]
     }
 
     private func appearAmount(forRevealOrder order: Int) -> Double {
@@ -2485,6 +2571,22 @@ struct MagazinePreviewPage: View {
 struct MagazineImageTile: View {
     let image: NSImage
     let appearAmount: Double
+
+    private var revealShadowOpacity: Double {
+        0.085 + (1 - appearAmount) * 0.34
+    }
+
+    private var revealShadowRadius: Double {
+        1.4 + (1 - appearAmount) * 3.0
+    }
+
+    private var revealShadowXOffset: Double {
+        -2.2 - ((1 - appearAmount) * 8.5)
+    }
+
+    private var revealShadowYOffset: Double {
+        -0.8 - ((1 - appearAmount) * 2.4)
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -2502,6 +2604,12 @@ struct MagazineImageTile: View {
             .opacity(appearAmount)
         }
         .clipped()
+        .shadow(
+            color: Color.black.opacity(revealShadowOpacity),
+            radius: revealShadowRadius,
+            x: revealShadowXOffset,
+            y: revealShadowYOffset
+        )
     }
 }
 
@@ -2588,6 +2696,7 @@ struct CenterPreviewPanel: View {
     let transitionProgress: Double
     let magazineImageFadeSeconds: Double
     let magazineImageDelaySeconds: Double
+    let magazineLayoutSeed: Int
     let isPreviewPlaying: Bool
     let onAddPhotos: () -> Void
     let onAddMusic: () -> Void
@@ -2608,7 +2717,7 @@ struct CenterPreviewPanel: View {
 
         let safeIndex = previewImages.indices.contains(activePhotoIndex) ? activePhotoIndex : 0
         let ordered = Array(previewImages[safeIndex...]) + Array(previewImages[..<safeIndex])
-        return Array(ordered.prefix(4))
+        return Array(ordered.prefix(6))
     }
 
     var body: some View {
@@ -2628,7 +2737,8 @@ struct CenterPreviewPanel: View {
                                 activePhotoIndex: activePhotoIndex,
                                 transitionProgress: transitionProgress,
                                 imageFadeSeconds: magazineImageFadeSeconds,
-                                imageDelaySeconds: magazineImageDelaySeconds
+                                imageDelaySeconds: magazineImageDelaySeconds,
+                                layoutSeed: magazineLayoutSeed
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 28))
                         } else if visualTheme == .origami {

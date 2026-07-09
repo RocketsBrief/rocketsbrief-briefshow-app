@@ -102,6 +102,7 @@ struct ContentView: View {
                         magazineImageFadeSeconds: magazineImageFadeSeconds,
                         magazineImageDelaySeconds: magazineImageDelaySeconds,
                         magazineLayoutSeed: magazinePageIndex,
+                        magazinePageSlotCount: currentMagazinePageSlotCount,
                         isPreviewPlaying: isPreviewPlaying,
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: openMusicPicker,
@@ -166,6 +167,7 @@ struct ContentView: View {
                     magazineImageFadeSeconds: magazineImageFadeSeconds,
                     magazineImageDelaySeconds: magazineImageDelaySeconds,
                     magazineLayoutSeed: magazinePageIndex,
+                    magazinePageSlotCount: currentMagazinePageSlotCount,
                     isPreviewPlaying: isPreviewPlaying,
                     onTogglePreview: togglePreview,
                     onStartFromBeginning: startPreviewFromBeginning,
@@ -296,8 +298,51 @@ struct ContentView: View {
         magazinePageIndex % 2
     }
 
+    private func plannedMagazineSlotCount(pageIndex: Int, remainingPhotos: Int) -> Int {
+        guard remainingPhotos > 0 else {
+            return 0
+        }
+
+        if pageIndex <= 0 {
+            return min(3, remainingPhotos)
+        }
+
+        if pageIndex == 1 {
+            return min(4, remainingPhotos)
+        }
+
+        if pageIndex == 2 {
+            return min(6, remainingPhotos)
+        }
+
+        let pattern = [4, 3, 5]
+        let plannedCount = pattern[(pageIndex - 3) % pattern.count]
+        return min(plannedCount, remainingPhotos)
+    }
+
     private var currentMagazinePageSlotCount: Int {
-        min(6, max(1, selectedPhotoURLs.count - activePhotoIndex))
+        plannedMagazineSlotCount(
+            pageIndex: magazinePageIndex,
+            remainingPhotos: selectedPhotoURLs.count - activePhotoIndex
+        )
+    }
+
+    private var magazinePreviewPageCount: Int {
+        guard selectedPhotoURLs.count > 0 else {
+            return 0
+        }
+
+        var pageIndex = 0
+        var consumedPhotos = 0
+
+        while consumedPhotos < selectedPhotoURLs.count {
+            let remainingPhotos = selectedPhotoURLs.count - consumedPhotos
+            let slotCount = max(1, plannedMagazineSlotCount(pageIndex: pageIndex, remainingPhotos: remainingPhotos))
+            consumedPhotos += slotCount
+            pageIndex += 1
+        }
+
+        return pageIndex
     }
 
     private var magazineRevealProgress: Double {
@@ -356,8 +401,7 @@ struct ContentView: View {
         }
 
         if usesMagazineTheme {
-            let pageCount = Int(ceil(Double(selectedPhotoURLs.count) / 6.0))
-            return magazinePageDuration * Double(max(1, pageCount))
+            return magazinePageDuration * Double(max(1, magazinePreviewPageCount))
         }
 
         if timingMode == .followMusic, let audioPlayer {
@@ -2195,6 +2239,7 @@ struct FullScreenPreviewSheet: View {
     let magazineImageFadeSeconds: Double
     let magazineImageDelaySeconds: Double
     let magazineLayoutSeed: Int
+    let magazinePageSlotCount: Int
     let isPreviewPlaying: Bool
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
@@ -2210,8 +2255,8 @@ struct FullScreenPreviewSheet: View {
         }
 
         let safeIndex = previewImages.indices.contains(activePhotoIndex) ? activePhotoIndex : 0
-        let ordered = Array(previewImages[safeIndex...]) + Array(previewImages[..<safeIndex])
-        return Array(ordered.prefix(6))
+        let slotCount = max(1, min(6, magazinePageSlotCount))
+        return Array(previewImages[safeIndex...].prefix(slotCount))
     }
 
     var body: some View {
@@ -2693,6 +2738,7 @@ struct CenterPreviewPanel: View {
     let magazineImageFadeSeconds: Double
     let magazineImageDelaySeconds: Double
     let magazineLayoutSeed: Int
+    let magazinePageSlotCount: Int
     let isPreviewPlaying: Bool
     let onAddPhotos: () -> Void
     let onAddMusic: () -> Void
@@ -2712,8 +2758,8 @@ struct CenterPreviewPanel: View {
         }
 
         let safeIndex = previewImages.indices.contains(activePhotoIndex) ? activePhotoIndex : 0
-        let ordered = Array(previewImages[safeIndex...]) + Array(previewImages[..<safeIndex])
-        return Array(ordered.prefix(6))
+        let slotCount = max(1, min(6, magazinePageSlotCount))
+        return Array(previewImages[safeIndex...].prefix(slotCount))
     }
 
     var body: some View {

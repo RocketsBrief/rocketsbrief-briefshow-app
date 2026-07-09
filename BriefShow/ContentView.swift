@@ -16,6 +16,17 @@ enum SlideshowTransitionStyle: String {
     case blink = "Blink"
 }
 
+enum SlideshowVisualTheme: String {
+    case singleFade = "Single Fade"
+    case singleBlink = "Single Blink"
+    case magazine = "Magazine"
+    case magazineFamily = "Magazine Family"
+    case magazineCouples = "Magazine Couples"
+    case origami = "Origami"
+    case magazineToon = "Magazine Toon"
+    case origamiToon = "Origami Toon"
+}
+
 struct ContentView: View {
     @State private var selectedPhotoURLs: [URL] = []
     @State private var previewImages: [NSImage] = []
@@ -30,6 +41,7 @@ struct ContentView: View {
     @State private var musicFadeOutSeconds: Double = 4
     @State private var shouldLoopPreview: Bool = false
     @State private var transitionStyle: SlideshowTransitionStyle = .fade
+    @State private var visualTheme: SlideshowVisualTheme = .singleFade
     @State private var selectedExportResolution: String = "4K"
     @State private var isExportingVideo: Bool = false
     @State private var exportStatusText: String?
@@ -56,7 +68,8 @@ struct ContentView: View {
                         musicFadeInSeconds: $musicFadeInSeconds,
                         musicFadeOutSeconds: $musicFadeOutSeconds,
                         shouldLoopPreview: $shouldLoopPreview,
-                        transitionStyle: $transitionStyle
+                        transitionStyle: $transitionStyle,
+                        visualTheme: $visualTheme
                     )
                     CenterPreviewPanel(
                         activePreviewImage: activePreviewImage,
@@ -1425,6 +1438,10 @@ struct LeftImportPanel: View {
     @Binding var musicFadeOutSeconds: Double
     @Binding var shouldLoopPreview: Bool
     @Binding var transitionStyle: SlideshowTransitionStyle
+    @Binding var visualTheme: SlideshowVisualTheme
+
+    @State private var isThemePickerPresented = false
+    @State private var isThemeButtonHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1434,6 +1451,65 @@ struct LeftImportPanel: View {
                 Text("Slideshow Settings")
                     .font(.custom("Figtree", size: 13).weight(.medium))
                     .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Theme")
+                        .font(.custom("Figtree", size: 11.5).weight(.medium))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+
+                    Button {
+                        isThemePickerPresented.toggle()
+                    } label: {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(visualTheme.rawValue)
+                                    .font(.custom("Figtree", size: 12.5).weight(.medium))
+                                    .foregroundColor(isThemeButtonHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390))
+                                    .scaleEffect(isThemeButtonHovered ? 1.025 : 1, anchor: .leading)
+
+                                Text("Choose Theme")
+                                    .font(.custom("Figtree", size: 10.5).weight(.regular))
+                                    .foregroundColor(isThemeButtonHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.82) : Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                                    .scaleEffect(isThemeButtonHovered ? 1.02 : 1, anchor: .leading)
+                            }
+
+                            Spacer()
+
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+                                .scaleEffect(isThemeButtonHovered ? 1.08 : 1)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(RoundedRectangle(cornerRadius: 18))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18)
+                            .stroke(isThemeButtonHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 2)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .onHover { hovering in
+                        withAnimation(.linear(duration: 0.10)) {
+                            isThemeButtonHovered = hovering
+                        }
+                    }
+                    .sheet(isPresented: $isThemePickerPresented) {
+                        ThemePickerPopover(
+                            selectedTheme: $visualTheme,
+                            transitionStyle: $transitionStyle,
+                            isPresented: $isThemePickerPresented
+                        )
+                    }
+
+                    Text(themeHelperText)
+                        .font(.custom("Figtree", size: 10.5).weight(.regular))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 HStack(spacing: 8) {
                     TimingModeButton(
@@ -1498,33 +1574,6 @@ struct LeftImportPanel: View {
                     step: 1,
                     suffix: "s"
                 )
-
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("Transition Style")
-                        .font(.custom("Figtree", size: 12).weight(.regular))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
-
-                    HStack(spacing: 8) {
-                        TimingModeButton(
-                            title: "Fade",
-                            isSelected: transitionStyle == .fade
-                        ) {
-                            if maxAllowedFadeDuration > 0 {
-                                transitionStyle = .fade
-                            }
-                        }
-                        .opacity(maxAllowedFadeDuration == 0 ? 0.55 : 1)
-                        .disabled(maxAllowedFadeDuration == 0)
-
-                        TimingModeButton(
-                            title: "Blink",
-                            isSelected: transitionStyle == .blink
-                        ) {
-                            transitionStyle = .blink
-                        }
-                    }
-                }
-                .padding(.top, 2)
 
                 Toggle("Loop Preview", isOn: $shouldLoopPreview)
                     .toggleStyle(.checkbox)
@@ -1600,6 +1649,27 @@ struct LeftImportPanel: View {
         }
     }
 
+    private var themeHelperText: String {
+        switch visualTheme {
+        case .singleFade:
+            return "Single Fade keeps one photo per slide with a soft transition."
+        case .singleBlink:
+            return "Single Blink keeps one photo per slide with fast clean cuts."
+        case .magazine:
+            return "Magazine will create editorial pages with one, three, or more photos per page."
+        case .magazineFamily:
+            return "Magazine Family will use warmer layouts for group and family photos."
+        case .magazineCouples:
+            return "Magazine Couples will use romantic layouts for portraits, weddings, and trips."
+        case .origami:
+            return "Origami will use geometric panel-style pages inspired by folded paper movement."
+        case .magazineToon:
+            return "Magazine Toon will require sign in and credits once AI styles are connected."
+        case .origamiToon:
+            return "Origami Toon will require sign in and credits once AI styles are connected."
+        }
+    }
+
     private var timingModeHelperText: String {
         switch timingMode {
         case .followMusic:
@@ -1615,6 +1685,245 @@ struct LeftImportPanel: View {
 
             return "Fade is limited to stay shorter than each photo duration, so the slideshow stays clean and professional."
         }
+    }
+}
+
+struct ThemePickerPopover: View {
+    @Binding var selectedTheme: SlideshowVisualTheme
+    @Binding var transitionStyle: SlideshowTransitionStyle
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center) {
+                Text("Choose Theme")
+                    .font(.custom("Figtree", size: 22).weight(.semibold))
+                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                Spacer()
+
+                Button {
+                    isPresented = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(HeaderLinkButtonStyle())
+            }
+
+            Text("Pick the slideshow style. AI Toon themes will be available later with sign in and credits.")
+                .font(.custom("Figtree", size: 12).weight(.regular))
+                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 10) {
+                ThemePickerSectionTitle("Classic")
+
+                ThemePickerOption(
+                    title: "Single Fade",
+                    subtitle: "One photo per slide with soft fade transitions.",
+                    isSelected: selectedTheme == .singleFade,
+                    isLocked: false
+                ) {
+                    selectedTheme = .singleFade
+                    transitionStyle = .fade
+                    isPresented = false
+                }
+
+                ThemePickerOption(
+                    title: "Single Blink",
+                    subtitle: "One photo per slide with fast clean cuts.",
+                    isSelected: selectedTheme == .singleBlink,
+                    isLocked: false
+                ) {
+                    selectedTheme = .singleBlink
+                    transitionStyle = .blink
+                    isPresented = false
+                }
+
+                ThemePickerSectionTitle("Magazine Styles")
+
+                ThemePickerOption(
+                    title: "Magazine",
+                    subtitle: "Editorial pages with one, three, or more photos.",
+                    isSelected: selectedTheme == .magazine,
+                    isLocked: false
+                ) {
+                    selectedTheme = .magazine
+                    isPresented = false
+                }
+
+                ThemePickerOption(
+                    title: "Magazine Family",
+                    subtitle: "Warm magazine layouts for family and group photos.",
+                    isSelected: selectedTheme == .magazineFamily,
+                    isLocked: false
+                ) {
+                    selectedTheme = .magazineFamily
+                    isPresented = false
+                }
+
+                ThemePickerOption(
+                    title: "Magazine Couples",
+                    subtitle: "Romantic magazine layouts for couples, weddings, and trips.",
+                    isSelected: selectedTheme == .magazineCouples,
+                    isLocked: false
+                ) {
+                    selectedTheme = .magazineCouples
+                    isPresented = false
+                }
+
+                ThemePickerSectionTitle("Motion Styles")
+
+                ThemePickerOption(
+                    title: "Origami",
+                    subtitle: "Geometric folded-panel movement and page layouts.",
+                    isSelected: selectedTheme == .origami,
+                    isLocked: false
+                ) {
+                    selectedTheme = .origami
+                    isPresented = false
+                }
+
+                ThemePickerSectionTitle("AI Toon Styles")
+
+                ThemePickerOption(
+                    title: "Magazine Toon",
+                    subtitle: "AI cartoon photo processing + magazine layout. Coming soon.",
+                    isSelected: false,
+                    isLocked: true,
+                    action: {}
+                )
+
+                ThemePickerOption(
+                    title: "Origami Toon",
+                    subtitle: "AI cartoon photo processing + origami layout. Coming soon.",
+                    isSelected: false,
+                    isLocked: true,
+                    action: {}
+                )
+            }
+        }
+        .padding(22)
+        .frame(width: 500, height: 680, alignment: .topLeading)
+        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+    }
+}
+
+struct ThemePickerSectionTitle: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title)
+            .font(.custom("Figtree", size: 11.5).weight(.semibold))
+            .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+            .padding(.top, 2)
+    }
+}
+
+struct ThemePickerOption: View {
+    let title: String
+    let subtitle: String
+    let isSelected: Bool
+    let isLocked: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            if !isLocked {
+                action()
+            }
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(title)
+                            .font(.custom("Figtree", size: 12.5).weight(.medium))
+                            .foregroundColor(titleColor)
+                            .scaleEffect(isHovered && !isLocked ? 1.025 : 1, anchor: .leading)
+
+                        if isLocked {
+                            Text("Locked")
+                                .font(.custom("Figtree", size: 9.5).weight(.semibold))
+                                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color(red: 0.900, green: 0.870, blue: 0.810))
+                                .clipShape(RoundedRectangle(cornerRadius: 999))
+                        }
+                    }
+
+                    Text(subtitle)
+                        .font(.custom("Figtree", size: 10.5).weight(.regular))
+                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(isLocked ? 0.55 : 0.78))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : (isLocked ? "lock.fill" : "circle"))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(iconColor)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 16))
+            .background(backgroundColor)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(borderColor, lineWidth: isSelected ? 2.5 : 1.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(PlainButtonStyle())
+        .disabled(isLocked)
+        .onHover { hovering in
+            withAnimation(.linear(duration: 0.10)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private var titleColor: Color {
+        if isLocked {
+            return Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.55)
+        }
+
+        if isHovered || isSelected {
+            return Color(red: 0.000, green: 0.610, blue: 0.760)
+        }
+
+        return Color(red: 0.315, green: 0.340, blue: 0.390)
+    }
+
+    private var iconColor: Color {
+        if isSelected || (isHovered && !isLocked) {
+            return Color(red: 0.000, green: 0.610, blue: 0.760)
+        }
+
+        return Color(red: 0.390, green: 0.390, blue: 0.390).opacity(isLocked ? 0.45 : 0.50)
+    }
+
+    private var backgroundColor: Color {
+        isSelected
+            ? Color(red: 0.930, green: 0.900, blue: 0.850)
+            : Color(red: 0.957, green: 0.937, blue: 0.910)
+    }
+
+    private var borderColor: Color {
+        if isSelected || (isHovered && !isLocked) {
+            return Color(red: 0.000, green: 0.610, blue: 0.760)
+        }
+
+        return Color(red: 0.820, green: 0.780, blue: 0.710).opacity(isLocked ? 0.45 : 0.85)
     }
 }
 

@@ -37,6 +37,8 @@ struct ContentView: View {
     @State private var timingMode: SlideshowTimingMode = .followMusic
     @State private var secondsPerPhoto: Double = 5
     @State private var fadeDuration: Double = 1
+    @State private var magazineImageFadeSeconds: Double = 1.0
+    @State private var magazineImageDelaySeconds: Double = 1.0
     @State private var musicFadeInSeconds: Double = 4
     @State private var musicFadeOutSeconds: Double = 4
     @State private var shouldLoopPreview: Bool = false
@@ -48,6 +50,7 @@ struct ContentView: View {
     @State private var activePhotoIndex: Int = 0
     @State private var previousPhotoIndex: Int?
     @State private var transitionProgress: Double = 1
+    @State private var magazineRevealElapsedSeconds: Double = 0
     @State private var isPreviewPlaying: Bool = false
     @State private var previewElapsedSeconds: Double = 0
     @State private var previewTotalElapsedSeconds: Double = 0
@@ -73,6 +76,8 @@ struct ContentView: View {
                         timingMode: $timingMode,
                         secondsPerPhoto: $secondsPerPhoto,
                         fadeDuration: $fadeDuration,
+                        magazineImageFadeSeconds: $magazineImageFadeSeconds,
+                        magazineImageDelaySeconds: $magazineImageDelaySeconds,
                         musicFadeInSeconds: $musicFadeInSeconds,
                         musicFadeOutSeconds: $musicFadeOutSeconds,
                         shouldLoopPreview: $shouldLoopPreview,
@@ -92,7 +97,9 @@ struct ContentView: View {
                         selectedMusicURL: selectedMusicURL,
                         timeCounterText: timeCounterText,
                         transitionStyle: transitionStyle,
-                        transitionProgress: transitionProgress,
+                        transitionProgress: usesMagazineTheme ? magazineRevealProgress : transitionProgress,
+                        magazineImageFadeSeconds: magazineImageFadeSeconds,
+                        magazineImageDelaySeconds: magazineImageDelaySeconds,
                         isPreviewPlaying: isPreviewPlaying,
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: openMusicPicker,
@@ -153,7 +160,9 @@ struct ContentView: View {
                     visualTheme: visualTheme,
                     timeCounterText: timeCounterText,
                     transitionStyle: transitionStyle,
-                    transitionProgress: transitionProgress,
+                    transitionProgress: usesMagazineTheme ? magazineRevealProgress : transitionProgress,
+                    magazineImageFadeSeconds: magazineImageFadeSeconds,
+                    magazineImageDelaySeconds: magazineImageDelaySeconds,
                     isPreviewPlaying: isPreviewPlaying,
                     onTogglePreview: togglePreview,
                     onStartFromBeginning: startPreviewFromBeginning,
@@ -173,8 +182,8 @@ struct ContentView: View {
             maxWidth: .infinity,
             alignment: .top
         )
-        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
-            advancePreviewIfNeeded(delta: 0.1)
+        .onReceive(Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()) { _ in
+            advancePreviewIfNeeded(delta: 1.0 / 60.0)
         }
     }
 
@@ -265,6 +274,30 @@ struct ContentView: View {
         }
     }
 
+    private var usesMagazineTheme: Bool {
+        visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
+    }
+
+    private var magazinePageDuration: Double {
+        let fadeSeconds = max(0.05, magazineImageFadeSeconds)
+        let delaySeconds = max(0, magazineImageDelaySeconds)
+        let pageHoldSeconds = timingMode == .customSpeed ? max(0, secondsPerPhoto) : 0
+
+        // 6 image slots on one magazine page:
+        // image 1 starts at 0, each next image starts after Start Delay.
+        // Seconds / Page is extra hold time after all images are visible.
+        return max(1, fadeSeconds + (delaySeconds * 5) + pageHoldSeconds)
+    }
+
+    private var magazineRevealProgress: Double {
+        let revealOnlySeconds = max(
+            0.05,
+            magazineImageFadeSeconds + (magazineImageDelaySeconds * 5)
+        )
+
+        return min(1, max(0, magazineRevealElapsedSeconds / revealOnlySeconds))
+    }
+
     private var activePreviewImage: NSImage? {
         guard previewImages.indices.contains(activePhotoIndex) else {
             return previewImages.first
@@ -290,6 +323,10 @@ struct ContentView: View {
     }
 
     private var currentPhotoDuration: Double {
+        if usesMagazineTheme {
+            return magazinePageDuration
+        }
+
         switch timingMode {
         case .followMusic:
             guard selectedPhotoURLs.count > 0, let audioPlayer else {
@@ -305,6 +342,11 @@ struct ContentView: View {
     private var totalPreviewDuration: Double {
         guard !selectedPhotoURLs.isEmpty else {
             return 0
+        }
+
+        if usesMagazineTheme {
+            let pageCount = Int(ceil(Double(selectedPhotoURLs.count) / 6.0))
+            return magazinePageDuration * Double(max(1, pageCount))
         }
 
         if timingMode == .followMusic, let audioPlayer {
@@ -343,6 +385,11 @@ struct ContentView: View {
             let fadeInDuration = max(musicFadeInSeconds, 0.1)
             audioPlayer?.volume = Float(min(previewTotalElapsedSeconds / fadeInDuration, 1))
             audioPlayer?.play()
+
+            if usesMagazineTheme {
+                transitionProgress = 1
+                magazineRevealElapsedSeconds = 0
+            }
         } else {
             audioPlayer?.pause()
         }
@@ -355,6 +402,11 @@ struct ContentView: View {
 
         previewElapsedSeconds += delta
         previewTotalElapsedSeconds += delta
+
+        if usesMagazineTheme {
+            magazineRevealElapsedSeconds = previewElapsedSeconds
+        }
+
         updateAudioFadeOut()
 
         guard previewElapsedSeconds >= currentPhotoDuration else {
@@ -363,7 +415,11 @@ struct ContentView: View {
 
         previewElapsedSeconds = 0
 
-        let nextIndex = activePhotoIndex + 1
+        if usesMagazineTheme {
+            magazineRevealElapsedSeconds = 0
+        }
+
+        let nextIndex = activePhotoIndex + (usesMagazineTheme ? 6 : 1)
 
         if nextIndex >= selectedPhotoURLs.count {
             if shouldLoopPreview {
@@ -390,7 +446,6 @@ struct ContentView: View {
         }
 
         previousPhotoIndex = nil
-        transitionProgress = 1
         activePhotoIndex = 0
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
@@ -398,6 +453,13 @@ struct ContentView: View {
         audioPlayer?.volume = 0
         audioPlayer?.currentTime = 0
         audioPlayer?.play()
+
+        if usesMagazineTheme {
+            transitionProgress = 1
+            magazineRevealElapsedSeconds = 0
+        } else {
+            transitionProgress = 1
+        }
     }
 
     private func updateAudioFadeOut() {
@@ -431,12 +493,27 @@ struct ContentView: View {
             return
         }
 
+        if usesMagazineTheme {
+            previousPhotoIndex = nil
+            activePhotoIndex = newIndex
+            transitionProgress = 1
+            magazineRevealElapsedSeconds = 0
+            return
+        }
+
         if transitionStyle == .fade {
             previousPhotoIndex = activePhotoIndex
             transitionProgress = 0
             activePhotoIndex = newIndex
 
-            let safeFadeDuration = min(max(fadeDuration, 0.15), max(0.15, currentPhotoDuration * 0.45))
+            let safeFadeDuration: Double
+            if usesMagazineTheme {
+                // Magazine uses its own internal reveal timing.
+                // Do not use the user-facing Single Fade setting here.
+                safeFadeDuration = magazinePageDuration
+            } else {
+                safeFadeDuration = min(max(fadeDuration, 0.15), max(0.15, currentPhotoDuration * 0.45))
+            }
 
             DispatchQueue.main.async {
                 withAnimation(.easeInOut(duration: safeFadeDuration)) {
@@ -461,6 +538,7 @@ struct ContentView: View {
         activePhotoIndex = 0
         previousPhotoIndex = nil
         transitionProgress = 1
+        magazineRevealElapsedSeconds = 0
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
         isPreviewPlaying = false
@@ -1559,6 +1637,8 @@ struct LeftImportPanel: View {
     @Binding var timingMode: SlideshowTimingMode
     @Binding var secondsPerPhoto: Double
     @Binding var fadeDuration: Double
+    @Binding var magazineImageFadeSeconds: Double
+    @Binding var magazineImageDelaySeconds: Double
     @Binding var musicFadeInSeconds: Double
     @Binding var musicFadeOutSeconds: Double
     @Binding var shouldLoopPreview: Bool
@@ -1654,7 +1734,7 @@ struct LeftImportPanel: View {
 
                 if timingMode == .customSpeed {
                     CompactStepperRow(
-                        label: "Seconds / Photo",
+                        label: usesMagazineSettings ? "Seconds / Page" : "Seconds / Photo",
                         value: Binding(
                             get: { secondsPerPhoto },
                             set: { newValue in
@@ -1662,27 +1742,48 @@ struct LeftImportPanel: View {
                                 enforceFadeLimit()
                             }
                         ),
-                        range: 1...20,
+                        range: usesMagazineSettings ? 0...20 : 1...20,
                         step: 1,
                         suffix: "s"
                     )
                 }
 
-                CompactStepperRow(
-                    label: "Fade",
-                    value: Binding(
-                        get: { fadeDuration },
-                        set: { newValue in
-                            fadeDuration = min(newValue, maxAllowedFadeDuration)
-                            enforceFadeLimit()
-                        }
-                    ),
-                    range: fadeStepperRange,
-                    step: 0.5,
-                    suffix: "s"
-                )
-                .opacity(isFadeControlDisabled ? 0.55 : 1)
-                .disabled(isFadeControlDisabled)
+                if visualTheme == .singleFade {
+                    CompactStepperRow(
+                        label: "Single Fade",
+                        value: Binding(
+                            get: { fadeDuration },
+                            set: { newValue in
+                                fadeDuration = min(newValue, maxAllowedFadeDuration)
+                                enforceFadeLimit()
+                            }
+                        ),
+                        range: fadeStepperRange,
+                        step: 0.5,
+                        suffix: "s"
+                    )
+                }
+
+                if usesMagazineSettings {
+                    VStack(alignment: .leading, spacing: 6) {
+                        CompactStepperRow(
+                            label: "Image Fade In",
+                            value: $magazineImageFadeSeconds,
+                            range: 0.2...2.0,
+                            step: 0.1,
+                            suffix: "s"
+                        )
+
+                        CompactStepperRow(
+                            label: "Start Delay",
+                            value: $magazineImageDelaySeconds,
+                            range: 0...2.0,
+                            step: 0.1,
+                            suffix: "s"
+                        )
+                    }
+                    .padding(.top, 2)
+                }
 
                 CompactStepperRow(
                     label: "Music Fade In",
@@ -1740,6 +1841,10 @@ struct LeftImportPanel: View {
         
     }
 
+    private var usesMagazineSettings: Bool {
+        visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
+    }
+
     private var maxAllowedFadeDuration: Double {
         guard timingMode == .customSpeed else {
             return 3
@@ -1753,7 +1858,7 @@ struct LeftImportPanel: View {
     }
 
     private var isFadeControlDisabled: Bool {
-        transitionStyle == .blink || maxAllowedFadeDuration == 0
+        visualTheme != .singleFade
     }
 
     private func enforceFadeLimit() {
@@ -1796,6 +1901,10 @@ struct LeftImportPanel: View {
     }
 
     private var timingModeHelperText: String {
+        if usesMagazineSettings {
+            return "For Magazine, Image Fade In controls alpha 0→1, Start Delay controls when the next image begins, and Seconds / Page controls how long the full page waits before the next empty page starts."
+        }
+
         switch timingMode {
         case .followMusic:
             return "Automatically spaces photos to match the music length, with music fade-in at the start and fade-out at the end."
@@ -2064,6 +2173,8 @@ struct FullScreenPreviewSheet: View {
     let timeCounterText: String
     let transitionStyle: SlideshowTransitionStyle
     let transitionProgress: Double
+    let magazineImageFadeSeconds: Double
+    let magazineImageDelaySeconds: Double
     let isPreviewPlaying: Bool
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
@@ -2126,11 +2237,12 @@ struct FullScreenPreviewSheet: View {
                     theme: visualTheme,
                     activePhotoName: activePhotoName,
                     activePhotoIndex: activePhotoIndex,
-                    transitionProgress: transitionProgress
+                    transitionProgress: transitionProgress,
+                    imageFadeSeconds: magazineImageFadeSeconds,
+                    imageDelaySeconds: magazineImageDelaySeconds
                 )
                 .frame(width: size.width, height: size.height)
                 .background(Color.black)
-                .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
             } else if visualTheme == .origami {
                 OrigamiPreviewPage(
                     images: themedPreviewImages,
@@ -2240,6 +2352,8 @@ struct MagazinePreviewPage: View {
     let activePhotoName: String
     let activePhotoIndex: Int
     let transitionProgress: Double
+    let imageFadeSeconds: Double
+    let imageDelaySeconds: Double
 
     private var layoutVariant: Int {
         activePhotoIndex % 4
@@ -2279,42 +2393,42 @@ struct MagazinePreviewPage: View {
         case 1:
             VStack(spacing: gap) {
                 HStack(spacing: gap) {
-                    tile(at: 1)
-                    tile(at: 2)
-                    tile(at: 3)
-                    tile(at: 4)
+                    tile(at: 1, revealOrder: 1)
+                    tile(at: 2, revealOrder: 2)
+                    tile(at: 3, revealOrder: 3)
+                    tile(at: 4, revealOrder: 4)
                 }
                 .frame(height: height * 0.30)
 
                 HStack(spacing: gap) {
-                    tile(at: 0)
-                    tile(at: 5)
+                    tile(at: 0, revealOrder: 0)
+                    tile(at: 5, revealOrder: 5)
                 }
             }
 
         case 2:
             HStack(spacing: gap) {
-                tile(at: 0)
+                tile(at: 0, revealOrder: 0)
                     .frame(width: width * 0.72)
 
                 VStack(spacing: gap) {
-                    tile(at: 1)
-                    tile(at: 2)
-                    tile(at: 3)
+                    tile(at: 1, revealOrder: 1)
+                    tile(at: 2, revealOrder: 2)
+                    tile(at: 3, revealOrder: 3)
                 }
             }
 
         case 3:
             VStack(spacing: gap) {
                 HStack(spacing: gap) {
-                    tile(at: 0)
-                    tile(at: 1)
+                    tile(at: 0, revealOrder: 0)
+                    tile(at: 1, revealOrder: 1)
                 }
 
                 HStack(spacing: gap) {
-                    tile(at: 2)
-                    tile(at: 3)
-                    tile(at: 4)
+                    tile(at: 2, revealOrder: 2)
+                    tile(at: 3, revealOrder: 3)
+                    tile(at: 4, revealOrder: 4)
                 }
                 .frame(height: height * 0.32)
             }
@@ -2322,28 +2436,28 @@ struct MagazinePreviewPage: View {
         default:
             VStack(spacing: gap) {
                 HStack(spacing: gap) {
-                    tile(at: 1)
-                    tile(at: 2)
-                    tile(at: 3)
-                    tile(at: 4)
+                    tile(at: 1, revealOrder: 1)
+                    tile(at: 2, revealOrder: 2)
+                    tile(at: 3, revealOrder: 3)
+                    tile(at: 4, revealOrder: 4)
                 }
                 .frame(height: height * 0.27)
 
                 HStack(spacing: gap) {
-                    tile(at: 0)
+                    tile(at: 0, revealOrder: 0)
                         .frame(width: width * 0.50)
-                    tile(at: 5)
+                    tile(at: 5, revealOrder: 5)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func tile(at index: Int) -> some View {
+    private func tile(at index: Int, revealOrder: Int) -> some View {
         if let image = imageForTile(index) {
             MagazineImageTile(
                 image: image,
-                appearAmount: appearAmount(for: index)
+                appearAmount: appearAmount(forRevealOrder: revealOrder)
             )
         } else {
             Color.white
@@ -2358,8 +2472,12 @@ struct MagazinePreviewPage: View {
         return images[index % images.count]
     }
 
-    private func appearAmount(for index: Int) -> Double {
-        let raw = (transitionProgress - (Double(index) * 0.055)) / 0.72
+    private func appearAmount(forRevealOrder order: Int) -> Double {
+        let fadeSeconds = max(0.05, imageFadeSeconds)
+        let delaySeconds = max(0, imageDelaySeconds)
+        let revealOnlySeconds = max(fadeSeconds, fadeSeconds + (delaySeconds * 5))
+        let startSeconds = Double(order) * delaySeconds
+        let raw = ((transitionProgress * revealOnlySeconds) - startSeconds) / fadeSeconds
         return min(1, max(0, raw))
     }
 }
@@ -2382,8 +2500,6 @@ struct MagazineImageTile: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
             .opacity(appearAmount)
-            .offset(x: CGFloat(1 - appearAmount) * -16)
-            .animation(.easeOut(duration: 0.20), value: appearAmount)
         }
         .clipped()
     }
@@ -2470,6 +2586,8 @@ struct CenterPreviewPanel: View {
     let timeCounterText: String
     let transitionStyle: SlideshowTransitionStyle
     let transitionProgress: Double
+    let magazineImageFadeSeconds: Double
+    let magazineImageDelaySeconds: Double
     let isPreviewPlaying: Bool
     let onAddPhotos: () -> Void
     let onAddMusic: () -> Void
@@ -2508,9 +2626,10 @@ struct CenterPreviewPanel: View {
                                 theme: visualTheme,
                                 activePhotoName: activePhotoName,
                                 activePhotoIndex: activePhotoIndex,
-                                transitionProgress: transitionProgress
+                                transitionProgress: transitionProgress,
+                                imageFadeSeconds: magazineImageFadeSeconds,
+                                imageDelaySeconds: magazineImageDelaySeconds
                             )
-                            .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
                             .clipShape(RoundedRectangle(cornerRadius: 28))
                         } else if visualTheme == .origami {
                             OrigamiPreviewPage(

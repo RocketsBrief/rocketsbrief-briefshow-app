@@ -373,6 +373,24 @@ struct ContentView: View {
         }
 
         let elapsed = min(previewTotalElapsedSeconds, totalPreviewDuration)
+
+        if usesMagazineTheme {
+            let delaySeconds = max(0, magazineImageDelaySeconds)
+            let visibleOnPage: Int
+
+            if delaySeconds <= 0 {
+                visibleOnPage = currentMagazinePageSlotCount
+            } else {
+                visibleOnPage = min(
+                    currentMagazinePageSlotCount,
+                    max(1, Int(floor(magazineRevealElapsedSeconds / delaySeconds)) + 1)
+                )
+            }
+
+            let visiblePhotoNumber = min(selectedPhotoURLs.count, activePhotoIndex + visibleOnPage)
+            return "\(formatTime(elapsed)) / \(formatTime(totalPreviewDuration)) · Photo \(visiblePhotoNumber) / \(selectedPhotoURLs.count)"
+        }
+
         return "\(formatTime(elapsed)) / \(formatTime(totalPreviewDuration)) · Photo \(activePhotoIndex + 1) / \(selectedPhotoURLs.count)"
     }
 
@@ -1999,7 +2017,7 @@ struct ThemePickerPopover: View {
                     isPresented = false
                 }
 
-                ThemePickerSectionTitle("Magazine Styles")
+                ThemePickerSectionTitle("Other")
 
                 ThemePickerOption(
                     title: "Magazine",
@@ -2010,28 +2028,6 @@ struct ThemePickerPopover: View {
                     selectedTheme = .magazine
                     isPresented = false
                 }
-
-                ThemePickerOption(
-                    title: "Magazine Family",
-                    subtitle: "Warm magazine layouts for family and group photos.",
-                    isSelected: selectedTheme == .magazineFamily,
-                    isLocked: false
-                ) {
-                    selectedTheme = .magazineFamily
-                    isPresented = false
-                }
-
-                ThemePickerOption(
-                    title: "Magazine Couples",
-                    subtitle: "Romantic magazine layouts for couples, weddings, and trips.",
-                    isSelected: selectedTheme == .magazineCouples,
-                    isLocked: false
-                ) {
-                    selectedTheme = .magazineCouples
-                    isPresented = false
-                }
-
-                ThemePickerSectionTitle("Motion Styles")
 
                 ThemePickerOption(
                     title: "Origami",

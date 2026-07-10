@@ -3329,7 +3329,8 @@ struct OrigamiPreviewPage: View {
     }
 
     private func aspectRatio(of image: NSImage) -> CGFloat {
-        guard image.size.height > 0 else {
+        guard image.size.width > 0,
+              image.size.height > 0 else {
             return 1
         }
 
@@ -3342,14 +3343,19 @@ struct OrigamiPreviewPage: View {
         switch ratio {
         case ..<0.72:
             return .ultraPortrait
+
         case ..<0.90:
             return .portrait
+
         case ..<1.15:
             return .square
+
         case ..<1.70:
             return .landscape
+
         case ..<2.30:
             return .wide
+
         default:
             return .ultraWide
         }
@@ -3377,18 +3383,6 @@ struct OrigamiPreviewPage: View {
         pagePhotoClasses.filter {
             $0 == .wide || $0 == .ultraWide
         }.count
-    }
-
-    private var aspectDescendingImages: [NSImage] {
-        pageImages.sorted {
-            aspectRatio(of: $0) > aspectRatio(of: $1)
-        }
-    }
-
-    private var aspectAscendingImages: [NSImage] {
-        pageImages.sorted {
-            aspectRatio(of: $0) < aspectRatio(of: $1)
-        }
     }
 
     private func chooseLayout() -> OrigamiLayout {
@@ -3426,6 +3420,127 @@ struct OrigamiPreviewPage: View {
 
         default:
             return .six
+        }
+    }
+
+    private func mismatchScore(
+        imageAspect: CGFloat,
+        slotAspect: CGFloat
+    ) -> CGFloat {
+        let safeImageAspect = max(0.01, imageAspect)
+        let safeSlotAspect = max(0.01, slotAspect)
+
+        var score = max(
+            safeImageAspect / safeSlotAspect,
+            safeSlotAspect / safeImageAspect
+        ) - 1
+
+        let imageIsPortrait = safeImageAspect < 0.90
+        let imageIsLandscape = safeImageAspect > 1.15
+
+        let slotIsPortrait = safeSlotAspect < 0.90
+        let slotIsLandscape = safeSlotAspect > 1.15
+
+        // Strongly discourage putting horizontal photos
+        // inside portrait slots, and vice versa.
+        if imageIsPortrait && slotIsLandscape {
+            score += 2.4
+        }
+
+        if imageIsLandscape && slotIsPortrait {
+            score += 2.4
+        }
+
+        // Extra protection for panoramas.
+        if safeImageAspect > 2.0 && safeSlotAspect < 1.25 {
+            score += 1.4
+        }
+
+        // Extra protection for very tall portraits.
+        if safeImageAspect < 0.65 && safeSlotAspect > 1.0 {
+            score += 1.4
+        }
+
+        return score
+    }
+
+    private func bestImageOrder(
+        for slotAspects: [CGFloat]
+    ) -> [NSImage] {
+        let count = min(pageImages.count, slotAspects.count)
+
+        guard count > 1 else {
+            return pageImages
+        }
+
+        var bestOrder = Array(0..<count)
+        var bestScore = CGFloat.greatestFiniteMagnitude
+
+        var currentOrder: [Int] = []
+        var used = Array(
+            repeating: false,
+            count: count
+        )
+
+        func search(
+            slotIndex: Int,
+            runningScore: CGFloat
+        ) {
+            if runningScore >= bestScore {
+                return
+            }
+
+            if slotIndex == count {
+                bestScore = runningScore
+                bestOrder = currentOrder
+                return
+            }
+
+            let targetAspect = max(
+                0.01,
+                slotAspects[slotIndex]
+            )
+
+            for imageIndex in 0..<count {
+                guard !used[imageIndex] else {
+                    continue
+                }
+
+                let imageAspect = aspectRatio(
+                    of: pageImages[imageIndex]
+                )
+
+                var score = mismatchScore(
+                    imageAspect: imageAspect,
+                    slotAspect: targetAspect
+                )
+
+                // Tiny tie-breaker keeps the original order
+                // when two matches are almost identical.
+                score += CGFloat(
+                    abs(imageIndex - slotIndex)
+                ) * 0.001
+
+                used[imageIndex] = true
+                currentOrder.append(imageIndex)
+
+                search(
+                    slotIndex: slotIndex + 1,
+                    runningScore: runningScore + score
+                )
+
+                currentOrder.removeLast()
+                used[imageIndex] = false
+            }
+        }
+
+        search(
+            slotIndex: 0,
+            runningScore: 0
+        )
+
+        return bestOrder.map {
+            pageImages[$0]
         }
     }
 
@@ -3472,24 +3587,44 @@ struct OrigamiPreviewPage: View {
 
     @ViewBuilder
     private func twoImageTemplate(in size: CGSize) -> some View {
-        let ordered = chooseLayout() == .twoMixed
-            ? aspectAscendingImages
-            : pageImages
+        let canvasAspect =
+            size.width / max(1, size.height)
 
         switch chooseLayout() {
         case .twoPortrait:
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.50,
+                    canvasAspect * 0.50
+                ]
+            )
+
             HStack(spacing: 0) {
                 tile(ordered[0])
                 tile(ordered[1])
             }
 
         case .twoLandscape:
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 2.0,
+                    canvasAspect * 2.0
+                ]
+            )
+
             VStack(spacing: 0) {
                 tile(ordered[0])
                 tile(ordered[1])
             }
 
         default:
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.38,
+                    canvasAspect * 0.62
+                ]
+            )
+
             HStack(spacing: 0) {
                 tile(ordered[0])
                     .frame(width: size.width * 0.38)
@@ -3502,58 +3637,104 @@ struct OrigamiPreviewPage: View {
 
     @ViewBuilder
     private func threeImageTemplate(in size: CGSize) -> some View {
+        let canvasAspect =
+            size.width / max(1, size.height)
+
         switch chooseLayout() {
         case .threePortrait:
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect / 3,
+                    canvasAspect / 3,
+                    canvasAspect / 3
+                ]
+            )
+
             HStack(spacing: 0) {
-                tile(pageImages[0])
-                tile(pageImages[1])
-                tile(pageImages[2])
-            }
-
-        case .threeLandscape:
-            let ordered = aspectDescendingImages
-
-            VStack(spacing: 0) {
                 tile(ordered[0])
                 tile(ordered[1])
                 tile(ordered[2])
             }
 
-        default:
-            let ordered = aspectAscendingImages
+        case .threeLandscape:
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.60,
+                    canvasAspect * 0.80,
+                    canvasAspect * 0.80
+                ]
+            )
 
             HStack(spacing: 0) {
                 tile(ordered[0])
-                    .frame(width: size.width * 0.38)
+                    .frame(width: size.width * 0.60)
 
                 VStack(spacing: 0) {
-                    tile(ordered[2])
                     tile(ordered[1])
+                    tile(ordered[2])
                 }
-                .frame(width: size.width * 0.62)
+                .frame(width: size.width * 0.40)
+            }
+
+        default:
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.34,
+                    canvasAspect * 1.32,
+                    canvasAspect * 1.32
+                ]
+            )
+
+            HStack(spacing: 0) {
+                tile(ordered[0])
+                    .frame(width: size.width * 0.34)
+
+                VStack(spacing: 0) {
+                    tile(ordered[1])
+                    tile(ordered[2])
+                }
+                .frame(width: size.width * 0.66)
             }
         }
     }
 
     @ViewBuilder
     private func fourImageTemplate(in size: CGSize) -> some View {
+        let canvasAspect =
+            size.width / max(1, size.height)
+
         if portraitCount >= 2 {
-            let ordered = aspectAscendingImages
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.24,
+                    canvasAspect * 1.04,
+                    canvasAspect * 1.04,
+                    canvasAspect * 0.24
+                ]
+            )
 
             HStack(spacing: 0) {
                 tile(ordered[0])
                     .frame(width: size.width * 0.24)
 
                 VStack(spacing: 0) {
+                    tile(ordered[1])
                     tile(ordered[2])
-                    tile(ordered[3])
                 }
+                .frame(width: size.width * 0.52)
 
-                tile(ordered[1])
+                tile(ordered[3])
                     .frame(width: size.width * 0.24)
             }
         } else {
-            let ordered = aspectDescendingImages
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect,
+                    canvasAspect,
+                    canvasAspect,
+                    canvasAspect
+                ]
+            )
 
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
@@ -3571,41 +3752,72 @@ struct OrigamiPreviewPage: View {
 
     @ViewBuilder
     private func fiveImageTemplate(in size: CGSize) -> some View {
-        if wideCount >= 2 {
-            let ordered = aspectDescendingImages
+        let canvasAspect =
+            size.width / max(1, size.height)
 
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    tile(ordered[0])
-                    tile(ordered[1])
-                    tile(ordered[2])
-                }
-                .frame(height: size.height * 0.28)
-
-                HStack(spacing: 0) {
-                    tile(ordered[3])
-                    tile(ordered[4])
-                }
-                .frame(height: size.height * 0.72)
-            }
-        } else if portraitCount >= 2 {
-            let ordered = aspectAscendingImages
+        if portraitCount >= 2 {
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.22,
+                    canvasAspect * 1.68,
+                    canvasAspect * 1.68,
+                    canvasAspect * 1.68,
+                    canvasAspect * 0.22
+                ]
+            )
 
             HStack(spacing: 0) {
                 tile(ordered[0])
                     .frame(width: size.width * 0.22)
 
                 VStack(spacing: 0) {
+                    tile(ordered[1])
                     tile(ordered[2])
                     tile(ordered[3])
-                    tile(ordered[4])
                 }
+                .frame(width: size.width * 0.56)
 
-                tile(ordered[1])
+                tile(ordered[4])
                     .frame(width: size.width * 0.22)
             }
+        } else if portraitCount == 1 {
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.28,
+                    canvasAspect * 0.72,
+                    canvasAspect * 0.72,
+                    canvasAspect * 0.72,
+                    canvasAspect * 0.72
+                ]
+            )
+
+            HStack(spacing: 0) {
+                tile(ordered[0])
+                    .frame(width: size.width * 0.28)
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        tile(ordered[1])
+                        tile(ordered[2])
+                    }
+
+                    HStack(spacing: 0) {
+                        tile(ordered[3])
+                        tile(ordered[4])
+                    }
+                }
+                .frame(width: size.width * 0.72)
+            }
         } else {
-            let ordered = aspectDescendingImages
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.806,
+                    canvasAspect * 0.806,
+                    canvasAspect * 0.877,
+                    canvasAspect * 0.877,
+                    canvasAspect * 0.877
+                ]
+            )
 
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
@@ -3626,31 +3838,82 @@ struct OrigamiPreviewPage: View {
 
     @ViewBuilder
     private func sixImageTemplate(in size: CGSize) -> some View {
-        if portraitCount >= 2 && wideCount >= 2 {
-            let tallImages = aspectAscendingImages
-            let wideImages = aspectDescendingImages
+        let canvasAspect =
+            size.width / max(1, size.height)
+
+        if portraitCount >= 2 {
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.22,
+                    canvasAspect * 0.56,
+                    canvasAspect * 0.56,
+                    canvasAspect * 0.56,
+                    canvasAspect * 0.56,
+                    canvasAspect * 0.22
+                ]
+            )
 
             HStack(spacing: 0) {
-                tile(tallImages[0])
-                    .frame(width: size.width * 0.28)
+                tile(ordered[0])
+                    .frame(width: size.width * 0.22)
 
                 VStack(spacing: 0) {
                     HStack(spacing: 0) {
-                        tile(wideImages[0])
-                        tile(wideImages[1])
+                        tile(ordered[1])
+                        tile(ordered[2])
                     }
-                    .frame(height: size.height * 0.46)
 
                     HStack(spacing: 0) {
-                        tile(wideImages[2])
-                        tile(wideImages[3])
-                        tile(wideImages[4])
+                        tile(ordered[3])
+                        tile(ordered[4])
                     }
-                    .frame(height: size.height * 0.54)
                 }
+                .frame(width: size.width * 0.56)
+
+                tile(ordered[5])
+                    .frame(width: size.width * 0.22)
+            }
+        } else if portraitCount == 1 {
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.26,
+                    canvasAspect * 0.74,
+                    canvasAspect * 0.74,
+                    canvasAspect * 0.493,
+                    canvasAspect * 0.493,
+                    canvasAspect * 0.493
+                ]
+            )
+
+            HStack(spacing: 0) {
+                tile(ordered[0])
+                    .frame(width: size.width * 0.26)
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        tile(ordered[1])
+                        tile(ordered[2])
+                    }
+
+                    HStack(spacing: 0) {
+                        tile(ordered[3])
+                        tile(ordered[4])
+                        tile(ordered[5])
+                    }
+                }
+                .frame(width: size.width * 0.74)
             }
         } else {
-            let ordered = aspectDescendingImages
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.667,
+                    canvasAspect * 0.667,
+                    canvasAspect * 0.667,
+                    canvasAspect * 0.667,
+                    canvasAspect * 0.667,
+                    canvasAspect * 0.667
+                ]
+            )
 
             VStack(spacing: 0) {
                 HStack(spacing: 0) {

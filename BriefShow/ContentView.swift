@@ -75,6 +75,7 @@ struct ContentView: View {
     @State private var transitionProgress: Double = 1
     @State private var magazineRevealElapsedSeconds: Double = 0
     @State private var magazinePageIndex: Int = 0
+    @State private var origamiPageIndex: Int = 0
     @State private var isPreviewPlaying: Bool = false
     @State private var previewElapsedSeconds: Double = 0
     @State private var previewTotalElapsedSeconds: Double = 0
@@ -428,6 +429,13 @@ struct ContentView: View {
         adaptiveMagazineSlotCount(
             pageIndex: magazinePageIndex,
             startIndex: activePhotoIndex,
+            remainingPhotos: selectedPhotoURLs.count - activePhotoIndex
+        )
+    }
+
+    private var currentOrigamiPageSlotCount: Int {
+        plannedMagazineSlotCount(
+            pageIndex: origamiPageIndex,
             remainingPhotos: selectedPhotoURLs.count - activePhotoIndex
         )
     }
@@ -3187,27 +3195,236 @@ struct OrigamiPreviewPage: View {
     let images: [NSImage]
     let activePhotoName: String
 
+    private enum OrigamiPhotoClass {
+        case ultraPortrait
+        case portrait
+        case square
+        case landscape
+        case wide
+        case ultraWide
+    }
+
+    private func aspectRatio(of image: NSImage) -> CGFloat {
+        guard image.size.height > 0 else { return 1 }
+        return image.size.width / image.size.height
+    }
+
+    private func photoClass(of image: NSImage) -> OrigamiPhotoClass {
+        let ratio = aspectRatio(of: image)
+
+        switch ratio {
+        case ..<0.72:
+            return .ultraPortrait
+        case ..<0.90:
+            return .portrait
+        case ..<1.15:
+            return .square
+        case ..<1.70:
+            return .landscape
+        case ..<2.30:
+            return .wide
+        default:
+            return .ultraWide
+        }
+    }
+
+    private var pagePhotoClasses: [OrigamiPhotoClass] {
+        images.map(photoClass)
+    }
+
+    private enum OrigamiLayout {
+        case one
+        case twoPortrait
+        case twoLandscape
+        case twoMixed
+        case threePortrait
+        case threeLandscape
+        case threeMixed
+        case four
+        case five
+        case six
+    }
+
+    private func chooseLayout() -> OrigamiLayout {
+        switch images.count {
+
+        case 1:
+            return .one
+
+        case 2:
+            let portraits = pagePhotoClasses.filter {
+                $0 == .portrait || $0 == .ultraPortrait
+            }.count
+
+            let landscapes = pagePhotoClasses.filter {
+                $0 == .landscape || $0 == .wide || $0 == .ultraWide
+            }.count
+
+            if portraits == 2 {
+                return .twoPortrait
+            }
+
+            if landscapes == 2 {
+                return .twoLandscape
+            }
+
+            return .twoMixed
+
+        case 3:
+            let portraits = pagePhotoClasses.filter {
+                $0 == .portrait || $0 == .ultraPortrait
+            }.count
+
+            if portraits == 3 {
+                return .threePortrait
+            }
+
+            let landscapes = pagePhotoClasses.filter {
+                $0 == .landscape || $0 == .wide || $0 == .ultraWide
+            }.count
+
+            if landscapes == 3 {
+                return .threeLandscape
+            }
+
+            return .threeMixed
+
+        case 4:
+            return .four
+
+        case 5:
+            return .five
+
+        default:
+            return .six
+        }
+    }
+
+    @ViewBuilder
+    private func tile(_ image: NSImage) -> some View {
+        let ratio = image.size.width / max(image.size.height, 1)
+
+        Image(nsImage: image)
+            .resizable()
+            .aspectRatio(
+                contentMode: (ratio > 2.0 || ratio < 0.75) ? .fit : .fill
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+            .clipped()
+            .drawingGroup()
+    }
+
+    @ViewBuilder
+    private var collage: some View {
+        switch images.count {
+
+        case 1:
+            tile(images[0])
+
+        case 2:
+            let first = photoClass(of: images[0])
+            let second = photoClass(of: images[1])
+
+            if (first == .portrait || first == .ultraPortrait) &&
+               (second == .portrait || second == .ultraPortrait) {
+
+                HStack(spacing: 0) {
+                    tile(images[0])
+                    tile(images[1])
+                }
+
+            } else if (first == .landscape || first == .wide || first == .ultraWide) &&
+                      (second == .landscape || second == .wide || second == .ultraWide) {
+
+                VStack(spacing: 0) {
+                    tile(images[0])
+                    tile(images[1])
+                }
+
+            } else {
+
+                HStack(spacing: 0) {
+                    tile(images[0])
+                    tile(images[1])
+                }
+            }
+
+        case 3:
+            switch chooseLayout() {
+
+            case .threePortrait:
+                HStack(spacing: 0) {
+                    tile(images[0])
+                    tile(images[1])
+                    tile(images[2])
+                }
+
+            case .threeLandscape:
+                VStack(spacing: 0) {
+                    tile(images[0])
+                    tile(images[1])
+                    tile(images[2])
+                }
+
+            default:
+                HStack(spacing: 0) {
+                    tile(images[0])
+                    tile(images[1])
+                    tile(images[2])
+                }
+            }
+
+        case 4:
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    tile(images[0])
+                    tile(images[1])
+                }
+                HStack(spacing: 0) {
+                    tile(images[2])
+                    tile(images[3])
+                }
+            }
+
+        case 5:
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    tile(images[0])
+                    tile(images[1])
+                    tile(images[2])
+                }
+                HStack(spacing: 0) {
+                    tile(images[3])
+                    tile(images[4])
+                }
+            }
+
+        default:
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    tile(images[0])
+                    tile(images[1])
+                    tile(images[2])
+                }
+                HStack(spacing: 0) {
+                    tile(images[3])
+                    tile(images[4])
+                    tile(images[5])
+                }
+            }
+        }
+    }
+
     var body: some View {
         ZStack {
             Color.black
 
-            HStack(spacing: 0) {
-                ForEach(Array(images.prefix(4).enumerated()), id: \.offset) { index, image in
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
-                        .clipShape(OrigamiPanelShape(index: index))
-                        .overlay(
-                            OrigamiPanelShape(index: index)
-                                .stroke(Color.white.opacity(0.35), lineWidth: 1.2)
-                        )
-                        .rotation3DEffect(
-                            .degrees(index.isMultiple(of: 2) ? -5 : 5),
-                            axis: (x: 0, y: 1, z: 0)
-                        )
-                }
+            GeometryReader { proxy in
+                collage
+                    .frame(width: proxy.size.width,
+                           height: proxy.size.height)
+                    .clipped()
             }
 
             VStack {
@@ -3217,11 +3434,10 @@ struct OrigamiPreviewPage: View {
                     Text(activePhotoName)
                         .font(.custom("Figtree", size: 11.5).weight(.medium))
                         .foregroundColor(.white.opacity(0.92))
-                        .lineLimit(1)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
+                        .padding(.horizontal,12)
+                        .padding(.vertical,7)
                         .background(Color.black.opacity(0.40))
-                        .clipShape(RoundedRectangle(cornerRadius: 999))
+                        .clipShape(Capsule())
 
                     Spacer()
                 }

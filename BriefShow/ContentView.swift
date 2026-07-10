@@ -32,8 +32,31 @@ struct ContentView: View {
     @State private var previewImages: [NSImage] = []
     @State private var isPreparingPhotos: Bool = false
     @State private var preparedPhotoCount: Int = 0
-    @State private var selectedMusicURL: URL?
+    @State private var selectedMusicURLs: [URL] = []
+    @State private var currentMusicIndex: Int = 0
+    @State private var currentMusicElapsedSeconds: Double = 0
+    @State private var pendingMusicSlotIndex: Int?
     @State private var audioPlayer: AVAudioPlayer?
+
+    private var selectedMusicURL: URL? {
+        selectedMusicURLs.first
+    }
+
+    private var activeMusicURL: URL? {
+        guard !selectedMusicURLs.isEmpty else {
+            return nil
+        }
+
+        if selectedMusicURLs.indices.contains(currentMusicIndex) {
+            return selectedMusicURLs[currentMusicIndex]
+        }
+
+        return selectedMusicURLs.first
+    }
+
+    private var selectedMusicTrackCount: Int {
+        selectedMusicURLs.count
+    }
     @State private var timingMode: SlideshowTimingMode = .followMusic
     @State private var secondsPerPhoto: Double = 5
     @State private var fadeDuration: Double = 1
@@ -96,6 +119,8 @@ struct ContentView: View {
                         isPreparingPhotos: isPreparingPhotos,
                         preparedPhotoCount: preparedPhotoCount,
                         selectedMusicURL: selectedMusicURL,
+                        selectedMusicURLs: selectedMusicURLs,
+                        selectedMusicCount: selectedMusicTrackCount,
                         timeCounterText: timeCounterText,
                         transitionStyle: transitionStyle,
                         transitionProgress: usesMagazineTheme ? magazineRevealProgress : transitionProgress,
@@ -105,9 +130,13 @@ struct ContentView: View {
                         magazinePageSlotCount: currentMagazinePageSlotCount,
                         isPreviewPlaying: isPreviewPlaying,
                         onAddPhotos: openPhotoPicker,
-                        onAddMusic: openMusicPicker,
+                        onAddMusic: { slotIndex in
+                            openMusicPicker(for: slotIndex)
+                        },
                         onDropPhotos: importPhotoURLs,
-                        onDropMusic: importMusicURLs,
+                        onDropMusic: { urls in
+                            importMusicURLs(urls)
+                        },
                         onTogglePreview: togglePreview,
                         onStartFromBeginning: startPreviewFromBeginning,
                         onOpenFullScreen: {
@@ -117,6 +146,7 @@ struct ContentView: View {
                     RightExportPanel(
                         selectedResolution: $selectedExportResolution,
                         selectedMusicURL: selectedMusicURL,
+                        selectedMusicCount: selectedMusicTrackCount,
                         canExport: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
                         isExporting: isExportingVideo,
                         exportStatusText: exportStatusText,
@@ -128,9 +158,12 @@ struct ContentView: View {
                     photoURLs: $selectedPhotoURLs,
                     previewImages: $previewImages,
                     musicURL: selectedMusicURL,
+                    musicCount: selectedMusicTrackCount,
                     isPreparingPhotos: isPreparingPhotos,
                     onDropPhotos: importPhotoURLs,
-                    onDropMusic: importMusicURLs,
+                    onDropMusic: { urls in
+                            importMusicURLs(urls)
+                        },
                     onClearImages: clearImages,
                     activePhotoIndex: $activePhotoIndex
                 )
@@ -303,26 +336,98 @@ struct ContentView: View {
             return 0
         }
 
+        let photoSeed = selectedPhotoURLs.enumerated().reduce(0) { total, item in
+            let nameScore = item.element.lastPathComponent.unicodeScalars.reduce(0) { partial, scalar in
+                partial + Int(scalar.value)
+            }
+
+            return total + ((item.offset + 1) * nameScore)
+        }
+
+        let safeSeed = abs(photoSeed)
+
         if pageIndex <= 0 {
-            return min(3, remainingPhotos)
+            let firstPageChoices = [2, 3, 4]
+            let firstPageCount = firstPageChoices[safeSeed % firstPageChoices.count]
+            return min(firstPageCount, remainingPhotos)
         }
 
-        if pageIndex == 1 {
-            return min(4, remainingPhotos)
-        }
+        // After the first page, use a stable shuffled cycle that includes every
+        // Magazine page size: 2, 3, 4, 5, and 6. This keeps the slideshow varied
+        // while still letting every template style appear over enough photos.
+        let templateCycles = [
+            [3, 5, 6, 4, 2],
+            [4, 6, 5, 3, 2],
+            [5, 3, 6, 2, 4],
+            [6, 5, 4, 3, 2],
+            [2, 4, 5, 6, 3]
+        ]
 
-        if pageIndex == 2 {
-            return min(6, remainingPhotos)
-        }
+        let cycle = templateCycles[safeSeed % templateCycles.count]
+        let plannedCount = cycle[(pageIndex - 1) % cycle.count]
 
-        let pattern = [4, 3, 5]
-        let plannedCount = pattern[(pageIndex - 3) % pattern.count]
         return min(plannedCount, remainingPhotos)
     }
 
+    private func adaptiveMagazineSlotCount(pageIndex: Int, startIndex: Int, remainingPhotos: Int) -> Int {
+        let plannedCount = plannedMagazineSlotCount(pageIndex: pageIndex, remainingPhotos: remainingPhotos)
+
+        guard plannedCount > 0, !previewImages.isEmpty else {
+            return plannedCount
+        }
+
+        let endIndex = min(previewImages.count, startIndex + plannedCount)
+        guard startIndex >= 0, startIndex < endIndex else {
+            return plannedCount
+        }
+
+        let pageImages = Array(previewImages[startIndex..<endIndex])
+
+        let portraitCount = pageImages.filter { image in
+            magazineImageAspectRatio(image) < 0.82
+        }.count
+
+        let landscapeCount = pageImages.filter { image in
+            magazineImageAspectRatio(image) > 1.18
+        }.count
+
+        let veryWideCount = pageImages.filter { image in
+            magazineImageAspectRatio(image) > 1.55
+        }.count
+
+        // Avoid layouts where one portrait is paired with three or more horizontal
+        // strip slots. That is where faces and wide photos get cropped too hard.
+        if plannedCount >= 4, portraitCount >= 1, landscapeCount >= 3 {
+            return min(3, remainingPhotos)
+        }
+
+        // Very wide photos need larger slots. If several are coming together,
+        // use a lighter page instead of forcing 4/5/6-image magazine pages.
+        if plannedCount >= 5, veryWideCount >= 2 {
+            return min(3, remainingPhotos)
+        }
+
+        if plannedCount >= 4, veryWideCount >= 3 {
+            return min(2, remainingPhotos)
+        }
+
+        return plannedCount
+    }
+
+    private func magazineImageAspectRatio(_ image: NSImage) -> CGFloat {
+        let size = image.size
+
+        guard size.width > 0, size.height > 0 else {
+            return 1
+        }
+
+        return size.width / size.height
+    }
+
     private var currentMagazinePageSlotCount: Int {
-        plannedMagazineSlotCount(
+        adaptiveMagazineSlotCount(
             pageIndex: magazinePageIndex,
+            startIndex: activePhotoIndex,
             remainingPhotos: selectedPhotoURLs.count - activePhotoIndex
         )
     }
@@ -337,13 +442,22 @@ struct ContentView: View {
 
         while consumedPhotos < selectedPhotoURLs.count {
             let remainingPhotos = selectedPhotoURLs.count - consumedPhotos
-            let slotCount = max(1, plannedMagazineSlotCount(pageIndex: pageIndex, remainingPhotos: remainingPhotos))
+            let slotCount = max(
+                1,
+                adaptiveMagazineSlotCount(
+                    pageIndex: pageIndex,
+                    startIndex: consumedPhotos,
+                    remainingPhotos: remainingPhotos
+                )
+            )
+
             consumedPhotos += slotCount
             pageIndex += 1
         }
 
         return pageIndex
     }
+
 
     private var magazineRevealProgress: Double {
         let revealOnlySeconds = max(
@@ -480,6 +594,7 @@ struct ContentView: View {
             magazineRevealElapsedSeconds = previewElapsedSeconds
         }
 
+        updateMusicPlaylistPlayback(delta: delta)
         updateAudioFadeOut()
 
         guard previewElapsedSeconds >= currentPhotoDuration else {
@@ -533,6 +648,9 @@ struct ContentView: View {
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
         isPreviewPlaying = true
+        currentMusicIndex = 0
+        currentMusicElapsedSeconds = 0
+        prepareAudioPlayer(for: activeMusicURL)
         audioPlayer?.volume = 0
         audioPlayer?.currentTime = 0
         audioPlayer?.play()
@@ -542,6 +660,37 @@ struct ContentView: View {
             magazineRevealElapsedSeconds = 0
         } else {
             transitionProgress = 1
+        }
+    }
+
+    private func updateMusicPlaylistPlayback(delta: Double) {
+        guard isPreviewPlaying, !selectedMusicURLs.isEmpty else {
+            return
+        }
+
+        guard let player = audioPlayer else {
+            currentMusicElapsedSeconds = 0
+            prepareAudioPlayer(for: activeMusicURL)
+            audioPlayer?.play()
+            return
+        }
+
+        currentMusicElapsedSeconds += delta
+
+        guard selectedMusicURLs.count > 1 else {
+            return
+        }
+
+        let trackDuration = max(0.05, player.duration)
+
+        if currentMusicElapsedSeconds >= trackDuration || !player.isPlaying {
+            let currentVolume = player.volume
+            currentMusicIndex = (currentMusicIndex + 1) % selectedMusicURLs.count
+            currentMusicElapsedSeconds = 0
+            prepareAudioPlayer(for: activeMusicURL)
+            audioPlayer?.volume = currentVolume
+            audioPlayer?.currentTime = 0
+            audioPlayer?.play()
         }
     }
 
@@ -702,28 +851,64 @@ struct ContentView: View {
         }
     }
 
-    private func openMusicPicker() {
+    private func openMusicPicker(for slotIndex: Int) {
+        pendingMusicSlotIndex = max(0, min(2, slotIndex))
+
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.resolvesAliases = true
 
         if panel.runModal() == .OK {
-            importMusicURLs(panel.urls)
+            importMusicURLs(panel.urls, targetSlot: pendingMusicSlotIndex)
         }
+
+        pendingMusicSlotIndex = nil
     }
 
-    private func importMusicURLs(_ urls: [URL]) {
-        guard let musicURL = urls.first(where: { url in
+    private func importMusicURLs(_ urls: [URL], targetSlot: Int? = nil) {
+        let musicURLs = urls.filter { url in
             UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true
-        }) else {
+        }
+
+        guard !musicURLs.isEmpty else {
             return
         }
 
-        selectedMusicURL = musicURL
-        prepareAudioPlayer(for: musicURL)
+        if let targetSlot {
+            var updatedMusicURLs = selectedMusicURLs
+            let safeStartIndex = min(max(0, targetSlot), updatedMusicURLs.count)
+
+            for (offset, musicURL) in musicURLs.enumerated() {
+                let slotIndex = safeStartIndex + offset
+
+                guard slotIndex < 3 else {
+                    break
+                }
+
+                if updatedMusicURLs.indices.contains(slotIndex) {
+                    updatedMusicURLs[slotIndex] = musicURL
+                } else {
+                    updatedMusicURLs.append(musicURL)
+                }
+            }
+
+            selectedMusicURLs = Array(updatedMusicURLs.prefix(3))
+        } else {
+            var updatedMusicURLs = selectedMusicURLs
+
+            for musicURL in musicURLs where updatedMusicURLs.count < 3 {
+                updatedMusicURLs.append(musicURL)
+            }
+
+            selectedMusicURLs = updatedMusicURLs
+        }
+
+        currentMusicIndex = 0
+        currentMusicElapsedSeconds = 0
+        prepareAudioPlayer(for: activeMusicURL)
         resetPreviewState()
     }
 
@@ -756,17 +941,17 @@ struct ContentView: View {
         audioPlayer?.pause()
 
         let photoURLs = selectedPhotoURLs
+        let musicURLs = selectedMusicURLs
         let resolution = selectedExportResolution
         let durationPerPhoto = max(0.25, currentPhotoDuration)
         let selectedTransitionStyle = transitionStyle
         let selectedFadeDuration = fadeDuration
-        let musicURL = selectedMusicURL
         let selectedMusicFadeIn = musicFadeInSeconds
         let selectedMusicFadeOut = musicFadeOutSeconds
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let videoOnlyURL = musicURL == nil ? outputURL : temporaryVideoURL(for: outputURL)
+                let videoOnlyURL = musicURLs.isEmpty ? outputURL : temporaryVideoURL(for: outputURL)
 
                 try renderSlideshowVideo(
                     photoURLs: photoURLs,
@@ -777,10 +962,10 @@ struct ContentView: View {
                     fadeDuration: selectedFadeDuration
                 )
 
-                if let musicURL {
+                if !musicURLs.isEmpty {
                     try muxVideoWithMusic(
                         videoURL: videoOnlyURL,
-                        musicURL: musicURL,
+                        musicURLs: musicURLs,
                         outputURL: outputURL,
                         fadeInSeconds: selectedMusicFadeIn,
                         fadeOutSeconds: selectedMusicFadeOut,
@@ -812,6 +997,7 @@ struct ContentView: View {
         do {
             let player = try AVAudioPlayer(contentsOf: url)
             player.volume = 1
+            player.numberOfLoops = selectedMusicURLs.count > 1 ? 0 : -1
             player.prepareToPlay()
             audioPlayer = player
         } catch {
@@ -1191,7 +1377,7 @@ private func temporaryVideoURL(for outputURL: URL) -> URL {
 
 private func muxVideoWithMusic(
     videoURL: URL,
-    musicURL: URL,
+    musicURLs: [URL],
     outputURL: URL,
     fadeInSeconds: Double,
     fadeOutSeconds: Double,
@@ -1202,7 +1388,6 @@ private func muxVideoWithMusic(
     }
 
     let videoAsset = AVURLAsset(url: videoURL)
-    let musicAsset = AVURLAsset(url: musicURL)
     let composition = AVMutableComposition()
 
     guard let sourceVideoTrack = videoAsset.tracks(withMediaType: .video).first,
@@ -1223,18 +1408,41 @@ private func muxVideoWithMusic(
 
     var audioMix: AVMutableAudioMix?
 
-    if let sourceAudioTrack = musicAsset.tracks(withMediaType: .audio).first,
+    let musicSources: [(track: AVAssetTrack, duration: CMTime)] = musicURLs.compactMap { url in
+        let asset = AVURLAsset(url: url)
+
+        guard let track = asset.tracks(withMediaType: .audio).first,
+              asset.duration > .zero else {
+            return nil
+        }
+
+        return (track, asset.duration)
+    }
+
+    if !musicSources.isEmpty,
        let compositionAudioTrack = composition.addMutableTrack(
            withMediaType: .audio,
            preferredTrackID: kCMPersistentTrackID_Invalid
        ) {
-        let audioDuration = minCMTime(videoDuration, musicAsset.duration)
+        var insertedAudioDuration = CMTime.zero
+        var sourceIndex = 0
 
-        try compositionAudioTrack.insertTimeRange(
-            CMTimeRange(start: .zero, duration: audioDuration),
-            of: sourceAudioTrack,
-            at: .zero
-        )
+        while insertedAudioDuration < videoDuration {
+            let source = musicSources[sourceIndex % musicSources.count]
+            let remainingVideoDuration = videoDuration - insertedAudioDuration
+            let audioSegmentDuration = minCMTime(remainingVideoDuration, source.duration)
+
+            try compositionAudioTrack.insertTimeRange(
+                CMTimeRange(start: .zero, duration: audioSegmentDuration),
+                of: source.track,
+                at: insertedAudioDuration
+            )
+
+            insertedAudioDuration = insertedAudioDuration + audioSegmentDuration
+            sourceIndex += 1
+        }
+
+        let audioDuration = minCMTime(videoDuration, insertedAudioDuration)
 
         let audioParameters = AVMutableAudioMixInputParameters(track: compositionAudioTrack)
         audioParameters.setVolume(1, at: .zero)
@@ -1791,6 +1999,13 @@ struct LeftImportPanel: View {
                         ThemePickerPopover(
                             selectedTheme: $visualTheme,
                             transitionStyle: $transitionStyle,
+                            timingMode: $timingMode,
+                            secondsPerPhoto: $secondsPerPhoto,
+                            magazineImageFadeSeconds: $magazineImageFadeSeconds,
+                            magazineImageDelaySeconds: $magazineImageDelaySeconds,
+                            musicFadeInSeconds: $musicFadeInSeconds,
+                            musicFadeOutSeconds: $musicFadeOutSeconds,
+                            shouldLoopPreview: $shouldLoopPreview,
                             isPresented: $isThemePickerPresented
                         )
                     }
@@ -2010,6 +2225,13 @@ struct LeftImportPanel: View {
 struct ThemePickerPopover: View {
     @Binding var selectedTheme: SlideshowVisualTheme
     @Binding var transitionStyle: SlideshowTransitionStyle
+    @Binding var timingMode: SlideshowTimingMode
+    @Binding var secondsPerPhoto: Double
+    @Binding var magazineImageFadeSeconds: Double
+    @Binding var magazineImageDelaySeconds: Double
+    @Binding var musicFadeInSeconds: Double
+    @Binding var musicFadeOutSeconds: Double
+    @Binding var shouldLoopPreview: Bool
     @Binding var isPresented: Bool
 
     var body: some View {
@@ -2070,6 +2292,14 @@ struct ThemePickerPopover: View {
                     isLocked: false
                 ) {
                     selectedTheme = .magazine
+                    transitionStyle = .fade
+                    timingMode = .customSpeed
+                    secondsPerPhoto = 4
+                    magazineImageFadeSeconds = 0.3
+                    magazineImageDelaySeconds = 0.3
+                    musicFadeInSeconds = 4
+                    musicFadeOutSeconds = 4
+                    shouldLoopPreview = false
                     isPresented = false
                 }
 
@@ -2422,6 +2652,18 @@ struct MagazinePreviewPage: View {
     let imageDelaySeconds: Double
     let layoutSeed: Int
 
+    private enum PhotoShape {
+        case landscape
+        case portrait
+        case square
+    }
+
+    private enum MagazineSlotShape {
+        case wide
+        case tall
+        case flex
+    }
+
     private var pageImages: [NSImage] {
         Array(images.prefix(6))
     }
@@ -2432,6 +2674,115 @@ struct MagazinePreviewPage: View {
 
     private var layoutVariant: Int {
         layoutSeed % 2
+    }
+
+    private var portraitIndexes: [Int] {
+        pageImages.indices.filter { shapeForImage(at: $0) == .portrait }
+    }
+
+    private var landscapeIndexes: [Int] {
+        pageImages.indices.filter { shapeForImage(at: $0) == .landscape }
+    }
+
+    private var squareIndexes: [Int] {
+        pageImages.indices.filter { shapeForImage(at: $0) == .square }
+    }
+
+    private var hasMixedLandscapeAndPortrait: Bool {
+        !portraitIndexes.isEmpty && !landscapeIndexes.isEmpty
+    }
+
+    private var slotShapesForCurrentLayout: [MagazineSlotShape] {
+        switch pagePhotoCount {
+        case 2:
+            return hasMixedLandscapeAndPortrait ? [.wide, .tall] : [.flex, .flex]
+
+        case 3:
+            if portraitIndexes.count >= 2 {
+                return [.tall, .tall, .flex]
+            }
+
+            if hasMixedLandscapeAndPortrait {
+                return [.wide, .wide, .tall]
+            }
+
+            return [.wide, .flex, .flex]
+
+        case 4:
+            if portraitIndexes.count >= 2 {
+                return [.tall, .tall, .wide, .wide]
+            }
+
+            if hasMixedLandscapeAndPortrait {
+                return [.tall, .wide, .wide, .wide]
+            }
+
+            return [.wide, .wide, .wide, .wide]
+
+        case 5:
+            if portraitIndexes.count >= 2 {
+                return [.tall, .tall, .wide, .wide, .wide]
+            }
+
+            if hasMixedLandscapeAndPortrait {
+                return [.tall, .wide, .wide, .wide, .wide]
+            }
+
+            return [.wide, .wide, .wide, .wide, .wide]
+
+        default:
+            if portraitIndexes.count >= 3 {
+                return [.tall, .tall, .tall, .wide, .wide, .wide]
+            }
+
+            if portraitIndexes.count == 2 {
+                return [.wide, .wide, .wide, .tall, .wide, .tall]
+            }
+
+            if portraitIndexes.count == 1 {
+                return [.tall, .wide, .wide, .wide, .wide, .wide]
+            }
+
+            return [.wide, .wide, .wide, .wide, .wide, .wide]
+        }
+    }
+
+    private var orderedPageIndexes: [Int] {
+        var used = Set<Int>()
+        var result: [Int] = []
+        let allIndexes = Array(pageImages.indices)
+
+        func candidates(for slotShape: MagazineSlotShape) -> [Int] {
+            switch slotShape {
+            case .wide:
+                return landscapeIndexes + squareIndexes + portraitIndexes
+            case .tall:
+                return portraitIndexes + squareIndexes + landscapeIndexes
+            case .flex:
+                return allIndexes
+            }
+        }
+
+        func appendFirst(from candidates: [Int]) {
+            if let next = candidates.first(where: { !used.contains($0) }) {
+                used.insert(next)
+                result.append(next)
+            }
+        }
+
+        func appendAny() {
+            appendFirst(from: allIndexes)
+        }
+
+        for slotShape in slotShapesForCurrentLayout.prefix(pagePhotoCount) {
+            appendFirst(from: candidates(for: slotShape))
+        }
+
+        while result.count < pagePhotoCount {
+            appendAny()
+        }
+
+        return result
     }
 
     var body: some View {
@@ -2469,134 +2820,312 @@ struct MagazinePreviewPage: View {
             Color.white
 
         case 1:
-            tile(at: 0, revealOrder: 0)
+            tile(slot: 0, revealOrder: 0)
 
         case 2:
-            HStack(spacing: gap) {
-                tile(at: 0, revealOrder: 0)
-                tile(at: 1, revealOrder: 1)
-            }
+            twoImageMagazineTemplate(width: width, height: height, gap: gap)
 
         case 3:
-            HStack(spacing: gap) {
-                tile(at: 0, revealOrder: 0)
-                    .frame(width: (width - gap) * 0.66)
-
-                VStack(spacing: gap) {
-                    tile(at: 1, revealOrder: 1)
-                    tile(at: 2, revealOrder: 2)
-                }
-            }
+            threeImageMagazineTemplate(width: width, height: height, gap: gap)
 
         case 4:
-            if layoutVariant == 0 {
-                fourImageFeatureTemplate(width: width, height: height, gap: gap)
-            } else {
-                fourImageStackTemplate(width: width, height: height, gap: gap)
-            }
+            fourImageMagazineTemplate(width: width, height: height, gap: gap)
 
         case 5:
-            HStack(spacing: gap) {
-                tile(at: 0, revealOrder: 0)
-                    .frame(width: (width - gap) * 0.58)
-
-                VStack(spacing: gap) {
-                    HStack(spacing: gap) {
-                        tile(at: 1, revealOrder: 1)
-                        tile(at: 2, revealOrder: 2)
-                    }
-
-                    HStack(spacing: gap) {
-                        tile(at: 3, revealOrder: 3)
-                        tile(at: 4, revealOrder: 4)
-                    }
-                }
-            }
+            fiveImageMagazineTemplate(width: width, height: height, gap: gap)
 
         default:
-            if layoutVariant == 0 {
-                sixImageTopFourBottomTwoTemplate(width: width, height: height, gap: gap)
-            } else {
-                sixImageHeroLeftStackRightTemplate(width: width, height: height, gap: gap)
-            }
+            sixImageMagazineTemplate(width: width, height: height, gap: gap)
         }
     }
 
-    private func sixImageTopFourBottomTwoTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        VStack(spacing: gap) {
+    @ViewBuilder
+    private func twoImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        if hasMixedLandscapeAndPortrait {
             HStack(spacing: gap) {
-                tile(at: 0, revealOrder: 0)
-                tile(at: 1, revealOrder: 1)
-                tile(at: 2, revealOrder: 2)
-                tile(at: 3, revealOrder: 3)
-            }
-            .frame(height: (height - gap) * 0.35)
+                tile(slot: 0, revealOrder: 0)
+                    .frame(width: (width - gap) * 0.64)
 
+                tile(slot: 1, revealOrder: 1)
+            }
+        } else {
             HStack(spacing: gap) {
-                tile(at: 4, revealOrder: 4)
-                tile(at: 5, revealOrder: 5)
-            }
-        }
-    }
-
-    private func sixImageHeroLeftStackRightTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        HStack(spacing: gap) {
-            tile(at: 0, revealOrder: 0)
-                .frame(width: (width - gap) * 0.58)
-
-            VStack(spacing: gap) {
-                tile(at: 1, revealOrder: 1)
-
-                HStack(spacing: gap) {
-                    tile(at: 2, revealOrder: 2)
-                    tile(at: 3, revealOrder: 3)
-                }
-
-                HStack(spacing: gap) {
-                    tile(at: 4, revealOrder: 4)
-                    tile(at: 5, revealOrder: 5)
-                }
-            }
-        }
-    }
-
-    private func fourImageFeatureTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        HStack(spacing: gap) {
-            tile(at: 0, revealOrder: 0)
-                .frame(width: (width - gap) * 0.62)
-
-            VStack(spacing: gap) {
-                tile(at: 1, revealOrder: 1)
-                tile(at: 2, revealOrder: 2)
-                tile(at: 3, revealOrder: 3)
-            }
-        }
-    }
-
-    private func fourImageStackTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        VStack(spacing: gap) {
-            HStack(spacing: gap) {
-                tile(at: 0, revealOrder: 0)
-                tile(at: 1, revealOrder: 1)
-            }
-
-            HStack(spacing: gap) {
-                tile(at: 2, revealOrder: 2)
-                tile(at: 3, revealOrder: 3)
+                tile(slot: 0, revealOrder: 0)
+                tile(slot: 1, revealOrder: 1)
             }
         }
     }
 
     @ViewBuilder
-    private func tile(at index: Int, revealOrder: Int) -> some View {
-        if pageImages.indices.contains(index) {
+    private func threeImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        if portraitIndexes.count >= 2 {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                tile(slot: 1, revealOrder: 1)
+                tile(slot: 2, revealOrder: 2)
+            }
+        } else if hasMixedLandscapeAndPortrait {
+            HStack(spacing: gap) {
+                VStack(spacing: gap) {
+                    tile(slot: 0, revealOrder: 0)
+                    tile(slot: 1, revealOrder: 1)
+                }
+                .frame(width: (width - gap) * 0.62)
+
+                tile(slot: 2, revealOrder: 2)
+            }
+        } else {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                    .frame(width: (width - gap) * 0.62)
+
+                VStack(spacing: gap) {
+                    tile(slot: 1, revealOrder: 1)
+                    tile(slot: 2, revealOrder: 2)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fourImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        if portraitIndexes.count >= 2 {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                tile(slot: 1, revealOrder: 1)
+
+                VStack(spacing: gap) {
+                    tile(slot: 2, revealOrder: 2)
+                    tile(slot: 3, revealOrder: 3)
+                }
+                .frame(width: (width - gap * 2) * 0.44)
+            }
+        } else if hasMixedLandscapeAndPortrait {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                    .frame(width: (width - gap) * 0.34)
+
+                VStack(spacing: gap) {
+                    tile(slot: 1, revealOrder: 1)
+                    tile(slot: 2, revealOrder: 2)
+                    tile(slot: 3, revealOrder: 3)
+                }
+            }
+        } else if layoutVariant == 0 {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                    .frame(width: (width - gap) * 0.62)
+
+                VStack(spacing: gap) {
+                    tile(slot: 1, revealOrder: 1)
+                    tile(slot: 2, revealOrder: 2)
+                    tile(slot: 3, revealOrder: 3)
+                }
+            }
+        } else {
+            VStack(spacing: gap) {
+                HStack(spacing: gap) {
+                    tile(slot: 0, revealOrder: 0)
+                    tile(slot: 1, revealOrder: 1)
+                }
+
+                HStack(spacing: gap) {
+                    tile(slot: 2, revealOrder: 2)
+                    tile(slot: 3, revealOrder: 3)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fiveImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        if portraitIndexes.count >= 2 {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                    .frame(width: (width - gap * 2) * 0.26)
+
+                tile(slot: 1, revealOrder: 1)
+                    .frame(width: (width - gap * 2) * 0.26)
+
+                VStack(spacing: gap) {
+                    tile(slot: 2, revealOrder: 2)
+
+                    HStack(spacing: gap) {
+                        tile(slot: 3, revealOrder: 3)
+                        tile(slot: 4, revealOrder: 4)
+                    }
+                }
+            }
+        } else if hasMixedLandscapeAndPortrait {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                    .frame(width: (width - gap) * 0.34)
+
+                VStack(spacing: gap) {
+                    HStack(spacing: gap) {
+                        tile(slot: 1, revealOrder: 1)
+                        tile(slot: 2, revealOrder: 2)
+                    }
+
+                    HStack(spacing: gap) {
+                        tile(slot: 3, revealOrder: 3)
+                        tile(slot: 4, revealOrder: 4)
+                    }
+                }
+            }
+        } else {
+            VStack(spacing: gap) {
+                HStack(spacing: gap) {
+                    tile(slot: 0, revealOrder: 0)
+                    tile(slot: 1, revealOrder: 1)
+                    tile(slot: 2, revealOrder: 2)
+                }
+                .frame(height: (height - gap) * 0.48)
+
+                HStack(spacing: gap) {
+                    tile(slot: 3, revealOrder: 3)
+                    tile(slot: 4, revealOrder: 4)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sixImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
+        if portraitIndexes.count >= 3 {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                tile(slot: 1, revealOrder: 1)
+                tile(slot: 2, revealOrder: 2)
+
+                VStack(spacing: gap) {
+                    tile(slot: 3, revealOrder: 3)
+                    tile(slot: 4, revealOrder: 4)
+                    tile(slot: 5, revealOrder: 5)
+                }
+                .frame(width: (width - gap * 3) * 0.34)
+            }
+        } else if portraitIndexes.count == 2 {
+            VStack(spacing: gap) {
+                HStack(spacing: gap) {
+                    tile(slot: 0, revealOrder: 0)
+                    tile(slot: 1, revealOrder: 1)
+                    tile(slot: 2, revealOrder: 2)
+                }
+                .frame(height: (height - gap) * 0.48)
+
+                HStack(spacing: gap) {
+                    tile(slot: 3, revealOrder: 3)
+                        .frame(width: (width - gap * 2) * 0.25)
+
+                    tile(slot: 4, revealOrder: 4)
+
+                    tile(slot: 5, revealOrder: 5)
+                        .frame(width: (width - gap * 2) * 0.25)
+                }
+            }
+        } else if portraitIndexes.count == 1 {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                    .frame(width: (width - gap) * 0.28)
+
+                VStack(spacing: gap) {
+                    HStack(spacing: gap) {
+                        tile(slot: 1, revealOrder: 1)
+                        tile(slot: 2, revealOrder: 2)
+                    }
+
+                    HStack(spacing: gap) {
+                        tile(slot: 3, revealOrder: 3)
+                        tile(slot: 4, revealOrder: 4)
+                        tile(slot: 5, revealOrder: 5)
+                    }
+                }
+            }
+        } else if layoutVariant == 0 {
+            VStack(spacing: gap) {
+                HStack(spacing: gap) {
+                    tile(slot: 0, revealOrder: 0)
+                    tile(slot: 1, revealOrder: 1)
+                    tile(slot: 2, revealOrder: 2)
+                    tile(slot: 3, revealOrder: 3)
+                }
+                .frame(height: (height - gap) * 0.35)
+
+                HStack(spacing: gap) {
+                    tile(slot: 4, revealOrder: 4)
+                    tile(slot: 5, revealOrder: 5)
+                }
+            }
+        } else {
+            HStack(spacing: gap) {
+                tile(slot: 0, revealOrder: 0)
+                    .frame(width: (width - gap) * 0.58)
+
+                VStack(spacing: gap) {
+                    tile(slot: 1, revealOrder: 1)
+
+                    HStack(spacing: gap) {
+                        tile(slot: 2, revealOrder: 2)
+                        tile(slot: 3, revealOrder: 3)
+                    }
+
+                    HStack(spacing: gap) {
+                        tile(slot: 4, revealOrder: 4)
+                        tile(slot: 5, revealOrder: 5)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tile(slot: Int, revealOrder: Int) -> some View {
+        if let image = imageForSlot(slot) {
             MagazineImageTile(
-                image: pageImages[index],
+                image: image,
                 appearAmount: appearAmount(forRevealOrder: revealOrder)
             )
         } else {
             Color.white
         }
+    }
+
+    private func imageForSlot(_ slot: Int) -> NSImage? {
+        guard orderedPageIndexes.indices.contains(slot) else {
+            return nil
+        }
+
+        let imageIndex = orderedPageIndexes[slot]
+
+        guard pageImages.indices.contains(imageIndex) else {
+            return nil
+        }
+
+        return pageImages[imageIndex]
+    }
+
+    private func shapeForImage(at index: Int) -> PhotoShape {
+        guard pageImages.indices.contains(index) else {
+            return .landscape
+        }
+
+        let size = pageImages[index].size
+        guard size.width > 0, size.height > 0 else {
+            return .landscape
+        }
+
+        let ratio = size.width / size.height
+
+        if ratio > 1.18 {
+            return .landscape
+        }
+
+        if ratio < 0.82 {
+            return .portrait
+        }
+
+        return .square
     }
 
     private func appearAmount(forRevealOrder order: Int) -> Double {
@@ -2732,6 +3261,8 @@ struct CenterPreviewPanel: View {
     let isPreparingPhotos: Bool
     let preparedPhotoCount: Int
     let selectedMusicURL: URL?
+    let selectedMusicURLs: [URL]
+    let selectedMusicCount: Int
     let timeCounterText: String
     let transitionStyle: SlideshowTransitionStyle
     let transitionProgress: Double
@@ -2741,7 +3272,7 @@ struct CenterPreviewPanel: View {
     let magazinePageSlotCount: Int
     let isPreviewPlaying: Bool
     let onAddPhotos: () -> Void
-    let onAddMusic: () -> Void
+    let onAddMusic: (Int) -> Void
     let onDropPhotos: ([URL]) -> Void
     let onDropMusic: ([URL]) -> Void
     let onTogglePreview: () -> Void
@@ -2919,26 +3450,113 @@ struct CenterPreviewPanel: View {
 
             HStack(spacing: 10) {
                 Button(action: onAddPhotos) {
-                    DropCard(
-                        icon: "photo.on.rectangle.angled",
-                        title: "Add Photos",
-                        subtitle: photoStatusText,
-                        isLoading: isPreparingPhotos
-                    )
-                    .frame(maxWidth: .infinity)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "photo.on.rectangle.angled")
+                                .font(.system(size: 19, weight: .medium))
+                                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Photos")
+                                    .font(.custom("Figtree", size: 13).weight(.medium))
+                                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                                Text(photoStatusText)
+                                    .font(.custom("Figtree", size: 10.5).weight(.regular))
+                                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                                    .lineLimit(1)
+                            }
+
+                            Spacer()
+                        }
+
+                        VStack(spacing: 6) {
+                            PhotoImportInfoRow(
+                                icon: "photo.stack",
+                                title: "Select multiple photos"
+                            )
+
+                            PhotoImportInfoRow(
+                                icon: "arrow.down.doc",
+                                title: "Drag & drop supported"
+                            )
+
+                            PhotoImportInfoRow(
+                                icon: "arrow.left.arrow.right",
+                                title: "Reorder anytime in Timeline"
+                            )
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
 
-                DropCard(
-                    icon: "music.note",
-                    title: "Add Music",
-                    subtitle: musicStatusText
-                )
-                .frame(maxWidth: .infinity)
-                .contentShape(RoundedRectangle(cornerRadius: 22))
-                .onTapGesture {
-                    onAddMusic()
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "music.note.list")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Music Playlist")
+                                .font(.custom("Figtree", size: 13).weight(.medium))
+                                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                            Text("Up to 3 tracks • repeats until slideshow ends")
+                                .font(.custom("Figtree", size: 10.5).weight(.regular))
+                                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+                    }
+
+                    VStack(spacing: 6) {
+                        ForEach(0..<3, id: \.self) { index in
+                            HStack(spacing: 8) {
+                                Image(systemName: selectedMusicURLs.indices.contains(index) ? "music.note" : "plus")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.8))
+                                    .frame(width: 18, height: 18)
+                                    .background(Color.white.opacity(0.48))
+                                    .clipShape(Circle())
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("Track \(index + 1)")
+                                        .font(.custom("Figtree", size: 10).weight(.medium))
+                                        .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+
+                                    Text(
+                                        selectedMusicURLs.indices.contains(index)
+                                            ? selectedMusicURLs[index].lastPathComponent
+                                            : index == 0 ? "Add main track" : "Optional"
+                                    )
+                                    .font(.custom("Figtree", size: 10.5).weight(.regular))
+                                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                }
+
+                                Spacer()
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 34)
+                            .background(Color.white.opacity(0.28))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.8), lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .contentShape(RoundedRectangle(cornerRadius: 10))
+                            .onTapGesture {
+                                onAddMusic(index)
+                            }
+                        }
+                    }
                 }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(12)
             .frame(maxWidth: .infinity)
@@ -2983,9 +3601,41 @@ struct CenterPreviewPanel: View {
     }
 }
 
+struct PhotoImportInfoRow: View {
+    let icon: String
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.8))
+                .frame(width: 18, height: 18)
+                .background(Color.white.opacity(0.48))
+                .clipShape(Circle())
+
+            Text(title)
+                .font(.custom("Figtree", size: 10.5).weight(.regular))
+                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                .lineLimit(1)
+
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 34)
+        .background(Color.white.opacity(0.28))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.8), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
 struct RightExportPanel: View {
     @Binding var selectedResolution: String
     let selectedMusicURL: URL?
+    let selectedMusicCount: Int
     let canExport: Bool
     let isExporting: Bool
     let exportStatusText: String?
@@ -3168,7 +3818,11 @@ struct RightExportPanel: View {
     }
 
     private var exportAudioText: String {
-        selectedMusicURL?.lastPathComponent ?? "Silent for now"
+        if selectedMusicCount > 1 {
+            return "\(selectedMusicCount) tracks selected"
+        }
+
+        return selectedMusicURL?.lastPathComponent ?? "Silent for now"
     }
 
     private func exportSizeText(for resolution: String) -> String {
@@ -3197,6 +3851,7 @@ struct TimelinePanel: View {
     @Binding var photoURLs: [URL]
     @Binding var previewImages: [NSImage]
     let musicURL: URL?
+    let musicCount: Int
     let isPreparingPhotos: Bool
     let onDropPhotos: ([URL]) -> Void
     let onDropMusic: ([URL]) -> Void

@@ -128,7 +128,7 @@ struct ContentView: View {
                         magazineImageFadeSeconds: magazineImageFadeSeconds,
                         magazineImageDelaySeconds: magazineImageDelaySeconds,
                         magazineLayoutSeed: magazinePageIndex,
-                        magazinePageSlotCount: currentMagazinePageSlotCount,
+                        magazinePageSlotCount: currentPreviewPageSlotCount,
                         isPreviewPlaying: isPreviewPlaying,
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: { slotIndex in
@@ -201,7 +201,7 @@ struct ContentView: View {
                     magazineImageFadeSeconds: magazineImageFadeSeconds,
                     magazineImageDelaySeconds: magazineImageDelaySeconds,
                     magazineLayoutSeed: magazinePageIndex,
-                    magazinePageSlotCount: currentMagazinePageSlotCount,
+                    magazinePageSlotCount: currentPreviewPageSlotCount,
                     isPreviewPlaying: isPreviewPlaying,
                     onTogglePreview: togglePreview,
                     onStartFromBeginning: startPreviewFromBeginning,
@@ -315,6 +315,14 @@ struct ContentView: View {
 
     private var usesMagazineTheme: Bool {
         visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
+    }
+
+    private var usesOrigamiTheme: Bool {
+        visualTheme == .origami
+    }
+
+    private var usesPagedTheme: Bool {
+        usesMagazineTheme || usesOrigamiTheme
     }
 
     private var magazinePageDuration: Double {
@@ -433,11 +441,51 @@ struct ContentView: View {
         )
     }
 
+    private func plannedOrigamiSlotCount(
+        pageIndex: Int,
+        remainingPhotos: Int
+    ) -> Int {
+        guard remainingPhotos > 0 else {
+            return 0
+        }
+
+        // Origami page cycle:
+        // page 1 = 3 photos
+        // page 2 = 5 photos
+        // page 3 = 6 photos
+        // page 4 = 2 photos
+        // page 5 = 4 photos
+        let cycle = [3, 5, 6, 2, 4]
+
+        let safePageIndex = max(0, pageIndex)
+        var plannedCount = min(
+            cycle[safePageIndex % cycle.count],
+            remainingPhotos
+        )
+
+        // Avoid leaving a final page with only one photo when the
+        // current page can safely give one photo to the next page.
+        if remainingPhotos - plannedCount == 1,
+           plannedCount > 2 {
+            plannedCount -= 1
+        }
+
+        return max(1, min(6, plannedCount))
+    }
+
     private var currentOrigamiPageSlotCount: Int {
-        plannedMagazineSlotCount(
+        plannedOrigamiSlotCount(
             pageIndex: origamiPageIndex,
             remainingPhotos: selectedPhotoURLs.count - activePhotoIndex
         )
+    }
+
+    private var currentPreviewPageSlotCount: Int {
+        if usesOrigamiTheme {
+            return currentOrigamiPageSlotCount
+        }
+
+        return currentMagazinePageSlotCount
     }
 
     private var magazinePreviewPageCount: Int {
@@ -466,6 +514,33 @@ struct ContentView: View {
         return pageIndex
     }
 
+
+    private var origamiPreviewPageCount: Int {
+        guard !selectedPhotoURLs.isEmpty else {
+            return 0
+        }
+
+        var pageIndex = 0
+        var consumedPhotos = 0
+
+        while consumedPhotos < selectedPhotoURLs.count {
+            let remainingPhotos =
+                selectedPhotoURLs.count - consumedPhotos
+
+            let slotCount = max(
+                1,
+                plannedOrigamiSlotCount(
+                    pageIndex: pageIndex,
+                    remainingPhotos: remainingPhotos
+                )
+            )
+
+            consumedPhotos += slotCount
+            pageIndex += 1
+        }
+
+        return pageIndex
+    }
 
     private var magazineRevealProgress: Double {
         let revealOnlySeconds = max(
@@ -505,6 +580,16 @@ struct ContentView: View {
             return magazinePageDuration
         }
 
+        if usesOrigamiTheme,
+           timingMode == .followMusic,
+           let audioPlayer {
+            return max(
+                0.5,
+                audioPlayer.duration /
+                Double(max(1, origamiPreviewPageCount))
+            )
+        }
+
         switch timingMode {
         case .followMusic:
             guard selectedPhotoURLs.count > 0, let audioPlayer else {
@@ -524,6 +609,11 @@ struct ContentView: View {
 
         if usesMagazineTheme {
             return magazinePageDuration * Double(max(1, magazinePreviewPageCount))
+        }
+
+        if usesOrigamiTheme {
+            return currentPhotoDuration *
+                Double(max(1, origamiPreviewPageCount))
         }
 
         if timingMode == .followMusic, let audioPlayer {
@@ -554,6 +644,15 @@ struct ContentView: View {
             }
 
             let visiblePhotoNumber = min(selectedPhotoURLs.count, activePhotoIndex + visibleOnPage)
+            return "\(formatTime(elapsed)) / \(formatTime(totalPreviewDuration)) · Photo \(visiblePhotoNumber) / \(selectedPhotoURLs.count)"
+        }
+
+        if usesOrigamiTheme {
+            let visiblePhotoNumber = min(
+                selectedPhotoURLs.count,
+                activePhotoIndex + currentOrigamiPageSlotCount
+            )
+
             return "\(formatTime(elapsed)) / \(formatTime(totalPreviewDuration)) · Photo \(visiblePhotoNumber) / \(selectedPhotoURLs.count)"
         }
 
@@ -615,7 +714,8 @@ struct ContentView: View {
             magazineRevealElapsedSeconds = 0
         }
 
-        let nextIndex = activePhotoIndex + (usesMagazineTheme ? currentMagazinePageSlotCount : 1)
+        let nextIndex = activePhotoIndex +
+            (usesPagedTheme ? currentPreviewPageSlotCount : 1)
 
         if nextIndex >= selectedPhotoURLs.count {
             if shouldLoopPreview {
@@ -653,6 +753,7 @@ struct ContentView: View {
         previousPhotoIndex = nil
         activePhotoIndex = 0
         magazinePageIndex = 0
+        origamiPageIndex = 0
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
         isPreviewPlaying = true
@@ -742,6 +843,11 @@ struct ContentView: View {
             return
         }
 
+        if usesOrigamiTheme {
+            origamiPageIndex =
+                newIndex == 0 ? 0 : origamiPageIndex + 1
+        }
+
         if transitionStyle == .fade {
             previousPhotoIndex = activePhotoIndex
             transitionProgress = 0
@@ -781,6 +887,7 @@ struct ContentView: View {
         transitionProgress = 1
         magazineRevealElapsedSeconds = 0
         magazinePageIndex = 0
+        origamiPageIndex = 0
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
         isPreviewPlaying = false
@@ -3204,8 +3311,28 @@ struct OrigamiPreviewPage: View {
         case ultraWide
     }
 
+    private enum OrigamiLayout {
+        case one
+        case twoPortrait
+        case twoLandscape
+        case twoMixed
+        case threePortrait
+        case threeLandscape
+        case threeMixed
+        case four
+        case five
+        case six
+    }
+
+    private var pageImages: [NSImage] {
+        Array(images.prefix(6))
+    }
+
     private func aspectRatio(of image: NSImage) -> CGFloat {
-        guard image.size.height > 0 else { return 1 }
+        guard image.size.height > 0 else {
+            return 1
+        }
+
         return image.size.width / image.size.height
     }
 
@@ -3229,61 +3356,63 @@ struct OrigamiPreviewPage: View {
     }
 
     private var pagePhotoClasses: [OrigamiPhotoClass] {
-        images.map(photoClass)
+        pageImages.map(photoClass)
     }
 
-    private enum OrigamiLayout {
-        case one
-        case twoPortrait
-        case twoLandscape
-        case twoMixed
-        case threePortrait
-        case threeLandscape
-        case threeMixed
-        case four
-        case five
-        case six
+    private var portraitCount: Int {
+        pagePhotoClasses.filter {
+            $0 == .portrait || $0 == .ultraPortrait
+        }.count
+    }
+
+    private var landscapeCount: Int {
+        pagePhotoClasses.filter {
+            $0 == .landscape ||
+            $0 == .wide ||
+            $0 == .ultraWide
+        }.count
+    }
+
+    private var wideCount: Int {
+        pagePhotoClasses.filter {
+            $0 == .wide || $0 == .ultraWide
+        }.count
+    }
+
+    private var aspectDescendingImages: [NSImage] {
+        pageImages.sorted {
+            aspectRatio(of: $0) > aspectRatio(of: $1)
+        }
+    }
+
+    private var aspectAscendingImages: [NSImage] {
+        pageImages.sorted {
+            aspectRatio(of: $0) < aspectRatio(of: $1)
+        }
     }
 
     private func chooseLayout() -> OrigamiLayout {
-        switch images.count {
-
+        switch pageImages.count {
         case 1:
             return .one
 
         case 2:
-            let portraits = pagePhotoClasses.filter {
-                $0 == .portrait || $0 == .ultraPortrait
-            }.count
-
-            let landscapes = pagePhotoClasses.filter {
-                $0 == .landscape || $0 == .wide || $0 == .ultraWide
-            }.count
-
-            if portraits == 2 {
+            if portraitCount == 2 {
                 return .twoPortrait
             }
 
-            if landscapes == 2 {
+            if landscapeCount == 2 {
                 return .twoLandscape
             }
 
             return .twoMixed
 
         case 3:
-            let portraits = pagePhotoClasses.filter {
-                $0 == .portrait || $0 == .ultraPortrait
-            }.count
-
-            if portraits == 3 {
+            if portraitCount == 3 {
                 return .threePortrait
             }
 
-            let landscapes = pagePhotoClasses.filter {
-                $0 == .landscape || $0 == .wide || $0 == .ultraWide
-            }.count
-
-            if landscapes == 3 {
+            if landscapeCount == 3 {
                 return .threeLandscape
             }
 
@@ -3302,115 +3431,238 @@ struct OrigamiPreviewPage: View {
 
     @ViewBuilder
     private func tile(_ image: NSImage) -> some View {
-        let ratio = image.size.width / max(image.size.height, 1)
-
-        Image(nsImage: image)
-            .resizable()
-            .aspectRatio(
-                contentMode: (ratio > 2.0 || ratio < 0.75) ? .fit : .fill
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.black)
-            .clipped()
-            .drawingGroup()
+        GeometryReader { proxy in
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(
+                    width: proxy.size.width,
+                    height: proxy.size.height
+                )
+                .clipped()
+        }
+        .clipped()
     }
 
     @ViewBuilder
-    private var collage: some View {
-        switch images.count {
+    private func collage(in size: CGSize) -> some View {
+        switch pageImages.count {
+        case 0:
+            Color.black
 
         case 1:
-            tile(images[0])
+            tile(pageImages[0])
 
         case 2:
-            let first = photoClass(of: images[0])
-            let second = photoClass(of: images[1])
-
-            if (first == .portrait || first == .ultraPortrait) &&
-               (second == .portrait || second == .ultraPortrait) {
-
-                HStack(spacing: 0) {
-                    tile(images[0])
-                    tile(images[1])
-                }
-
-            } else if (first == .landscape || first == .wide || first == .ultraWide) &&
-                      (second == .landscape || second == .wide || second == .ultraWide) {
-
-                VStack(spacing: 0) {
-                    tile(images[0])
-                    tile(images[1])
-                }
-
-            } else {
-
-                HStack(spacing: 0) {
-                    tile(images[0])
-                    tile(images[1])
-                }
-            }
+            twoImageTemplate(in: size)
 
         case 3:
-            switch chooseLayout() {
-
-            case .threePortrait:
-                HStack(spacing: 0) {
-                    tile(images[0])
-                    tile(images[1])
-                    tile(images[2])
-                }
-
-            case .threeLandscape:
-                VStack(spacing: 0) {
-                    tile(images[0])
-                    tile(images[1])
-                    tile(images[2])
-                }
-
-            default:
-                HStack(spacing: 0) {
-                    tile(images[0])
-                    tile(images[1])
-                    tile(images[2])
-                }
-            }
+            threeImageTemplate(in: size)
 
         case 4:
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    tile(images[0])
-                    tile(images[1])
-                }
-                HStack(spacing: 0) {
-                    tile(images[2])
-                    tile(images[3])
-                }
-            }
+            fourImageTemplate(in: size)
 
         case 5:
+            fiveImageTemplate(in: size)
+
+        default:
+            sixImageTemplate(in: size)
+        }
+    }
+
+    @ViewBuilder
+    private func twoImageTemplate(in size: CGSize) -> some View {
+        let ordered = chooseLayout() == .twoMixed
+            ? aspectAscendingImages
+            : pageImages
+
+        switch chooseLayout() {
+        case .twoPortrait:
+            HStack(spacing: 0) {
+                tile(ordered[0])
+                tile(ordered[1])
+            }
+
+        case .twoLandscape:
             VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    tile(images[0])
-                    tile(images[1])
-                    tile(images[2])
-                }
-                HStack(spacing: 0) {
-                    tile(images[3])
-                    tile(images[4])
-                }
+                tile(ordered[0])
+                tile(ordered[1])
             }
 
         default:
+            HStack(spacing: 0) {
+                tile(ordered[0])
+                    .frame(width: size.width * 0.38)
+
+                tile(ordered[1])
+                    .frame(width: size.width * 0.62)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func threeImageTemplate(in size: CGSize) -> some View {
+        switch chooseLayout() {
+        case .threePortrait:
+            HStack(spacing: 0) {
+                tile(pageImages[0])
+                tile(pageImages[1])
+                tile(pageImages[2])
+            }
+
+        case .threeLandscape:
+            let ordered = aspectDescendingImages
+
+            VStack(spacing: 0) {
+                tile(ordered[0])
+                tile(ordered[1])
+                tile(ordered[2])
+            }
+
+        default:
+            let ordered = aspectAscendingImages
+
+            HStack(spacing: 0) {
+                tile(ordered[0])
+                    .frame(width: size.width * 0.38)
+
+                VStack(spacing: 0) {
+                    tile(ordered[2])
+                    tile(ordered[1])
+                }
+                .frame(width: size.width * 0.62)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fourImageTemplate(in size: CGSize) -> some View {
+        if portraitCount >= 2 {
+            let ordered = aspectAscendingImages
+
+            HStack(spacing: 0) {
+                tile(ordered[0])
+                    .frame(width: size.width * 0.24)
+
+                VStack(spacing: 0) {
+                    tile(ordered[2])
+                    tile(ordered[3])
+                }
+
+                tile(ordered[1])
+                    .frame(width: size.width * 0.24)
+            }
+        } else {
+            let ordered = aspectDescendingImages
+
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
-                    tile(images[0])
-                    tile(images[1])
-                    tile(images[2])
+                    tile(ordered[0])
+                    tile(ordered[1])
                 }
+
                 HStack(spacing: 0) {
-                    tile(images[3])
-                    tile(images[4])
-                    tile(images[5])
+                    tile(ordered[2])
+                    tile(ordered[3])
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fiveImageTemplate(in size: CGSize) -> some View {
+        if wideCount >= 2 {
+            let ordered = aspectDescendingImages
+
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    tile(ordered[0])
+                    tile(ordered[1])
+                    tile(ordered[2])
+                }
+                .frame(height: size.height * 0.28)
+
+                HStack(spacing: 0) {
+                    tile(ordered[3])
+                    tile(ordered[4])
+                }
+                .frame(height: size.height * 0.72)
+            }
+        } else if portraitCount >= 2 {
+            let ordered = aspectAscendingImages
+
+            HStack(spacing: 0) {
+                tile(ordered[0])
+                    .frame(width: size.width * 0.22)
+
+                VStack(spacing: 0) {
+                    tile(ordered[2])
+                    tile(ordered[3])
+                    tile(ordered[4])
+                }
+
+                tile(ordered[1])
+                    .frame(width: size.width * 0.22)
+            }
+        } else {
+            let ordered = aspectDescendingImages
+
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    tile(ordered[0])
+                    tile(ordered[1])
+                }
+                .frame(height: size.height * 0.62)
+
+                HStack(spacing: 0) {
+                    tile(ordered[2])
+                    tile(ordered[3])
+                    tile(ordered[4])
+                }
+                .frame(height: size.height * 0.38)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sixImageTemplate(in size: CGSize) -> some View {
+        if portraitCount >= 2 && wideCount >= 2 {
+            let tallImages = aspectAscendingImages
+            let wideImages = aspectDescendingImages
+
+            HStack(spacing: 0) {
+                tile(tallImages[0])
+                    .frame(width: size.width * 0.28)
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        tile(wideImages[0])
+                        tile(wideImages[1])
+                    }
+                    .frame(height: size.height * 0.46)
+
+                    HStack(spacing: 0) {
+                        tile(wideImages[2])
+                        tile(wideImages[3])
+                        tile(wideImages[4])
+                    }
+                    .frame(height: size.height * 0.54)
+                }
+            }
+        } else {
+            let ordered = aspectDescendingImages
+
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    tile(ordered[0])
+                    tile(ordered[1])
+                    tile(ordered[2])
+                }
+
+                HStack(spacing: 0) {
+                    tile(ordered[3])
+                    tile(ordered[4])
+                    tile(ordered[5])
                 }
             }
         }
@@ -3421,9 +3673,11 @@ struct OrigamiPreviewPage: View {
             Color.black
 
             GeometryReader { proxy in
-                collage
-                    .frame(width: proxy.size.width,
-                           height: proxy.size.height)
+                collage(in: proxy.size)
+                    .frame(
+                        width: proxy.size.width,
+                        height: proxy.size.height
+                    )
                     .clipped()
             }
 
@@ -3432,10 +3686,13 @@ struct OrigamiPreviewPage: View {
 
                 HStack {
                     Text(activePhotoName)
-                        .font(.custom("Figtree", size: 11.5).weight(.medium))
+                        .font(
+                            .custom("Figtree", size: 11.5)
+                            .weight(.medium)
+                        )
                         .foregroundColor(.white.opacity(0.92))
-                        .padding(.horizontal,12)
-                        .padding(.vertical,7)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
                         .background(Color.black.opacity(0.40))
                         .clipShape(Capsule())
 
@@ -3444,6 +3701,7 @@ struct OrigamiPreviewPage: View {
                 .padding(16)
             }
         }
+        .clipped()
     }
 }
 

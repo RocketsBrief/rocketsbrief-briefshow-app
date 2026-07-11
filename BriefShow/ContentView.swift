@@ -57,7 +57,7 @@ struct ContentView: View {
     private var selectedMusicTrackCount: Int {
         selectedMusicURLs.count
     }
-    @State private var timingMode: SlideshowTimingMode = .followMusic
+    @State private var timingMode: SlideshowTimingMode = .customSpeed
     @State private var secondsPerPhoto: Double = 5
     @State private var fadeDuration: Double = 1
     @State private var magazineImageFadeSeconds: Double = 0.6
@@ -153,6 +153,7 @@ struct ContentView: View {
                         previousOrigamiPageReplacements: previousOrigamiPageReplacements,
                         previousOrigamiPageAnimationVariant: previousOrigamiPageAnimationVariant,
                         origamiWholePageFoldProgress: origamiWholePageFoldProgress,
+                        origamiBlackOverlayOpacity: origamiBlackOverlayOpacity,
                         visualTheme: visualTheme,
                         isPreparingPhotos: isPreparingPhotos,
                         preparedPhotoCount: preparedPhotoCount,
@@ -240,6 +241,7 @@ struct ContentView: View {
                     previousOrigamiPageReplacements: previousOrigamiPageReplacements,
                     previousOrigamiPageAnimationVariant: previousOrigamiPageAnimationVariant,
                     origamiWholePageFoldProgress: origamiWholePageFoldProgress,
+                    origamiBlackOverlayOpacity: origamiBlackOverlayOpacity,
                     visualTheme: visualTheme,
                     timeCounterText: timeCounterText,
                     transitionStyle: transitionStyle,
@@ -663,19 +665,39 @@ struct ContentView: View {
                         remainingPhotos
                 )
 
-            // All replacement images move together
-            // as one simultaneous animation batch.
-            totalSwaps +=
-                replacementCount > 0
-                ? 1
-                : 0
+            // Timer must count the exact number of
+            // replacement batches that playback performs.
+            //
+            // Example:
+            // replacementCount = 2
+            // simultaneousSwapCount = 1
+            // result = 2 separate swap animations.
+            let simultaneousCount = max(
+                1,
+                origamiSimultaneousSwapCount
+            )
 
-            // Hold before the simultaneous batch and
-            // hold once more before the complete page fold.
+            let replacementBatchCount: Int
+
+            if replacementCount > 0 {
+                replacementBatchCount =
+                    (
+                        replacementCount
+                        + simultaneousCount
+                        - 1
+                    )
+                    / simultaneousCount
+            } else {
+                replacementBatchCount = 0
+            }
+
+            totalSwaps +=
+                replacementBatchCount
+
+            // Playback waits once before every batch,
+            // and once more before changing the full page.
             totalHolds +=
-                replacementCount > 0
-                ? 2
-                : 1
+                replacementBatchCount + 1
 
             consumedPhotos +=
                 baseSlotCount
@@ -786,6 +808,77 @@ struct ContentView: View {
         }
 
         return currentPhotoDuration * Double(selectedPhotoURLs.count)
+    }
+
+    private var origamiBlackOverlayOpacity: Double {
+        guard usesOrigamiTheme,
+              totalPreviewDuration > 0
+        else {
+            return 0
+        }
+
+        // Before the first playback begins, keep the
+        // normal Origami preview visible.
+        if previewTotalElapsedSeconds <= 0,
+           !isPreviewPlaying {
+            return 0
+        }
+
+        let fadeDuration = min(
+            1.0,
+            totalPreviewDuration * 0.5
+        )
+
+        guard fadeDuration > 0 else {
+            return 0
+        }
+
+        let elapsed = min(
+            max(
+                0,
+                previewTotalElapsedSeconds
+            ),
+            totalPreviewDuration
+        )
+
+        // Beginning: black alpha 1 -> 0.
+        let fadeInAlpha = max(
+            0,
+            1 - elapsed / fadeDuration
+        )
+
+        // Ending: black alpha 0 -> 1.
+        let fadeOutStart = max(
+            0,
+            totalPreviewDuration
+                - fadeDuration
+        )
+
+        let fadeOutAlpha: Double
+
+        if elapsed >= fadeOutStart {
+            fadeOutAlpha = min(
+                1,
+                max(
+                    0,
+                    (
+                        elapsed
+                        - fadeOutStart
+                    )
+                    / fadeDuration
+                )
+            )
+        } else {
+            fadeOutAlpha = 0
+        }
+
+        return min(
+            1,
+            max(
+                fadeInAlpha,
+                fadeOutAlpha
+            )
+        )
     }
 
     private var timeCounterText: String {
@@ -1208,12 +1301,36 @@ struct ContentView: View {
                 if shouldLoopPreview {
                     startPreviewFromBeginning()
                 } else {
-                    isPreviewPlaying = false
+                    // Keep the final Origami page visible
+                    // while the timer and music fade-out
+                    // finish their remaining duration.
+                    let remainingDuration = max(
+                        0,
+                        totalPreviewDuration
+                            - previewTotalElapsedSeconds
+                    )
+
+                    if remainingDuration > 0.02 {
+                        // Keep checking the final state on
+                        // every timer tick instead of waiting
+                        // through another complete image delay.
+                        previewElapsedSeconds =
+                            origamiInternalHoldDuration
+
+                        updateAudioFadeOut()
+                        return
+                    }
 
                     previewTotalElapsedSeconds =
                         totalPreviewDuration
 
+                    // Guarantee the exact final fade value
+                    // before pausing the player.
+                    updateAudioFadeOut()
+                    audioPlayer?.volume = 0
                     audioPlayer?.pause()
+
+                    isPreviewPlaying = false
                     transitionProgress = 1
                     origamiSwapProgress = 1
                 }
@@ -2921,7 +3038,7 @@ struct LeftImportPanel: View {
                         spacing: 6
                     ) {
                         CompactStepperRow(
-                            label: "Image Change Delay",
+                            label: "Swap Delay",
                             value:
                                 $origamiInternalHoldSeconds,
                             range: 1...15,
@@ -2930,7 +3047,7 @@ struct LeftImportPanel: View {
                         )
 
                         CompactStepperRow(
-                            label: "Images Before Page",
+                            label: "Swap Count",
                             value: Binding(
                                 get: {
                                     Double(
@@ -3368,6 +3485,7 @@ struct FullScreenPreviewSheet: View {
     let previousOrigamiPageReplacements: [Int: NSImage]
     let previousOrigamiPageAnimationVariant: Int
     let origamiWholePageFoldProgress: Double
+    let origamiBlackOverlayOpacity: Double
     let visualTheme: SlideshowVisualTheme
     let timeCounterText: String
     let transitionStyle: SlideshowTransitionStyle
@@ -3473,6 +3591,13 @@ struct FullScreenPreviewSheet: View {
                         .allowsHitTesting(false)
                         .zIndex(100)
                     }
+
+                    Color.black
+                        .opacity(
+                            origamiBlackOverlayOpacity
+                        )
+                        .allowsHitTesting(false)
+                        .zIndex(500)
                 }
                 .frame(
                     width: size.width,
@@ -5785,6 +5910,7 @@ struct CenterPreviewPanel: View {
     let previousOrigamiPageReplacements: [Int: NSImage]
     let previousOrigamiPageAnimationVariant: Int
     let origamiWholePageFoldProgress: Double
+    let origamiBlackOverlayOpacity: Double
     let visualTheme: SlideshowVisualTheme
     let isPreparingPhotos: Bool
     let preparedPhotoCount: Int
@@ -5870,6 +5996,13 @@ struct CenterPreviewPanel: View {
                                     .allowsHitTesting(false)
                                     .zIndex(100)
                                 }
+
+                                Color.black
+                                    .opacity(
+                                        origamiBlackOverlayOpacity
+                                    )
+                                    .allowsHitTesting(false)
+                                    .zIndex(500)
                             }
                             .clipShape(
                                 RoundedRectangle(

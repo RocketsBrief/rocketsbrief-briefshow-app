@@ -129,6 +129,7 @@ struct ContentView: View {
                         magazineImageDelaySeconds: magazineImageDelaySeconds,
                         magazineLayoutSeed: magazinePageIndex,
                         magazinePageSlotCount: currentPreviewPageSlotCount,
+                        origamiAnimationSeed: origamiPageIndex,
                         isPreviewPlaying: isPreviewPlaying,
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: { slotIndex in
@@ -202,6 +203,7 @@ struct ContentView: View {
                     magazineImageDelaySeconds: magazineImageDelaySeconds,
                     magazineLayoutSeed: magazinePageIndex,
                     magazinePageSlotCount: currentPreviewPageSlotCount,
+                    origamiAnimationSeed: origamiPageIndex,
                     isPreviewPlaying: isPreviewPlaying,
                     onTogglePreview: togglePreview,
                     onStartFromBeginning: startPreviewFromBeginning,
@@ -575,6 +577,16 @@ struct ContentView: View {
         return selectedPhotoURLs[activePhotoIndex].lastPathComponent
     }
 
+    private var origamiTransitionDuration: Double {
+        min(
+            1.20,
+            max(
+                0.78,
+                currentPhotoDuration * 0.30
+            )
+        )
+    }
+
     private var currentPhotoDuration: Double {
         if usesMagazineTheme {
             return magazinePageDuration
@@ -767,6 +779,21 @@ struct ContentView: View {
         if usesMagazineTheme {
             transitionProgress = 1
             magazineRevealElapsedSeconds = 0
+        } else if usesOrigamiTheme {
+            transitionProgress = 0
+
+            let duration =
+                origamiTransitionDuration
+
+            DispatchQueue.main.async {
+                withAnimation(
+                    .easeInOut(
+                        duration: duration
+                    )
+                ) {
+                    transitionProgress = 1
+                }
+            }
         } else {
             transitionProgress = 1
         }
@@ -848,18 +875,28 @@ struct ContentView: View {
                 newIndex == 0 ? 0 : origamiPageIndex + 1
         }
 
-        if transitionStyle == .fade {
+        if usesOrigamiTheme || transitionStyle == .fade {
             previousPhotoIndex = activePhotoIndex
             transitionProgress = 0
             activePhotoIndex = newIndex
 
             let safeFadeDuration: Double
-            if usesMagazineTheme {
+
+            if usesOrigamiTheme {
+                safeFadeDuration =
+                    origamiTransitionDuration
+            } else if usesMagazineTheme {
                 // Magazine uses its own internal reveal timing.
-                // Do not use the user-facing Single Fade setting here.
-                safeFadeDuration = magazinePageDuration
+                safeFadeDuration =
+                    magazinePageDuration
             } else {
-                safeFadeDuration = min(max(fadeDuration, 0.15), max(0.15, currentPhotoDuration * 0.45))
+                safeFadeDuration = min(
+                    max(fadeDuration, 0.15),
+                    max(
+                        0.15,
+                        currentPhotoDuration * 0.45
+                    )
+                )
             }
 
             DispatchQueue.main.async {
@@ -2585,6 +2622,7 @@ struct FullScreenPreviewSheet: View {
     let magazineImageDelaySeconds: Double
     let magazineLayoutSeed: Int
     let magazinePageSlotCount: Int
+    let origamiAnimationSeed: Int
     let isPreviewPlaying: Bool
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
@@ -2657,11 +2695,13 @@ struct FullScreenPreviewSheet: View {
             } else if visualTheme == .origami {
                 OrigamiPreviewPage(
                     images: themedPreviewImages,
-                    activePhotoName: activePhotoName
+                    activePhotoName: activePhotoName,
+                    showsPhotoName: false,
+                    transitionProgress: transitionProgress,
+                    animationVariant: origamiAnimationSeed
                 )
                 .frame(width: size.width, height: size.height)
                 .background(Color.black)
-                .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
             } else {
                 ZStack {
                     Color.black
@@ -3301,6 +3341,9 @@ struct MagazineImageTile: View {
 struct OrigamiPreviewPage: View {
     let images: [NSImage]
     let activePhotoName: String
+    let showsPhotoName: Bool
+    let transitionProgress: Double
+    let animationVariant: Int
 
     private enum OrigamiPhotoClass {
         case ultraPortrait
@@ -3544,17 +3587,297 @@ struct OrigamiPreviewPage: View {
         }
     }
 
+    private var normalizedAnimationVariant: Int {
+        let variant = animationVariant % 3
+        return variant >= 0 ? variant : variant + 3
+    }
+
+    private func tileSlot(for image: NSImage) -> Int {
+        pageImages.firstIndex { candidate in
+            candidate === image
+        } ?? 0
+    }
+
+    private func revealOrder(for slot: Int) -> Int {
+        let count = max(1, pageImages.count)
+
+        switch normalizedAnimationVariant {
+        case 0:
+            // Left-to-right accordion.
+            return slot
+
+        case 1:
+            // Reverse top/bottom fold.
+            return max(0, count - 1 - slot)
+
+        default:
+            // Center-out cascade.
+            let center = Double(count - 1) / 2
+            return Int(
+                abs(Double(slot) - center) * 2
+            )
+        }
+    }
+
+    private func tileAnimationProgress(
+        for slot: Int
+    ) -> Double {
+        let safeGlobalProgress = min(
+            1,
+            max(0, transitionProgress)
+        )
+
+        let order = revealOrder(for: slot)
+        let delay = Double(order) * 0.055
+        let animationSpan = 0.72
+
+        let rawProgress = (
+            safeGlobalProgress - delay
+        ) / animationSpan
+
+        let clampedProgress = min(
+            1,
+            max(0, rawProgress)
+        )
+
+        // Smoothstep curve.
+        return clampedProgress
+            * clampedProgress
+            * (3 - 2 * clampedProgress)
+    }
+
+    private func foldAxis(
+        for slot: Int
+    ) -> (
+        x: CGFloat,
+        y: CGFloat,
+        z: CGFloat
+    ) {
+        switch normalizedAnimationVariant {
+        case 0:
+            return (
+                x: 0,
+                y: 1,
+                z: 0
+            )
+
+        case 1:
+            return (
+                x: 1,
+                y: 0,
+                z: 0
+            )
+
+        default:
+            if slot.isMultiple(of: 2) {
+                return (
+                    x: 0.30,
+                    y: 1,
+                    z: 0
+                )
+            }
+
+            return (
+                x: 1,
+                y: 0.30,
+                z: 0
+            )
+        }
+    }
+
+    private func foldAnchor(
+        for slot: Int
+    ) -> UnitPoint {
+        switch normalizedAnimationVariant {
+        case 0:
+            return slot.isMultiple(of: 2)
+                ? .leading
+                : .trailing
+
+        case 1:
+            return slot.isMultiple(of: 2)
+                ? .top
+                : .bottom
+
+        default:
+            return .center
+        }
+    }
+
+    private func foldAngle(
+        for slot: Int,
+        progress: Double
+    ) -> Double {
+        let remaining = 1 - progress
+        let direction = slot.isMultiple(of: 2)
+            ? -1.0
+            : 1.0
+
+        switch normalizedAnimationVariant {
+        case 0:
+            return direction
+                * 88
+                * remaining
+
+        case 1:
+            return direction
+                * 82
+                * remaining
+
+        default:
+            return direction
+                * 70
+                * remaining
+        }
+    }
+
+    private func foldOffset(
+        for slot: Int,
+        progress: Double,
+        size: CGSize
+    ) -> CGSize {
+        let remaining = CGFloat(1 - progress)
+        let direction: CGFloat =
+            slot.isMultiple(of: 2) ? -1 : 1
+
+        switch normalizedAnimationVariant {
+        case 0:
+            return CGSize(
+                width:
+                    direction
+                    * size.width
+                    * 0.10
+                    * remaining,
+                height: 0
+            )
+
+        case 1:
+            return CGSize(
+                width: 0,
+                height:
+                    direction
+                    * size.height
+                    * 0.10
+                    * remaining
+            )
+
+        default:
+            let horizontalDirection: CGFloat =
+                slot % 4 < 2 ? -1 : 1
+
+            let verticalDirection: CGFloat =
+                slot.isMultiple(of: 2) ? -1 : 1
+
+            return CGSize(
+                width:
+                    horizontalDirection
+                    * size.width
+                    * 0.055
+                    * remaining,
+                height:
+                    verticalDirection
+                    * size.height
+                    * 0.055
+                    * remaining
+            )
+        }
+    }
+
+    private func foldScale(
+        progress: Double
+    ) -> CGFloat {
+        guard normalizedAnimationVariant == 2 else {
+            return 1
+        }
+
+        return 0.88
+            + CGFloat(progress) * 0.12
+    }
+
     @ViewBuilder
     private func tile(_ image: NSImage) -> some View {
         GeometryReader { proxy in
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(
-                    width: proxy.size.width,
-                    height: proxy.size.height
+            let slot = tileSlot(for: image)
+            let localProgress =
+                tileAnimationProgress(for: slot)
+
+            let axis = foldAxis(for: slot)
+            let anchor = foldAnchor(for: slot)
+
+            let angle = foldAngle(
+                for: slot,
+                progress: localProgress
+            )
+
+            let offset = foldOffset(
+                for: slot,
+                progress: localProgress,
+                size: proxy.size
+            )
+
+            let opacity = min(
+                1,
+                max(0, localProgress * 3.0)
+            )
+
+            ZStack {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(
+                        width: proxy.size.width,
+                        height: proxy.size.height
+                    )
+                    .clipped()
+
+                Color.black
+                    .opacity(
+                        (1 - localProgress) * 0.30
+                    )
+            }
+            .frame(
+                width: proxy.size.width,
+                height: proxy.size.height
+            )
+            .clipped()
+            .scaleEffect(
+                foldScale(
+                    progress: localProgress
                 )
-                .clipped()
+            )
+            .rotation3DEffect(
+                .degrees(angle),
+                axis: axis,
+                anchor: anchor,
+                anchorZ: 0,
+                perspective: 0.72
+            )
+            .offset(
+                x: offset.width,
+                y: offset.height
+            )
+            .opacity(opacity)
+            .shadow(
+                color: Color.black.opacity(
+                    (1 - localProgress) * 0.48
+                ),
+                radius:
+                    12
+                    * CGFloat(1 - localProgress),
+                x:
+                    normalizedAnimationVariant == 0
+                    ? (slot.isMultiple(of: 2) ? -8 : 8)
+                    : 0,
+                y:
+                    normalizedAnimationVariant == 1
+                    ? (slot.isMultiple(of: 2) ? -8 : 8)
+                    : 5
+            )
+            .zIndex(
+                Double(
+                    pageImages.count - slot
+                )
+            )
         }
         .clipped()
     }
@@ -3755,32 +4078,10 @@ struct OrigamiPreviewPage: View {
         let canvasAspect =
             size.width / max(1, size.height)
 
-        if portraitCount >= 2 {
-            let ordered = bestImageOrder(
-                for: [
-                    canvasAspect * 0.22,
-                    canvasAspect * 1.68,
-                    canvasAspect * 1.68,
-                    canvasAspect * 1.68,
-                    canvasAspect * 0.22
-                ]
-            )
-
-            HStack(spacing: 0) {
-                tile(ordered[0])
-                    .frame(width: size.width * 0.22)
-
-                VStack(spacing: 0) {
-                    tile(ordered[1])
-                    tile(ordered[2])
-                    tile(ordered[3])
-                }
-                .frame(width: size.width * 0.56)
-
-                tile(ordered[4])
-                    .frame(width: size.width * 0.22)
-            }
-        } else if portraitCount == 1 {
+        if portraitCount >= 1 {
+            // One tall portrait slot + four balanced slots.
+            // This avoids stacking three horizontal images into
+            // extremely shallow strips.
             let ordered = bestImageOrder(
                 for: [
                     canvasAspect * 0.28,
@@ -3809,6 +4110,8 @@ struct OrigamiPreviewPage: View {
                 .frame(width: size.width * 0.72)
             }
         } else {
+            // Landscape/square page:
+            // two larger images above and three below.
             let ordered = bestImageOrder(
                 for: [
                     canvasAspect * 0.806,
@@ -3932,38 +4235,70 @@ struct OrigamiPreviewPage: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.black
+        GeometryReader { proxy in
+            let availableWidth = max(1, proxy.size.width)
+            let availableHeight = max(1, proxy.size.height)
 
-            GeometryReader { proxy in
-                collage(in: proxy.size)
-                    .frame(
-                        width: proxy.size.width,
-                        height: proxy.size.height
-                    )
-                    .clipped()
-            }
+            let pageWidth = min(
+                availableWidth,
+                availableHeight * 16 / 9
+            )
 
-            VStack {
-                Spacer()
+            let pageHeight = pageWidth * 9 / 16
+            let pageSize = CGSize(
+                width: pageWidth,
+                height: pageHeight
+            )
 
-                HStack {
-                    Text(activePhotoName)
-                        .font(
-                            .custom("Figtree", size: 11.5)
-                            .weight(.medium)
+            ZStack {
+                Color.black
+
+                ZStack {
+                    collage(in: pageSize)
+                        .frame(
+                            width: pageWidth,
+                            height: pageHeight
                         )
-                        .foregroundColor(.white.opacity(0.92))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background(Color.black.opacity(0.40))
-                        .clipShape(Capsule())
+                        .clipped()
 
-                    Spacer()
+                    if showsPhotoName {
+                        VStack {
+                            Spacer()
+
+                            HStack {
+                                Text(activePhotoName)
+                                    .font(
+                                        .custom("Figtree", size: 11.5)
+                                        .weight(.medium)
+                                    )
+                                    .foregroundColor(.white.opacity(0.92))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(Color.black.opacity(0.40))
+                                    .clipShape(Capsule())
+
+                                Spacer()
+                            }
+                            .padding(16)
+                        }
+                        .frame(
+                            width: pageWidth,
+                            height: pageHeight
+                        )
+                    }
                 }
-                .padding(16)
+                .frame(
+                    width: pageWidth,
+                    height: pageHeight
+                )
+                .clipped()
             }
+            .frame(
+                width: proxy.size.width,
+                height: proxy.size.height
+            )
         }
+        .background(Color.black)
         .clipped()
     }
 }
@@ -4007,6 +4342,7 @@ struct CenterPreviewPanel: View {
     let magazineImageDelaySeconds: Double
     let magazineLayoutSeed: Int
     let magazinePageSlotCount: Int
+    let origamiAnimationSeed: Int
     let isPreviewPlaying: Bool
     let onAddPhotos: () -> Void
     let onAddMusic: (Int) -> Void
@@ -4054,9 +4390,11 @@ struct CenterPreviewPanel: View {
                         } else if visualTheme == .origami {
                             OrigamiPreviewPage(
                                 images: themedPreviewImages,
-                                activePhotoName: activePhotoName
+                                activePhotoName: activePhotoName,
+                                showsPhotoName: true,
+                                transitionProgress: transitionProgress,
+                                animationVariant: origamiAnimationSeed
                             )
-                            .opacity(transitionStyle == .fade && previousPreviewImage != nil ? transitionProgress : 1)
                             .clipShape(RoundedRectangle(cornerRadius: 28))
                         } else {
                             if transitionStyle == .fade, let previousPreviewImage {

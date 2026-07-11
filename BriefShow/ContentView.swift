@@ -76,6 +76,17 @@ struct ContentView: View {
     @State private var magazineRevealElapsedSeconds: Double = 0
     @State private var magazinePageIndex: Int = 0
     @State private var origamiPageIndex: Int = 0
+
+    // The Origami page remains fixed while individual
+    // image slots are replaced one at a time.
+    @State private var origamiSlotReplacementImages: [Int: NSImage] = [:]
+    @State private var origamiCompletedSwapCount: Int = 0
+    @State private var origamiSwapSlotIndex: Int?
+    @State private var origamiSwapIncomingImage: NSImage?
+    @State private var origamiSwapProgress: Double = 1
+    @State private var origamiSwapStyle: Int = 0
+    @State private var isOrigamiSwapAnimating: Bool = false
+
     @State private var isPreviewPlaying: Bool = false
     @State private var previewElapsedSeconds: Double = 0
     @State private var previewTotalElapsedSeconds: Double = 0
@@ -116,6 +127,11 @@ struct ContentView: View {
                         activePhotoIndex: activePhotoIndex,
                         photoCount: selectedPhotoURLs.count,
                         previewImages: previewImages,
+                        origamiSlotReplacementImages: origamiSlotReplacementImages,
+                        origamiSwapSlotIndex: origamiSwapSlotIndex,
+                        origamiSwapIncomingImage: origamiSwapIncomingImage,
+                        origamiSwapProgress: origamiSwapProgress,
+                        origamiSwapStyle: origamiSwapStyle,
                         visualTheme: visualTheme,
                         isPreparingPhotos: isPreparingPhotos,
                         preparedPhotoCount: preparedPhotoCount,
@@ -195,6 +211,11 @@ struct ContentView: View {
                     photoCount: selectedPhotoURLs.count,
                     isPreparingPhotos: isPreparingPhotos,
                     previewImages: previewImages,
+                    origamiSlotReplacementImages: origamiSlotReplacementImages,
+                    origamiSwapSlotIndex: origamiSwapSlotIndex,
+                    origamiSwapIncomingImage: origamiSwapIncomingImage,
+                    origamiSwapProgress: origamiSwapProgress,
+                    origamiSwapStyle: origamiSwapStyle,
                     visualTheme: visualTheme,
                     timeCounterText: timeCounterText,
                     transitionStyle: transitionStyle,
@@ -478,8 +499,57 @@ struct ContentView: View {
     private var currentOrigamiPageSlotCount: Int {
         plannedOrigamiSlotCount(
             pageIndex: origamiPageIndex,
-            remainingPhotos: selectedPhotoURLs.count - activePhotoIndex
+            remainingPhotos:
+                selectedPhotoURLs.count - activePhotoIndex
         )
+    }
+
+    private func plannedOrigamiReplacementCount(
+        baseSlotCount: Int,
+        remainingPhotos: Int
+    ) -> Int {
+        var replacementCount = min(
+            3,
+            max(
+                0,
+                remainingPhotos - baseSlotCount
+            )
+        )
+
+        // Do not consume so many replacement photos
+        // that only one image remains for the next page.
+        if remainingPhotos
+            - baseSlotCount
+            - replacementCount == 1,
+           replacementCount > 0 {
+            replacementCount -= 1
+        }
+
+        return replacementCount
+    }
+
+    private var currentOrigamiReplacementCount: Int {
+        plannedOrigamiReplacementCount(
+            baseSlotCount:
+                currentOrigamiPageSlotCount,
+            remainingPhotos:
+                selectedPhotoURLs.count
+                - activePhotoIndex
+        )
+    }
+
+    private var currentOrigamiConsumedCount: Int {
+        currentOrigamiPageSlotCount
+            + currentOrigamiReplacementCount
+    }
+
+    private var origamiInternalHoldDuration: Double {
+        // Fixed page delay between individual changes.
+        3.5
+    }
+
+    private var origamiInternalSwapDuration: Double {
+        1.05
     }
 
     private var currentPreviewPageSlotCount: Int {
@@ -517,32 +587,67 @@ struct ContentView: View {
     }
 
 
-    private var origamiPreviewPageCount: Int {
+    private var origamiPlanMetrics: (
+        pages: Int,
+        swaps: Int,
+        holds: Int
+    ) {
         guard !selectedPhotoURLs.isEmpty else {
-            return 0
+            return (0, 0, 0)
         }
 
         var pageIndex = 0
         var consumedPhotos = 0
+        var totalSwaps = 0
+        var totalHolds = 0
 
-        while consumedPhotos < selectedPhotoURLs.count {
+        while consumedPhotos
+                < selectedPhotoURLs.count {
+
             let remainingPhotos =
-                selectedPhotoURLs.count - consumedPhotos
+                selectedPhotoURLs.count
+                - consumedPhotos
 
-            let slotCount = max(
+            let baseSlotCount = max(
                 1,
                 plannedOrigamiSlotCount(
                     pageIndex: pageIndex,
-                    remainingPhotos: remainingPhotos
+                    remainingPhotos:
+                        remainingPhotos
                 )
             )
 
-            consumedPhotos += slotCount
+            let replacementCount =
+                plannedOrigamiReplacementCount(
+                    baseSlotCount:
+                        baseSlotCount,
+                    remainingPhotos:
+                        remainingPhotos
+                )
+
+            totalSwaps += replacementCount
+
+            // Initial hold plus one hold after every swap.
+            totalHolds += replacementCount + 1
+
+            consumedPhotos +=
+                baseSlotCount
+                + replacementCount
+
             pageIndex += 1
         }
 
-        return pageIndex
+        return (
+            pages: pageIndex,
+            swaps: totalSwaps,
+            holds: totalHolds
+        )
     }
+
+    private var origamiPreviewPageCount: Int {
+        origamiPlanMetrics.pages
+    }
+
 
     private var magazineRevealProgress: Double {
         let revealOnlySeconds = max(
@@ -592,14 +697,8 @@ struct ContentView: View {
             return magazinePageDuration
         }
 
-        if usesOrigamiTheme,
-           timingMode == .followMusic,
-           let audioPlayer {
-            return max(
-                0.5,
-                audioPlayer.duration /
-                Double(max(1, origamiPreviewPageCount))
-            )
+        if usesOrigamiTheme {
+            return origamiInternalHoldDuration
         }
 
         switch timingMode {
@@ -624,8 +723,15 @@ struct ContentView: View {
         }
 
         if usesOrigamiTheme {
-            return currentPhotoDuration *
-                Double(max(1, origamiPreviewPageCount))
+            let metrics = origamiPlanMetrics
+
+            return
+                Double(metrics.holds)
+                    * origamiInternalHoldDuration
+                + Double(metrics.swaps)
+                    * origamiInternalSwapDuration
+                + Double(metrics.pages)
+                    * origamiTransitionDuration
         }
 
         if timingMode == .followMusic, let audioPlayer {
@@ -680,7 +786,10 @@ struct ContentView: View {
     }
 
     private func togglePreview() {
-        guard !selectedPhotoURLs.isEmpty, !isPreparingPhotos, !previewImages.isEmpty else {
+        guard !selectedPhotoURLs.isEmpty,
+              !isPreparingPhotos,
+              !previewImages.isEmpty
+        else {
             return
         }
 
@@ -688,8 +797,19 @@ struct ContentView: View {
         previewElapsedSeconds = 0
 
         if isPreviewPlaying {
-            let fadeInDuration = max(musicFadeInSeconds, 0.1)
-            audioPlayer?.volume = Float(min(previewTotalElapsedSeconds / fadeInDuration, 1))
+            let fadeInDuration = max(
+                musicFadeInSeconds,
+                0.1
+            )
+
+            audioPlayer?.volume = Float(
+                min(
+                    previewTotalElapsedSeconds
+                        / fadeInDuration,
+                    1
+                )
+            )
+
             audioPlayer?.play()
 
             if usesMagazineTheme {
@@ -701,22 +821,173 @@ struct ContentView: View {
         }
     }
 
-    private func advancePreviewIfNeeded(delta: Double) {
-        guard isPreviewPlaying, !selectedPhotoURLs.isEmpty else {
+    private func resetOrigamiInternalSwapState() {
+        origamiSlotReplacementImages = [:]
+        origamiCompletedSwapCount = 0
+        origamiSwapSlotIndex = nil
+        origamiSwapIncomingImage = nil
+        origamiSwapProgress = 1
+        origamiSwapStyle = 0
+        isOrigamiSwapAnimating = false
+    }
+
+    private func startOrigamiInternalSwap() {
+        guard usesOrigamiTheme,
+              !isOrigamiSwapAnimating,
+              origamiCompletedSwapCount
+                < currentOrigamiReplacementCount,
+              currentOrigamiPageSlotCount > 0
+        else {
             return
         }
 
-        previewElapsedSeconds += delta
-        previewTotalElapsedSeconds += delta
+        let replacementPhotoIndex =
+            activePhotoIndex
+            + currentOrigamiPageSlotCount
+            + origamiCompletedSwapCount
 
-        if usesMagazineTheme {
-            magazineRevealElapsedSeconds = previewElapsedSeconds
+        guard previewImages.indices.contains(
+            replacementPhotoIndex
+        ) else {
+            return
         }
+
+        let slotIndex =
+            origamiCompletedSwapCount
+            % currentOrigamiPageSlotCount
+
+        let incomingImage =
+            previewImages[replacementPhotoIndex]
+
+        let pageStartIndex =
+            activePhotoIndex
+
+        origamiSwapSlotIndex = slotIndex
+        origamiSwapIncomingImage = incomingImage
+
+        // Swap 1 = Half Fold
+        // Swap 2 = Quarter Fold
+        // Swap 3 = Half Fold
+        origamiSwapStyle =
+            origamiCompletedSwapCount % 2
+
+        origamiSwapProgress = 0
+        isOrigamiSwapAnimating = true
+
+        let duration =
+            origamiInternalSwapDuration
+
+        DispatchQueue.main.async {
+            withAnimation(
+                .easeInOut(duration: duration)
+            ) {
+                origamiSwapProgress = 1
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(
+            deadline:
+                .now()
+                + duration
+                + 0.03
+        ) {
+            guard activePhotoIndex
+                    == pageStartIndex,
+                  origamiSwapSlotIndex
+                    == slotIndex
+            else {
+                return
+            }
+
+            origamiSlotReplacementImages[
+                slotIndex
+            ] = incomingImage
+
+            origamiCompletedSwapCount += 1
+            origamiSwapSlotIndex = nil
+            origamiSwapIncomingImage = nil
+            origamiSwapProgress = 1
+            isOrigamiSwapAnimating = false
+        }
+    }
+
+    private func advancePreviewIfNeeded(
+        delta: Double
+    ) {
+        guard isPreviewPlaying,
+              !selectedPhotoURLs.isEmpty
+        else {
+            return
+        }
+
+        previewTotalElapsedSeconds += delta
 
         updateMusicPlaylistPlayback(delta: delta)
         updateAudioFadeOut()
 
-        guard previewElapsedSeconds >= currentPhotoDuration else {
+        if usesOrigamiTheme {
+            // Do not count the 3.5 second hold while
+            // the whole page or one slot is animating.
+            guard transitionProgress >= 0.999,
+                  !isOrigamiSwapAnimating
+            else {
+                return
+            }
+
+            previewElapsedSeconds += delta
+
+            guard previewElapsedSeconds
+                    >= origamiInternalHoldDuration
+            else {
+                return
+            }
+
+            previewElapsedSeconds = 0
+
+            if origamiCompletedSwapCount
+                < currentOrigamiReplacementCount {
+
+                startOrigamiInternalSwap()
+                return
+            }
+
+            let nextIndex =
+                activePhotoIndex
+                + currentOrigamiConsumedCount
+
+            if nextIndex
+                >= selectedPhotoURLs.count {
+
+                if shouldLoopPreview {
+                    startPreviewFromBeginning()
+                } else {
+                    isPreviewPlaying = false
+
+                    previewTotalElapsedSeconds =
+                        totalPreviewDuration
+
+                    audioPlayer?.pause()
+                    transitionProgress = 1
+                    origamiSwapProgress = 1
+                }
+
+                return
+            }
+
+            moveToPhoto(at: nextIndex)
+            return
+        }
+
+        previewElapsedSeconds += delta
+
+        if usesMagazineTheme {
+            magazineRevealElapsedSeconds =
+                previewElapsedSeconds
+        }
+
+        guard previewElapsedSeconds
+                >= currentPhotoDuration
+        else {
             return
         }
 
@@ -726,8 +997,13 @@ struct ContentView: View {
             magazineRevealElapsedSeconds = 0
         }
 
-        let nextIndex = activePhotoIndex +
-            (usesPagedTheme ? currentPreviewPageSlotCount : 1)
+        let nextIndex =
+            activePhotoIndex
+            + (
+                usesMagazineTheme
+                ? currentMagazinePageSlotCount
+                : 1
+            )
 
         if nextIndex >= selectedPhotoURLs.count {
             if shouldLoopPreview {
@@ -738,19 +1014,32 @@ struct ContentView: View {
                 moveToPhoto(at: 0)
             } else {
                 isPreviewPlaying = false
-                previewTotalElapsedSeconds = totalPreviewDuration
+
+                previewTotalElapsedSeconds =
+                    totalPreviewDuration
+
                 audioPlayer?.pause()
 
                 if usesMagazineTheme {
                     transitionProgress = 1
+
                     magazineRevealElapsedSeconds = max(
                         0.05,
-                        magazineImageFadeSeconds + (magazineImageDelaySeconds * 5)
+                        magazineImageFadeSeconds
+                            + (
+                                magazineImageDelaySeconds
+                                * 5
+                            )
                     )
                 } else {
-                    moveToPhoto(at: selectedPhotoURLs.count - 1)
+                    moveToPhoto(
+                        at:
+                            selectedPhotoURLs.count
+                            - 1
+                    )
                 }
             }
+
             return
         }
 
@@ -758,7 +1047,10 @@ struct ContentView: View {
     }
 
     private func startPreviewFromBeginning() {
-        guard !selectedPhotoURLs.isEmpty, !isPreparingPhotos, !previewImages.isEmpty else {
+        guard !selectedPhotoURLs.isEmpty,
+              !isPreparingPhotos,
+              !previewImages.isEmpty
+        else {
             return
         }
 
@@ -766,12 +1058,19 @@ struct ContentView: View {
         activePhotoIndex = 0
         magazinePageIndex = 0
         origamiPageIndex = 0
+
+        resetOrigamiInternalSwapState()
+
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
         isPreviewPlaying = true
         currentMusicIndex = 0
         currentMusicElapsedSeconds = 0
-        prepareAudioPlayer(for: activeMusicURL)
+
+        prepareAudioPlayer(
+            for: activeMusicURL
+        )
+
         audioPlayer?.volume = 0
         audioPlayer?.currentTime = 0
         audioPlayer?.play()
@@ -857,14 +1156,23 @@ struct ContentView: View {
     }
 
     private func moveToPhoto(at newIndex: Int) {
-        guard selectedPhotoURLs.indices.contains(newIndex), newIndex != activePhotoIndex else {
+        guard selectedPhotoURLs.indices.contains(
+                newIndex
+              ),
+              newIndex != activePhotoIndex
+        else {
             return
         }
 
         if usesMagazineTheme {
             previousPhotoIndex = nil
             activePhotoIndex = newIndex
-            magazinePageIndex = newIndex == 0 ? 0 : magazinePageIndex + 1
+
+            magazinePageIndex =
+                newIndex == 0
+                ? 0
+                : magazinePageIndex + 1
+
             transitionProgress = 1
             magazineRevealElapsedSeconds = 0
             return
@@ -872,23 +1180,29 @@ struct ContentView: View {
 
         if usesOrigamiTheme {
             origamiPageIndex =
-                newIndex == 0 ? 0 : origamiPageIndex + 1
+                newIndex == 0
+                ? 0
+                : origamiPageIndex + 1
         }
 
-        if usesOrigamiTheme || transitionStyle == .fade {
-            previousPhotoIndex = activePhotoIndex
+        if usesOrigamiTheme
+            || transitionStyle == .fade {
+
+            previousPhotoIndex =
+                activePhotoIndex
+
             transitionProgress = 0
             activePhotoIndex = newIndex
+
+            if usesOrigamiTheme {
+                resetOrigamiInternalSwapState()
+            }
 
             let safeFadeDuration: Double
 
             if usesOrigamiTheme {
                 safeFadeDuration =
                     origamiTransitionDuration
-            } else if usesMagazineTheme {
-                // Magazine uses its own internal reveal timing.
-                safeFadeDuration =
-                    magazinePageDuration
             } else {
                 safeFadeDuration = min(
                     max(fadeDuration, 0.15),
@@ -900,12 +1214,22 @@ struct ContentView: View {
             }
 
             DispatchQueue.main.async {
-                withAnimation(.easeInOut(duration: safeFadeDuration)) {
+                withAnimation(
+                    .easeInOut(
+                        duration:
+                            safeFadeDuration
+                    )
+                ) {
                     transitionProgress = 1
                 }
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + safeFadeDuration + 0.02) {
+            DispatchQueue.main.asyncAfter(
+                deadline:
+                    .now()
+                    + safeFadeDuration
+                    + 0.02
+            ) {
                 if activePhotoIndex == newIndex {
                     previousPhotoIndex = nil
                     transitionProgress = 1
@@ -925,9 +1249,13 @@ struct ContentView: View {
         magazineRevealElapsedSeconds = 0
         magazinePageIndex = 0
         origamiPageIndex = 0
+
+        resetOrigamiInternalSwapState()
+
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
         isPreviewPlaying = false
+
         audioPlayer?.pause()
         audioPlayer?.currentTime = 0
         audioPlayer?.volume = 1
@@ -2614,6 +2942,11 @@ struct FullScreenPreviewSheet: View {
     let photoCount: Int
     let isPreparingPhotos: Bool
     let previewImages: [NSImage]
+    let origamiSlotReplacementImages: [Int: NSImage]
+    let origamiSwapSlotIndex: Int?
+    let origamiSwapIncomingImage: NSImage?
+    let origamiSwapProgress: Double
+    let origamiSwapStyle: Int
     let visualTheme: SlideshowVisualTheme
     let timeCounterText: String
     let transitionStyle: SlideshowTransitionStyle
@@ -2695,6 +3028,11 @@ struct FullScreenPreviewSheet: View {
             } else if visualTheme == .origami {
                 OrigamiPreviewPage(
                     images: themedPreviewImages,
+                    slotReplacementImages: origamiSlotReplacementImages,
+                    swapSlotIndex: origamiSwapSlotIndex,
+                    swapIncomingImage: origamiSwapIncomingImage,
+                    swapProgress: origamiSwapProgress,
+                    swapStyle: origamiSwapStyle,
                     activePhotoName: activePhotoName,
                     showsPhotoName: false,
                     transitionProgress: transitionProgress,
@@ -3340,6 +3678,11 @@ struct MagazineImageTile: View {
 
 struct OrigamiPreviewPage: View {
     let images: [NSImage]
+    let slotReplacementImages: [Int: NSImage]
+    let swapSlotIndex: Int?
+    let swapIncomingImage: NSImage?
+    let swapProgress: Double
+    let swapStyle: Int
     let activePhotoName: String
     let showsPhotoName: Bool
     let transitionProgress: Double
@@ -3794,57 +4137,51 @@ struct OrigamiPreviewPage: View {
             + CGFloat(progress) * 0.12
     }
 
+    private func swapSmoothStep(
+        _ value: Double
+    ) -> Double {
+        let clamped = min(
+            1,
+            max(0, value)
+        )
+
+        return clamped
+            * clamped
+            * (3 - 2 * clamped)
+    }
+
     @ViewBuilder
-    private func tile(_ image: NSImage) -> some View {
-        GeometryReader { proxy in
-            let slot = tileSlot(for: image)
-            let localProgress =
-                tileAnimationProgress(for: slot)
-
-            let axis = foldAxis(for: slot)
-            let anchor = foldAnchor(for: slot)
-
-            let angle = foldAngle(
-                for: slot,
-                progress: localProgress
-            )
-
-            let offset = foldOffset(
-                for: slot,
-                progress: localProgress,
-                size: proxy.size
-            )
-
-            let opacity = min(
-                1,
-                max(0, localProgress * 3.0)
-            )
-
-            ZStack {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(
-                        width: proxy.size.width,
-                        height: proxy.size.height
-                    )
-                    .clipped()
-
-                Color.black
-                    .opacity(
-                        (1 - localProgress) * 0.30
-                    )
-            }
+    private func foldPanel(
+        image: NSImage,
+        fullSize: CGSize,
+        panelSize: CGSize,
+        cropOffset: CGSize,
+        position: CGPoint,
+        anchor: UnitPoint,
+        axis: (
+            x: CGFloat,
+            y: CGFloat,
+            z: CGFloat
+        ),
+        angle: Double,
+        opacity: Double
+    ) -> some View {
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFill()
             .frame(
-                width: proxy.size.width,
-                height: proxy.size.height
+                width: fullSize.width,
+                height: fullSize.height
+            )
+            .offset(
+                x: cropOffset.width,
+                y: cropOffset.height
+            )
+            .frame(
+                width: panelSize.width,
+                height: panelSize.height
             )
             .clipped()
-            .scaleEffect(
-                foldScale(
-                    progress: localProgress
-                )
-            )
             .rotation3DEffect(
                 .degrees(angle),
                 axis: axis,
@@ -3852,34 +4189,444 @@ struct OrigamiPreviewPage: View {
                 anchorZ: 0,
                 perspective: 0.72
             )
-            .offset(
-                x: offset.width,
-                y: offset.height
-            )
             .opacity(opacity)
+            .frame(
+                width: panelSize.width,
+                height: panelSize.height
+            )
+            .position(position)
             .shadow(
                 color: Color.black.opacity(
-                    (1 - localProgress) * 0.48
+                    0.42
+                    * min(
+                        1,
+                        abs(angle) / 90
+                    )
                 ),
-                radius:
-                    12
-                    * CGFloat(1 - localProgress),
-                x:
-                    normalizedAnimationVariant == 0
-                    ? (slot.isMultiple(of: 2) ? -8 : 8)
-                    : 0,
-                y:
-                    normalizedAnimationVariant == 1
-                    ? (slot.isMultiple(of: 2) ? -8 : 8)
-                    : 5
+                radius: 10,
+                x: 0,
+                y: 3
             )
-            .zIndex(
-                Double(
-                    pageImages.count - slot
+    }
+
+    @ViewBuilder
+    private func halfFoldSwapTile(
+        oldImage: NSImage,
+        newImage: NSImage,
+        progress: Double,
+        size: CGSize
+    ) -> some View {
+        let width = max(1, size.width)
+        let height = max(1, size.height)
+        let halfWidth = width * 0.5
+
+        let foldProgress =
+            swapSmoothStep(
+                progress / 0.84
+            )
+
+        let oldOpacity = max(
+            0,
+            1 - swapSmoothStep(
+                (progress - 0.68) / 0.32
+            )
+        )
+
+        let angle =
+            94 * foldProgress
+
+        ZStack {
+            // New image stays behind the old image.
+            Image(nsImage: newImage)
+                .resizable()
+                .scaledToFill()
+                .frame(
+                    width: width,
+                    height: height
+                )
+                .clipped()
+
+            foldPanel(
+                image: oldImage,
+                fullSize: size,
+                panelSize: CGSize(
+                    width: halfWidth,
+                    height: height
+                ),
+                cropOffset: CGSize(
+                    width: width * 0.25,
+                    height: 0
+                ),
+                position: CGPoint(
+                    x: width * 0.25,
+                    y: height * 0.5
+                ),
+                anchor: .trailing,
+                axis: (
+                    x: 0,
+                    y: 1,
+                    z: 0
+                ),
+                angle: -angle,
+                opacity: oldOpacity
+            )
+
+            foldPanel(
+                image: oldImage,
+                fullSize: size,
+                panelSize: CGSize(
+                    width: halfWidth,
+                    height: height
+                ),
+                cropOffset: CGSize(
+                    width: -width * 0.25,
+                    height: 0
+                ),
+                position: CGPoint(
+                    x: width * 0.75,
+                    y: height * 0.5
+                ),
+                anchor: .leading,
+                axis: (
+                    x: 0,
+                    y: 1,
+                    z: 0
+                ),
+                angle: angle,
+                opacity: oldOpacity
+            )
+        }
+        .frame(
+            width: width,
+            height: height
+        )
+        .clipped()
+    }
+
+    @ViewBuilder
+    private func quarterFoldSwapTile(
+        oldImage: NSImage,
+        newImage: NSImage,
+        progress: Double,
+        size: CGSize
+    ) -> some View {
+        let width = max(1, size.width)
+        let height = max(1, size.height)
+
+        let panelSize = CGSize(
+            width: width * 0.5,
+            height: height * 0.5
+        )
+
+        let foldProgress =
+            swapSmoothStep(
+                progress / 0.86
+            )
+
+        let oldOpacity = max(
+            0,
+            1 - swapSmoothStep(
+                (progress - 0.68) / 0.32
+            )
+        )
+
+        let angle =
+            92 * foldProgress
+
+        ZStack {
+            // New image stays behind all four old quarters.
+            Image(nsImage: newImage)
+                .resizable()
+                .scaledToFill()
+                .frame(
+                    width: width,
+                    height: height
+                )
+                .clipped()
+
+            foldPanel(
+                image: oldImage,
+                fullSize: size,
+                panelSize: panelSize,
+                cropOffset: CGSize(
+                    width: width * 0.25,
+                    height: height * 0.25
+                ),
+                position: CGPoint(
+                    x: width * 0.25,
+                    y: height * 0.25
+                ),
+                anchor: .bottomTrailing,
+                axis: (
+                    x: 1,
+                    y: -1,
+                    z: 0
+                ),
+                angle: -angle,
+                opacity: oldOpacity
+            )
+
+            foldPanel(
+                image: oldImage,
+                fullSize: size,
+                panelSize: panelSize,
+                cropOffset: CGSize(
+                    width: -width * 0.25,
+                    height: height * 0.25
+                ),
+                position: CGPoint(
+                    x: width * 0.75,
+                    y: height * 0.25
+                ),
+                anchor: .bottomLeading,
+                axis: (
+                    x: 1,
+                    y: 1,
+                    z: 0
+                ),
+                angle: angle,
+                opacity: oldOpacity
+            )
+
+            foldPanel(
+                image: oldImage,
+                fullSize: size,
+                panelSize: panelSize,
+                cropOffset: CGSize(
+                    width: width * 0.25,
+                    height: -height * 0.25
+                ),
+                position: CGPoint(
+                    x: width * 0.25,
+                    y: height * 0.75
+                ),
+                anchor: .topTrailing,
+                axis: (
+                    x: 1,
+                    y: 1,
+                    z: 0
+                ),
+                angle: angle,
+                opacity: oldOpacity
+            )
+
+            foldPanel(
+                image: oldImage,
+                fullSize: size,
+                panelSize: panelSize,
+                cropOffset: CGSize(
+                    width: -width * 0.25,
+                    height: -height * 0.25
+                ),
+                position: CGPoint(
+                    x: width * 0.75,
+                    y: height * 0.75
+                ),
+                anchor: .topLeading,
+                axis: (
+                    x: 1,
+                    y: -1,
+                    z: 0
+                ),
+                angle: -angle,
+                opacity: oldOpacity
+            )
+        }
+        .frame(
+            width: width,
+            height: height
+        )
+        .clipped()
+    }
+
+    private func internalSwapTile(
+        oldImage: NSImage,
+        newImage: NSImage,
+        style: Int,
+        progress: Double,
+        size: CGSize
+    ) -> AnyView {
+        if style.isMultiple(of: 2) {
+            return AnyView(
+                halfFoldSwapTile(
+                    oldImage: oldImage,
+                    newImage: newImage,
+                    progress: progress,
+                    size: size
                 )
             )
         }
-        .clipped()
+
+        return AnyView(
+            quarterFoldSwapTile(
+                oldImage: oldImage,
+                newImage: newImage,
+                progress: progress,
+                size: size
+            )
+        )
+    }
+
+    private func tile(
+        _ image: NSImage
+    ) -> AnyView {
+        AnyView(
+            GeometryReader { proxy in
+                let slot =
+                    tileSlot(for: image)
+
+                let displayedImage =
+                    slotReplacementImages[slot]
+                    ?? image
+
+                let localProgress =
+                    tileAnimationProgress(
+                        for: slot
+                    )
+
+                let axis =
+                    foldAxis(for: slot)
+
+                let anchor =
+                    foldAnchor(for: slot)
+
+                let angle =
+                    foldAngle(
+                        for: slot,
+                        progress: localProgress
+                    )
+
+                let offset =
+                    foldOffset(
+                        for: slot,
+                        progress: localProgress,
+                        size: proxy.size
+                    )
+
+                let opacity = min(
+                    1,
+                    max(
+                        0,
+                        localProgress * 3
+                    )
+                )
+
+                AnyView(
+                    ZStack {
+                        if swapSlotIndex == slot,
+                           let incomingImage =
+                            swapIncomingImage {
+
+                            internalSwapTile(
+                                oldImage:
+                                    displayedImage,
+                                newImage:
+                                    incomingImage,
+                                style:
+                                    swapStyle,
+                                progress:
+                                    swapProgress,
+                                size:
+                                    proxy.size
+                            )
+                        } else {
+                            Image(
+                                nsImage:
+                                    displayedImage
+                            )
+                            .resizable()
+                            .scaledToFill()
+                            .frame(
+                                width:
+                                    proxy.size.width,
+                                height:
+                                    proxy.size.height
+                            )
+                            .clipped()
+                        }
+
+                        Color.black
+                            .opacity(
+                                (
+                                    1
+                                    - localProgress
+                                )
+                                * 0.30
+                            )
+                    }
+                    .frame(
+                        width:
+                            proxy.size.width,
+                        height:
+                            proxy.size.height
+                    )
+                    .clipped()
+                    .scaleEffect(
+                        foldScale(
+                            progress:
+                                localProgress
+                        )
+                    )
+                    .rotation3DEffect(
+                        .degrees(angle),
+                        axis: axis,
+                        anchor: anchor,
+                        anchorZ: 0,
+                        perspective: 0.72
+                    )
+                    .offset(
+                        x: offset.width,
+                        y: offset.height
+                    )
+                    .opacity(opacity)
+                    .shadow(
+                        color:
+                            Color.black.opacity(
+                                (
+                                    1
+                                    - localProgress
+                                )
+                                * 0.48
+                            ),
+                        radius:
+                            12
+                            * CGFloat(
+                                1
+                                - localProgress
+                            ),
+                        x:
+                            normalizedAnimationVariant
+                                == 0
+                            ? (
+                                slot.isMultiple(
+                                    of: 2
+                                )
+                                ? -8
+                                : 8
+                            )
+                            : 0,
+                        y:
+                            normalizedAnimationVariant
+                                == 1
+                            ? (
+                                slot.isMultiple(
+                                    of: 2
+                                )
+                                ? -8
+                                : 8
+                            )
+                            : 5
+                    )
+                    .zIndex(
+                        Double(
+                            pageImages.count
+                            - slot
+                        )
+                    )
+                )
+            }
+            .clipped()
+        )
     }
 
     @ViewBuilder
@@ -4329,6 +5076,11 @@ struct CenterPreviewPanel: View {
     let activePhotoIndex: Int
     let photoCount: Int
     let previewImages: [NSImage]
+    let origamiSlotReplacementImages: [Int: NSImage]
+    let origamiSwapSlotIndex: Int?
+    let origamiSwapIncomingImage: NSImage?
+    let origamiSwapProgress: Double
+    let origamiSwapStyle: Int
     let visualTheme: SlideshowVisualTheme
     let isPreparingPhotos: Bool
     let preparedPhotoCount: Int
@@ -4390,6 +5142,11 @@ struct CenterPreviewPanel: View {
                         } else if visualTheme == .origami {
                             OrigamiPreviewPage(
                                 images: themedPreviewImages,
+                                slotReplacementImages: origamiSlotReplacementImages,
+                                swapSlotIndex: origamiSwapSlotIndex,
+                                swapIncomingImage: origamiSwapIncomingImage,
+                                swapProgress: origamiSwapProgress,
+                                swapStyle: origamiSwapStyle,
                                 activePhotoName: activePhotoName,
                                 showsPhotoName: true,
                                 transitionProgress: transitionProgress,

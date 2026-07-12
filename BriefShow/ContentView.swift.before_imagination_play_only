@@ -107,15 +107,6 @@ struct ContentView: View {
     @State private var origamiWholePageFoldProgress: Double = 1
 
     @State private var isPreviewPlaying: Bool = false
-
-    // Koristi se samo kada Imagination mora eksplicitno
-    // ponovo da krene preko Play From Beginning.
-    @State private var imaginationPlaybackRestartToken: Int = 0
-
-    // Sprečava preklapanje dva Imagination page transitiona.
-    // Motion fotografije i dust ostaju aktivni dok traje overlay.
-    @State private var isImaginationPageTransitionAnimating: Bool = false
-
     @State private var previewElapsedSeconds: Double = 0
     @State private var previewTotalElapsedSeconds: Double = 0
     @State private var isFullScreenPreviewPresented: Bool = false
@@ -182,8 +173,6 @@ struct ContentView: View {
                         magazinePageSlotCount: currentPreviewPageSlotCount,
                         origamiAnimationSeed: origamiPageIndex,
                         isPreviewPlaying: isPreviewPlaying,
-                        imaginationPlaybackRestartToken:
-                            imaginationPlaybackRestartToken,
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: { slotIndex in
                             openMusicPicker(for: slotIndex)
@@ -269,8 +258,6 @@ struct ContentView: View {
                     magazinePageSlotCount: currentPreviewPageSlotCount,
                     origamiAnimationSeed: origamiPageIndex,
                     isPreviewPlaying: isPreviewPlaying,
-                    imaginationPlaybackRestartToken:
-                        imaginationPlaybackRestartToken,
                     onTogglePreview: togglePreview,
                     onStartFromBeginning: startPreviewFromBeginning,
                     onClose: {
@@ -1536,11 +1523,6 @@ struct ContentView: View {
 
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
-
-        if visualTheme == .imagination {
-            imaginationPlaybackRestartToken += 1
-        }
-
         isPreviewPlaying = true
         currentMusicIndex = 0
         currentMusicElapsedSeconds = 0
@@ -1665,133 +1647,6 @@ struct ContentView: View {
         )
     }
 
-    private func startImaginationPageTransition(
-        to newIndex: Int
-    ) {
-        guard visualTheme == .imagination,
-              selectedPhotoURLs.indices.contains(newIndex),
-              newIndex != activePhotoIndex,
-              !isImaginationPageTransitionAnimating
-        else {
-            return
-        }
-
-        isImaginationPageTransitionAnimating = true
-
-        // Koristi postojeću Fade Duration vrednost,
-        // ali garantuje dovoljno vremena da se vidi
-        // smooth 0 -> 1 -> 0 black overlay.
-        let duration = min(
-            max(fadeDuration, 0.80),
-            max(
-                0.80,
-                currentPhotoDuration * 0.45
-            )
-        )
-
-        var setupTransaction = Transaction()
-        setupTransaction.animation = nil
-
-        withTransaction(setupTransaction) {
-            previousPhotoIndex = nil
-            transitionProgress = 0
-        }
-
-        Task { @MainActor in
-            let startedAt =
-                Date.timeIntervalSinceReferenceDate
-
-            var didChangePhoto = false
-
-            while true {
-                guard isPreviewPlaying,
-                      isImaginationPageTransitionAnimating
-                else {
-                    var cancelledTransaction = Transaction()
-                    cancelledTransaction.animation = nil
-
-                    withTransaction(cancelledTransaction) {
-                        transitionProgress = 1
-                        isImaginationPageTransitionAnimating = false
-                    }
-
-                    return
-                }
-
-                let elapsed =
-                    Date.timeIntervalSinceReferenceDate
-                    - startedAt
-
-                let linearProgress = min(
-                    1,
-                    max(
-                        0,
-                        elapsed / duration
-                    )
-                )
-
-                // Smoothstep easing bez implicitnog SwiftUI
-                // restarta postojeće motion animacije.
-                let easedProgress =
-                    linearProgress
-                    * linearProgress
-                    * (
-                        3
-                        - 2 * linearProgress
-                    )
-
-                // Fotografija se menja samo kada je
-                // black overlay potpuno zatvorio kadar.
-                if !didChangePhoto,
-                   linearProgress >= 0.50 {
-
-                    var midpointTransaction = Transaction()
-                    midpointTransaction.animation = nil
-
-                    withTransaction(midpointTransaction) {
-                        activePhotoIndex = newIndex
-                    }
-
-                    didChangePhoto = true
-                }
-
-                var frameTransaction = Transaction()
-                frameTransaction.animation = nil
-
-                withTransaction(frameTransaction) {
-                    transitionProgress = easedProgress
-                }
-
-                if linearProgress >= 1 {
-                    break
-                }
-
-                try? await Task.sleep(
-                    nanoseconds: 16_666_667
-                )
-            }
-
-            // Sigurnosna zamena ako jedan frame preskoči midpoint.
-            if !didChangePhoto {
-                var photoTransaction = Transaction()
-                photoTransaction.animation = nil
-
-                withTransaction(photoTransaction) {
-                    activePhotoIndex = newIndex
-                }
-            }
-
-            var completionTransaction = Transaction()
-            completionTransaction.animation = nil
-
-            withTransaction(completionTransaction) {
-                transitionProgress = 1
-                previousPhotoIndex = nil
-                isImaginationPageTransitionAnimating = false
-            }
-        }
-    }
-
     private func moveToPhoto(
         at newIndex: Int
     ) {
@@ -1800,13 +1655,6 @@ struct ContentView: View {
               ),
               newIndex != activePhotoIndex
         else {
-            return
-        }
-
-        if visualTheme == .imagination {
-            startImaginationPageTransition(
-                to: newIndex
-            )
             return
         }
 
@@ -2025,7 +1873,6 @@ struct ContentView: View {
 
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
-        isImaginationPageTransitionAnimating = false
         isPreviewPlaying = false
 
         audioPlayer?.pause()
@@ -9692,7 +9539,6 @@ struct FullScreenPreviewSheet: View {
     let magazinePageSlotCount: Int
     let origamiAnimationSeed: Int
     let isPreviewPlaying: Bool
-    let imaginationPlaybackRestartToken: Int
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
     let onClose: () -> Void
@@ -9812,15 +9658,11 @@ struct FullScreenPreviewSheet: View {
                 .background(Color.black)
             } else if visualTheme == .imagination {
                 ImaginationCardPage(
-                    activeImage: activePreviewImage,
-                    activePhotoIndex: activePhotoIndex,
-                    transitionProgress: transitionProgress,
-                    isPreviewPlaying: isPreviewPlaying,
-                    playbackRestartToken:
-                        imaginationPlaybackRestartToken
-                )
+                        activeImage: activePreviewImage,
+                        activePhotoIndex: activePhotoIndex,
+                        transitionProgress: transitionProgress
+                    )
                 .frame(width: size.width, height: size.height)
-                .allowsHitTesting(false)
             } else {
                 ZStack {
                     Color.black
@@ -12291,12 +12133,8 @@ private struct ImaginationDustOverlay: View {
                 )
             ) { timeline in
                 Canvas { context, size in
-                    // Dust motion je 30% brži, ali ostaje
-                    // potpuno neprekidan između page-eva.
                     let currentTime =
-                        timeline.date
-                            .timeIntervalSinceReferenceDate
-                            * 1.30
+                        timeline.date.timeIntervalSinceReferenceDate
 
                     let elapsedSinceBurst = max(
                         0,
@@ -12544,17 +12382,11 @@ struct ImaginationCardPage: View {
     let activeImage: NSImage?
     let activePhotoIndex: Int
     let transitionProgress: Double
-    let isPreviewPlaying: Bool
-    let playbackRestartToken: Int
 
     @State private var revealScale: CGFloat = 2.20
     @State private var revealBlur: CGFloat = 30
-    @State private var revealSaturation: Double = 0
-    @State private var revealBrightness: Double = 0.12
-    @State private var revealContrast: Double = 1.12
     @State private var revealOffsetX: CGFloat = 0
     @State private var revealOffsetY: CGFloat = 0
-    @State private var revealTiltX: Double = 0
     @State private var revealTiltY: Double = 0
     @State private var revealRotationZ: Double = 0
 
@@ -12567,14 +12399,8 @@ struct ImaginationCardPage: View {
 
     @State private var sideIsRight: Bool = false
     @State private var lastSeenIndex: Int = -1
-    @State private var hasStartedCurrentPhoto: Bool = false
-    @State private var lastPlaybackRestartToken: Int = -1
 
     private var blackOverlayOpacity: Double {
-        guard isPreviewPlaying else {
-            return 1
-        }
-
         let p = min(1, max(0, transitionProgress))
         return 1 - abs(1 - 2 * p)
     }
@@ -12624,11 +12450,11 @@ struct ImaginationCardPage: View {
                             )
                             .clipped()
                             .blur(radius: 16)
-                            .brightness(-0.08)
-                            .contrast(0.92)
+                            .brightness(-0.24)
+                            .contrast(0.88)
 
                         Color.black
-                            .opacity(0.20)
+                            .opacity(0.40)
                     }
                     .frame(
                         width: cardSize.width,
@@ -12663,7 +12489,7 @@ struct ImaginationCardPage: View {
                         x: distantOffsetX,
                         y: distantOffsetY
                     )
-                    .opacity(0.62)
+                    .opacity(0.52)
                     .zIndex(5)
 
                     // ---------------------------------------------
@@ -12679,9 +12505,6 @@ struct ImaginationCardPage: View {
                                 height: cardSize.height
                             )
                             .clipped()
-                            .saturation(revealSaturation)
-                            .brightness(revealBrightness)
-                            .contrast(revealContrast)
                             .blur(radius: revealBlur)
                     }
                     .frame(
@@ -12700,14 +12523,7 @@ struct ImaginationCardPage: View {
                         axis: (x: 0, y: 1, z: 0),
                         perspective: 0.55
                     )
-                    .rotation3DEffect(
-                        .degrees(revealTiltX),
-                        axis: (x: 1, y: 0, z: 0),
-                        perspective: 0.55
-                    )
-                    .rotationEffect(
-                        .degrees(revealRotationZ)
-                    )
+                    .rotationEffect(.degrees(revealRotationZ))
                     .scaleEffect(revealScale)
                     .offset(
                         x: revealOffsetX,
@@ -12750,14 +12566,6 @@ struct ImaginationCardPage: View {
             .clipped()
             .onAppear {
                 lastSeenIndex = activePhotoIndex
-                lastPlaybackRestartToken =
-                    playbackRestartToken
-
-                guard isPreviewPlaying else {
-                    return
-                }
-
-                hasStartedCurrentPhoto = true
 
                 triggerReveal(
                     sceneSize: proxy.size
@@ -12769,48 +12577,6 @@ struct ImaginationCardPage: View {
                 }
 
                 lastSeenIndex = newValue
-                hasStartedCurrentPhoto = false
-
-                guard isPreviewPlaying else {
-                    return
-                }
-
-                hasStartedCurrentPhoto = true
-
-                triggerReveal(
-                    sceneSize: proxy.size
-                )
-            }
-            .onChange(of: isPreviewPlaying) { playing in
-                guard playing,
-                      !hasStartedCurrentPhoto
-                else {
-                    return
-                }
-
-                hasStartedCurrentPhoto = true
-
-                triggerReveal(
-                    sceneSize: proxy.size
-                )
-            }
-            .onChange(
-                of: playbackRestartToken
-            ) { newToken in
-                guard newToken
-                        != lastPlaybackRestartToken
-                else {
-                    return
-                }
-
-                lastPlaybackRestartToken = newToken
-
-                guard isPreviewPlaying else {
-                    hasStartedCurrentPhoto = false
-                    return
-                }
-
-                hasStartedCurrentPhoto = true
 
                 triggerReveal(
                     sceneSize: proxy.size
@@ -12828,273 +12594,39 @@ struct ImaginationCardPage: View {
         let sideOffset: CGFloat =
             startsOnRight ? 190 : -190
 
-        // Pseudo-random redosled svih sedam postojećih
-        // Imagination motion stilova.
-        //
-        // Množenje sa 3 prolazi kroz svih 7 slotova
-        // bez ponavljanja pre nego što ciklus krene ponovo.
-        // playbackRestartToken menja početak redosleda
-        // posle svakog Play From Beginning.
-        let motionSlot =
-            (
-                activePhotoIndex * 3
-                + playbackRestartToken
-            ) % 7
-
         let movementStyle =
-            motionSlot % 3
-
-        // Sve postojeće animacije ostaju sačuvane.
-        let usesThrownCornerMotion =
-            motionSlot == 5
-
-        let usesDiagonalThrownMotion =
-            motionSlot == 6
-
-        let usesTopCornerMotion =
-            motionSlot == 4
-
-        let usesCrossTiltMotion =
-            motionSlot == 3
-
-        let startingOffsetX: CGFloat =
-            usesThrownCornerMotion
-            ? (
-                startsOnRight
-                ? sceneSize.width * 0.52
-                : -(sceneSize.width * 0.52)
-            )
-            : (
-                usesDiagonalThrownMotion
-                ? (
-                    startsOnRight
-                    ? -(sceneSize.width * 0.34)
-                    : sceneSize.width * 0.34
-                )
-                : (
-                    usesTopCornerMotion
-                    ? (
-                        startsOnRight
-                        ? sceneSize.width * 0.38
-                        : -(sceneSize.width * 0.38)
-                    )
-                    : sideOffset
-                )
-            )
-
-        let endingOffsetX: CGFloat =
-            sideOffset
+            activePhotoIndex % 3
 
         let startingOffsetY: CGFloat
         let endingOffsetY: CGFloat
 
-        if usesThrownCornerMotion {
-            // Snažno bacanje iz gornjeg spoljnog ugla.
-            startingOffsetY =
-                -(sceneSize.height * 0.36)
+        switch movementStyle {
+        case 1:
+            // Glavna fotografija počinje gore.
+            startingOffsetY = -115
+            endingOffsetY = 45
 
-            endingOffsetY = 18
-        } else if usesDiagonalThrownMotion {
-            // Dijagonalno presecanje scene iz suprotnog ugla.
-            startingOffsetY =
-                -(sceneSize.height * 0.28)
+        case 2:
+            // Glavna fotografija počinje dole.
+            startingOffsetY = 115
+            endingOffsetY = -45
 
-            endingOffsetY = -26
-        } else if usesTopCornerMotion {
-            // Fotografija počinje iznad scene i dijagonalno
-            // se spušta ka svom bočnom položaju.
-            startingOffsetY =
-                -(sceneSize.height * 0.46)
-
-            endingOffsetY = 28
-        } else if usesCrossTiltMotion {
-            // Početak je malo niže, a zatim se gornji
-            // deo fotografije povlači dublje u scenu.
-            startingOffsetY = 72
-            endingOffsetY = -34
-        } else {
-            switch movementStyle {
-            case 1:
-                // Glavna fotografija počinje gore.
-                startingOffsetY = -115
-                endingOffsetY = 45
-
-            case 2:
-                // Glavna fotografija počinje dole.
-                startingOffsetY = 115
-                endingOffsetY = -45
-
-            default:
-                startingOffsetY = 0
-                endingOffsetY = 0
-            }
+        default:
+            startingOffsetY = 0
+            endingOffsetY = 0
         }
 
-        let startingTiltX: Double =
-            usesThrownCornerMotion
-            ? -10.0
-            : (
-                usesDiagonalThrownMotion
-                ? -6.5
-                : (
-                    usesTopCornerMotion
-                    ? -8.0
-                    : (
-                        usesCrossTiltMotion
-                        ? -1.5
-                        : 0
-                    )
-                )
-            )
-
-        let endingTiltX: Double =
-            usesThrownCornerMotion
-            ? 2.5
-            : (
-                usesDiagonalThrownMotion
-                ? 4.0
-                : (
-                    usesTopCornerMotion
-                    ? 1.5
-                    : (
-                        usesCrossTiltMotion
-                        ? 6.5
-                        : 0
-                    )
-                )
-            )
-
         let startingTiltY: Double =
-            usesThrownCornerMotion
-            ? (
-                startsOnRight
-                ? -18.0
-                : 18.0
-            )
-            : (
-                usesDiagonalThrownMotion
-                ? (
-                    startsOnRight
-                    ? 15.0
-                    : -15.0
-                )
-                : (
-                    usesTopCornerMotion
-                    ? (
-                        startsOnRight
-                        ? -13.0
-                        : 13.0
-                    )
-                    : (
-                        usesCrossTiltMotion
-                        ? -12.0
-                        : (
-                            startsOnRight
-                            ? -9.0
-                            : 9.0
-                        )
-                    )
-                )
-            )
+            startsOnRight ? -9.0 : 9.0
 
         let endingTiltY: Double =
-            usesThrownCornerMotion
-            ? (
-                startsOnRight
-                ? -2.5
-                : 2.5
-            )
-            : (
-                usesDiagonalThrownMotion
-                ? (
-                    startsOnRight
-                    ? -5.0
-                    : 5.0
-                )
-                : (
-                    usesTopCornerMotion
-                    ? (
-                        startsOnRight
-                        ? -3.0
-                        : 3.0
-                    )
-                    : (
-                        usesCrossTiltMotion
-                        ? 7.0
-                        : (
-                            startsOnRight
-                            ? -4.0
-                            : 4.0
-                        )
-                    )
-                )
-            )
+            startsOnRight ? -4.0 : 4.0
 
         let startingRotationZ: Double =
-            usesThrownCornerMotion
-            ? (
-                startsOnRight
-                ? 9.0
-                : -9.0
-            )
-            : (
-                usesDiagonalThrownMotion
-                ? (
-                    startsOnRight
-                    ? -8.0
-                    : 8.0
-                )
-                : (
-                    usesTopCornerMotion
-                    ? (
-                        startsOnRight
-                        ? 6.0
-                        : -6.0
-                    )
-                    : (
-                        usesCrossTiltMotion
-                        ? 3.2
-                        : (
-                            startsOnRight
-                            ? 2.4
-                            : -2.4
-                        )
-                    )
-                )
-            )
+            startsOnRight ? 2.4 : -2.4
 
         let endingRotationZ: Double =
-            usesThrownCornerMotion
-            ? (
-                startsOnRight
-                ? 0.6
-                : -0.6
-            )
-            : (
-                usesDiagonalThrownMotion
-                ? (
-                    startsOnRight
-                    ? 1.4
-                    : -1.4
-                )
-                : (
-                    usesTopCornerMotion
-                    ? (
-                        startsOnRight
-                        ? 1.0
-                        : -1.0
-                    )
-                    : (
-                        usesCrossTiltMotion
-                        ? -1.8
-                        : (
-                            startsOnRight
-                            ? 1.0
-                            : -1.0
-                        )
-                    )
-                )
-            )
+            startsOnRight ? 1.0 : -1.0
 
         // Blurry fotografija dobija stvarno suprotan X znak.
         let distantStartingX: CGFloat =
@@ -13151,12 +12683,8 @@ struct ImaginationCardPage: View {
 
             revealScale = 1.50
             revealBlur = 30
-            revealSaturation = 0
-            revealBrightness = 0.12
-            revealContrast = 1.12
-            revealOffsetX = startingOffsetX
+            revealOffsetX = sideOffset
             revealOffsetY = startingOffsetY
-            revealTiltX = startingTiltX
             revealTiltY = startingTiltY
             revealRotationZ = startingRotationZ
 
@@ -13167,25 +12695,8 @@ struct ImaginationCardPage: View {
             distantRotationZ = distantStartingRotationZ
         }
 
-        // Blur završava prvi.
         withAnimation(.easeOut(duration: 1.08)) {
             revealBlur = 0
-        }
-
-        // Fotografija ostaje black and white tokom
-        // kompletnog blur fade-outa od 1.08 sekundi.
-        //
-        // Nakon toga automatski prelazi ka potpuno
-        // originalnoj fotografiji tokom 1.5 sekundi.
-        let colorRevealAnimation =
-            Animation
-                .easeInOut(duration: 1.5)
-                .delay(1.08)
-
-        withAnimation(colorRevealAnimation) {
-            revealSaturation = 1
-            revealBrightness = 0
-            revealContrast = 1
         }
 
                 // Jedna neprekinuta animacija glavne fotografije.
@@ -13203,9 +12714,8 @@ struct ImaginationCardPage: View {
 
         withAnimation(driftingAnimation) {
             revealScale = 0.96
-            revealOffsetX = endingOffsetX
+            revealOffsetX = sideOffset
             revealOffsetY = endingOffsetY
-            revealTiltX = endingTiltX
             revealTiltY = endingTiltY
             revealRotationZ = endingRotationZ
         }
@@ -13260,7 +12770,6 @@ struct CenterPreviewPanel: View {
     let magazinePageSlotCount: Int
     let origamiAnimationSeed: Int
     let isPreviewPlaying: Bool
-    let imaginationPlaybackRestartToken: Int
     let onAddPhotos: () -> Void
     let onAddMusic: (Int) -> Void
     let onDropPhotos: ([URL]) -> Void
@@ -13359,21 +12868,11 @@ struct CenterPreviewPanel: View {
                             )
                         } else if visualTheme == .imagination {
                             ImaginationCardPage(
-                                activeImage: activePreviewImage,
-                                activePhotoIndex: activePhotoIndex,
-                                transitionProgress:
-                                    transitionProgress,
-                                isPreviewPlaying:
-                                    isPreviewPlaying,
-                                playbackRestartToken:
-                                    imaginationPlaybackRestartToken
-                            )
-                            .clipShape(
-                                RoundedRectangle(
-                                    cornerRadius: 28
-                                )
-                            )
-                            .allowsHitTesting(false)
+                        activeImage: activePreviewImage,
+                        activePhotoIndex: activePhotoIndex,
+                        transitionProgress: transitionProgress
+                    )
+                            .clipShape(RoundedRectangle(cornerRadius: 28))
                         } else {
                             if transitionStyle == .fade, let previousPreviewImage {
                                 Image(nsImage: previousPreviewImage)

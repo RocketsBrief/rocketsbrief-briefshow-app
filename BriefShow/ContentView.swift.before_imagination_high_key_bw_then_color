@@ -112,10 +112,6 @@ struct ContentView: View {
     // ponovo da krene preko Play From Beginning.
     @State private var imaginationPlaybackRestartToken: Int = 0
 
-    // Sprečava preklapanje dva Imagination page transitiona.
-    // Motion fotografije i dust ostaju aktivni dok traje overlay.
-    @State private var isImaginationPageTransitionAnimating: Bool = false
-
     @State private var previewElapsedSeconds: Double = 0
     @State private var previewTotalElapsedSeconds: Double = 0
     @State private var isFullScreenPreviewPresented: Bool = false
@@ -1665,133 +1661,6 @@ struct ContentView: View {
         )
     }
 
-    private func startImaginationPageTransition(
-        to newIndex: Int
-    ) {
-        guard visualTheme == .imagination,
-              selectedPhotoURLs.indices.contains(newIndex),
-              newIndex != activePhotoIndex,
-              !isImaginationPageTransitionAnimating
-        else {
-            return
-        }
-
-        isImaginationPageTransitionAnimating = true
-
-        // Koristi postojeću Fade Duration vrednost,
-        // ali garantuje dovoljno vremena da se vidi
-        // smooth 0 -> 1 -> 0 black overlay.
-        let duration = min(
-            max(fadeDuration, 0.80),
-            max(
-                0.80,
-                currentPhotoDuration * 0.45
-            )
-        )
-
-        var setupTransaction = Transaction()
-        setupTransaction.animation = nil
-
-        withTransaction(setupTransaction) {
-            previousPhotoIndex = nil
-            transitionProgress = 0
-        }
-
-        Task { @MainActor in
-            let startedAt =
-                Date.timeIntervalSinceReferenceDate
-
-            var didChangePhoto = false
-
-            while true {
-                guard isPreviewPlaying,
-                      isImaginationPageTransitionAnimating
-                else {
-                    var cancelledTransaction = Transaction()
-                    cancelledTransaction.animation = nil
-
-                    withTransaction(cancelledTransaction) {
-                        transitionProgress = 1
-                        isImaginationPageTransitionAnimating = false
-                    }
-
-                    return
-                }
-
-                let elapsed =
-                    Date.timeIntervalSinceReferenceDate
-                    - startedAt
-
-                let linearProgress = min(
-                    1,
-                    max(
-                        0,
-                        elapsed / duration
-                    )
-                )
-
-                // Smoothstep easing bez implicitnog SwiftUI
-                // restarta postojeće motion animacije.
-                let easedProgress =
-                    linearProgress
-                    * linearProgress
-                    * (
-                        3
-                        - 2 * linearProgress
-                    )
-
-                // Fotografija se menja samo kada je
-                // black overlay potpuno zatvorio kadar.
-                if !didChangePhoto,
-                   linearProgress >= 0.50 {
-
-                    var midpointTransaction = Transaction()
-                    midpointTransaction.animation = nil
-
-                    withTransaction(midpointTransaction) {
-                        activePhotoIndex = newIndex
-                    }
-
-                    didChangePhoto = true
-                }
-
-                var frameTransaction = Transaction()
-                frameTransaction.animation = nil
-
-                withTransaction(frameTransaction) {
-                    transitionProgress = easedProgress
-                }
-
-                if linearProgress >= 1 {
-                    break
-                }
-
-                try? await Task.sleep(
-                    nanoseconds: 16_666_667
-                )
-            }
-
-            // Sigurnosna zamena ako jedan frame preskoči midpoint.
-            if !didChangePhoto {
-                var photoTransaction = Transaction()
-                photoTransaction.animation = nil
-
-                withTransaction(photoTransaction) {
-                    activePhotoIndex = newIndex
-                }
-            }
-
-            var completionTransaction = Transaction()
-            completionTransaction.animation = nil
-
-            withTransaction(completionTransaction) {
-                transitionProgress = 1
-                previousPhotoIndex = nil
-                isImaginationPageTransitionAnimating = false
-            }
-        }
-    }
-
     private func moveToPhoto(
         at newIndex: Int
     ) {
@@ -1800,13 +1669,6 @@ struct ContentView: View {
               ),
               newIndex != activePhotoIndex
         else {
-            return
-        }
-
-        if visualTheme == .imagination {
-            startImaginationPageTransition(
-                to: newIndex
-            )
             return
         }
 
@@ -2025,7 +1887,6 @@ struct ContentView: View {
 
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
-        isImaginationPageTransitionAnimating = false
         isPreviewPlaying = false
 
         audioPlayer?.pause()
@@ -12550,8 +12411,6 @@ struct ImaginationCardPage: View {
     @State private var revealScale: CGFloat = 2.20
     @State private var revealBlur: CGFloat = 30
     @State private var revealSaturation: Double = 0
-    @State private var revealBrightness: Double = 0.12
-    @State private var revealContrast: Double = 1.12
     @State private var revealOffsetX: CGFloat = 0
     @State private var revealOffsetY: CGFloat = 0
     @State private var revealTiltX: Double = 0
@@ -12680,8 +12539,6 @@ struct ImaginationCardPage: View {
                             )
                             .clipped()
                             .saturation(revealSaturation)
-                            .brightness(revealBrightness)
-                            .contrast(revealContrast)
                             .blur(radius: revealBlur)
                     }
                     .frame(
@@ -13152,8 +13009,6 @@ struct ImaginationCardPage: View {
             revealScale = 1.50
             revealBlur = 30
             revealSaturation = 0
-            revealBrightness = 0.12
-            revealContrast = 1.12
             revealOffsetX = startingOffsetX
             revealOffsetY = startingOffsetY
             revealTiltX = startingTiltX
@@ -13172,20 +13027,10 @@ struct ImaginationCardPage: View {
             revealBlur = 0
         }
 
-        // Fotografija ostaje black and white tokom
-        // kompletnog blur fade-outa od 1.08 sekundi.
-        //
-        // Nakon toga automatski prelazi ka potpuno
-        // originalnoj fotografiji tokom 1.5 sekundi.
-        let colorRevealAnimation =
-            Animation
-                .easeInOut(duration: 1.5)
-                .delay(1.08)
-
-        withAnimation(colorRevealAnimation) {
+        // Fotografija prelazi iz potpuno crno-bele
+        // u punu boju tokom 2.5 sekunde.
+        withAnimation(.easeOut(duration: 2.5)) {
             revealSaturation = 1
-            revealBrightness = 0
-            revealContrast = 1
         }
 
                 // Jedna neprekinuta animacija glavne fotografije.

@@ -12666,7 +12666,7 @@ struct ImaginationCardPage: View {
         withTransaction(resetTransaction) {
             sideIsRight = startsOnRight
 
-            revealScale = 1.25
+            revealScale = 1.50
             revealBlur = 30
             revealOffsetX = sideOffset
             revealOffsetY = startingOffsetY
@@ -12680,15 +12680,20 @@ struct ImaginationCardPage: View {
             distantRotationZ = distantStartingRotationZ
         }
 
-        withAnimation(.easeOut(duration: 1.80)) {
+        withAnimation(.easeOut(duration: 1.08)) {
             revealBlur = 0
         }
 
+                // Jedna neprekinuta animacija glavne fotografije.
+        //
+        // Kreće snažno i brzo kao da je fotografija bačena,
+        // zatim posle približno 1.5 sekundi naglo usporava,
+        // ali bez prekida nastavlja veoma sporo udaljavanje.
         let driftingAnimation = Animation.timingCurve(
-            0.14,
-            0.76,
-            0.30,
-            0.97,
+            0.04,
+            0.96,
+            0.13,
+            0.995,
             duration: 17.0
         )
 

@@ -12603,9 +12603,10 @@ struct ImaginationCardPage: View {
             return false
         }
 
-        // Two-photo scena je trenutno prva Imagination
-        // animacija radi neposredne vizuelne provere.
-        return activePhotoIndex == 0
+        return (
+            activePhotoIndex * 5
+            + playbackRestartToken
+        ) % 8 == 7
     }
 
     private var blackOverlayOpacity: Double {
@@ -12875,7 +12876,7 @@ struct ImaginationCardPage: View {
                             x: secondaryOffsetX,
                             y: secondaryOffsetY
                         )
-                        .zIndex(12)
+                        .zIndex(9)
                     }
 
                     // ---------------------------------------------
@@ -13095,13 +13096,7 @@ struct ImaginationCardPage: View {
             )
 
         let endingOffsetX: CGFloat =
-            usesTwoPhotoScene
-            ? (
-                startsOnRight
-                ? sceneSize.width * 0.19
-                : -(sceneSize.width * 0.19)
-            )
-            : sideOffset
+            sideOffset
 
         let startingOffsetY: CGFloat
         let endingOffsetY: CGFloat
@@ -13373,8 +13368,8 @@ struct ImaginationCardPage: View {
 
         let secondaryEndingX: CGFloat =
             secondaryStartsOnRight
-            ? sceneSize.width * 0.255
-            : -(sceneSize.width * 0.255)
+            ? sceneSize.width * 0.285
+            : -(sceneSize.width * 0.285)
 
         let secondaryStartingY: CGFloat =
             startsOnRight
@@ -13383,8 +13378,8 @@ struct ImaginationCardPage: View {
 
         let secondaryEndingY: CGFloat =
             startsOnRight
-            ? sceneSize.height * 0.13
-            : -(sceneSize.height * 0.12)
+            ? sceneSize.height * 0.105
+            : -(sceneSize.height * 0.095)
 
         let secondaryStartingTiltX: Double =
             startsOnRight ? 7.0 : -7.0
@@ -13445,11 +13440,7 @@ struct ImaginationCardPage: View {
         withTransaction(resetTransaction) {
             sideIsRight = startsOnRight
 
-            revealScale =
-                usesTwoPhotoScene
-                ? 1.08
-                : 1.50
-
+            revealScale = 1.50
             revealBlur = 30
             revealSaturation = 0
             revealBrightness = 0.12
@@ -13460,7 +13451,7 @@ struct ImaginationCardPage: View {
             revealTiltY = startingTiltY
             revealRotationZ = startingRotationZ
 
-            secondaryScale = 1.02
+            secondaryScale = 1.34
             secondaryBlur = 30
             secondarySaturation = 0
             secondaryBrightness = 0.12
@@ -13472,7 +13463,7 @@ struct ImaginationCardPage: View {
             secondaryRotationZ =
                 secondaryStartingRotationZ
 
-            secondaryDistantScale = 1.20
+            secondaryDistantScale = 1.48
             secondaryDistantOffsetX =
                 secondaryDistantStartingX
             secondaryDistantOffsetY =
@@ -13534,11 +13525,7 @@ struct ImaginationCardPage: View {
         )
 
         withAnimation(driftingAnimation) {
-            revealScale =
-                usesTwoPhotoScene
-                ? 0.70
-                : 0.96
-
+            revealScale = 0.96
             revealOffsetX = endingOffsetX
             revealOffsetY = endingOffsetY
             revealTiltX = endingTiltX
@@ -13546,7 +13533,7 @@ struct ImaginationCardPage: View {
             revealRotationZ = endingRotationZ
 
             if usesTwoPhotoScene {
-                secondaryScale = 0.68
+                secondaryScale = 0.82
                 secondaryOffsetX = secondaryEndingX
                 secondaryOffsetY = secondaryEndingY
                 secondaryTiltX = secondaryEndingTiltX
@@ -13572,7 +13559,7 @@ struct ImaginationCardPage: View {
             distantRotationZ = distantEndingRotationZ
 
             if usesTwoPhotoScene {
-                secondaryDistantScale = 0.92
+                secondaryDistantScale = 1.15
                 secondaryDistantOffsetX =
                     secondaryDistantEndingX
                 secondaryDistantOffsetY =

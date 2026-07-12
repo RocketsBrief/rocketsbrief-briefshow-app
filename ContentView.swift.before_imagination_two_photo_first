@@ -12603,9 +12603,10 @@ struct ImaginationCardPage: View {
             return false
         }
 
-        // Two-photo scena je trenutno prva Imagination
-        // animacija radi neposredne vizuelne provere.
-        return activePhotoIndex == 0
+        return (
+            activePhotoIndex * 5
+            + playbackRestartToken
+        ) % 8 == 7
     }
 
     private var blackOverlayOpacity: Double {

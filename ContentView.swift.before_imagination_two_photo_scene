@@ -9813,14 +9813,6 @@ struct FullScreenPreviewSheet: View {
             } else if visualTheme == .imagination {
                 ImaginationCardPage(
                     activeImage: activePreviewImage,
-                    secondaryImage:
-                        previewImages.count > 1
-                        ? previewImages[
-                            (
-                                activePhotoIndex + 1
-                            ) % previewImages.count
-                        ]
-                        : nil,
                     activePhotoIndex: activePhotoIndex,
                     transitionProgress: transitionProgress,
                     isPreviewPlaying: isPreviewPlaying,
@@ -12550,7 +12542,6 @@ private struct ImaginationDustOverlay: View {
 
 struct ImaginationCardPage: View {
     let activeImage: NSImage?
-    let secondaryImage: NSImage?
     let activePhotoIndex: Int
     let transitionProgress: Double
     let isPreviewPlaying: Bool
@@ -12567,25 +12558,6 @@ struct ImaginationCardPage: View {
     @State private var revealTiltY: Double = 0
     @State private var revealRotationZ: Double = 0
 
-    // Dodatna manja fotografija za novu two-photo scenu.
-    @State private var secondaryScale: CGFloat = 1.34
-    @State private var secondaryBlur: CGFloat = 30
-    @State private var secondarySaturation: Double = 0
-    @State private var secondaryBrightness: Double = 0.12
-    @State private var secondaryContrast: Double = 1.12
-    @State private var secondaryOffsetX: CGFloat = 0
-    @State private var secondaryOffsetY: CGFloat = 0
-    @State private var secondaryTiltX: Double = 0
-    @State private var secondaryTiltY: Double = 0
-    @State private var secondaryRotationZ: Double = 0
-
-    // Blurry kopija dodatne fotografije.
-    @State private var secondaryDistantScale: CGFloat = 1.48
-    @State private var secondaryDistantOffsetX: CGFloat = 0
-    @State private var secondaryDistantOffsetY: CGFloat = 0
-    @State private var secondaryDistantTiltY: Double = 0
-    @State private var secondaryDistantRotationZ: Double = 0
-
     // Tamna blurry kopija u dijagonalno suprotnom uglu.
     @State private var distantScale: CGFloat = 1.56156
     @State private var distantOffsetX: CGFloat = 0
@@ -12597,16 +12569,6 @@ struct ImaginationCardPage: View {
     @State private var lastSeenIndex: Int = -1
     @State private var hasStartedCurrentPhoto: Bool = false
     @State private var lastPlaybackRestartToken: Int = -1
-
-    private var usesTwoPhotoScene: Bool {
-        guard secondaryImage != nil else {
-            return false
-        }
-
-        // Two-photo scena je trenutno prva Imagination
-        // animacija radi neposredne vizuelne provere.
-        return activePhotoIndex == 0
-    }
 
     private var blackOverlayOpacity: Double {
         guard isPreviewPlaying else {
@@ -12646,49 +12608,6 @@ struct ImaginationCardPage: View {
                                 height: availableHeight
                             )
                         }
-                    }()
-
-                    let secondaryCardSize: CGSize? = {
-                        guard let secondaryImage else {
-                            return nil
-                        }
-
-                        let secondaryRatio = max(
-                            0.01,
-                            secondaryImage.size.width
-                                / max(
-                                    1,
-                                    secondaryImage.size.height
-                                )
-                        )
-
-                        let secondaryAvailableWidth =
-                            proxy.size.width * 0.48
-
-                        let secondaryAvailableHeight =
-                            proxy.size.height * 0.54
-
-                        let secondaryAvailableRatio =
-                            secondaryAvailableWidth
-                                / secondaryAvailableHeight
-
-                        if secondaryRatio
-                            > secondaryAvailableRatio {
-
-                            return CGSize(
-                                width: secondaryAvailableWidth,
-                                height:
-                                    secondaryAvailableWidth
-                                    / secondaryRatio
-                            )
-                        }
-
-                        return CGSize(
-                            width:
-                                secondaryAvailableHeight
-                                * secondaryRatio,
-                            height: secondaryAvailableHeight
-                        )
                     }()
 
                     // ---------------------------------------------
@@ -12746,137 +12665,6 @@ struct ImaginationCardPage: View {
                     )
                     .opacity(0.62)
                     .zIndex(5)
-
-                    // ---------------------------------------------
-                    // NOVA TWO-PHOTO SCENA
-                    // ---------------------------------------------
-
-                    if usesTwoPhotoScene,
-                       let secondaryImage,
-                       let secondaryCardSize {
-
-                        // Blurry kopija druge fotografije nalazi se
-                        // dijagonalno nasuprot njenom originalu.
-                        ZStack {
-                            Image(nsImage: secondaryImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(
-                                    width:
-                                        secondaryCardSize.width,
-                                    height:
-                                        secondaryCardSize.height
-                                )
-                                .clipped()
-                                .blur(radius: 16)
-                                .brightness(-0.08)
-                                .contrast(0.92)
-
-                            Color.black
-                                .opacity(0.20)
-                        }
-                        .frame(
-                            width: secondaryCardSize.width,
-                            height: secondaryCardSize.height
-                        )
-                        .clipShape(
-                            RoundedRectangle(
-                                cornerRadius: 22,
-                                style: .continuous
-                            )
-                        )
-                        .mask(
-                            RoundedRectangle(
-                                cornerRadius: 18,
-                                style: .continuous
-                            )
-                            .fill(
-                                Color.white.opacity(0.80)
-                            )
-                            .padding(30)
-                            .blur(radius: 24)
-                        )
-                        .compositingGroup()
-                        .rotation3DEffect(
-                            .degrees(
-                                secondaryDistantTiltY
-                            ),
-                            axis: (x: 0, y: 1, z: 0),
-                            perspective: 0.55
-                        )
-                        .rotationEffect(
-                            .degrees(
-                                secondaryDistantRotationZ
-                            )
-                        )
-                        .scaleEffect(
-                            secondaryDistantScale
-                        )
-                        .offset(
-                            x:
-                                secondaryDistantOffsetX,
-                            y:
-                                secondaryDistantOffsetY
-                        )
-                        .opacity(0.62)
-                        .zIndex(6)
-
-                        // Manji, drugačije rotiran original.
-                        ZStack {
-                            Image(nsImage: secondaryImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(
-                                    width:
-                                        secondaryCardSize.width,
-                                    height:
-                                        secondaryCardSize.height
-                                )
-                                .clipped()
-                                .saturation(
-                                    secondarySaturation
-                                )
-                                .brightness(
-                                    secondaryBrightness
-                                )
-                                .contrast(
-                                    secondaryContrast
-                                )
-                                .blur(
-                                    radius: secondaryBlur
-                                )
-                        }
-                        .frame(
-                            width: secondaryCardSize.width,
-                            height: secondaryCardSize.height
-                        )
-                        .clipShape(
-                            RoundedRectangle(
-                                cornerRadius: 22,
-                                style: .continuous
-                            )
-                        )
-                        .compositingGroup()
-                        .rotation3DEffect(
-                            .degrees(secondaryTiltY),
-                            axis: (x: 0, y: 1, z: 0),
-                            perspective: 0.55
-                        )
-                        .rotation3DEffect(
-                            .degrees(secondaryTiltX),
-                            axis: (x: 1, y: 0, z: 0),
-                            perspective: 0.55
-                        )
-                        .rotationEffect(
-                            .degrees(secondaryRotationZ)
-                        )
-                        .scaleEffect(secondaryScale)
-                        .offset(
-                            x: secondaryOffsetX,
-                            y: secondaryOffsetY
-                        )
-                        .zIndex(12)
-                    }
 
                     // ---------------------------------------------
                     // POSTOJEĆA GLAVNA FOTOGRAFIJA
@@ -13095,13 +12883,7 @@ struct ImaginationCardPage: View {
             )
 
         let endingOffsetX: CGFloat =
-            usesTwoPhotoScene
-            ? (
-                startsOnRight
-                ? sceneSize.width * 0.19
-                : -(sceneSize.width * 0.19)
-            )
-            : sideOffset
+            sideOffset
 
         let startingOffsetY: CGFloat
         let endingOffsetY: CGFloat
@@ -13361,95 +13143,13 @@ struct ImaginationCardPage: View {
             distantStartingY
             + (distantStartingY > 0 ? 16 : -16)
 
-        // Two-photo motion postoji potpuno odvojeno
-        // od sedam postojećih motion stilova.
-        let secondaryStartsOnRight =
-            !startsOnRight
-
-        let secondaryStartingX: CGFloat =
-            secondaryStartsOnRight
-            ? sceneSize.width * 0.54
-            : -(sceneSize.width * 0.54)
-
-        let secondaryEndingX: CGFloat =
-            secondaryStartsOnRight
-            ? sceneSize.width * 0.255
-            : -(sceneSize.width * 0.255)
-
-        let secondaryStartingY: CGFloat =
-            startsOnRight
-            ? sceneSize.height * 0.20
-            : -(sceneSize.height * 0.18)
-
-        let secondaryEndingY: CGFloat =
-            startsOnRight
-            ? sceneSize.height * 0.13
-            : -(sceneSize.height * 0.12)
-
-        let secondaryStartingTiltX: Double =
-            startsOnRight ? 7.0 : -7.0
-
-        let secondaryEndingTiltX: Double =
-            startsOnRight ? 2.5 : -2.5
-
-        let secondaryStartingTiltY: Double =
-            secondaryStartsOnRight
-            ? -15.0
-            : 15.0
-
-        let secondaryEndingTiltY: Double =
-            secondaryStartsOnRight
-            ? -4.5
-            : 4.5
-
-        let secondaryStartingRotationZ: Double =
-            secondaryStartsOnRight
-            ? 10.0
-            : -10.0
-
-        let secondaryEndingRotationZ: Double =
-            secondaryStartsOnRight
-            ? 4.8
-            : -4.8
-
-        // Njena blurry kopija je sa suprotnim X i Y znakom.
-        let secondaryDistantStartingX: CGFloat =
-            secondaryStartsOnRight
-            ? -(sceneSize.width * 0.43)
-            : sceneSize.width * 0.43
-
-        let secondaryDistantStartingY: CGFloat =
-            secondaryStartingY > 0
-            ? -(sceneSize.height * 0.31)
-            : sceneSize.height * 0.31
-
-        let secondaryDistantEndingX: CGFloat =
-            secondaryDistantStartingX
-            + (
-                secondaryDistantStartingX > 0
-                ? 20
-                : -20
-            )
-
-        let secondaryDistantEndingY: CGFloat =
-            secondaryDistantStartingY
-            + (
-                secondaryDistantStartingY > 0
-                ? 15
-                : -15
-            )
-
         var resetTransaction = Transaction()
         resetTransaction.animation = nil
 
         withTransaction(resetTransaction) {
             sideIsRight = startsOnRight
 
-            revealScale =
-                usesTwoPhotoScene
-                ? 1.08
-                : 1.50
-
+            revealScale = 1.50
             revealBlur = 30
             revealSaturation = 0
             revealBrightness = 0.12
@@ -13459,28 +13159,6 @@ struct ImaginationCardPage: View {
             revealTiltX = startingTiltX
             revealTiltY = startingTiltY
             revealRotationZ = startingRotationZ
-
-            secondaryScale = 1.02
-            secondaryBlur = 30
-            secondarySaturation = 0
-            secondaryBrightness = 0.12
-            secondaryContrast = 1.12
-            secondaryOffsetX = secondaryStartingX
-            secondaryOffsetY = secondaryStartingY
-            secondaryTiltX = secondaryStartingTiltX
-            secondaryTiltY = secondaryStartingTiltY
-            secondaryRotationZ =
-                secondaryStartingRotationZ
-
-            secondaryDistantScale = 1.20
-            secondaryDistantOffsetX =
-                secondaryDistantStartingX
-            secondaryDistantOffsetY =
-                secondaryDistantStartingY
-            secondaryDistantTiltY =
-                secondaryStartsOnRight ? 5.0 : -5.0
-            secondaryDistantRotationZ =
-                secondaryStartsOnRight ? -7.0 : 7.0
 
             distantScale = 1.56156
             distantOffsetX = distantStartingX
@@ -13492,10 +13170,6 @@ struct ImaginationCardPage: View {
         // Blur završava prvi.
         withAnimation(.easeOut(duration: 1.08)) {
             revealBlur = 0
-
-            if usesTwoPhotoScene {
-                secondaryBlur = 0
-            }
         }
 
         // Fotografija ostaje black and white tokom
@@ -13512,15 +13186,9 @@ struct ImaginationCardPage: View {
             revealSaturation = 1
             revealBrightness = 0
             revealContrast = 1
-
-            if usesTwoPhotoScene {
-                secondarySaturation = 1
-                secondaryBrightness = 0
-                secondaryContrast = 1
-            }
         }
 
-        // Jedna neprekinuta animacija glavne fotografije.
+                // Jedna neprekinuta animacija glavne fotografije.
         //
         // Kreće snažno i brzo kao da je fotografija bačena,
         // zatim posle približno 1.5 sekundi naglo usporava,
@@ -13534,26 +13202,12 @@ struct ImaginationCardPage: View {
         )
 
         withAnimation(driftingAnimation) {
-            revealScale =
-                usesTwoPhotoScene
-                ? 0.70
-                : 0.96
-
+            revealScale = 0.96
             revealOffsetX = endingOffsetX
             revealOffsetY = endingOffsetY
             revealTiltX = endingTiltX
             revealTiltY = endingTiltY
             revealRotationZ = endingRotationZ
-
-            if usesTwoPhotoScene {
-                secondaryScale = 0.68
-                secondaryOffsetX = secondaryEndingX
-                secondaryOffsetY = secondaryEndingY
-                secondaryTiltX = secondaryEndingTiltX
-                secondaryTiltY = secondaryEndingTiltY
-                secondaryRotationZ =
-                    secondaryEndingRotationZ
-            }
         }
 
         let distantAnimation = Animation.timingCurve(
@@ -13570,18 +13224,6 @@ struct ImaginationCardPage: View {
             distantOffsetY = distantEndingY
             distantTiltY = distantEndingTiltY
             distantRotationZ = distantEndingRotationZ
-
-            if usesTwoPhotoScene {
-                secondaryDistantScale = 0.92
-                secondaryDistantOffsetX =
-                    secondaryDistantEndingX
-                secondaryDistantOffsetY =
-                    secondaryDistantEndingY
-                secondaryDistantTiltY =
-                    secondaryStartsOnRight ? 3.0 : -3.0
-                secondaryDistantRotationZ =
-                    secondaryStartsOnRight ? -5.0 : 5.0
-            }
         }
     }
 }
@@ -13718,14 +13360,6 @@ struct CenterPreviewPanel: View {
                         } else if visualTheme == .imagination {
                             ImaginationCardPage(
                                 activeImage: activePreviewImage,
-                                secondaryImage:
-                                    previewImages.count > 1
-                                    ? previewImages[
-                                        (
-                                            activePhotoIndex + 1
-                                        ) % previewImages.count
-                                    ]
-                                    : nil,
                                 activePhotoIndex: activePhotoIndex,
                                 transitionProgress:
                                     transitionProgress,

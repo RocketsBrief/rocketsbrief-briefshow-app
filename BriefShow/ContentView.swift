@@ -12374,6 +12374,14 @@ struct ImaginationCardPage: View {
     @State private var revealOffsetY: CGFloat = 0
     @State private var revealTiltY: Double = 0
     @State private var revealRotationZ: Double = 0
+
+    // Tamna blurry kopija u dijagonalno suprotnom uglu.
+    @State private var distantScale: CGFloat = 1.56156
+    @State private var distantOffsetX: CGFloat = 0
+    @State private var distantOffsetY: CGFloat = 0
+    @State private var distantTiltY: Double = 0
+    @State private var distantRotationZ: Double = 0
+
     @State private var sideIsRight: Bool = false
     @State private var lastSeenIndex: Int = -1
 
@@ -12397,7 +12405,8 @@ struct ImaginationCardPage: View {
                     let availableHeight = proxy.size.height * 0.76
 
                     let cardSize: CGSize = {
-                        let availableRatio = availableWidth / availableHeight
+                        let availableRatio =
+                            availableWidth / availableHeight
 
                         if imageRatio > availableRatio {
                             return CGSize(
@@ -12411,6 +12420,66 @@ struct ImaginationCardPage: View {
                             )
                         }
                     }()
+
+                    // ---------------------------------------------
+                    // TAMNA BLURRY KOPIJA — SUPROTAN UGAO
+                    // ---------------------------------------------
+
+                    ZStack {
+                        Image(nsImage: activeImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(
+                                width: cardSize.width,
+                                height: cardSize.height
+                            )
+                            .clipped()
+                            .blur(radius: 16)
+                            .brightness(-0.24)
+                            .contrast(0.88)
+
+                        Color.black
+                            .opacity(0.40)
+                    }
+                    .frame(
+                        width: cardSize.width,
+                        height: cardSize.height
+                    )
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: 22,
+                            style: .continuous
+                        )
+                    )
+                    .mask(
+                        RoundedRectangle(
+                            cornerRadius: 18,
+                            style: .continuous
+                        )
+                        .fill(Color.white.opacity(0.80))
+                        .padding(30)
+                        .blur(radius: 24)
+                    )
+                    .compositingGroup()
+                    .rotation3DEffect(
+                        .degrees(distantTiltY),
+                        axis: (x: 0, y: 1, z: 0),
+                        perspective: 0.55
+                    )
+                    .rotationEffect(
+                        .degrees(distantRotationZ)
+                    )
+                    .scaleEffect(distantScale)
+                    .offset(
+                        x: distantOffsetX,
+                        y: distantOffsetY
+                    )
+                    .opacity(0.52)
+                    .zIndex(5)
+
+                    // ---------------------------------------------
+                    // POSTOJEĆA GLAVNA FOTOGRAFIJA
+                    // ---------------------------------------------
 
                     ZStack {
                         Image(nsImage: activeImage)
@@ -12441,68 +12510,89 @@ struct ImaginationCardPage: View {
                     )
                     .rotationEffect(.degrees(revealRotationZ))
                     .scaleEffect(revealScale)
-                    .offset(x: revealOffsetX, y: revealOffsetY)
+                    .offset(
+                        x: revealOffsetX,
+                        y: revealOffsetY
+                    )
                     .zIndex(10)
                 }
 
-                // Više prašine, uglavnom sa leve i desne strane.
-                // Oba sloja su iza fotografije.
-                ImaginationDustOverlay(burstToken: activePhotoIndex)
-                    .opacity(0.95)
-                    
-                    .frame(
-                        width: proxy.size.width,
-                        height: proxy.size.height
-                    ).zIndex(20)
+                ImaginationDustOverlay(
+                    burstToken: activePhotoIndex
+                )
+                .opacity(0.95)
+                .frame(
+                    width: proxy.size.width,
+                    height: proxy.size.height
+                )
+                .zIndex(20)
 
-                ImaginationDustOverlay(burstToken: activePhotoIndex)
-                    .scaleEffect(1.08)
-                    .offset(y: 24)
-                    .opacity(0.65)
-                    
-                    .frame(
-                        width: proxy.size.width,
-                        height: proxy.size.height
-                    ).zIndex(21)
+                ImaginationDustOverlay(
+                    burstToken: activePhotoIndex
+                )
+                .scaleEffect(1.08)
+                .offset(y: 24)
+                .opacity(0.65)
+                .frame(
+                    width: proxy.size.width,
+                    height: proxy.size.height
+                )
+                .zIndex(21)
 
                 Color.black
                     .opacity(blackOverlayOpacity)
                     .allowsHitTesting(false)
                     .zIndex(100)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
+            .frame(
+                width: proxy.size.width,
+                height: proxy.size.height
+            )
             .clipped()
             .onAppear {
                 lastSeenIndex = activePhotoIndex
-                triggerReveal()
+
+                triggerReveal(
+                    sceneSize: proxy.size
+                )
             }
             .onChange(of: activePhotoIndex) { newValue in
-                guard newValue != lastSeenIndex else { return }
+                guard newValue != lastSeenIndex else {
+                    return
+                }
+
                 lastSeenIndex = newValue
-                triggerReveal()
+
+                triggerReveal(
+                    sceneSize: proxy.size
+                )
             }
         }
     }
 
-    private func triggerReveal() {
-        let startsOnRight = activePhotoIndex.isMultiple(of: 2)
-        let sideOffset: CGFloat = startsOnRight ? 190 : -190
+    private func triggerReveal(
+        sceneSize: CGSize
+    ) {
+        let startsOnRight =
+            activePhotoIndex.isMultiple(of: 2)
 
-        // Tri animacije koje se smenjuju:
-        // 0 = postojeća bočna animacija
-        // 1 = slika kreće odozgo i ide malo naniže
-        // 2 = slika kreće odozdo i ide malo nagore
-        let movementStyle = activePhotoIndex % 3
+        let sideOffset: CGFloat =
+            startsOnRight ? 190 : -190
+
+        let movementStyle =
+            activePhotoIndex % 3
 
         let startingOffsetY: CGFloat
         let endingOffsetY: CGFloat
 
         switch movementStyle {
         case 1:
+            // Glavna fotografija počinje gore.
             startingOffsetY = -115
             endingOffsetY = 45
 
         case 2:
+            // Glavna fotografija počinje dole.
             startingOffsetY = 115
             endingOffsetY = -45
 
@@ -12511,35 +12601,89 @@ struct ImaginationCardPage: View {
             endingOffsetY = 0
         }
 
-        // Fotografije se naginju ka unutrašnjoj strani.
-        let startingTiltY: Double = startsOnRight ? -9.0 : 9.0
-        let endingTiltY: Double = startsOnRight ? -4.0 : 4.0
+        let startingTiltY: Double =
+            startsOnRight ? -9.0 : 9.0
 
-        // Blaga rotacija daje efekat bačenih fotografija.
-        let startingRotationZ: Double = startsOnRight ? 2.4 : -2.4
-        let endingRotationZ: Double = startsOnRight ? 1.0 : -1.0
+        let endingTiltY: Double =
+            startsOnRight ? -4.0 : 4.0
+
+        let startingRotationZ: Double =
+            startsOnRight ? 2.4 : -2.4
+
+        let endingRotationZ: Double =
+            startsOnRight ? 1.0 : -1.0
+
+        // Blurry fotografija dobija stvarno suprotan X znak.
+        let distantStartingX: CGFloat =
+            startsOnRight
+            ? -(sceneSize.width * 0.425)
+            : sceneSize.width * 0.425
+
+        // Blurry fotografija dobija stvarno suprotan Y znak.
+        let distantStartingY: CGFloat
+
+        if startingOffsetY > 0 {
+            // Glavna je dole -> blurry mora gore.
+            distantStartingY =
+                -(sceneSize.height * 0.34)
+        } else if startingOffsetY < 0 {
+            // Glavna je gore -> blurry mora dole.
+            distantStartingY =
+                sceneSize.height * 0.34
+        } else {
+            // Kada je glavna vertikalno u sredini,
+            // ugao se menja po page-u.
+            distantStartingY =
+                activePhotoIndex.isMultiple(of: 4)
+                ? -(sceneSize.height * 0.34)
+                : sceneSize.height * 0.34
+        }
+
+        let distantStartingTiltY: Double =
+            startsOnRight ? 5.0 : -5.0
+
+        let distantEndingTiltY: Double =
+            startsOnRight ? 3.0 : -3.0
+
+        let distantStartingRotationZ: Double =
+            startsOnRight ? -7.0 : 7.0
+
+        let distantEndingRotationZ: Double =
+            startsOnRight ? -5.0 : 5.0
+
+        // Kreće još malo prema spolja, nikada prema glavnoj slici.
+        let distantEndingX: CGFloat =
+            distantStartingX
+            + (distantStartingX > 0 ? 22 : -22)
+
+        let distantEndingY: CGFloat =
+            distantStartingY
+            + (distantStartingY > 0 ? 16 : -16)
 
         var resetTransaction = Transaction()
         resetTransaction.animation = nil
 
         withTransaction(resetTransaction) {
+            sideIsRight = startsOnRight
+
             revealScale = 1.25
             revealBlur = 30
             revealOffsetX = sideOffset
             revealOffsetY = startingOffsetY
             revealTiltY = startingTiltY
             revealRotationZ = startingRotationZ
+
+            distantScale = 1.56156
+            distantOffsetX = distantStartingX
+            distantOffsetY = distantStartingY
+            distantTiltY = distantStartingTiltY
+            distantRotationZ = distantStartingRotationZ
         }
 
-        // Blur nestaje glatko.
         withAnimation(.easeOut(duration: 1.80)) {
             revealBlur = 0
         }
 
-        // Neprekidno udaljavanje, vertikalno kretanje i blag tilt.
-        // Kreće malo brže, a zatim veoma glatko usporava.
-        // Duže trajanje sprečava da fotografija vizuelno stane
-        // pre nego što sledeća fotografija preuzme kadar.
         let driftingAnimation = Animation.timingCurve(
             0.14,
             0.76,
@@ -12554,6 +12698,22 @@ struct ImaginationCardPage: View {
             revealOffsetY = endingOffsetY
             revealTiltY = endingTiltY
             revealRotationZ = endingRotationZ
+        }
+
+        let distantAnimation = Animation.timingCurve(
+            0.22,
+            0.62,
+            0.32,
+            1.0,
+            duration: 24.2
+        )
+
+        withAnimation(distantAnimation) {
+            distantScale = 1.20666
+            distantOffsetX = distantEndingX
+            distantOffsetY = distantEndingY
+            distantTiltY = distantEndingTiltY
+            distantRotationZ = distantEndingRotationZ
         }
     }
 }

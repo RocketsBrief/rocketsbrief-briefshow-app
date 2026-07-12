@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import Combine
 import AVFoundation
 import ImageIO
+import CoreImage
 import CoreGraphics
 
 enum SlideshowTimingMode: String {
@@ -70,6 +71,7 @@ struct ContentView: View {
     @State private var selectedExportResolution: String = "4K"
     @State private var isExportingVideo: Bool = false
     @State private var exportStatusText: String?
+    @State private var exportProgress: Double = 0
     @State private var activePhotoIndex: Int = 0
     @State private var previousPhotoIndex: Int?
     @State private var transitionProgress: Double = 1
@@ -154,6 +156,7 @@ struct ContentView: View {
                         previousOrigamiPageAnimationVariant: previousOrigamiPageAnimationVariant,
                         origamiWholePageFoldProgress: origamiWholePageFoldProgress,
                         origamiBlackOverlayOpacity: origamiBlackOverlayOpacity,
+                        magazineBlackOverlayOpacity: magazineBlackOverlayOpacity,
                         visualTheme: visualTheme,
                         isPreparingPhotos: isPreparingPhotos,
                         preparedPhotoCount: preparedPhotoCount,
@@ -189,6 +192,7 @@ struct ContentView: View {
                         selectedMusicCount: selectedMusicTrackCount,
                         canExport: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
                         isExporting: isExportingVideo,
+                        exportProgress: exportProgress,
                         exportStatusText: exportStatusText,
                         onExportVideo: openExportSavePanel
                     )
@@ -242,6 +246,7 @@ struct ContentView: View {
                     previousOrigamiPageAnimationVariant: previousOrigamiPageAnimationVariant,
                     origamiWholePageFoldProgress: origamiWholePageFoldProgress,
                     origamiBlackOverlayOpacity: origamiBlackOverlayOpacity,
+                    magazineBlackOverlayOpacity: magazineBlackOverlayOpacity,
                     visualTheme: visualTheme,
                     timeCounterText: timeCounterText,
                     transitionStyle: transitionStyle,
@@ -794,13 +799,27 @@ struct ContentView: View {
         if usesOrigamiTheme {
             let metrics = origamiPlanMetrics
 
+            let initialRevealDuration =
+                metrics.pages > 0
+                ? origamiTransitionDuration
+                : 0
+
+            let wholePageFoldDuration =
+                Double(
+                    max(
+                        0,
+                        metrics.pages - 1
+                    )
+                )
+                * 1.30
+
             return
                 Double(metrics.holds)
                     * origamiInternalHoldDuration
                 + Double(metrics.swaps)
                     * origamiInternalSwapDuration
-                + Double(metrics.pages)
-                    * origamiTransitionDuration
+                + initialRevealDuration
+                + wholePageFoldDuration
         }
 
         if timingMode == .followMusic, let audioPlayer {
@@ -810,6 +829,26 @@ struct ContentView: View {
         return currentPhotoDuration * Double(selectedPhotoURLs.count)
     }
 
+    private var isOrigamiOnFinalSettledPage: Bool {
+        guard usesOrigamiTheme,
+              !selectedPhotoURLs.isEmpty
+        else {
+            return false
+        }
+
+        let nextIndex =
+            activePhotoIndex
+            + currentOrigamiConsumedCount
+
+        return nextIndex >= selectedPhotoURLs.count
+            && origamiCompletedSwapCount
+                >= currentOrigamiReplacementCount
+            && !isOrigamiSwapAnimating
+            && !isOrigamiWholePageFoldAnimating
+            && previousOrigamiPageImages.isEmpty
+            && transitionProgress >= 0.999
+    }
+
     private var origamiBlackOverlayOpacity: Double {
         guard usesOrigamiTheme,
               totalPreviewDuration > 0
@@ -817,8 +856,7 @@ struct ContentView: View {
             return 0
         }
 
-        // Before the first playback begins, keep the
-        // normal Origami preview visible.
+        // Keep the normal preview visible before playback.
         if previewTotalElapsedSeconds <= 0,
            !isPreviewPlaying {
             return 0
@@ -841,13 +879,20 @@ struct ContentView: View {
             totalPreviewDuration
         )
 
-        // Beginning: black alpha 1 -> 0.
+        // Initial black reveal remains unchanged.
         let fadeInAlpha = max(
             0,
             1 - elapsed / fadeDuration
         )
 
-        // Ending: black alpha 0 -> 1.
+        // Never allow the ending fade to cover:
+        // - an internal image swap
+        // - a whole-page fold
+        // - any intermediate Origami page
+        guard isOrigamiOnFinalSettledPage else {
+            return fadeInAlpha
+        }
+
         let fadeOutStart = max(
             0,
             totalPreviewDuration
@@ -857,7 +902,7 @@ struct ContentView: View {
         let fadeOutAlpha: Double
 
         if elapsed >= fadeOutStart {
-            fadeOutAlpha = min(
+            let linearProgress = min(
                 1,
                 max(
                     0,
@@ -868,6 +913,14 @@ struct ContentView: View {
                     / fadeDuration
                 )
             )
+
+            fadeOutAlpha =
+                linearProgress
+                * linearProgress
+                * (
+                    3.0
+                    - 2.0 * linearProgress
+                )
         } else {
             fadeOutAlpha = 0
         }
@@ -879,6 +932,43 @@ struct ContentView: View {
                 fadeOutAlpha
             )
         )
+    }
+
+    private var magazineBlackOverlayOpacity: Double {
+        guard usesMagazineTheme,
+              totalPreviewDuration > 0
+        else {
+            return 0
+        }
+
+        let fadeDuration = min(
+            3.0,
+            totalPreviewDuration
+        )
+
+        guard fadeDuration > 0 else {
+            return 0
+        }
+
+        let fadeStart = max(
+            0,
+            totalPreviewDuration - fadeDuration
+        )
+
+        let linearProgress = min(
+            1,
+            max(
+                0,
+                (
+                    previewTotalElapsedSeconds
+                    - fadeStart
+                ) / fadeDuration
+            )
+        )
+
+        return linearProgress
+            * linearProgress
+            * (3.0 - 2.0 * linearProgress)
     }
 
     private var timeCounterText: String {
@@ -1632,27 +1722,70 @@ struct ContentView: View {
 
             let duration = 1.30
 
-            DispatchQueue.main.async {
-                withAnimation(
-                    .easeInOut(
-                        duration: duration
+            // Drive the whole-page fold with real frame-by-frame
+            // state updates. This prevents SwiftUI from interrupting
+            // the implicit animation when activePhotoIndex changes
+            // and the parent Origami view is rebuilt.
+            Task { @MainActor in
+                let startTime =
+                    Date.timeIntervalSinceReferenceDate
+
+                while true {
+                    guard activePhotoIndex == newIndex,
+                          isOrigamiWholePageFoldAnimating
+                    else {
+                        return
+                    }
+
+                    let elapsed =
+                        Date.timeIntervalSinceReferenceDate
+                        - startTime
+
+                    let linearProgress = min(
+                        1,
+                        max(
+                            0,
+                            elapsed / duration
+                        )
                     )
-                ) {
-                    origamiWholePageFoldProgress = 1
+
+                    // Smoothstep easing, equivalent to the previous
+                    // ease-in-out animation but stored as real state.
+                    let easedProgress =
+                        linearProgress
+                        * linearProgress
+                        * (
+                            3
+                            - 2 * linearProgress
+                        )
+
+                    var frameTransaction =
+                        Transaction()
+
+                    frameTransaction.animation = nil
+
+                    withTransaction(
+                        frameTransaction
+                    ) {
+                        origamiWholePageFoldProgress =
+                            easedProgress
+                    }
+
+                    if linearProgress >= 1 {
+                        break
+                    }
+
+                    try? await Task.sleep(
+                        nanoseconds: 16_666_667
+                    )
                 }
-            }
 
-            DispatchQueue.main.asyncAfter(
-                deadline:
-                    .now()
-                    + duration
-                    + 0.04
-            ) {
-                isOrigamiWholePageFoldAnimating = false
+                try? await Task.sleep(
+                    nanoseconds: 40_000_000
+                )
 
-                guard activePhotoIndex
-                        == newIndex
-                else {
+                guard activePhotoIndex == newIndex else {
+                    isOrigamiWholePageFoldAnimating = false
                     return
                 }
 
@@ -1664,10 +1797,11 @@ struct ContentView: View {
                 withTransaction(
                     cleanupTransaction
                 ) {
+                    origamiWholePageFoldProgress = 1
                     previousOrigamiPageImages = []
                     previousOrigamiPageReplacements = [:]
                     previousPhotoIndex = nil
-                    origamiWholePageFoldProgress = 1
+                    isOrigamiWholePageFoldAnimating = false
                 }
             }
 
@@ -1900,7 +2034,8 @@ struct ContentView: View {
         }
 
         isExportingVideo = true
-        exportStatusText = "Exporting video…"
+        exportProgress = 0
+        exportStatusText = "Rendering video… 0% · estimating time"
         isPreviewPlaying = false
         audioPlayer?.pause()
 
@@ -1910,23 +2045,129 @@ struct ContentView: View {
         let durationPerPhoto = max(0.25, currentPhotoDuration)
         let selectedTransitionStyle = transitionStyle
         let selectedFadeDuration = fadeDuration
+        let selectedVisualTheme = visualTheme
+        let selectedMagazineImageFade =
+            magazineImageFadeSeconds
+        let selectedMagazineImageDelay =
+            magazineImageDelaySeconds
+        let selectedOrigamiHoldSeconds =
+            origamiInternalHoldSeconds
+
+        let selectedOrigamiImagesBeforePageChange =
+            origamiImagesBeforePageChange
+
+        let selectedOrigamiSimultaneousSwapCount =
+            origamiSimultaneousSwapCount
         let selectedMusicFadeIn = musicFadeInSeconds
         let selectedMusicFadeOut = musicFadeOutSeconds
+
+
+        let exportStartedAt = Date()
+
+        let reportRenderProgress:
+            @Sendable (Double) -> Void = {
+                rawProgress in
+
+                let renderProgress = max(
+                    0,
+                    min(1, rawProgress)
+                )
+
+                DispatchQueue.main.async {
+                    let overallProgress =
+                        renderProgress
+                        * (musicURLs.isEmpty ? 0.99 : 0.90)
+
+                    exportProgress = overallProgress
+
+                    let percent = Int(
+                        round(overallProgress * 100)
+                    )
+
+                    let elapsed =
+                        Date().timeIntervalSince(
+                            exportStartedAt
+                        )
+
+                    if renderProgress > 0.025 {
+                        let estimatedRenderTotal =
+                            elapsed / renderProgress
+
+                        let remainingRender =
+                            max(
+                                0,
+                                estimatedRenderTotal - elapsed
+                            )
+
+                        exportStatusText =
+                            "Rendering video… \(percent)% · about "
+                            + formattedExportTime(
+                                remainingRender
+                            )
+                            + " remaining"
+                    } else {
+                        exportStatusText =
+                            "Rendering video… \(percent)% · estimating time"
+                    }
+                }
+            }
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let videoOnlyURL = musicURLs.isEmpty ? outputURL : temporaryVideoURL(for: outputURL)
 
-                try renderSlideshowVideo(
-                    photoURLs: photoURLs,
-                    outputURL: videoOnlyURL,
-                    resolutionName: resolution,
-                    secondsPerPhoto: durationPerPhoto,
-                    transitionStyle: selectedTransitionStyle,
-                    fadeDuration: selectedFadeDuration
-                )
+                if selectedVisualTheme == .magazine
+                    || selectedVisualTheme == .magazineFamily
+                    || selectedVisualTheme == .magazineCouples {
+
+                    try renderMagazineSlideshowVideo(
+                        photoURLs: photoURLs,
+                        outputURL: videoOnlyURL,
+                        resolutionName: resolution,
+                        pageDuration: durationPerPhoto,
+                        imageFadeSeconds:
+                            selectedMagazineImageFade,
+                        imageDelaySeconds:
+                            selectedMagazineImageDelay,
+                        progressHandler:
+                            reportRenderProgress
+                    )
+                } else if selectedVisualTheme == .origami {
+                    try renderOrigamiSlideshowVideo(
+                        photoURLs: photoURLs,
+                        outputURL: videoOnlyURL,
+                        resolutionName: resolution,
+                        pageDuration:
+                            selectedOrigamiHoldSeconds,
+                        imagesBeforePageChange:
+                            selectedOrigamiImagesBeforePageChange,
+                        simultaneousSwapCount:
+                            selectedOrigamiSimultaneousSwapCount,
+                        progressHandler:
+                            reportRenderProgress
+                    )
+                } else {
+                    try renderSlideshowVideo(
+                        photoURLs: photoURLs,
+                        outputURL: videoOnlyURL,
+                        resolutionName: resolution,
+                        secondsPerPhoto: durationPerPhoto,
+                        transitionStyle:
+                            selectedTransitionStyle,
+                        fadeDuration:
+                            selectedFadeDuration,
+                        progressHandler:
+                            reportRenderProgress
+                    )
+                }
 
                 if !musicURLs.isEmpty {
+                    DispatchQueue.main.async {
+                        exportProgress = 0.92
+                        exportStatusText =
+                            "Adding music… 92%"
+                    }
+
                     try muxVideoWithMusic(
                         videoURL: videoOnlyURL,
                         musicURLs: musicURLs,
@@ -1940,16 +2181,57 @@ struct ContentView: View {
                 }
 
                 DispatchQueue.main.async {
+                    exportProgress = 0.99
+                    exportStatusText = "Finalizing… 99%"
+                }
+
+                DispatchQueue.main.async {
+                    exportProgress = 1
                     isExportingVideo = false
-                    exportStatusText = "Export complete: \(outputURL.lastPathComponent)"
+                    exportStatusText =
+                        "Export complete · 100%: \(outputURL.lastPathComponent)"
                 }
             } catch {
                 DispatchQueue.main.async {
+                    exportProgress = 0
                     isExportingVideo = false
-                    exportStatusText = "Export failed: \(error.localizedDescription)"
+                    exportStatusText =
+                        "Export failed: \(error.localizedDescription)"
                 }
             }
         }
+    }
+
+
+
+
+
+
+
+    private func formattedExportTime(
+        _ seconds: Double
+    ) -> String {
+        let roundedSeconds =
+            max(
+                1,
+                Int(ceil(seconds))
+            )
+
+        if roundedSeconds < 60 {
+            return "\(roundedSeconds) sec"
+        }
+
+        let minutes =
+            roundedSeconds / 60
+
+        let remainingSeconds =
+            roundedSeconds % 60
+
+        if remainingSeconds == 0 {
+            return "\(minutes) min"
+        }
+
+        return "\(minutes) min \(remainingSeconds) sec"
     }
 
     private func prepareAudioPlayer(for url: URL?) {
@@ -1972,13 +2254,5366 @@ struct ContentView: View {
 }
 
 
+
+private enum MagazineExportPhotoShape {
+    case landscape
+    case portrait
+    case square
+}
+
+private enum MagazineExportSlotShape {
+    case wide
+    case tall
+    case flex
+}
+
+private struct MagazineExportPhoto {
+    let url: URL
+    let image: CGImage
+
+    var aspectRatio: CGFloat {
+        guard image.height > 0 else {
+            return 1
+        }
+
+        return CGFloat(image.width)
+            / CGFloat(image.height)
+    }
+
+    var shape: MagazineExportPhotoShape {
+        if aspectRatio > 1.18 {
+            return .landscape
+        }
+
+        if aspectRatio < 0.82 {
+            return .portrait
+        }
+
+        return .square
+    }
+}
+
+private struct MagazineExportPage {
+    let photos: [MagazineExportPhoto]
+    let layoutVariant: Int
+}
+
+private func magazineExportPhotoSeed(
+    _ photos: [MagazineExportPhoto]
+) -> Int {
+    let value = photos.enumerated().reduce(0) {
+        total,
+        item in
+
+        let nameScore =
+            item.element.url.lastPathComponent
+                .unicodeScalars
+                .reduce(0) {
+                    partial,
+                    scalar in
+
+                    partial + Int(scalar.value)
+                }
+
+        return total
+            + (
+                item.offset + 1
+            )
+            * nameScore
+    }
+
+    return abs(value)
+}
+
+private func plannedMagazineExportSlotCount(
+    pageIndex: Int,
+    remainingPhotos: Int,
+    seed: Int
+) -> Int {
+    guard remainingPhotos > 0 else {
+        return 0
+    }
+
+    if pageIndex <= 0 {
+        let choices = [2, 3, 4]
+
+        return min(
+            choices[
+                seed % choices.count
+            ],
+            remainingPhotos
+        )
+    }
+
+    let cycles = [
+        [3, 5, 6, 4, 2],
+        [4, 6, 5, 3, 2],
+        [5, 3, 6, 2, 4],
+        [6, 5, 4, 3, 2],
+        [2, 4, 5, 6, 3],
+    ]
+
+    let cycle =
+        cycles[
+            seed % cycles.count
+        ]
+
+    let planned =
+        cycle[
+            (pageIndex - 1)
+                % cycle.count
+        ]
+
+    return min(
+        planned,
+        remainingPhotos
+    )
+}
+
+private func adaptiveMagazineExportSlotCount(
+    plannedCount: Int,
+    photos: [MagazineExportPhoto],
+    remainingPhotos: Int
+) -> Int {
+    guard plannedCount > 0 else {
+        return 0
+    }
+
+    let candidatePhotos =
+        Array(
+            photos.prefix(
+                plannedCount
+            )
+        )
+
+    let portraitCount =
+        candidatePhotos.filter {
+            $0.aspectRatio < 0.82
+        }.count
+
+    let landscapeCount =
+        candidatePhotos.filter {
+            $0.aspectRatio > 1.18
+        }.count
+
+    let veryWideCount =
+        candidatePhotos.filter {
+            $0.aspectRatio > 1.55
+        }.count
+
+    if plannedCount >= 4,
+       portraitCount >= 1,
+       landscapeCount >= 3 {
+
+        return min(
+            3,
+            remainingPhotos
+        )
+    }
+
+    if plannedCount >= 5,
+       veryWideCount >= 2 {
+
+        return min(
+            3,
+            remainingPhotos
+        )
+    }
+
+    if plannedCount >= 4,
+       veryWideCount >= 3 {
+
+        return min(
+            2,
+            remainingPhotos
+        )
+    }
+
+    return plannedCount
+}
+
+
+private let magazineExportSRGBColorSpace =
+    CGColorSpace(
+        name: CGColorSpace.sRGB
+    )
+    ?? CGColorSpaceCreateDeviceRGB()
+
+private let magazineExportCIContext =
+    CIContext(
+        options: [
+            .workingColorSpace:
+                magazineExportSRGBColorSpace,
+            .outputColorSpace:
+                magazineExportSRGBColorSpace,
+            .cacheIntermediates:
+                false,
+        ]
+    )
+
+private func makeSDRExportCGImage(
+    from url: URL
+) -> CGImage? {
+    var options:
+        [CIImageOption: Any] = [
+            .applyOrientationProperty:
+                true,
+        ]
+
+    // Do not expand Apple gain-map photographs
+    // into HDR. Use the normal SDR base image.
+    if #available(macOS 14.0, *) {
+        options[
+            .expandToHDR
+        ] = false
+    }
+
+    guard let image =
+        CIImage(
+            contentsOf: url,
+            options: options
+        )
+    else {
+        print(
+            "BriefShow Core Image decode failed:",
+            url.lastPathComponent
+        )
+
+        return nil
+    }
+
+    let extent =
+        image.extent.integral
+
+    guard extent.width > 0,
+          extent.height > 0,
+          extent.width.isFinite,
+          extent.height.isFinite
+    else {
+        print(
+            "BriefShow invalid image extent:",
+            url.lastPathComponent,
+            image.extent
+        )
+
+        return nil
+    }
+
+    guard let normalizedImage =
+        magazineExportCIContext
+            .createCGImage(
+                image,
+                from: extent,
+                format: .RGBA8,
+                colorSpace:
+                    magazineExportSRGBColorSpace
+            )
+    else {
+        print(
+            "BriefShow SDR RGBA8 conversion failed:",
+            url.lastPathComponent
+        )
+
+        return nil
+    }
+
+    print(
+        "BriefShow SDR image:",
+        url.lastPathComponent,
+        normalizedImage.width,
+        "x",
+        normalizedImage.height,
+        "bpc:",
+        normalizedImage.bitsPerComponent,
+        "bpp:",
+        normalizedImage.bitsPerPixel
+    )
+
+    return normalizedImage
+}
+
+
+private func buildMagazineExportPages(
+    photoURLs: [URL]
+) -> [MagazineExportPage] {
+    let photos =
+        photoURLs.compactMap {
+            url -> MagazineExportPhoto? in
+
+            guard let image =
+                    makeSDRExportCGImage(
+                        from: url
+                    )
+            else {
+                return nil
+            }
+
+            return MagazineExportPhoto(
+                url: url,
+                image: image
+            )
+        }
+
+    guard !photos.isEmpty else {
+        return []
+    }
+
+    let seed =
+        magazineExportPhotoSeed(
+            photos
+        )
+
+    var pages: [MagazineExportPage] = []
+    var pageIndex = 0
+    var consumed = 0
+
+    while consumed < photos.count {
+        let remaining =
+            photos.count - consumed
+
+        let planned =
+            plannedMagazineExportSlotCount(
+                pageIndex: pageIndex,
+                remainingPhotos:
+                    remaining,
+                seed: seed
+            )
+
+        let availablePhotos =
+            Array(
+                photos[consumed...]
+            )
+
+        let slotCount = max(
+            1,
+            adaptiveMagazineExportSlotCount(
+                plannedCount:
+                    planned,
+                photos:
+                    availablePhotos,
+                remainingPhotos:
+                    remaining
+            )
+        )
+
+        let endIndex = min(
+            photos.count,
+            consumed + slotCount
+        )
+
+        guard consumed < endIndex else {
+            break
+        }
+
+        pages.append(
+            MagazineExportPage(
+                photos:
+                    Array(
+                        photos[
+                            consumed..<endIndex
+                        ]
+                    ),
+                layoutVariant:
+                    pageIndex % 2
+            )
+        )
+
+        consumed = endIndex
+        pageIndex += 1
+    }
+
+    return pages
+}
+
+private func magazineExportSlotShapes(
+    for photos: [MagazineExportPhoto]
+) -> [MagazineExportSlotShape] {
+    let portraitCount =
+        photos.filter {
+            $0.shape == .portrait
+        }.count
+
+    let landscapeCount =
+        photos.filter {
+            $0.shape == .landscape
+        }.count
+
+    let mixed =
+        portraitCount > 0
+        && landscapeCount > 0
+
+    switch photos.count {
+    case 2:
+        return mixed
+            ? [.wide, .tall]
+            : [.flex, .flex]
+
+    case 3:
+        if portraitCount >= 2 {
+            return [
+                .tall,
+                .tall,
+                .flex,
+            ]
+        }
+
+        if mixed {
+            return [
+                .wide,
+                .wide,
+                .tall,
+            ]
+        }
+
+        return [
+            .wide,
+            .flex,
+            .flex,
+        ]
+
+    case 4:
+        if portraitCount >= 2 {
+            return [
+                .tall,
+                .tall,
+                .wide,
+                .wide,
+            ]
+        }
+
+        if mixed {
+            return [
+                .tall,
+                .wide,
+                .wide,
+                .wide,
+            ]
+        }
+
+        return Array(
+            repeating: .wide,
+            count: 4
+        )
+
+    case 5:
+        if portraitCount >= 2 {
+            return [
+                .tall,
+                .tall,
+                .wide,
+                .wide,
+                .wide,
+            ]
+        }
+
+        if mixed {
+            return [
+                .tall,
+                .wide,
+                .wide,
+                .wide,
+                .wide,
+            ]
+        }
+
+        return Array(
+            repeating: .wide,
+            count: 5
+        )
+
+    default:
+        if portraitCount >= 3 {
+            return [
+                .tall,
+                .tall,
+                .tall,
+                .wide,
+                .wide,
+                .wide,
+            ]
+        }
+
+        if portraitCount == 2 {
+            return [
+                .wide,
+                .wide,
+                .wide,
+                .tall,
+                .wide,
+                .tall,
+            ]
+        }
+
+        if portraitCount == 1 {
+            return [
+                .tall,
+                .wide,
+                .wide,
+                .wide,
+                .wide,
+                .wide,
+            ]
+        }
+
+        return Array(
+            repeating: .wide,
+            count:
+                max(
+                    1,
+                    photos.count
+                )
+        )
+    }
+}
+
+private func orderedMagazineExportPhotos(
+    _ photos: [MagazineExportPhoto]
+) -> [MagazineExportPhoto] {
+    let portraitIndexes =
+        photos.indices.filter {
+            photos[$0].shape
+                == .portrait
+        }
+
+    let landscapeIndexes =
+        photos.indices.filter {
+            photos[$0].shape
+                == .landscape
+        }
+
+    let squareIndexes =
+        photos.indices.filter {
+            photos[$0].shape
+                == .square
+        }
+
+    let allIndexes =
+        Array(photos.indices)
+
+    var used = Set<Int>()
+    var result: [Int] = []
+
+    func candidates(
+        for shape:
+            MagazineExportSlotShape
+    ) -> [Int] {
+        switch shape {
+        case .wide:
+            return landscapeIndexes
+                + squareIndexes
+                + portraitIndexes
+
+        case .tall:
+            return portraitIndexes
+                + squareIndexes
+                + landscapeIndexes
+
+        case .flex:
+            return allIndexes
+        }
+    }
+
+    for slotShape in
+        magazineExportSlotShapes(
+            for: photos
+        )
+        .prefix(photos.count) {
+
+        if let next =
+            candidates(
+                for: slotShape
+            )
+            .first(
+                where: {
+                    !used.contains($0)
+                }
+            ) {
+
+            used.insert(next)
+            result.append(next)
+        }
+    }
+
+    for index in allIndexes
+    where !used.contains(index) {
+        result.append(index)
+    }
+
+    return result.map {
+        photos[$0]
+    }
+}
+
+private func magazineExportLayoutRects(
+    page: MagazineExportPage,
+    contentRect: CGRect,
+    gap: CGFloat
+) -> [CGRect] {
+    let photos = page.photos
+
+    guard !photos.isEmpty else {
+        return []
+    }
+
+    let portraitCount =
+        photos.filter {
+            $0.shape == .portrait
+        }.count
+
+    let landscapeCount =
+        photos.filter {
+            $0.shape == .landscape
+        }.count
+
+    let mixed =
+        portraitCount > 0
+        && landscapeCount > 0
+
+    let width =
+        contentRect.width
+
+    let height =
+        contentRect.height
+
+    func topRect(
+        x: CGFloat,
+        y: CGFloat,
+        width: CGFloat,
+        height: CGFloat
+    ) -> CGRect {
+        CGRect(
+            x:
+                contentRect.minX + x,
+            y:
+                contentRect.maxY
+                - y
+                - height,
+            width:
+                max(1, width),
+            height:
+                max(1, height)
+        )
+    }
+
+    switch photos.count {
+    case 1:
+        return [
+            contentRect,
+        ]
+
+    case 2:
+        if mixed {
+            let leftWidth =
+                (
+                    width - gap
+                ) * 0.64
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        leftWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        leftWidth + gap,
+                    y: 0,
+                    width:
+                        width
+                        - leftWidth
+                        - gap,
+                    height:
+                        height
+                ),
+            ]
+        }
+
+        let columnWidth =
+            (
+                width - gap
+            ) / 2
+
+        return [
+            topRect(
+                x: 0,
+                y: 0,
+                width:
+                    columnWidth,
+                height:
+                    height
+            ),
+            topRect(
+                x:
+                    columnWidth + gap,
+                y: 0,
+                width:
+                    columnWidth,
+                height:
+                    height
+            ),
+        ]
+
+    case 3:
+        if portraitCount >= 2 {
+            let columnWidth =
+                (
+                    width
+                    - gap * 2
+                ) / 3
+
+            return (0..<3).map {
+                index in
+
+                topRect(
+                    x:
+                        CGFloat(index)
+                        * (
+                            columnWidth
+                            + gap
+                        ),
+                    y: 0,
+                    width:
+                        columnWidth,
+                    height:
+                        height
+                )
+            }
+        }
+
+        let largeWidth =
+            (
+                width - gap
+            ) * 0.62
+
+        let smallWidth =
+            width
+            - largeWidth
+            - gap
+
+        let halfHeight =
+            (
+                height - gap
+            ) / 2
+
+        if mixed {
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        largeWidth,
+                    height:
+                        halfHeight
+                ),
+                topRect(
+                    x: 0,
+                    y:
+                        halfHeight + gap,
+                    width:
+                        largeWidth,
+                    height:
+                        halfHeight
+                ),
+                topRect(
+                    x:
+                        largeWidth + gap,
+                    y: 0,
+                    width:
+                        smallWidth,
+                    height:
+                        height
+                ),
+            ]
+        }
+
+        return [
+            topRect(
+                x: 0,
+                y: 0,
+                width:
+                    largeWidth,
+                height:
+                    height
+            ),
+            topRect(
+                x:
+                    largeWidth + gap,
+                y: 0,
+                width:
+                    smallWidth,
+                height:
+                    halfHeight
+            ),
+            topRect(
+                x:
+                    largeWidth + gap,
+                y:
+                    halfHeight + gap,
+                width:
+                    smallWidth,
+                height:
+                    halfHeight
+            ),
+        ]
+
+    case 4:
+        if portraitCount >= 2 {
+            let rightWidth =
+                (
+                    width
+                    - gap * 2
+                ) * 0.44
+
+            let flexibleWidth =
+                (
+                    width
+                    - gap * 2
+                    - rightWidth
+                ) / 2
+
+            let halfHeight =
+                (
+                    height - gap
+                ) / 2
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        flexibleWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        flexibleWidth
+                        + gap,
+                    y: 0,
+                    width:
+                        flexibleWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        flexibleWidth
+                        * 2
+                        + gap * 2,
+                    y: 0,
+                    width:
+                        rightWidth,
+                    height:
+                        halfHeight
+                ),
+                topRect(
+                    x:
+                        flexibleWidth
+                        * 2
+                        + gap * 2,
+                    y:
+                        halfHeight
+                        + gap,
+                    width:
+                        rightWidth,
+                    height:
+                        halfHeight
+                ),
+            ]
+        }
+
+        if mixed {
+            let leftWidth =
+                (
+                    width - gap
+                ) * 0.34
+
+            let rightWidth =
+                width
+                - leftWidth
+                - gap
+
+            let rowHeight =
+                (
+                    height
+                    - gap * 2
+                ) / 3
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        leftWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        leftWidth + gap,
+                    y: 0,
+                    width:
+                        rightWidth,
+                    height:
+                        rowHeight
+                ),
+                topRect(
+                    x:
+                        leftWidth + gap,
+                    y:
+                        rowHeight + gap,
+                    width:
+                        rightWidth,
+                    height:
+                        rowHeight
+                ),
+                topRect(
+                    x:
+                        leftWidth + gap,
+                    y:
+                        (
+                            rowHeight
+                            + gap
+                        ) * 2,
+                    width:
+                        rightWidth,
+                    height:
+                        rowHeight
+                ),
+            ]
+        }
+
+        if page.layoutVariant == 0 {
+            let leftWidth =
+                (
+                    width - gap
+                ) * 0.62
+
+            let rightWidth =
+                width
+                - leftWidth
+                - gap
+
+            let rowHeight =
+                (
+                    height
+                    - gap * 2
+                ) / 3
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        leftWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        leftWidth + gap,
+                    y: 0,
+                    width:
+                        rightWidth,
+                    height:
+                        rowHeight
+                ),
+                topRect(
+                    x:
+                        leftWidth + gap,
+                    y:
+                        rowHeight + gap,
+                    width:
+                        rightWidth,
+                    height:
+                        rowHeight
+                ),
+                topRect(
+                    x:
+                        leftWidth + gap,
+                    y:
+                        (
+                            rowHeight
+                            + gap
+                        ) * 2,
+                    width:
+                        rightWidth,
+                    height:
+                        rowHeight
+                ),
+            ]
+        }
+
+        let columnWidth =
+            (
+                width - gap
+            ) / 2
+
+        let rowHeight =
+            (
+                height - gap
+            ) / 2
+
+        return [
+            topRect(
+                x: 0,
+                y: 0,
+                width:
+                    columnWidth,
+                height:
+                    rowHeight
+            ),
+            topRect(
+                x:
+                    columnWidth + gap,
+                y: 0,
+                width:
+                    columnWidth,
+                height:
+                    rowHeight
+            ),
+            topRect(
+                x: 0,
+                y:
+                    rowHeight + gap,
+                width:
+                    columnWidth,
+                height:
+                    rowHeight
+            ),
+            topRect(
+                x:
+                    columnWidth + gap,
+                y:
+                    rowHeight + gap,
+                width:
+                    columnWidth,
+                height:
+                    rowHeight
+            ),
+        ]
+
+    case 5:
+        if portraitCount >= 2 {
+            let fixedWidth =
+                (
+                    width
+                    - gap * 2
+                ) * 0.26
+
+            let rightWidth =
+                width
+                - gap * 2
+                - fixedWidth * 2
+
+            let halfHeight =
+                (
+                    height - gap
+                ) / 2
+
+            let rightHalfWidth =
+                (
+                    rightWidth - gap
+                ) / 2
+
+            let rightX =
+                fixedWidth * 2
+                + gap * 2
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        fixedWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        fixedWidth + gap,
+                    y: 0,
+                    width:
+                        fixedWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        rightX,
+                    y: 0,
+                    width:
+                        rightWidth,
+                    height:
+                        halfHeight
+                ),
+                topRect(
+                    x:
+                        rightX,
+                    y:
+                        halfHeight + gap,
+                    width:
+                        rightHalfWidth,
+                    height:
+                        halfHeight
+                ),
+                topRect(
+                    x:
+                        rightX
+                        + rightHalfWidth
+                        + gap,
+                    y:
+                        halfHeight + gap,
+                    width:
+                        rightHalfWidth,
+                    height:
+                        halfHeight
+                ),
+            ]
+        }
+
+        if mixed {
+            let leftWidth =
+                (
+                    width - gap
+                ) * 0.34
+
+            let rightWidth =
+                width
+                - leftWidth
+                - gap
+
+            let columnWidth =
+                (
+                    rightWidth - gap
+                ) / 2
+
+            let rowHeight =
+                (
+                    height - gap
+                ) / 2
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        leftWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        leftWidth + gap,
+                    y: 0,
+                    width:
+                        columnWidth,
+                    height:
+                        rowHeight
+                ),
+                topRect(
+                    x:
+                        leftWidth
+                        + gap
+                        + columnWidth
+                        + gap,
+                    y: 0,
+                    width:
+                        columnWidth,
+                    height:
+                        rowHeight
+                ),
+                topRect(
+                    x:
+                        leftWidth + gap,
+                    y:
+                        rowHeight + gap,
+                    width:
+                        columnWidth,
+                    height:
+                        rowHeight
+                ),
+                topRect(
+                    x:
+                        leftWidth
+                        + gap
+                        + columnWidth
+                        + gap,
+                    y:
+                        rowHeight + gap,
+                    width:
+                        columnWidth,
+                    height:
+                        rowHeight
+                ),
+            ]
+        }
+
+        let topHeight =
+            (
+                height - gap
+            ) * 0.48
+
+        let bottomHeight =
+            height
+            - topHeight
+            - gap
+
+        let topWidth =
+            (
+                width
+                - gap * 2
+            ) / 3
+
+        let bottomWidth =
+            (
+                width - gap
+            ) / 2
+
+        return [
+            topRect(
+                x: 0,
+                y: 0,
+                width:
+                    topWidth,
+                height:
+                    topHeight
+            ),
+            topRect(
+                x:
+                    topWidth + gap,
+                y: 0,
+                width:
+                    topWidth,
+                height:
+                    topHeight
+            ),
+            topRect(
+                x:
+                    (
+                        topWidth
+                        + gap
+                    ) * 2,
+                y: 0,
+                width:
+                    topWidth,
+                height:
+                    topHeight
+            ),
+            topRect(
+                x: 0,
+                y:
+                    topHeight + gap,
+                width:
+                    bottomWidth,
+                height:
+                    bottomHeight
+            ),
+            topRect(
+                x:
+                    bottomWidth + gap,
+                y:
+                    topHeight + gap,
+                width:
+                    bottomWidth,
+                height:
+                    bottomHeight
+            ),
+        ]
+
+    default:
+        if portraitCount >= 3 {
+            let rightWidth =
+                (
+                    width
+                    - gap * 3
+                ) * 0.34
+
+            let columnWidth =
+                (
+                    width
+                    - gap * 3
+                    - rightWidth
+                ) / 3
+
+            let rightX =
+                columnWidth * 3
+                + gap * 3
+
+            let rowHeight =
+                (
+                    height
+                    - gap * 2
+                ) / 3
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        columnWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        columnWidth + gap,
+                    y: 0,
+                    width:
+                        columnWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        (
+                            columnWidth
+                            + gap
+                        ) * 2,
+                    y: 0,
+                    width:
+                        columnWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        rightX,
+                    y: 0,
+                    width:
+                        rightWidth,
+                    height:
+                        rowHeight
+                ),
+                topRect(
+                    x:
+                        rightX,
+                    y:
+                        rowHeight + gap,
+                    width:
+                        rightWidth,
+                    height:
+                        rowHeight
+                ),
+                topRect(
+                    x:
+                        rightX,
+                    y:
+                        (
+                            rowHeight
+                            + gap
+                        ) * 2,
+                    width:
+                        rightWidth,
+                    height:
+                        rowHeight
+                ),
+            ]
+        }
+
+        if portraitCount == 2 {
+            let topHeight =
+                (
+                    height - gap
+                ) * 0.48
+
+            let bottomHeight =
+                height
+                - topHeight
+                - gap
+
+            let topWidth =
+                (
+                    width
+                    - gap * 2
+                ) / 3
+
+            let fixedBottomWidth =
+                (
+                    width
+                    - gap * 2
+                ) * 0.25
+
+            let centerBottomWidth =
+                width
+                - gap * 2
+                - fixedBottomWidth * 2
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        topWidth,
+                    height:
+                        topHeight
+                ),
+                topRect(
+                    x:
+                        topWidth + gap,
+                    y: 0,
+                    width:
+                        topWidth,
+                    height:
+                        topHeight
+                ),
+                topRect(
+                    x:
+                        (
+                            topWidth
+                            + gap
+                        ) * 2,
+                    y: 0,
+                    width:
+                        topWidth,
+                    height:
+                        topHeight
+                ),
+                topRect(
+                    x: 0,
+                    y:
+                        topHeight + gap,
+                    width:
+                        fixedBottomWidth,
+                    height:
+                        bottomHeight
+                ),
+                topRect(
+                    x:
+                        fixedBottomWidth
+                        + gap,
+                    y:
+                        topHeight + gap,
+                    width:
+                        centerBottomWidth,
+                    height:
+                        bottomHeight
+                ),
+                topRect(
+                    x:
+                        fixedBottomWidth
+                        + gap
+                        + centerBottomWidth
+                        + gap,
+                    y:
+                        topHeight + gap,
+                    width:
+                        fixedBottomWidth,
+                    height:
+                        bottomHeight
+                ),
+            ]
+        }
+
+        if portraitCount == 1 {
+            let leftWidth =
+                (
+                    width - gap
+                ) * 0.28
+
+            let rightWidth =
+                width
+                - leftWidth
+                - gap
+
+            let halfHeight =
+                (
+                    height - gap
+                ) / 2
+
+            let topWidth =
+                (
+                    rightWidth - gap
+                ) / 2
+
+            let bottomWidth =
+                (
+                    rightWidth
+                    - gap * 2
+                ) / 3
+
+            let rightX =
+                leftWidth + gap
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        leftWidth,
+                    height:
+                        height
+                ),
+                topRect(
+                    x:
+                        rightX,
+                    y: 0,
+                    width:
+                        topWidth,
+                    height:
+                        halfHeight
+                ),
+                topRect(
+                    x:
+                        rightX
+                        + topWidth
+                        + gap,
+                    y: 0,
+                    width:
+                        topWidth,
+                    height:
+                        halfHeight
+                ),
+                topRect(
+                    x:
+                        rightX,
+                    y:
+                        halfHeight + gap,
+                    width:
+                        bottomWidth,
+                    height:
+                        halfHeight
+                ),
+                topRect(
+                    x:
+                        rightX
+                        + bottomWidth
+                        + gap,
+                    y:
+                        halfHeight + gap,
+                    width:
+                        bottomWidth,
+                    height:
+                        halfHeight
+                ),
+                topRect(
+                    x:
+                        rightX
+                        + (
+                            bottomWidth
+                            + gap
+                        ) * 2,
+                    y:
+                        halfHeight + gap,
+                    width:
+                        bottomWidth,
+                    height:
+                        halfHeight
+                ),
+            ]
+        }
+
+        if page.layoutVariant == 0 {
+            let topHeight =
+                (
+                    height - gap
+                ) * 0.35
+
+            let bottomHeight =
+                height
+                - topHeight
+                - gap
+
+            let topWidth =
+                (
+                    width
+                    - gap * 3
+                ) / 4
+
+            let bottomWidth =
+                (
+                    width - gap
+                ) / 2
+
+            return [
+                topRect(
+                    x: 0,
+                    y: 0,
+                    width:
+                        topWidth,
+                    height:
+                        topHeight
+                ),
+                topRect(
+                    x:
+                        topWidth + gap,
+                    y: 0,
+                    width:
+                        topWidth,
+                    height:
+                        topHeight
+                ),
+                topRect(
+                    x:
+                        (
+                            topWidth
+                            + gap
+                        ) * 2,
+                    y: 0,
+                    width:
+                        topWidth,
+                    height:
+                        topHeight
+                ),
+                topRect(
+                    x:
+                        (
+                            topWidth
+                            + gap
+                        ) * 3,
+                    y: 0,
+                    width:
+                        topWidth,
+                    height:
+                        topHeight
+                ),
+                topRect(
+                    x: 0,
+                    y:
+                        topHeight + gap,
+                    width:
+                        bottomWidth,
+                    height:
+                        bottomHeight
+                ),
+                topRect(
+                    x:
+                        bottomWidth + gap,
+                    y:
+                        topHeight + gap,
+                    width:
+                        bottomWidth,
+                    height:
+                        bottomHeight
+                ),
+            ]
+        }
+
+        let leftWidth =
+            (
+                width - gap
+            ) * 0.58
+
+        let rightWidth =
+            width
+            - leftWidth
+            - gap
+
+        let rowHeight =
+            (
+                height
+                - gap * 2
+            ) / 3
+
+        let halfRightWidth =
+            (
+                rightWidth - gap
+            ) / 2
+
+        let rightX =
+            leftWidth + gap
+
+        return [
+            topRect(
+                x: 0,
+                y: 0,
+                width:
+                    leftWidth,
+                height:
+                    height
+            ),
+            topRect(
+                x:
+                    rightX,
+                y: 0,
+                width:
+                    rightWidth,
+                height:
+                    rowHeight
+            ),
+            topRect(
+                x:
+                    rightX,
+                y:
+                    rowHeight + gap,
+                width:
+                    halfRightWidth,
+                height:
+                    rowHeight
+            ),
+            topRect(
+                x:
+                    rightX
+                    + halfRightWidth
+                    + gap,
+                y:
+                    rowHeight + gap,
+                width:
+                    halfRightWidth,
+                height:
+                    rowHeight
+            ),
+            topRect(
+                x:
+                    rightX,
+                y:
+                    (
+                        rowHeight
+                        + gap
+                    ) * 2,
+                width:
+                    halfRightWidth,
+                height:
+                    rowHeight
+            ),
+            topRect(
+                x:
+                    rightX
+                    + halfRightWidth
+                    + gap,
+                y:
+                    (
+                        rowHeight
+                        + gap
+                    ) * 2,
+                width:
+                    halfRightWidth,
+                height:
+                    rowHeight
+            ),
+        ]
+    }
+}
+
+private func drawMagazineExportImage(
+    _ image: CGImage,
+    in rect: CGRect,
+    alpha: CGFloat,
+    shadowScale: CGFloat,
+    context: CGContext
+) {
+    guard rect.width > 0,
+          rect.height > 0,
+          alpha > 0
+    else {
+        return
+    }
+
+    let safeAlpha = max(
+        0,
+        min(1, alpha)
+    )
+
+    let imageWidth =
+        CGFloat(image.width)
+
+    let imageHeight =
+        CGFloat(image.height)
+
+    guard imageWidth > 0,
+          imageHeight > 0
+    else {
+        return
+    }
+
+    let imageAspect =
+        imageWidth / imageHeight
+
+    let rectAspect =
+        rect.width / rect.height
+
+    let drawRect: CGRect
+
+    if imageAspect > rectAspect {
+        let drawHeight =
+            rect.height
+
+        let drawWidth =
+            drawHeight * imageAspect
+
+        drawRect = CGRect(
+            x:
+                rect.midX
+                - drawWidth / 2,
+            y:
+                rect.minY,
+            width:
+                drawWidth,
+            height:
+                drawHeight
+        )
+    } else {
+        let drawWidth =
+            rect.width
+
+        let drawHeight =
+            drawWidth / imageAspect
+
+        drawRect = CGRect(
+            x:
+                rect.minX,
+            y:
+                rect.midY
+                - drawHeight / 2,
+            width:
+                drawWidth,
+            height:
+                drawHeight
+        )
+    }
+
+    // Match MagazineImageTile Preview shadow.
+    let hiddenAmount =
+        1 - safeAlpha
+
+    let revealShadowOpacity =
+        0.085
+        + hiddenAmount * 0.34
+
+    let revealShadowRadius =
+        1.4
+        + hiddenAmount * 3.0
+
+    let revealShadowXOffset =
+        -2.2
+        - hiddenAmount * 8.5
+
+    let revealShadowYOffset =
+        -0.8
+        - hiddenAmount * 2.4
+
+    let safeShadowScale =
+        max(
+            0.5,
+            shadowScale
+        )
+
+    // Draw the rectangular tile shadow before clipping.
+    // CGContext uses an inverted Y direction compared with SwiftUI.
+    context.saveGState()
+
+    context.setAlpha(
+        safeAlpha
+    )
+
+    context.setShadow(
+        offset: CGSize(
+            width:
+                revealShadowXOffset
+                * safeShadowScale,
+            height:
+                -revealShadowYOffset
+                * safeShadowScale
+        ),
+        blur:
+            revealShadowRadius
+            * safeShadowScale,
+        color:
+            NSColor.black
+                .withAlphaComponent(
+                    revealShadowOpacity
+                )
+                .cgColor
+    )
+
+    context.setFillColor(
+        NSColor.white.cgColor
+    )
+
+    context.fill(rect)
+    context.restoreGState()
+
+    // Draw the photograph separately, clipped to its slot.
+    context.saveGState()
+    context.clip(to: rect)
+    context.setAlpha(safeAlpha)
+    context.interpolationQuality = .high
+
+    context.draw(
+        image,
+        in: drawRect
+    )
+
+    context.restoreGState()
+}
+
+private func makeMagazineExportPixelBuffer(
+    page: MagazineExportPage,
+    localTime: Double,
+    imageFadeSeconds: Double,
+    imageDelaySeconds: Double,
+    renderSize: CGSize,
+    pixelBufferPool: CVPixelBufferPool?
+) -> CVPixelBuffer? {
+    guard let pixelBufferPool else {
+        return nil
+    }
+
+    var pixelBuffer:
+        CVPixelBuffer?
+
+    let status =
+        CVPixelBufferPoolCreatePixelBuffer(
+            nil,
+            pixelBufferPool,
+            &pixelBuffer
+        )
+
+    guard status
+            == kCVReturnSuccess,
+          let pixelBuffer
+    else {
+        return nil
+    }
+
+    CVPixelBufferLockBaseAddress(
+        pixelBuffer,
+        []
+    )
+
+    defer {
+        CVPixelBufferUnlockBaseAddress(
+            pixelBuffer,
+            []
+        )
+    }
+
+    guard let context = CGContext(
+        data:
+            CVPixelBufferGetBaseAddress(
+                pixelBuffer
+            ),
+        width:
+            Int(renderSize.width),
+        height:
+            Int(renderSize.height),
+        bitsPerComponent: 8,
+        bytesPerRow:
+            CVPixelBufferGetBytesPerRow(
+                pixelBuffer
+            ),
+        space:
+            CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo:
+            CGImageAlphaInfo
+                .premultipliedFirst
+                .rawValue
+            | CGBitmapInfo
+                .byteOrder32Little
+                .rawValue
+    ) else {
+        return nil
+    }
+
+    let canvasRect = CGRect(
+        origin: .zero,
+        size: renderSize
+    )
+
+    context.setFillColor(
+        NSColor.black.cgColor
+    )
+
+    context.fill(canvasRect)
+
+    let pageWidth = min(
+        renderSize.width,
+        renderSize.height * 16 / 9
+    )
+
+    let pageHeight =
+        pageWidth * 9 / 16
+
+    let pageRect = CGRect(
+        x:
+            (
+                renderSize.width
+                - pageWidth
+            ) / 2,
+        y:
+            (
+                renderSize.height
+                - pageHeight
+            ) / 2,
+        width:
+            pageWidth,
+        height:
+            pageHeight
+    )
+
+    context.setFillColor(
+        NSColor.white.cgColor
+    )
+
+    context.fill(pageRect)
+
+    let gap = max(
+        10,
+        min(
+            20,
+            pageWidth * 0.012
+        )
+    )
+
+    let contentRect =
+        pageRect.insetBy(
+            dx: gap,
+            dy: gap
+        )
+
+    let orderedPhotos =
+        orderedMagazineExportPhotos(
+            page.photos
+        )
+
+    let rects =
+        magazineExportLayoutRects(
+            page: page,
+            contentRect:
+                contentRect,
+            gap: gap
+        )
+
+    let fadeSeconds = max(
+        0.05,
+        imageFadeSeconds
+    )
+
+    let delaySeconds = max(
+        0,
+        imageDelaySeconds
+    )
+
+    for index in
+        0..<min(
+            orderedPhotos.count,
+            rects.count
+        ) {
+
+        let startTime =
+            Double(index)
+            * delaySeconds
+
+        let rawAlpha =
+            (
+                localTime
+                - startTime
+            )
+            / fadeSeconds
+
+        let alpha = CGFloat(
+            min(
+                1,
+                max(
+                    0,
+                    rawAlpha
+                )
+            )
+        )
+
+        drawMagazineExportImage(
+            orderedPhotos[index].image,
+            in: rects[index],
+            alpha: alpha,
+            shadowScale: max(
+                0.5,
+                pageWidth / 780
+            ),
+            context: context
+        )
+    }
+
+    return pixelBuffer
+}
+
+private func renderMagazineSlideshowVideo(
+    photoURLs: [URL],
+    outputURL: URL,
+    resolutionName: String,
+    pageDuration: Double,
+    imageFadeSeconds: Double,
+    imageDelaySeconds: Double,
+    progressHandler: @escaping @Sendable (Double) -> Void
+) throws {
+    if FileManager.default
+        .fileExists(
+            atPath:
+                outputURL.path
+        ) {
+
+        try FileManager.default
+            .removeItem(
+                at: outputURL
+            )
+    }
+
+    let pages =
+        buildMagazineExportPages(
+            photoURLs: photoURLs
+        )
+
+    guard !pages.isEmpty else {
+        throw BriefShowExportError
+            .couldNotCreatePixelBuffer
+    }
+
+    let requestedRenderSize =
+        exportRenderSize(
+            for:
+                resolutionName,
+            photoURLs:
+                photoURLs
+        )
+
+    let renderSize: CGSize
+
+    if resolutionName
+        .trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        == "Original" {
+
+        // Magazine Original is always full-screen UHD 4K.
+        // Resolution is never reduced below 4K.
+        renderSize = CGSize(
+            width: 3840,
+            height: 2160
+        )
+    } else {
+        renderSize = requestedRenderSize
+    }
+
+    let fps: Int32 = 30
+
+    let frameDuration =
+        CMTime(
+            value: 1,
+            timescale: fps
+        )
+
+    let safePageDuration = max(
+        0.25,
+        pageDuration
+    )
+
+    let framesPerPage = max(
+        1,
+        Int(
+            round(
+                safePageDuration
+                * Double(fps)
+            )
+        )
+    )
+
+    let writer =
+        try AVAssetWriter(
+            outputURL:
+                outputURL,
+            fileType:
+                .mp4
+        )
+
+    // H.264 is used for the Magazine renderer because
+    // the macOS HEVC path can fail when source photos
+    // contain HDR gain maps. Resolution remains 4K.
+    let selectedCodec: AVVideoCodecType = .hevc
+
+    let compressionProperties:
+        [String: Any]
+
+    if selectedCodec == .hevc {
+        compressionProperties = [
+            AVVideoAverageBitRateKey:
+                exportBitrate(
+                    for:
+                        renderSize
+                ),
+            AVVideoMaxKeyFrameIntervalKey:
+                30,
+            AVVideoExpectedSourceFrameRateKey:
+                30,
+        ]
+    } else {
+        compressionProperties = [
+            AVVideoAverageBitRateKey:
+                exportBitrate(
+                    for:
+                        renderSize
+                ),
+            AVVideoProfileLevelKey:
+                AVVideoProfileLevelH264HighAutoLevel,
+            AVVideoMaxKeyFrameIntervalKey:
+                30,
+            AVVideoExpectedSourceFrameRateKey:
+                30,
+        ]
+    }
+
+    let videoSettings:
+        [String: Any] = [
+            AVVideoCodecKey:
+                selectedCodec,
+            AVVideoWidthKey:
+                Int(
+                    renderSize.width
+                ),
+            AVVideoHeightKey:
+                Int(
+                    renderSize.height
+                ),
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey:
+                    AVVideoColorPrimaries_ITU_R_709_2,
+                AVVideoTransferFunctionKey:
+                    AVVideoTransferFunction_ITU_R_709_2,
+                AVVideoYCbCrMatrixKey:
+                    AVVideoYCbCrMatrix_ITU_R_709_2,
+            ],
+            AVVideoCompressionPropertiesKey:
+                compressionProperties,
+        ]
+
+    print(
+        "BriefShow Magazine export codec:",
+        selectedCodec.rawValue,
+        "resolution:",
+        resolutionName,
+        "pages:",
+        pages.count
+    )
+
+    guard writer.canApply(
+        outputSettings:
+            videoSettings,
+        forMediaType:
+            .video
+    ) else {
+        throw BriefShowExportError
+            .cannotAddVideoInput
+    }
+
+    let input =
+        AVAssetWriterInput(
+            mediaType:
+                .video,
+            outputSettings:
+                videoSettings
+        )
+
+    input.expectsMediaDataInRealTime =
+        false
+
+    let pixelBufferAttributes:
+        [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey
+                as String:
+                kCVPixelFormatType_32BGRA,
+
+            kCVPixelBufferWidthKey
+                as String:
+                Int(
+                    renderSize.width
+                ),
+
+            kCVPixelBufferHeightKey
+                as String:
+                Int(
+                    renderSize.height
+                ),
+
+            kCVPixelBufferCGImageCompatibilityKey
+                as String:
+                true,
+
+            kCVPixelBufferCGBitmapContextCompatibilityKey
+                as String:
+                true,
+
+            kCVPixelBufferIOSurfacePropertiesKey
+                as String:
+                [String: Any](),
+
+            kCVPixelBufferMetalCompatibilityKey
+                as String:
+                true,
+        ]
+
+    let adaptor =
+        AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput:
+                input,
+            sourcePixelBufferAttributes:
+                pixelBufferAttributes
+        )
+
+    guard writer.canAdd(input) else {
+        throw BriefShowExportError
+            .cannotAddVideoInput
+    }
+
+    writer.add(input)
+
+    guard writer.startWriting() else {
+        throw writer.error
+            ?? BriefShowExportError
+                .couldNotStartWriter
+    }
+
+    writer.startSession(
+        atSourceTime: .zero
+    )
+
+    let totalMagazineFrameCount =
+        max(
+            1,
+            pages.count * framesPerPage
+        )
+
+    var frameNumber: Int64 = 0
+
+    for (pageIndex, page) in pages.enumerated() {
+        for frameIndex
+        in 0..<framesPerPage {
+
+            while !input
+                .isReadyForMoreMediaData {
+
+                Thread.sleep(
+                    forTimeInterval:
+                        0.01
+                )
+            }
+
+            let localTime =
+                Double(frameIndex)
+                / Double(fps)
+
+            guard let pixelBuffer =
+                makeMagazineExportPixelBuffer(
+                    page: page,
+                    localTime:
+                        localTime,
+                    imageFadeSeconds:
+                        imageFadeSeconds,
+                    imageDelaySeconds:
+                        imageDelaySeconds,
+                    renderSize:
+                        renderSize,
+                    pixelBufferPool:
+                        adaptor.pixelBufferPool
+                )
+            else {
+                throw BriefShowExportError
+                    .couldNotCreatePixelBuffer
+            }
+
+            // Magazine export only: final 3-second black alpha fade.
+            // This does not change FPS, page duration or frame count.
+            if pageIndex == pages.count - 1 {
+                let requestedFadeFrames = max(
+                    1,
+                    Int(round(3.0 * Double(fps)))
+                )
+            
+                let exportFadeFrames = min(
+                    framesPerPage,
+                    requestedFadeFrames
+                )
+            
+                let exportFadeStartFrame = max(
+                    0,
+                    framesPerPage - exportFadeFrames
+                )
+            
+                if frameIndex >= exportFadeStartFrame {
+                    let fadeFrameIndex =
+                        frameIndex - exportFadeStartFrame
+            
+                    let linearProgress = Double(fadeFrameIndex)
+                        / Double(max(1, exportFadeFrames - 1))
+            
+                    let clampedProgress = max(
+                        0.0,
+                        min(1.0, linearProgress)
+                    )
+            
+                    let smoothAlpha =
+                        clampedProgress
+                        * clampedProgress
+                        * (3.0 - 2.0 * clampedProgress)
+            
+                    let brightness = Float(1.0 - smoothAlpha)
+            
+                    let pixelFormat =
+                        CVPixelBufferGetPixelFormatType(
+                            pixelBuffer
+                        )
+            
+                    if pixelFormat == kCVPixelFormatType_32BGRA {
+                        CVPixelBufferLockBaseAddress(
+                            pixelBuffer,
+                            []
+                        )
+            
+                        if let baseAddress =
+                            CVPixelBufferGetBaseAddress(
+                                pixelBuffer
+                            ) {
+                            let width =
+                                CVPixelBufferGetWidth(
+                                    pixelBuffer
+                                )
+                            let height =
+                                CVPixelBufferGetHeight(
+                                    pixelBuffer
+                                )
+                            let bytesPerRow =
+                                CVPixelBufferGetBytesPerRow(
+                                    pixelBuffer
+                                )
+                            let pixels =
+                                baseAddress.assumingMemoryBound(
+                                    to: UInt8.self
+                                )
+            
+                            for row in 0..<height {
+                                let rowAddress =
+                                    pixels.advanced(
+                                        by: row * bytesPerRow
+                                    )
+            
+                                for column in 0..<width {
+                                    let pixel =
+                                        rowAddress.advanced(
+                                            by: column * 4
+                                        )
+            
+                                    pixel[0] = UInt8(
+                                        Float(pixel[0]) * brightness
+                                    )
+                                    pixel[1] = UInt8(
+                                        Float(pixel[1]) * brightness
+                                    )
+                                    pixel[2] = UInt8(
+                                        Float(pixel[2]) * brightness
+                                    )
+                                }
+                            }
+                        }
+            
+                        CVPixelBufferUnlockBaseAddress(
+                            pixelBuffer,
+                            []
+                        )
+            
+                        if fadeFrameIndex == 0 {
+                            print(
+                                "BriefShow Magazine export inline fade started.",
+                                "frames:",
+                                exportFadeFrames
+                            )
+                        }
+            
+                        if fadeFrameIndex == exportFadeFrames - 1 {
+                            print(
+                                "BriefShow Magazine export inline fade reached black."
+                            )
+                        }
+                    } else if fadeFrameIndex == 0 {
+                        print(
+                            "BriefShow Magazine export fade unsupported format:",
+                            pixelFormat
+                        )
+                    }
+                }
+            }
+            
+            let presentationTime =
+                CMTimeMultiply(
+                    frameDuration,
+                    multiplier:
+                        Int32(
+                            frameNumber
+                        )
+                )
+
+            guard adaptor.append(
+                pixelBuffer,
+                withPresentationTime:
+                    presentationTime
+            ) else {
+                print(
+                    "BriefShow Magazine append failed.",
+                    "frame:",
+                    frameNumber,
+                    "page frame:",
+                    frameIndex,
+                    "writer status:",
+                    writer.status.rawValue,
+                    "writer error:",
+                    writer.error?.localizedDescription
+                        ?? "nil",
+                    "underlying:",
+                    String(
+                        describing:
+                            writer.error
+                    )
+                )
+
+                throw writer.error
+                    ?? BriefShowExportError
+                        .couldNotAppendFrame
+            }
+
+            frameNumber += 1
+
+            progressHandler(
+                min(
+                    1,
+                    Double(frameNumber)
+                    / Double(totalMagazineFrameCount)
+                )
+            )
+        }
+    }
+
+    input.markAsFinished()
+
+    let semaphore =
+        DispatchSemaphore(
+            value: 0
+        )
+
+    writer.finishWriting {
+        semaphore.signal()
+    }
+
+    semaphore.wait()
+
+    if writer.status == .failed {
+        print(
+            "BriefShow Magazine finish failed.",
+            "status:",
+            writer.status.rawValue,
+            "error:",
+            writer.error?.localizedDescription
+                ?? "nil",
+            "underlying:",
+            String(
+                describing:
+                    writer.error
+            )
+        )
+
+        throw writer.error
+            ?? BriefShowExportError
+                .writerFailed
+    }
+
+    print(
+        "BriefShow Magazine video completed.",
+        Int(renderSize.width),
+        "x",
+        Int(renderSize.height),
+        "frames:",
+        frameNumber
+    )
+}
+
+
+
+private struct OrigamiExportPhoto {
+    let image: CGImage
+
+    var aspectRatio: CGFloat {
+        guard image.height > 0 else {
+            return 1
+        }
+
+        return CGFloat(image.width)
+            / CGFloat(image.height)
+    }
+
+    var isPortrait: Bool {
+        aspectRatio < 0.90
+    }
+
+    var isLandscape: Bool {
+        aspectRatio > 1.15
+    }
+}
+
+private struct OrigamiExportPage {
+    let photos: [OrigamiExportPhoto]
+    let pageIndex: Int
+}
+
+private func buildOrigamiExportPages(
+    photoURLs: [URL]
+) -> [OrigamiExportPage] {
+    let loadedPhotos =
+        photoURLs.compactMap { url in
+            makeCGImage(from: url).map {
+                OrigamiExportPhoto(image: $0)
+            }
+        }
+
+    guard !loadedPhotos.isEmpty else {
+        return []
+    }
+
+    let cycle = [3, 5, 6, 2, 4]
+
+    var pages: [OrigamiExportPage] = []
+    var photoIndex = 0
+    var pageIndex = 0
+
+    while photoIndex < loadedPhotos.count {
+        let remaining =
+            loadedPhotos.count - photoIndex
+
+        var slotCount = min(
+            cycle[pageIndex % cycle.count],
+            remaining
+        )
+
+        // Match the Preview planning rule:
+        // avoid leaving one photo alone on the next page.
+        if remaining - slotCount == 1,
+           slotCount > 2 {
+            slotCount -= 1
+        }
+
+        slotCount = max(
+            1,
+            min(6, slotCount)
+        )
+
+        let endIndex = min(
+            loadedPhotos.count,
+            photoIndex + slotCount
+        )
+
+        pages.append(
+            OrigamiExportPage(
+                photos: Array(
+                    loadedPhotos[
+                        photoIndex..<endIndex
+                    ]
+                ),
+                pageIndex: pageIndex
+            )
+        )
+
+        photoIndex = endIndex
+        pageIndex += 1
+    }
+
+    return pages
+}
+
+private func origamiExportMismatchScore(
+    imageAspect: CGFloat,
+    slotAspect: CGFloat
+) -> CGFloat {
+    let safeImageAspect =
+        max(0.01, imageAspect)
+
+    let safeSlotAspect =
+        max(0.01, slotAspect)
+
+    var score = max(
+        safeImageAspect / safeSlotAspect,
+        safeSlotAspect / safeImageAspect
+    ) - 1
+
+    let imageIsPortrait =
+        safeImageAspect < 0.90
+
+    let imageIsLandscape =
+        safeImageAspect > 1.15
+
+    let slotIsPortrait =
+        safeSlotAspect < 0.90
+
+    let slotIsLandscape =
+        safeSlotAspect > 1.15
+
+    if imageIsPortrait && slotIsLandscape {
+        score += 2.4
+    }
+
+    if imageIsLandscape && slotIsPortrait {
+        score += 2.4
+    }
+
+    if safeImageAspect > 2.0
+        && safeSlotAspect < 1.25 {
+        score += 1.4
+    }
+
+    if safeImageAspect < 0.65
+        && safeSlotAspect > 1.0 {
+        score += 1.4
+    }
+
+    return score
+}
+
+private func bestOrigamiExportPhotoOrder(
+    photos: [OrigamiExportPhoto],
+    rects: [CGRect]
+) -> [OrigamiExportPhoto] {
+    let count = min(
+        photos.count,
+        rects.count
+    )
+
+    guard count > 1 else {
+        return photos
+    }
+
+    var bestOrder =
+        Array(0..<count)
+
+    var bestScore =
+        CGFloat.greatestFiniteMagnitude
+
+    var currentOrder: [Int] = []
+
+    var used = Array(
+        repeating: false,
+        count: count
+    )
+
+    func search(
+        slotIndex: Int,
+        runningScore: CGFloat
+    ) {
+        if runningScore >= bestScore {
+            return
+        }
+
+        if slotIndex == count {
+            bestScore = runningScore
+            bestOrder = currentOrder
+            return
+        }
+
+        let rect = rects[slotIndex]
+
+        let targetAspect =
+            max(
+                0.01,
+                rect.width
+                    / max(1, rect.height)
+            )
+
+        for imageIndex in 0..<count {
+            guard !used[imageIndex] else {
+                continue
+            }
+
+            var score =
+                origamiExportMismatchScore(
+                    imageAspect:
+                        photos[imageIndex]
+                            .aspectRatio,
+                    slotAspect:
+                        targetAspect
+                )
+
+            score += CGFloat(
+                abs(imageIndex - slotIndex)
+            ) * 0.001
+
+            used[imageIndex] = true
+            currentOrder.append(imageIndex)
+
+            search(
+                slotIndex: slotIndex + 1,
+                runningScore:
+                    runningScore + score
+            )
+
+            currentOrder.removeLast()
+            used[imageIndex] = false
+        }
+    }
+
+    search(
+        slotIndex: 0,
+        runningScore: 0
+    )
+
+    return bestOrder.map {
+        photos[$0]
+    }
+}
+
+private func origamiExportTopRect(
+    pageRect: CGRect,
+    x: CGFloat,
+    y: CGFloat,
+    width: CGFloat,
+    height: CGFloat
+) -> CGRect {
+    CGRect(
+        x: pageRect.minX + x,
+        y:
+            pageRect.maxY
+            - y
+            - height,
+        width: width,
+        height: height
+    )
+}
+
+private func origamiExportLayoutRects(
+    photos: [OrigamiExportPhoto],
+    pageRect: CGRect
+) -> [CGRect] {
+    let count = photos.count
+
+    guard count > 0 else {
+        return []
+    }
+
+    let width = pageRect.width
+    let height = pageRect.height
+
+    let portraitCount =
+        photos.filter {
+            $0.isPortrait
+        }.count
+
+    let landscapeCount =
+        photos.filter {
+            $0.isLandscape
+        }.count
+
+    switch count {
+    case 1:
+        return [pageRect]
+
+    case 2:
+        if portraitCount == 2 {
+            return [
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: 0,
+                    y: 0,
+                    width: width * 0.5,
+                    height: height
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.5,
+                    y: 0,
+                    width: width * 0.5,
+                    height: height
+                ),
+            ]
+        }
+
+        if landscapeCount == 2 {
+            return [
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: 0,
+                    y: 0,
+                    width: width,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: 0,
+                    y: height * 0.5,
+                    width: width,
+                    height: height * 0.5
+                ),
+            ]
+        }
+
+        return [
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: 0,
+                y: 0,
+                width: width * 0.38,
+                height: height
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width * 0.38,
+                y: 0,
+                width: width * 0.62,
+                height: height
+            ),
+        ]
+
+    case 3:
+        if portraitCount == 3 {
+            return [
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: 0,
+                    y: 0,
+                    width: width / 3,
+                    height: height
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width / 3,
+                    y: 0,
+                    width: width / 3,
+                    height: height
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 2 / 3,
+                    y: 0,
+                    width: width / 3,
+                    height: height
+                ),
+            ]
+        }
+
+        if landscapeCount == 3 {
+            return [
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: 0,
+                    y: 0,
+                    width: width * 0.60,
+                    height: height
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.60,
+                    y: 0,
+                    width: width * 0.40,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.60,
+                    y: height * 0.5,
+                    width: width * 0.40,
+                    height: height * 0.5
+                ),
+            ]
+        }
+
+        return [
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: 0,
+                y: 0,
+                width: width * 0.34,
+                height: height
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width * 0.34,
+                y: 0,
+                width: width * 0.66,
+                height: height * 0.5
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width * 0.34,
+                y: height * 0.5,
+                width: width * 0.66,
+                height: height * 0.5
+            ),
+        ]
+
+    case 4:
+        if portraitCount >= 2 {
+            return [
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: 0,
+                    y: 0,
+                    width: width * 0.24,
+                    height: height
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.24,
+                    y: 0,
+                    width: width * 0.52,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.24,
+                    y: height * 0.5,
+                    width: width * 0.52,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.76,
+                    y: 0,
+                    width: width * 0.24,
+                    height: height
+                ),
+            ]
+        }
+
+        return [
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: 0,
+                y: 0,
+                width: width * 0.5,
+                height: height * 0.5
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width * 0.5,
+                y: 0,
+                width: width * 0.5,
+                height: height * 0.5
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: 0,
+                y: height * 0.5,
+                width: width * 0.5,
+                height: height * 0.5
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width * 0.5,
+                y: height * 0.5,
+                width: width * 0.5,
+                height: height * 0.5
+            ),
+        ]
+
+    case 5:
+        if portraitCount >= 1 {
+            return [
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: 0,
+                    y: 0,
+                    width: width * 0.28,
+                    height: height
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.28,
+                    y: 0,
+                    width: width * 0.36,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.64,
+                    y: 0,
+                    width: width * 0.36,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.28,
+                    y: height * 0.5,
+                    width: width * 0.36,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.64,
+                    y: height * 0.5,
+                    width: width * 0.36,
+                    height: height * 0.5
+                ),
+            ]
+        }
+
+        return [
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: 0,
+                y: 0,
+                width: width * 0.5,
+                height: height * 0.62
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width * 0.5,
+                y: 0,
+                width: width * 0.5,
+                height: height * 0.62
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: 0,
+                y: height * 0.62,
+                width: width / 3,
+                height: height * 0.38
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width / 3,
+                y: height * 0.62,
+                width: width / 3,
+                height: height * 0.38
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width * 2 / 3,
+                y: height * 0.62,
+                width: width / 3,
+                height: height * 0.38
+            ),
+        ]
+
+    default:
+        if portraitCount >= 2 {
+            return [
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: 0,
+                    y: 0,
+                    width: width * 0.22,
+                    height: height
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.22,
+                    y: 0,
+                    width: width * 0.28,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.50,
+                    y: 0,
+                    width: width * 0.28,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.22,
+                    y: height * 0.5,
+                    width: width * 0.28,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.50,
+                    y: height * 0.5,
+                    width: width * 0.28,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.78,
+                    y: 0,
+                    width: width * 0.22,
+                    height: height
+                ),
+            ]
+        }
+
+        if portraitCount == 1 {
+            return [
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: 0,
+                    y: 0,
+                    width: width * 0.26,
+                    height: height
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.26,
+                    y: 0,
+                    width: width * 0.37,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.63,
+                    y: 0,
+                    width: width * 0.37,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.26,
+                    y: height * 0.5,
+                    width: width * 0.2466667,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.5066667,
+                    y: height * 0.5,
+                    width: width * 0.2466667,
+                    height: height * 0.5
+                ),
+                origamiExportTopRect(
+                    pageRect: pageRect,
+                    x: width * 0.7533334,
+                    y: height * 0.5,
+                    width: width * 0.2466666,
+                    height: height * 0.5
+                ),
+            ]
+        }
+
+        return [
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: 0,
+                y: 0,
+                width: width / 3,
+                height: height * 0.5
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width / 3,
+                y: 0,
+                width: width / 3,
+                height: height * 0.5
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width * 2 / 3,
+                y: 0,
+                width: width / 3,
+                height: height * 0.5
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: 0,
+                y: height * 0.5,
+                width: width / 3,
+                height: height * 0.5
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width / 3,
+                y: height * 0.5,
+                width: width / 3,
+                height: height * 0.5
+            ),
+            origamiExportTopRect(
+                pageRect: pageRect,
+                x: width * 2 / 3,
+                y: height * 0.5,
+                width: width / 3,
+                height: height * 0.5
+            ),
+        ]
+    }
+}
+
+private func drawOrigamiExportImage(
+    _ image: CGImage,
+    in rect: CGRect,
+    context: CGContext
+) {
+    guard rect.width > 0,
+          rect.height > 0,
+          image.width > 0,
+          image.height > 0
+    else {
+        return
+    }
+
+    let imageAspect =
+        CGFloat(image.width)
+        / CGFloat(image.height)
+
+    let rectAspect =
+        rect.width / rect.height
+
+    let drawRect: CGRect
+
+    if imageAspect > rectAspect {
+        let drawHeight = rect.height
+        let drawWidth =
+            drawHeight * imageAspect
+
+        drawRect = CGRect(
+            x:
+                rect.midX
+                - drawWidth / 2,
+            y: rect.minY,
+            width: drawWidth,
+            height: drawHeight
+        )
+    } else {
+        let drawWidth = rect.width
+        let drawHeight =
+            drawWidth / imageAspect
+
+        drawRect = CGRect(
+            x: rect.minX,
+            y:
+                rect.midY
+                - drawHeight / 2,
+            width: drawWidth,
+            height: drawHeight
+        )
+    }
+
+    context.saveGState()
+    context.clip(to: rect)
+    context.interpolationQuality = .high
+
+    context.draw(
+        image,
+        in: drawRect
+    )
+
+    context.restoreGState()
+}
+
+
+private struct OrigamiSwiftUIExportSwapBatch {
+    let images: [Int: NSImage]
+    let styles: [Int: Int]
+}
+
+private struct OrigamiSwiftUIExportPage {
+    let baseImages: [NSImage]
+    let swapBatches:
+        [OrigamiSwiftUIExportSwapBatch]
+    let finalReplacements:
+        [Int: NSImage]
+    let pageIndex: Int
+}
+
+private enum OrigamiSwiftUIExportSegmentKind {
+    case initialReveal
+    case hold
+    case swap(Int)
+    case pageFold
+}
+
+private struct OrigamiSwiftUIExportSegment {
+    let kind:
+        OrigamiSwiftUIExportSegmentKind
+    let pageIndex: Int
+    let completedBatchCount: Int
+    let duration: Double
+}
+
+private func origamiSwiftUIExportAspectRatio(
+    of image: NSImage
+) -> Double {
+    guard image.size.height > 0 else {
+        return 1
+    }
+
+    return Double(
+        image.size.width
+        / image.size.height
+    )
+}
+
+private func origamiSwiftUIExportOrientation(
+    of image: NSImage
+) -> Int {
+    let ratio =
+        origamiSwiftUIExportAspectRatio(
+            of: image
+        )
+
+    if ratio > 1.15 {
+        return 1
+    }
+
+    if ratio < 0.85 {
+        return -1
+    }
+
+    return 0
+}
+
+private func origamiSwiftUIExportTargetSlots(
+    incomingImages: [NSImage],
+    baseImages: [NSImage],
+    replacements: [Int: NSImage],
+    usedSlots: Set<Int>
+) -> [Int] {
+    guard !baseImages.isEmpty else {
+        return []
+    }
+
+    var availableSlots =
+        Array(
+            baseImages.indices
+        )
+        .filter {
+            !usedSlots.contains($0)
+        }
+
+    if availableSlots.isEmpty {
+        availableSlots =
+            Array(baseImages.indices)
+    }
+
+    var targets: [Int] = []
+
+    for incomingImage in incomingImages {
+        guard !availableSlots.isEmpty else {
+            break
+        }
+
+        let incomingRatio =
+            origamiSwiftUIExportAspectRatio(
+                of: incomingImage
+            )
+
+        let incomingOrientation =
+            origamiSwiftUIExportOrientation(
+                of: incomingImage
+            )
+
+        let target =
+            availableSlots.min {
+                leftSlot,
+                rightSlot in
+
+                func score(
+                    slot: Int
+                ) -> Double {
+                    guard baseImages.indices
+                            .contains(slot)
+                    else {
+                        return 100
+                    }
+
+                    let currentImage =
+                        replacements[slot]
+                        ?? baseImages[slot]
+
+                    let currentRatio =
+                        origamiSwiftUIExportAspectRatio(
+                            of: currentImage
+                        )
+
+                    let currentOrientation =
+                        origamiSwiftUIExportOrientation(
+                            of: currentImage
+                        )
+
+                    let orientationPenalty =
+                        incomingOrientation
+                            == currentOrientation
+                        ? 0.0
+                        : 8.0
+
+                    let ratioPenalty = abs(
+                        log(
+                            max(
+                                0.05,
+                                incomingRatio
+                            )
+                            /
+                            max(
+                                0.05,
+                                currentRatio
+                            )
+                        )
+                    )
+
+                    return orientationPenalty
+                        + ratioPenalty
+                }
+
+                return score(slot: leftSlot)
+                    < score(slot: rightSlot)
+            }!
+
+        targets.append(target)
+
+        availableSlots.removeAll {
+            $0 == target
+        }
+    }
+
+    return targets
+}
+
+private func buildOrigamiSwiftUIExportPages(
+    photoURLs: [URL],
+    imagesBeforePageChange: Int,
+    simultaneousSwapCount: Int
+) -> [OrigamiSwiftUIExportPage] {
+    let loadedImages =
+        photoURLs.compactMap {
+            NSImage(contentsOf: $0)
+        }
+
+    guard !loadedImages.isEmpty else {
+        return []
+    }
+
+    let cycle = [3, 5, 6, 2, 4]
+
+    let requestedReplacementCount =
+        max(
+            0,
+            min(
+                6,
+                imagesBeforePageChange
+            )
+        )
+
+    let safeSimultaneousCount =
+        max(
+            1,
+            simultaneousSwapCount
+        )
+
+    var pages:
+        [OrigamiSwiftUIExportPage] = []
+
+    var photoIndex = 0
+    var pageIndex = 0
+
+    while photoIndex < loadedImages.count {
+        let remainingPhotos =
+            loadedImages.count
+            - photoIndex
+
+        var baseSlotCount = min(
+            cycle[
+                pageIndex
+                % cycle.count
+            ],
+            remainingPhotos
+        )
+
+        if remainingPhotos
+            - baseSlotCount == 1,
+           baseSlotCount > 2 {
+
+            baseSlotCount -= 1
+        }
+
+        baseSlotCount = max(
+            1,
+            min(
+                6,
+                baseSlotCount
+            )
+        )
+
+        var replacementCount = min(
+            requestedReplacementCount,
+            baseSlotCount,
+            max(
+                0,
+                remainingPhotos
+                    - baseSlotCount
+            )
+        )
+
+        if remainingPhotos
+            - baseSlotCount
+            - replacementCount == 1,
+           replacementCount > 0 {
+
+            replacementCount -= 1
+        }
+
+        let baseEnd = min(
+            loadedImages.count,
+            photoIndex
+                + baseSlotCount
+        )
+
+        let baseImages = Array(
+            loadedImages[
+                photoIndex..<baseEnd
+            ]
+        )
+
+        let replacementStart =
+            baseEnd
+
+        let replacementEnd = min(
+            loadedImages.count,
+            replacementStart
+                + replacementCount
+        )
+
+        let replacementImages =
+            replacementStart
+                < replacementEnd
+            ? Array(
+                loadedImages[
+                    replacementStart
+                    ..< replacementEnd
+                ]
+            )
+            : []
+
+        var swapBatches:
+            [OrigamiSwiftUIExportSwapBatch] = []
+
+        var currentReplacements:
+            [Int: NSImage] = [:]
+
+        var usedSlots:
+            Set<Int> = []
+
+        var replacementOffset = 0
+
+        while replacementOffset
+                < replacementImages.count {
+
+            let batchEnd = min(
+                replacementImages.count,
+                replacementOffset
+                    + safeSimultaneousCount
+            )
+
+            let incomingImages = Array(
+                replacementImages[
+                    replacementOffset
+                    ..< batchEnd
+                ]
+            )
+
+            let targetSlots =
+                origamiSwiftUIExportTargetSlots(
+                    incomingImages:
+                        incomingImages,
+                    baseImages:
+                        baseImages,
+                    replacements:
+                        currentReplacements,
+                    usedSlots:
+                        usedSlots
+                )
+
+            guard targetSlots.count
+                    == incomingImages.count
+            else {
+                break
+            }
+
+            var batchImages:
+                [Int: NSImage] = [:]
+
+            var batchStyles:
+                [Int: Int] = [:]
+
+            let batchStyle =
+                pageIndex.isMultiple(of: 2)
+                ? 0
+                : 1
+
+            for (
+                offset,
+                incomingImage
+            ) in incomingImages.enumerated() {
+
+                let slot =
+                    targetSlots[offset]
+
+                batchImages[slot] =
+                    incomingImage
+
+                batchStyles[slot] =
+                    batchStyle
+
+                currentReplacements[slot] =
+                    incomingImage
+
+                usedSlots.insert(slot)
+            }
+
+            swapBatches.append(
+                OrigamiSwiftUIExportSwapBatch(
+                    images:
+                        batchImages,
+                    styles:
+                        batchStyles
+                )
+            )
+
+            replacementOffset =
+                batchEnd
+        }
+
+        pages.append(
+            OrigamiSwiftUIExportPage(
+                baseImages:
+                    baseImages,
+                swapBatches:
+                    swapBatches,
+                finalReplacements:
+                    currentReplacements,
+                pageIndex:
+                    pageIndex
+            )
+        )
+
+        photoIndex +=
+            baseSlotCount
+            + replacementCount
+
+        pageIndex += 1
+    }
+
+    return pages
+}
+
+private func origamiSwiftUIExportSmoothstep(
+    _ value: Double
+) -> Double {
+    let clamped = min(
+        1,
+        max(
+            0,
+            value
+        )
+    )
+
+    return clamped
+        * clamped
+        * (
+            3
+            - 2 * clamped
+        )
+}
+
+// SwiftUI .easeInOut uses a cubic timing curve.
+// This converts linear export time to the same curve.
+private func origamiSwiftUIExportEaseInOut(
+    _ value: Double
+) -> Double {
+    let targetX = min(
+        1,
+        max(
+            0,
+            value
+        )
+    )
+
+    let x1 = 0.42
+    let y1 = 0.0
+    let x2 = 0.58
+    let y2 = 1.0
+
+    func sample(
+        _ t: Double,
+        _ first: Double,
+        _ second: Double
+    ) -> Double {
+        let inverse = 1 - t
+
+        return
+            3
+            * inverse
+            * inverse
+            * t
+            * first
+            + 3
+            * inverse
+            * t
+            * t
+            * second
+            + t
+            * t
+            * t
+    }
+
+    var low = 0.0
+    var high = 1.0
+
+    for _ in 0..<14 {
+        let middle =
+            (low + high) * 0.5
+
+        if sample(
+            middle,
+            x1,
+            x2
+        ) < targetX {
+            low = middle
+        } else {
+            high = middle
+        }
+    }
+
+    return sample(
+        (low + high) * 0.5,
+        y1,
+        y2
+    )
+}
+
+private func origamiSwiftUIExportReplacements(
+    page: OrigamiSwiftUIExportPage,
+    completedBatchCount: Int
+) -> [Int: NSImage] {
+    var replacements:
+        [Int: NSImage] = [:]
+
+    let safeCount = min(
+        max(
+            0,
+            completedBatchCount
+        ),
+        page.swapBatches.count
+    )
+
+    for batch in
+        page.swapBatches.prefix(
+            safeCount
+        ) {
+
+        for (
+            slot,
+            image
+        ) in batch.images {
+
+            replacements[slot] =
+                image
+        }
+    }
+
+    return replacements
+}
+
+private struct OrigamiSwiftUIExportFrameView:
+    View {
+
+    let page:
+        OrigamiSwiftUIExportPage
+
+    let replacements:
+        [Int: NSImage]
+
+    let activeSwapImages:
+        [Int: NSImage]
+
+    let activeSwapStyles:
+        [Int: Int]
+
+    let swapProgress: Double
+    let transitionProgress: Double
+
+    let previousPage:
+        OrigamiSwiftUIExportPage?
+
+    let wholePageFoldProgress:
+        Double
+
+    let blackOverlayOpacity:
+        Double
+
+    var body: some View {
+        ZStack {
+            Color.black
+
+            OrigamiPreviewPage(
+                images:
+                    page.baseImages,
+                slotReplacementImages:
+                    replacements,
+                activeSwapImages:
+                    activeSwapImages,
+                activeSwapStyles:
+                    activeSwapStyles,
+                swapProgress:
+                    swapProgress,
+                activePhotoName: "",
+                showsPhotoName: false,
+                transitionProgress:
+                    transitionProgress,
+                animationVariant:
+                    page.pageIndex
+            )
+
+            if let previousPage {
+                OrigamiWholePageHalfFoldOverlay(
+                    images:
+                        previousPage
+                            .baseImages,
+                    slotReplacementImages:
+                        previousPage
+                            .finalReplacements,
+                    animationVariant:
+                        previousPage
+                            .pageIndex,
+                    progress:
+                        wholePageFoldProgress
+                )
+                .allowsHitTesting(false)
+                .zIndex(100)
+            }
+
+            Color.black
+                .opacity(
+                    min(
+                        1,
+                        max(
+                            0,
+                            blackOverlayOpacity
+                        )
+                    )
+                )
+                .allowsHitTesting(false)
+                .zIndex(500)
+        }
+        .background(Color.black)
+    }
+}
+
+private func makeOrigamiSwiftUIExportCGImage(
+    page:
+        OrigamiSwiftUIExportPage,
+    replacements:
+        [Int: NSImage],
+    activeSwapImages:
+        [Int: NSImage],
+    activeSwapStyles:
+        [Int: Int],
+    swapProgress: Double,
+    transitionProgress: Double,
+    previousPage:
+        OrigamiSwiftUIExportPage?,
+    wholePageFoldProgress: Double,
+    blackOverlayOpacity: Double,
+    renderSize: CGSize
+) -> CGImage? {
+    var renderedImage: CGImage?
+
+    let renderBlock = {
+        let frameView =
+            OrigamiSwiftUIExportFrameView(
+                page:
+                    page,
+                replacements:
+                    replacements,
+                activeSwapImages:
+                    activeSwapImages,
+                activeSwapStyles:
+                    activeSwapStyles,
+                swapProgress:
+                    swapProgress,
+                transitionProgress:
+                    transitionProgress,
+                previousPage:
+                    previousPage,
+                wholePageFoldProgress:
+                    wholePageFoldProgress,
+                blackOverlayOpacity:
+                    blackOverlayOpacity
+            )
+            .frame(
+                width:
+                    renderSize.width,
+                height:
+                    renderSize.height
+            )
+            .background(Color.black)
+
+        let renderer =
+            ImageRenderer(
+                content:
+                    frameView
+            )
+
+        renderer.proposedSize =
+            ProposedViewSize(
+                width:
+                    renderSize.width,
+                height:
+                    renderSize.height
+            )
+
+        renderer.scale = 1
+
+        renderedImage =
+            renderer.cgImage
+    }
+
+    if Thread.isMainThread {
+        renderBlock()
+    } else {
+        DispatchQueue.main.sync(
+            execute:
+                renderBlock
+        )
+    }
+
+    return renderedImage
+}
+
+private func makeOrigamiSwiftUIExportPixelBuffer(
+    page:
+        OrigamiSwiftUIExportPage,
+    replacements:
+        [Int: NSImage],
+    activeSwapImages:
+        [Int: NSImage],
+    activeSwapStyles:
+        [Int: Int],
+    swapProgress: Double,
+    transitionProgress: Double,
+    previousPage:
+        OrigamiSwiftUIExportPage?,
+    wholePageFoldProgress: Double,
+    blackOverlayOpacity: Double,
+    renderSize: CGSize,
+    pixelBufferPool:
+        CVPixelBufferPool?
+) -> CVPixelBuffer? {
+    guard let pixelBufferPool,
+          let frameImage =
+            makeOrigamiSwiftUIExportCGImage(
+                page:
+                    page,
+                replacements:
+                    replacements,
+                activeSwapImages:
+                    activeSwapImages,
+                activeSwapStyles:
+                    activeSwapStyles,
+                swapProgress:
+                    swapProgress,
+                transitionProgress:
+                    transitionProgress,
+                previousPage:
+                    previousPage,
+                wholePageFoldProgress:
+                    wholePageFoldProgress,
+                blackOverlayOpacity:
+                    blackOverlayOpacity,
+                renderSize:
+                    renderSize
+            )
+    else {
+        return nil
+    }
+
+    var pixelBuffer:
+        CVPixelBuffer?
+
+    let status =
+        CVPixelBufferPoolCreatePixelBuffer(
+            nil,
+            pixelBufferPool,
+            &pixelBuffer
+        )
+
+    guard status
+            == kCVReturnSuccess,
+          let pixelBuffer
+    else {
+        return nil
+    }
+
+    CVPixelBufferLockBaseAddress(
+        pixelBuffer,
+        []
+    )
+
+    defer {
+        CVPixelBufferUnlockBaseAddress(
+            pixelBuffer,
+            []
+        )
+    }
+
+    guard let context = CGContext(
+        data:
+            CVPixelBufferGetBaseAddress(
+                pixelBuffer
+            ),
+        width:
+            Int(renderSize.width),
+        height:
+            Int(renderSize.height),
+        bitsPerComponent: 8,
+        bytesPerRow:
+            CVPixelBufferGetBytesPerRow(
+                pixelBuffer
+            ),
+        space:
+            CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo:
+            CGImageAlphaInfo
+                .premultipliedFirst
+                .rawValue
+            | CGBitmapInfo
+                .byteOrder32Little
+                .rawValue
+    ) else {
+        return nil
+    }
+
+    let canvasRect = CGRect(
+        origin: .zero,
+        size: renderSize
+    )
+
+    context.setFillColor(
+        NSColor.black.cgColor
+    )
+
+    context.fill(canvasRect)
+
+    context.interpolationQuality =
+        .high
+
+    context.draw(
+        frameImage,
+        in: canvasRect
+    )
+
+    return pixelBuffer
+}
+
+private enum OrigamiExportAnimationPhase {
+    case initialReveal
+    case hold
+    case pageFold
+}
+
+private func origamiExportSmoothstep(
+    _ value: Double
+) -> Double {
+    let clamped = min(
+        1,
+        max(0, value)
+    )
+
+    return clamped
+        * clamped
+        * (
+            3
+            - 2 * clamped
+        )
+}
+
+private func origamiExportPageRect(
+    renderSize: CGSize
+) -> CGRect {
+    let pageWidth = min(
+        renderSize.width,
+        renderSize.height * 16 / 9
+    )
+
+    let pageHeight =
+        pageWidth * 9 / 16
+
+    return CGRect(
+        x:
+            (
+                renderSize.width
+                - pageWidth
+            ) / 2,
+        y:
+            (
+                renderSize.height
+                - pageHeight
+            ) / 2,
+        width: pageWidth,
+        height: pageHeight
+    )
+}
+
+private func drawOrigamiExportPage(
+    _ page: OrigamiExportPage,
+    in pageRect: CGRect,
+    context: CGContext,
+    revealProgress: Double = 1,
+    animationVariant: Int = 0
+) {
+    let rects =
+        origamiExportLayoutRects(
+            photos: page.photos,
+            pageRect: pageRect
+        )
+
+    let orderedPhotos =
+        bestOrigamiExportPhotoOrder(
+            photos: page.photos,
+            rects: rects
+        )
+
+    let count = min(
+        orderedPhotos.count,
+        rects.count
+    )
+
+    guard count > 0 else {
+        return
+    }
+
+    let safeGlobalProgress = min(
+        1,
+        max(0, revealProgress)
+    )
+
+    for index in 0..<count {
+        let delay =
+            Double(index)
+            * 0.065
+
+        let rawTileProgress =
+            (
+                safeGlobalProgress
+                - delay
+            )
+            / 0.72
+
+        let tileProgress =
+            origamiExportSmoothstep(
+                rawTileProgress
+            )
+
+        guard tileProgress > 0.001 else {
+            continue
+        }
+
+        let tileRect =
+            rects[index]
+
+        let revealRect: CGRect
+
+        let mode =
+            (
+                animationVariant
+                + index
+            ) % 2
+
+        if mode == 0 {
+            let revealedWidth =
+                tileRect.width
+                * CGFloat(tileProgress)
+
+            if index.isMultiple(of: 2) {
+                revealRect = CGRect(
+                    x: tileRect.minX,
+                    y: tileRect.minY,
+                    width: revealedWidth,
+                    height: tileRect.height
+                )
+            } else {
+                revealRect = CGRect(
+                    x:
+                        tileRect.maxX
+                        - revealedWidth,
+                    y: tileRect.minY,
+                    width: revealedWidth,
+                    height: tileRect.height
+                )
+            }
+        } else {
+            let revealedHeight =
+                tileRect.height
+                * CGFloat(tileProgress)
+
+            if index.isMultiple(of: 2) {
+                revealRect = CGRect(
+                    x: tileRect.minX,
+                    y: tileRect.minY,
+                    width: tileRect.width,
+                    height: revealedHeight
+                )
+            } else {
+                revealRect = CGRect(
+                    x: tileRect.minX,
+                    y:
+                        tileRect.maxY
+                        - revealedHeight,
+                    width: tileRect.width,
+                    height: revealedHeight
+                )
+            }
+        }
+
+        context.saveGState()
+        context.clip(to: revealRect)
+
+        drawOrigamiExportImage(
+            orderedPhotos[index].image,
+            in: tileRect,
+            context: context
+        )
+
+        let shadeOpacity =
+            CGFloat(
+                0.34
+                * (
+                    1
+                    - tileProgress
+                )
+            )
+
+        if shadeOpacity > 0.001 {
+            context.setFillColor(
+                NSColor.black
+                    .withAlphaComponent(
+                        shadeOpacity
+                    )
+                    .cgColor
+            )
+
+            context.fill(revealRect)
+        }
+
+        context.restoreGState()
+    }
+}
+
+private func makeOrigamiExportPageImage(
+    page: OrigamiExportPage,
+    size: CGSize
+) -> CGImage? {
+    let width = max(
+        1,
+        Int(size.width.rounded())
+    )
+
+    let height = max(
+        1,
+        Int(size.height.rounded())
+    )
+
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space:
+            CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo:
+            CGImageAlphaInfo
+                .premultipliedLast
+                .rawValue
+    ) else {
+        return nil
+    }
+
+    let localRect = CGRect(
+        x: 0,
+        y: 0,
+        width: CGFloat(width),
+        height: CGFloat(height)
+    )
+
+    context.setFillColor(
+        NSColor.black.cgColor
+    )
+
+    context.fill(localRect)
+
+    drawOrigamiExportPage(
+        page,
+        in: localRect,
+        context: context,
+        revealProgress: 1
+    )
+
+    return context.makeImage()
+}
+
+private func drawOrigamiExportWholePageFold(
+    previousPage: OrigamiExportPage,
+    in pageRect: CGRect,
+    context: CGContext,
+    progress: Double,
+    usesVerticalCenterFold: Bool
+) {
+    let safeProgress =
+        origamiExportSmoothstep(
+            progress
+        )
+
+    guard safeProgress < 0.999 else {
+        return
+    }
+
+    guard let pageImage =
+        makeOrigamiExportPageImage(
+            page: previousPage,
+            size: pageRect.size
+        )
+    else {
+        return
+    }
+
+    let remaining =
+        CGFloat(
+            1
+            - safeProgress
+        )
+
+    context.saveGState()
+    context.interpolationQuality = .high
+
+    if usesVerticalCenterFold {
+        let halfWidth =
+            pageRect.width * 0.5
+
+        let foldedWidth =
+            halfWidth * remaining
+
+        let leftDestination = CGRect(
+            x:
+                pageRect.midX
+                - foldedWidth,
+            y: pageRect.minY,
+            width: foldedWidth,
+            height: pageRect.height
+        )
+
+        let rightDestination = CGRect(
+            x: pageRect.midX,
+            y: pageRect.minY,
+            width: foldedWidth,
+            height: pageRect.height
+        )
+
+        let imageWidth =
+            CGFloat(pageImage.width)
+
+        let imageHeight =
+            CGFloat(pageImage.height)
+
+        let leftCrop = CGRect(
+            x: 0,
+            y: 0,
+            width: imageWidth * 0.5,
+            height: imageHeight
+        )
+
+        let rightCrop = CGRect(
+            x: imageWidth * 0.5,
+            y: 0,
+            width: imageWidth * 0.5,
+            height: imageHeight
+        )
+
+        if let leftImage =
+            pageImage.cropping(
+                to: leftCrop
+            ) {
+            context.draw(
+                leftImage,
+                in: leftDestination
+            )
+        }
+
+        if let rightImage =
+            pageImage.cropping(
+                to: rightCrop
+            ) {
+            context.draw(
+                rightImage,
+                in: rightDestination
+            )
+        }
+
+        let shadowWidth =
+            max(
+                2,
+                pageRect.width
+                    * 0.018
+                    * CGFloat(
+                        sin(
+                            safeProgress
+                            * .pi
+                        )
+                    )
+            )
+
+        let shadowRect = CGRect(
+            x:
+                pageRect.midX
+                - shadowWidth * 0.5,
+            y: pageRect.minY,
+            width: shadowWidth,
+            height: pageRect.height
+        )
+
+        context.setFillColor(
+            NSColor.black
+                .withAlphaComponent(
+                    CGFloat(
+                        0.52
+                        * sin(
+                            safeProgress
+                            * .pi
+                        )
+                    )
+                )
+                .cgColor
+        )
+
+        context.fill(shadowRect)
+    } else {
+        let halfHeight =
+            pageRect.height * 0.5
+
+        let foldedHeight =
+            halfHeight * remaining
+
+        let bottomDestination = CGRect(
+            x: pageRect.minX,
+            y:
+                pageRect.midY
+                - foldedHeight,
+            width: pageRect.width,
+            height: foldedHeight
+        )
+
+        let topDestination = CGRect(
+            x: pageRect.minX,
+            y: pageRect.midY,
+            width: pageRect.width,
+            height: foldedHeight
+        )
+
+        let imageWidth =
+            CGFloat(pageImage.width)
+
+        let imageHeight =
+            CGFloat(pageImage.height)
+
+        let bottomCrop = CGRect(
+            x: 0,
+            y: 0,
+            width: imageWidth,
+            height: imageHeight * 0.5
+        )
+
+        let topCrop = CGRect(
+            x: 0,
+            y: imageHeight * 0.5,
+            width: imageWidth,
+            height: imageHeight * 0.5
+        )
+
+        if let bottomImage =
+            pageImage.cropping(
+                to: bottomCrop
+            ) {
+            context.draw(
+                bottomImage,
+                in: bottomDestination
+            )
+        }
+
+        if let topImage =
+            pageImage.cropping(
+                to: topCrop
+            ) {
+            context.draw(
+                topImage,
+                in: topDestination
+            )
+        }
+
+        let shadowHeight =
+            max(
+                2,
+                pageRect.height
+                    * 0.026
+                    * CGFloat(
+                        sin(
+                            safeProgress
+                            * .pi
+                        )
+                    )
+            )
+
+        let shadowRect = CGRect(
+            x: pageRect.minX,
+            y:
+                pageRect.midY
+                - shadowHeight * 0.5,
+            width: pageRect.width,
+            height: shadowHeight
+        )
+
+        context.setFillColor(
+            NSColor.black
+                .withAlphaComponent(
+                    CGFloat(
+                        0.52
+                        * sin(
+                            safeProgress
+                            * .pi
+                        )
+                    )
+                )
+                .cgColor
+        )
+
+        context.fill(shadowRect)
+    }
+
+    context.restoreGState()
+}
+
+private func makeOrigamiExportPixelBuffer(
+    page: OrigamiExportPage,
+    nextPage: OrigamiExportPage?,
+    phase: OrigamiExportAnimationPhase,
+    phaseProgress: Double,
+    pageIndex: Int,
+    blackOverlayOpacity: Double,
+    renderSize: CGSize,
+    pixelBufferPool: CVPixelBufferPool?
+) -> CVPixelBuffer? {
+    guard let pixelBufferPool else {
+        return nil
+    }
+
+    var pixelBuffer: CVPixelBuffer?
+
+    let status =
+        CVPixelBufferPoolCreatePixelBuffer(
+            nil,
+            pixelBufferPool,
+            &pixelBuffer
+        )
+
+    guard status == kCVReturnSuccess,
+          let pixelBuffer
+    else {
+        return nil
+    }
+
+    CVPixelBufferLockBaseAddress(
+        pixelBuffer,
+        []
+    )
+
+    defer {
+        CVPixelBufferUnlockBaseAddress(
+            pixelBuffer,
+            []
+        )
+    }
+
+    guard let context = CGContext(
+        data:
+            CVPixelBufferGetBaseAddress(
+                pixelBuffer
+            ),
+        width: Int(renderSize.width),
+        height: Int(renderSize.height),
+        bitsPerComponent: 8,
+        bytesPerRow:
+            CVPixelBufferGetBytesPerRow(
+                pixelBuffer
+            ),
+        space:
+            CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo:
+            CGImageAlphaInfo
+                .premultipliedFirst
+                .rawValue
+            | CGBitmapInfo
+                .byteOrder32Little
+                .rawValue
+    ) else {
+        return nil
+    }
+
+    let canvasRect = CGRect(
+        origin: .zero,
+        size: renderSize
+    )
+
+    context.setFillColor(
+        NSColor.black.cgColor
+    )
+
+    context.fill(canvasRect)
+
+    let pageRect =
+        origamiExportPageRect(
+            renderSize: renderSize
+        )
+
+    switch phase {
+    case .initialReveal:
+        drawOrigamiExportPage(
+            page,
+            in: pageRect,
+            context: context,
+            revealProgress:
+                phaseProgress,
+            animationVariant:
+                pageIndex
+        )
+
+    case .hold:
+        drawOrigamiExportPage(
+            page,
+            in: pageRect,
+            context: context,
+            revealProgress: 1,
+            animationVariant:
+                pageIndex
+        )
+
+    case .pageFold:
+        if let nextPage {
+            drawOrigamiExportPage(
+                nextPage,
+                in: pageRect,
+                context: context,
+                revealProgress: 1,
+                animationVariant:
+                    pageIndex + 1
+            )
+        }
+
+        drawOrigamiExportWholePageFold(
+            previousPage: page,
+            in: pageRect,
+            context: context,
+            progress:
+                phaseProgress,
+            usesVerticalCenterFold:
+                pageIndex
+                    .isMultiple(of: 2)
+                    == false
+        )
+    }
+
+    let safeBlackOpacity = min(
+        1,
+        max(
+            0,
+            blackOverlayOpacity
+        )
+    )
+
+    if safeBlackOpacity > 0.001 {
+        context.setFillColor(
+            NSColor.black
+                .withAlphaComponent(
+                    CGFloat(
+                        safeBlackOpacity
+                    )
+                )
+                .cgColor
+        )
+
+        context.fill(canvasRect)
+    }
+
+    return pixelBuffer
+}
+
+private func renderOrigamiSlideshowVideo(
+    photoURLs: [URL],
+    outputURL: URL,
+    resolutionName: String,
+    pageDuration: Double,
+    imagesBeforePageChange: Int,
+    simultaneousSwapCount: Int,
+    progressHandler:
+        @escaping @Sendable (Double) -> Void
+) throws {
+    if FileManager.default.fileExists(
+        atPath: outputURL.path
+    ) {
+        try FileManager.default.removeItem(
+            at: outputURL
+        )
+    }
+
+    let pages =
+        buildOrigamiSwiftUIExportPages(
+            photoURLs:
+                photoURLs,
+            imagesBeforePageChange:
+                imagesBeforePageChange,
+            simultaneousSwapCount:
+                simultaneousSwapCount
+        )
+
+    guard !pages.isEmpty else {
+        throw BriefShowExportError
+            .couldNotCreatePixelBuffer
+    }
+
+    let renderSize =
+        exportRenderSize(
+            for:
+                resolutionName,
+            photoURLs:
+                photoURLs
+        )
+
+    let fps: Int32 = 30
+
+    let safeHoldDuration =
+        max(
+            1.0,
+            min(
+                15.0,
+                pageDuration
+            )
+        )
+
+    let initialRevealDuration =
+        min(
+            1.20,
+            max(
+                0.78,
+                safeHoldDuration * 0.30
+            )
+        )
+
+    let internalSwapDuration =
+        1.05
+
+    let wholePageFoldDuration =
+        1.30
+
+    var segments:
+        [OrigamiSwiftUIExportSegment] = []
+
+    segments.append(
+        OrigamiSwiftUIExportSegment(
+            kind:
+                .initialReveal,
+            pageIndex: 0,
+            completedBatchCount: 0,
+            duration:
+                initialRevealDuration
+        )
+    )
+
+    for pageIndex in pages.indices {
+        let page =
+            pages[pageIndex]
+
+        for batchIndex in
+            page.swapBatches.indices {
+
+            // Preview waits before every internal swap.
+            segments.append(
+                OrigamiSwiftUIExportSegment(
+                    kind: .hold,
+                    pageIndex:
+                        pageIndex,
+                    completedBatchCount:
+                        batchIndex,
+                    duration:
+                        safeHoldDuration
+                )
+            )
+
+            segments.append(
+                OrigamiSwiftUIExportSegment(
+                    kind:
+                        .swap(
+                            batchIndex
+                        ),
+                    pageIndex:
+                        pageIndex,
+                    completedBatchCount:
+                        batchIndex,
+                    duration:
+                        internalSwapDuration
+                )
+            )
+        }
+
+        // Preview waits once more before changing page.
+        segments.append(
+            OrigamiSwiftUIExportSegment(
+                kind: .hold,
+                pageIndex:
+                    pageIndex,
+                completedBatchCount:
+                    page.swapBatches.count,
+                duration:
+                    safeHoldDuration
+            )
+        )
+
+        if pageIndex
+            < pages.count - 1 {
+
+            segments.append(
+                OrigamiSwiftUIExportSegment(
+                    kind:
+                        .pageFold,
+                    pageIndex:
+                        pageIndex,
+                    completedBatchCount:
+                        page.swapBatches.count,
+                    duration:
+                        wholePageFoldDuration
+                )
+            )
+        }
+    }
+
+    let totalDuration =
+        segments.reduce(0) {
+            $0 + $1.duration
+        }
+
+    let totalFrameCount = max(
+        1,
+        Int(
+            ceil(
+                totalDuration
+                * Double(fps)
+            )
+        )
+    )
+
+    let writer =
+        try AVAssetWriter(
+            outputURL:
+                outputURL,
+            fileType: .mp4
+        )
+
+    let pixelCount =
+        renderSize.width
+        * renderSize.height
+
+    let shouldUseHEVC =
+        resolutionName
+            .trimmingCharacters(
+                in:
+                    .whitespacesAndNewlines
+            ) == "Original"
+        || pixelCount > 8_294_400
+
+    let codec:
+        AVVideoCodecType =
+            shouldUseHEVC
+            ? .hevc
+            : .h264
+
+    let compressionProperties:
+        [String: Any] = [
+            AVVideoAverageBitRateKey:
+                exportBitrate(
+                    for: renderSize
+                ),
+            AVVideoMaxKeyFrameIntervalKey:
+                30,
+            AVVideoExpectedSourceFrameRateKey:
+                30,
+        ]
+
+    let videoSettings:
+        [String: Any] = [
+            AVVideoCodecKey:
+                codec,
+            AVVideoWidthKey:
+                Int(renderSize.width),
+            AVVideoHeightKey:
+                Int(renderSize.height),
+            AVVideoCompressionPropertiesKey:
+                compressionProperties,
+        ]
+
+    guard writer.canApply(
+        outputSettings:
+            videoSettings,
+        forMediaType:
+            .video
+    ) else {
+        throw BriefShowExportError
+            .cannotAddVideoInput
+    }
+
+    let input =
+        AVAssetWriterInput(
+            mediaType:
+                .video,
+            outputSettings:
+                videoSettings
+        )
+
+    input.expectsMediaDataInRealTime =
+        false
+
+    let pixelBufferAttributes:
+        [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey
+                as String:
+                    kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey
+                as String:
+                    Int(renderSize.width),
+            kCVPixelBufferHeightKey
+                as String:
+                    Int(renderSize.height),
+            kCVPixelBufferCGImageCompatibilityKey
+                as String:
+                    true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey
+                as String:
+                    true,
+        ]
+
+    let adaptor =
+        AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput:
+                input,
+            sourcePixelBufferAttributes:
+                pixelBufferAttributes
+        )
+
+    guard writer.canAdd(input) else {
+        throw BriefShowExportError
+            .cannotAddVideoInput
+    }
+
+    writer.add(input)
+
+    guard writer.startWriting() else {
+        throw writer.error
+            ?? BriefShowExportError
+                .writerFailed
+    }
+
+    writer.startSession(
+        atSourceTime: .zero
+    )
+
+    let fadeDuration = min(
+        1.0,
+        totalDuration * 0.5
+    )
+
+    var frameNumber: Int64 = 0
+    var cachedSegmentIndex = 0
+    var cachedSegmentStart = 0.0
+
+    for frameIndex in 0..<totalFrameCount {
+        while !input
+            .isReadyForMoreMediaData {
+
+            Thread.sleep(
+                forTimeInterval:
+                    0.004
+            )
+        }
+
+        let globalTime =
+            Double(frameIndex)
+            / Double(fps)
+
+        while cachedSegmentIndex
+                < segments.count - 1,
+              globalTime
+                >= cachedSegmentStart
+                    + segments[
+                        cachedSegmentIndex
+                    ].duration {
+
+            cachedSegmentStart +=
+                segments[
+                    cachedSegmentIndex
+                ].duration
+
+            cachedSegmentIndex += 1
+        }
+
+        let segment =
+            segments[
+                cachedSegmentIndex
+            ]
+
+        let localLinearProgress =
+            segment.duration > 0
+            ? min(
+                1,
+                max(
+                    0,
+                    (
+                        globalTime
+                        - cachedSegmentStart
+                    )
+                    / segment.duration
+                )
+            )
+            : 1
+
+        let page =
+            pages[
+                segment.pageIndex
+            ]
+
+        let replacements =
+            origamiSwiftUIExportReplacements(
+                page:
+                    page,
+                completedBatchCount:
+                    segment
+                        .completedBatchCount
+            )
+
+        var activeSwapImages:
+            [Int: NSImage] = [:]
+
+        var activeSwapStyles:
+            [Int: Int] = [:]
+
+        var swapProgress = 1.0
+        var transitionProgress = 1.0
+
+        var previousPage:
+            OrigamiSwiftUIExportPage?
+
+        var wholePageFoldProgress =
+            1.0
+
+        switch segment.kind {
+        case .initialReveal:
+            transitionProgress =
+                origamiSwiftUIExportEaseInOut(
+                    localLinearProgress
+                )
+
+        case .hold:
+            break
+
+        case .swap(let batchIndex):
+            if page.swapBatches.indices
+                .contains(batchIndex) {
+
+                let batch =
+                    page.swapBatches[
+                        batchIndex
+                    ]
+
+                activeSwapImages =
+                    batch.images
+
+                activeSwapStyles =
+                    batch.styles
+
+                swapProgress =
+                    origamiSwiftUIExportEaseInOut(
+                        localLinearProgress
+                    )
+            }
+
+        case .pageFold:
+            guard segment.pageIndex + 1
+                    < pages.count
+            else {
+                break
+            }
+
+            previousPage =
+                page
+
+            // Preview manually stores one smoothstep value.
+            // The shared overlay applies its own smoothstep again.
+            wholePageFoldProgress =
+                origamiSwiftUIExportSmoothstep(
+                    localLinearProgress
+                )
+        }
+
+        let displayedPage:
+            OrigamiSwiftUIExportPage
+
+        let displayedReplacements:
+            [Int: NSImage]
+
+        if case .pageFold =
+            segment.kind {
+
+            displayedPage =
+                pages[
+                    min(
+                        segment.pageIndex + 1,
+                        pages.count - 1
+                    )
+                ]
+
+            displayedReplacements = [:]
+        } else {
+            displayedPage = page
+
+            displayedReplacements =
+                replacements
+        }
+
+        let fadeInAlpha:
+            Double
+
+        if fadeDuration > 0 {
+            fadeInAlpha = max(
+                0,
+                1
+                - globalTime
+                    / fadeDuration
+            )
+        } else {
+            fadeInAlpha = 0
+        }
+
+        let fadeOutStart = max(
+            0,
+            totalDuration
+                - fadeDuration
+        )
+
+        let fadeOutAlpha:
+            Double
+
+        if fadeDuration > 0,
+           globalTime >= fadeOutStart {
+
+            fadeOutAlpha =
+                origamiSwiftUIExportSmoothstep(
+                    (
+                        globalTime
+                        - fadeOutStart
+                    )
+                    / fadeDuration
+                )
+        } else {
+            fadeOutAlpha = 0
+        }
+
+        let blackOverlayOpacity = min(
+            1,
+            max(
+                fadeInAlpha,
+                fadeOutAlpha
+            )
+        )
+
+        guard let pixelBuffer =
+            makeOrigamiSwiftUIExportPixelBuffer(
+                page:
+                    displayedPage,
+                replacements:
+                    displayedReplacements,
+                activeSwapImages:
+                    activeSwapImages,
+                activeSwapStyles:
+                    activeSwapStyles,
+                swapProgress:
+                    swapProgress,
+                transitionProgress:
+                    transitionProgress,
+                previousPage:
+                    previousPage,
+                wholePageFoldProgress:
+                    wholePageFoldProgress,
+                blackOverlayOpacity:
+                    blackOverlayOpacity,
+                renderSize:
+                    renderSize,
+                pixelBufferPool:
+                    adaptor
+                        .pixelBufferPool
+            )
+        else {
+            throw BriefShowExportError
+                .couldNotCreatePixelBuffer
+        }
+
+        let presentationTime =
+            CMTime(
+                value:
+                    frameNumber,
+                timescale:
+                    fps
+            )
+
+        guard adaptor.append(
+            pixelBuffer,
+            withPresentationTime:
+                presentationTime
+        ) else {
+            throw writer.error
+                ?? BriefShowExportError
+                    .writerFailed
+        }
+
+        frameNumber += 1
+
+        progressHandler(
+            min(
+                1,
+                Double(frameNumber)
+                / Double(
+                    totalFrameCount
+                )
+            )
+        )
+    }
+
+    input.markAsFinished()
+
+    let finishSemaphore =
+        DispatchSemaphore(
+            value: 0
+        )
+
+    writer.finishWriting {
+        finishSemaphore.signal()
+    }
+
+    finishSemaphore.wait()
+
+    guard writer.status
+            == .completed
+    else {
+        throw writer.error
+            ?? BriefShowExportError
+                .writerFailed
+    }
+
+    print(
+        "BriefShow shared SwiftUI Origami export completed.",
+        Int(renderSize.width),
+        "x",
+        Int(renderSize.height),
+        "frames:",
+        frameNumber,
+        "pages:",
+        pages.count
+    )
+}
+
+
 private func renderSlideshowVideo(
     photoURLs: [URL],
     outputURL: URL,
     resolutionName: String,
     secondsPerPhoto: Double,
     transitionStyle: SlideshowTransitionStyle,
-    fadeDuration: Double
+    fadeDuration: Double,
+    progressHandler: @escaping @Sendable (Double) -> Void
 ) throws {
     if FileManager.default.fileExists(atPath: outputURL.path) {
         try FileManager.default.removeItem(at: outputURL)
@@ -1988,6 +7623,11 @@ private func renderSlideshowVideo(
     let fps: Int32 = 30
     let frameDuration = CMTime(value: 1, timescale: fps)
     let framesPerPhoto = max(1, Int(round(secondsPerPhoto * Double(fps))))
+    let totalStandardFrameCount =
+        max(
+            1,
+            photoURLs.count * framesPerPhoto
+        )
     let fadeFrames = max(1, min(
         Int(round(fadeDuration * Double(fps))),
         max(1, Int(Double(framesPerPhoto) * 0.45))
@@ -2114,6 +7754,14 @@ private func renderSlideshowVideo(
             }
 
             frameNumber += 1
+
+            progressHandler(
+                min(
+                    1,
+                    Double(frameNumber)
+                    / Double(totalStandardFrameCount)
+                )
+            )
         }
 
         previousImage = cgImage
@@ -2339,6 +7987,51 @@ private func temporaryVideoURL(for outputURL: URL) -> URL {
     return FileManager.default.temporaryDirectory.appendingPathComponent(tempName)
 }
 
+private func loadAssetFullySynchronously(_ asset: AVURLAsset) {
+    let semaphore = DispatchSemaphore(value: 0)
+    asset.loadValuesAsynchronously(forKeys: ["tracks", "duration", "playable"]) {
+        semaphore.signal()
+    }
+    semaphore.wait()
+}
+
+private func convertMusicURLToAAC(_ sourceURL: URL) throws -> URL {
+    let sourceAsset = AVURLAsset(url: sourceURL)
+
+    let tempURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathExtension("m4a")
+
+    guard let exportSession = AVAssetExportSession(
+        asset: sourceAsset,
+        presetName: AVAssetExportPresetAppleM4A
+    ) else {
+        throw BriefShowExportError.couldNotExportWithAudio
+    }
+
+    exportSession.outputURL = tempURL
+    exportSession.outputFileType = .m4a
+
+    let semaphore = DispatchSemaphore(value: 0)
+    exportSession.exportAsynchronously {
+        semaphore.signal()
+    }
+    semaphore.wait()
+
+    guard exportSession.status == .completed else {
+        print(
+            "BriefShow mux: FAILED converting music to AAC:",
+            sourceURL.lastPathComponent,
+            String(describing: exportSession.error)
+        )
+        throw exportSession.error ?? BriefShowExportError.couldNotExportWithAudio
+    }
+
+    print("BriefShow mux: converted", sourceURL.lastPathComponent, "-> AAC temp file")
+
+    return tempURL
+}
+
 private func muxVideoWithMusic(
     videoURL: URL,
     musicURLs: [URL],
@@ -2352,6 +8045,7 @@ private func muxVideoWithMusic(
     }
 
     let videoAsset = AVURLAsset(url: videoURL)
+    loadAssetFullySynchronously(videoAsset)
     let composition = AVMutableComposition()
 
     guard let sourceVideoTrack = videoAsset.tracks(withMediaType: .video).first,
@@ -2363,25 +8057,134 @@ private func muxVideoWithMusic(
     }
 
     let videoDuration = videoAsset.duration
-    try compositionVideoTrack.insertTimeRange(
-        CMTimeRange(start: .zero, duration: videoDuration),
-        of: sourceVideoTrack,
-        at: .zero
-    )
+    print("BriefShow mux: videoDuration =", videoDuration, "isValid:", videoDuration.isValid)
+    do {
+        try compositionVideoTrack.insertTimeRange(
+            CMTimeRange(start: .zero, duration: videoDuration),
+            of: sourceVideoTrack,
+            at: .zero
+        )
+    } catch {
+        print("BriefShow mux FAILED at video insertTimeRange:", String(describing: error))
+        throw error
+    }
     compositionVideoTrack.preferredTransform = sourceVideoTrack.preferredTransform
 
     var audioMix: AVMutableAudioMix?
 
-    let musicSources: [(track: AVAssetTrack, duration: CMTime)] = musicURLs.compactMap { url in
-        let asset = AVURLAsset(url: url)
+    var musicSources: [
+        (
+            asset: AVURLAsset,
+            track: AVAssetTrack,
+            duration: CMTime,
+            startTime: CMTime
+        )
+    ] = []
 
-        guard let track = asset.tracks(withMediaType: .audio).first,
-              asset.duration > .zero else {
-            return nil
+    var temporaryMusicURLs: [URL] = []
+
+    defer {
+        for temporaryURL in temporaryMusicURLs {
+            try? FileManager.default.removeItem(
+                at: temporaryURL
+            )
+        }
+    }
+
+    for url in musicURLs {
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
         }
 
-        return (track, asset.duration)
+        print(
+            "BriefShow mux: security-scoped access started =",
+            didStartAccess,
+            "for",
+            url.lastPathComponent
+        )
+
+        let convertedURL: URL
+
+        do {
+            convertedURL = try convertMusicURLToAAC(url)
+        } catch {
+            print(
+                "BriefShow mux: SKIPPING music track, AAC conversion failed:",
+                url.lastPathComponent,
+                String(describing: error)
+            )
+            continue
+        }
+
+        temporaryMusicURLs.append(
+            convertedURL
+        )
+
+        let asset = AVURLAsset(
+            url: convertedURL
+        )
+
+        loadAssetFullySynchronously(
+            asset
+        )
+
+        let assetDuration =
+            asset.duration
+
+        let audioTracks =
+            asset.tracks(
+                withMediaType: .audio
+            )
+
+        print(
+            "BriefShow mux: music url =", url.lastPathComponent,
+            "duration =", assetDuration,
+            "isValid:", assetDuration.isValid,
+            "audioTrackCount:", audioTracks.count
+        )
+
+        guard let track = audioTracks.first,
+              assetDuration > .zero,
+              track.timeRange.duration > .zero
+        else {
+            print(
+                "BriefShow mux: SKIPPING music track "
+                + "(no track or zero duration)"
+            )
+            continue
+        }
+
+        let usableTrackDuration =
+            minCMTime(
+                assetDuration,
+                track.timeRange.duration
+            )
+
+        musicSources.append(
+            (
+                asset: asset,
+                track: track,
+                duration: usableTrackDuration,
+                startTime: track.timeRange.start
+            )
+        )
+
+        print(
+            "BriefShow mux: retained AAC asset:",
+            convertedURL.lastPathComponent,
+            "track start:",
+            track.timeRange.start,
+            "track duration:",
+            track.timeRange.duration,
+            "usable duration:",
+            usableTrackDuration
+        )
     }
+
+    print("BriefShow mux: usable musicSources count =", musicSources.count)
 
     if !musicSources.isEmpty,
        let compositionAudioTrack = composition.addMutableTrack(
@@ -2396,11 +8199,44 @@ private func muxVideoWithMusic(
             let remainingVideoDuration = videoDuration - insertedAudioDuration
             let audioSegmentDuration = minCMTime(remainingVideoDuration, source.duration)
 
-            try compositionAudioTrack.insertTimeRange(
-                CMTimeRange(start: .zero, duration: audioSegmentDuration),
-                of: source.track,
-                at: insertedAudioDuration
-            )
+            do {
+                let sourceTimeRange =
+                    CMTimeRange(
+                        start:
+                            source.startTime,
+                        duration:
+                            audioSegmentDuration
+                    )
+
+                try compositionAudioTrack
+                    .insertTimeRange(
+                        sourceTimeRange,
+                        of:
+                            source.track,
+                        at:
+                            insertedAudioDuration
+                    )
+            } catch {
+                print(
+                    "BriefShow mux FAILED at audio insertTimeRange:",
+                    "insertedAudioDuration:",
+                    insertedAudioDuration,
+                    "sourceStart:",
+                    source.startTime,
+                    "sourceDuration:",
+                    source.duration,
+                    "audioSegmentDuration:",
+                    audioSegmentDuration,
+                    "trackTimeRange:",
+                    source.track.timeRange,
+                    "error:",
+                    String(
+                        describing:
+                            error
+                    )
+                )
+                throw error
+            }
 
             insertedAudioDuration = insertedAudioDuration + audioSegmentDuration
             sourceIndex += 1
@@ -2454,16 +8290,28 @@ private func muxVideoWithMusic(
         audioMix?.inputParameters = [audioParameters]
     }
 
+    // Passthrough is only safe on AVMutableComposition when
+    // AVFoundation itself reports it as compatible, and never
+    // when we need to apply an audio mix (volume ramps require
+    // re-encoding, which Passthrough cannot do).
     let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: composition)
-    let preferredPreset: String
+    let passthroughIsSafe = audioMix == nil
+        && compatiblePresets.contains(AVAssetExportPresetPassthrough)
 
-    if preferHEVC, compatiblePresets.contains(AVAssetExportPresetHEVCHighestQuality) {
-        preferredPreset = AVAssetExportPresetHEVCHighestQuality
-    } else {
-        preferredPreset = AVAssetExportPresetHighestQuality
-    }
+    let preferredPreset: String = (preferHEVC && passthroughIsSafe)
+        ? AVAssetExportPresetPassthrough
+        : AVAssetExportPresetHighestQuality
 
-    print("BriefShow mux preset:", preferredPreset, "preferHEVC:", preferHEVC)
+    print(
+        "BriefShow mux preset:",
+        preferredPreset,
+        "preferHEVC:",
+        preferHEVC,
+        "passthroughIsSafe:",
+        passthroughIsSafe,
+        "compatiblePresets:",
+        compatiblePresets
+    )
 
     guard let exportSession = AVAssetExportSession(
         asset: composition,
@@ -2484,7 +8332,16 @@ private func muxVideoWithMusic(
     semaphore.wait()
 
     if exportSession.status != .completed {
-        throw exportSession.error ?? BriefShowExportError.couldNotExportWithAudio
+        let underlyingError = exportSession.error
+        print(
+            "BriefShow mux FAILED - status:",
+            exportSession.status.rawValue,
+            "error:",
+            underlyingError?.localizedDescription ?? "nil",
+            "fullError:",
+            String(describing: underlyingError)
+        )
+        throw underlyingError ?? BriefShowExportError.couldNotExportWithAudio
     }
 }
 
@@ -3486,6 +9343,7 @@ struct FullScreenPreviewSheet: View {
     let previousOrigamiPageAnimationVariant: Int
     let origamiWholePageFoldProgress: Double
     let origamiBlackOverlayOpacity: Double
+    let magazineBlackOverlayOpacity: Double
     let visualTheme: SlideshowVisualTheme
     let timeCounterText: String
     let transitionStyle: SlideshowTransitionStyle
@@ -3552,16 +9410,25 @@ struct FullScreenPreviewSheet: View {
     private func fittedPreviewContent(in size: CGSize) -> some View {
         if let activePreviewImage {
             if usesMagazinePreview {
-                MagazinePreviewPage(
-                    images: themedPreviewImages,
-                    theme: visualTheme,
-                    activePhotoName: activePhotoName,
-                    activePhotoIndex: activePhotoIndex,
-                    transitionProgress: transitionProgress,
-                    imageFadeSeconds: magazineImageFadeSeconds,
-                    imageDelaySeconds: magazineImageDelaySeconds,
-                    layoutSeed: magazineLayoutSeed
-                )
+                ZStack {
+                    MagazinePreviewPage(
+                        images: themedPreviewImages,
+                        theme: visualTheme,
+                        activePhotoName: activePhotoName,
+                        activePhotoIndex: activePhotoIndex,
+                        transitionProgress: transitionProgress,
+                        imageFadeSeconds: magazineImageFadeSeconds,
+                        imageDelaySeconds: magazineImageDelaySeconds,
+                        layoutSeed: magazineLayoutSeed
+                    )
+
+                    Color.black
+                        .opacity(
+                            magazineBlackOverlayOpacity
+                        )
+                        .allowsHitTesting(false)
+                        .zIndex(500)
+                }
                 .frame(width: size.width, height: size.height)
                 .background(Color.black)
             } else if visualTheme == .origami {
@@ -5634,20 +11501,7 @@ struct OrigamiWholePageHalfFoldOverlay: View {
     }
 
     private var pageOpacity: Double {
-        let fadeStart = 0.90
-
-        guard safeProgress > fadeStart else {
-            return 1
-        }
-
-        return max(
-            0,
-            1 - (
-                safeProgress - fadeStart
-            ) / (
-                1 - fadeStart
-            )
-        )
+        1
     }
 
     private func pageView(
@@ -5676,6 +11530,15 @@ struct OrigamiWholePageHalfFoldOverlay: View {
         )
     }
 
+    private var usesVerticalCenterFold: Bool {
+        let normalizedVariant =
+            animationVariant >= 0
+            ? animationVariant
+            : -animationVariant
+
+        return normalizedVariant.isMultiple(of: 2) == false
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let availableWidth =
@@ -5692,6 +11555,9 @@ struct OrigamiWholePageHalfFoldOverlay: View {
             let canvasHeight =
                 canvasWidth * 9 / 16
 
+            let halfWidth =
+                canvasWidth * 0.5
+
             let halfHeight =
                 canvasHeight * 0.5
 
@@ -5699,47 +11565,91 @@ struct OrigamiWholePageHalfFoldOverlay: View {
                 90 * easedProgress
 
             ZStack {
-                topHalf(
-                    width: canvasWidth,
-                    height: canvasHeight,
-                    halfHeight: halfHeight,
-                    angle: angle
-                )
-
-                bottomHalf(
-                    width: canvasWidth,
-                    height: canvasHeight,
-                    halfHeight: halfHeight,
-                    angle: angle
-                )
-
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.clear,
-                                Color.black.opacity(
-                                    0.50
-                                    * sin(
-                                        easedProgress
-                                        * .pi
-                                    )
-                                ),
-                                Color.clear,
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(
+                if usesVerticalCenterFold {
+                    leftHalf(
                         width: canvasWidth,
-                        height: 18
+                        height: canvasHeight,
+                        halfWidth: halfWidth,
+                        angle: angle
                     )
-                    .position(
-                        x: canvasWidth * 0.5,
-                        y: canvasHeight * 0.5
+
+                    rightHalf(
+                        width: canvasWidth,
+                        height: canvasHeight,
+                        halfWidth: halfWidth,
+                        angle: angle
                     )
-                    .allowsHitTesting(false)
+
+                    Rectangle()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.clear,
+                                    Color.black.opacity(
+                                        0.50
+                                        * sin(
+                                            easedProgress
+                                            * .pi
+                                        )
+                                    ),
+                                    Color.clear,
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(
+                            width: 18,
+                            height: canvasHeight
+                        )
+                        .position(
+                            x: canvasWidth * 0.5,
+                            y: canvasHeight * 0.5
+                        )
+                        .allowsHitTesting(false)
+                } else {
+                    topHalf(
+                        width: canvasWidth,
+                        height: canvasHeight,
+                        halfHeight: halfHeight,
+                        angle: angle
+                    )
+
+                    bottomHalf(
+                        width: canvasWidth,
+                        height: canvasHeight,
+                        halfHeight: halfHeight,
+                        angle: angle
+                    )
+
+                    Rectangle()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.clear,
+                                    Color.black.opacity(
+                                        0.50
+                                        * sin(
+                                            easedProgress
+                                            * .pi
+                                        )
+                                    ),
+                                    Color.clear,
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(
+                            width: canvasWidth,
+                            height: 18
+                        )
+                        .position(
+                            x: canvasWidth * 0.5,
+                            y: canvasHeight * 0.5
+                        )
+                        .allowsHitTesting(false)
+                }
             }
             .frame(
                 width: canvasWidth,
@@ -5752,6 +11662,126 @@ struct OrigamiWholePageHalfFoldOverlay: View {
                 y: availableHeight * 0.5
             )
         }
+    }
+
+    private func leftHalf(
+        width: CGFloat,
+        height: CGFloat,
+        halfWidth: CGFloat,
+        angle: Double
+    ) -> AnyView {
+        AnyView(
+            pageView(
+                width: width,
+                height: height
+            )
+            .offset(
+                x: width * 0.25
+            )
+            .frame(
+                width: halfWidth,
+                height: height
+            )
+            .clipped()
+            .rotation3DEffect(
+                .degrees(angle),
+                axis: (
+                    x: 0,
+                    y: 1,
+                    z: 0
+                ),
+                anchor: .trailing,
+                anchorZ: 0,
+                perspective: 0.72
+            )
+            .shadow(
+                color:
+                    Color.black.opacity(
+                        0.46
+                        * sin(
+                            easedProgress
+                            * .pi
+                        )
+                    ),
+                radius:
+                    18
+                    * sin(
+                        easedProgress
+                        * .pi
+                    ),
+                x: 8,
+                y: 0
+            )
+            .frame(
+                width: halfWidth,
+                height: height
+            )
+            .position(
+                x: halfWidth * 0.5,
+                y: height * 0.5
+            )
+        )
+    }
+
+    private func rightHalf(
+        width: CGFloat,
+        height: CGFloat,
+        halfWidth: CGFloat,
+        angle: Double
+    ) -> AnyView {
+        AnyView(
+            pageView(
+                width: width,
+                height: height
+            )
+            .offset(
+                x: -width * 0.25
+            )
+            .frame(
+                width: halfWidth,
+                height: height
+            )
+            .clipped()
+            .rotation3DEffect(
+                .degrees(-angle),
+                axis: (
+                    x: 0,
+                    y: 1,
+                    z: 0
+                ),
+                anchor: .leading,
+                anchorZ: 0,
+                perspective: 0.72
+            )
+            .shadow(
+                color:
+                    Color.black.opacity(
+                        0.46
+                        * sin(
+                            easedProgress
+                            * .pi
+                        )
+                    ),
+                radius:
+                    18
+                    * sin(
+                        easedProgress
+                        * .pi
+                    ),
+                x: -8,
+                y: 0
+            )
+            .frame(
+                width: halfWidth,
+                height: height
+            )
+            .position(
+                x:
+                    halfWidth
+                    + halfWidth * 0.5,
+                y: height * 0.5
+            )
+        )
     }
 
     private func topHalf(
@@ -5911,6 +11941,7 @@ struct CenterPreviewPanel: View {
     let previousOrigamiPageAnimationVariant: Int
     let origamiWholePageFoldProgress: Double
     let origamiBlackOverlayOpacity: Double
+    let magazineBlackOverlayOpacity: Double
     let visualTheme: SlideshowVisualTheme
     let isPreparingPhotos: Bool
     let preparedPhotoCount: Int
@@ -5958,17 +11989,30 @@ struct CenterPreviewPanel: View {
 
                     if let activePreviewImage {
                         if usesMagazinePreview {
-                            MagazinePreviewPage(
-                                images: themedPreviewImages,
-                                theme: visualTheme,
-                                activePhotoName: activePhotoName,
-                                activePhotoIndex: activePhotoIndex,
-                                transitionProgress: transitionProgress,
-                                imageFadeSeconds: magazineImageFadeSeconds,
-                                imageDelaySeconds: magazineImageDelaySeconds,
-                                layoutSeed: magazineLayoutSeed
+                            ZStack {
+                                MagazinePreviewPage(
+                                    images: themedPreviewImages,
+                                    theme: visualTheme,
+                                    activePhotoName: activePhotoName,
+                                    activePhotoIndex: activePhotoIndex,
+                                    transitionProgress: transitionProgress,
+                                    imageFadeSeconds: magazineImageFadeSeconds,
+                                    imageDelaySeconds: magazineImageDelaySeconds,
+                                    layoutSeed: magazineLayoutSeed
+                                )
+
+                                Color.black
+                                    .opacity(
+                                        magazineBlackOverlayOpacity
+                                    )
+                                    .allowsHitTesting(false)
+                                    .zIndex(500)
+                            }
+                            .clipShape(
+                                RoundedRectangle(
+                                    cornerRadius: 28
+                                )
                             )
-                            .clipShape(RoundedRectangle(cornerRadius: 28))
                         } else if visualTheme == .origami {
                             ZStack {
                                 OrigamiPreviewPage(
@@ -6326,6 +12370,7 @@ struct RightExportPanel: View {
     let selectedMusicCount: Int
     let canExport: Bool
     let isExporting: Bool
+    let exportProgress: Double
     let exportStatusText: String?
     let onExportVideo: () -> Void
 
@@ -6378,10 +12423,17 @@ struct RightExportPanel: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     if isExporting {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.7)
-                            .frame(width: 16, height: 16)
+                        ProgressView(
+                            value: max(
+                                0,
+                                min(1, exportProgress)
+                            ),
+                            total: 1
+                        )
+                        .progressViewStyle(.circular)
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: 16, height: 16)
                     }
                 }
                 .padding(.horizontal, 12)

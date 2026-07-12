@@ -26,6 +26,7 @@ enum SlideshowVisualTheme: String {
     case origami = "Origami"
     case magazineToon = "Magazine Toon"
     case origamiToon = "Origami Toon"
+    case imagination = "Imagination"
 }
 
 struct ContentView: View {
@@ -2168,13 +2169,43 @@ struct ContentView: View {
                             "Adding music… 92%"
                     }
 
+                    let isOrigamiVideo =
+                        selectedVisualTheme
+                            == .origami
+
+                    let shouldUseOrigamiHEVC =
+                        isOrigamiVideo
+                        && (
+                            resolution == "Original"
+                            || resolution == "4K"
+                        )
+
                     try muxVideoWithMusic(
                         videoURL: videoOnlyURL,
                         musicURLs: musicURLs,
                         outputURL: outputURL,
-                        fadeInSeconds: selectedMusicFadeIn,
-                        fadeOutSeconds: selectedMusicFadeOut,
-                        preferHEVC: resolution == "Original"
+                        fadeInSeconds:
+                            selectedMusicFadeIn,
+                        fadeOutSeconds:
+                            selectedMusicFadeOut,
+                        preferHEVC:
+                            shouldUseOrigamiHEVC
+                            || (
+                                !isOrigamiVideo
+                                && resolution
+                                    == "Original"
+                            ),
+                        forcedFrameRate:
+                            isOrigamiVideo
+                            ? 30
+                            : nil,
+                        forcedRenderSize:
+                            isOrigamiVideo
+                            ? origamiExportRenderSize(
+                                for:
+                                    resolution
+                            )
+                            : nil
                     )
 
                     try? FileManager.default.removeItem(at: videoOnlyURL)
@@ -7059,11 +7090,8 @@ private func renderOrigamiSlideshowVideo(
     }
 
     let renderSize =
-        exportRenderSize(
-            for:
-                resolutionName,
-            photoURLs:
-                photoURLs
+        origamiExportRenderSize(
+            for: resolutionName
         )
 
     let fps: Int32 = 30
@@ -7780,6 +7808,49 @@ private func renderSlideshowVideo(
     }
 }
 
+private func origamiExportRenderSize(
+    for resolutionName: String
+) -> CGSize {
+    switch resolutionName
+        .trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) {
+
+    case "480p":
+        return CGSize(
+            width: 854,
+            height: 480
+        )
+
+    case "720p":
+        return CGSize(
+            width: 1280,
+            height: 720
+        )
+
+    case "1080p":
+        return CGSize(
+            width: 1920,
+            height: 1080
+        )
+
+    case "4K", "Original":
+        // Origami is always a 16:9 full-screen composition.
+        // "Original" means maximum Origami quality, not the
+        // aspect ratio of the first imported photograph.
+        return CGSize(
+            width: 3840,
+            height: 2160
+        )
+
+    default:
+        return CGSize(
+            width: 3840,
+            height: 2160
+        )
+    }
+}
+
 private func exportRenderSize(for resolutionName: String, photoURLs: [URL]) -> CGSize {
     if resolutionName == "480p" {
         return CGSize(width: 854, height: 480)
@@ -8038,7 +8109,9 @@ private func muxVideoWithMusic(
     outputURL: URL,
     fadeInSeconds: Double,
     fadeOutSeconds: Double,
-    preferHEVC: Bool
+    preferHEVC: Bool,
+    forcedFrameRate: Int32? = nil,
+    forcedRenderSize: CGSize? = nil
 ) throws {
     if FileManager.default.fileExists(atPath: outputURL.path) {
         try FileManager.default.removeItem(at: outputURL)
@@ -8069,6 +8142,73 @@ private func muxVideoWithMusic(
         throw error
     }
     compositionVideoTrack.preferredTransform = sourceVideoTrack.preferredTransform
+
+    var forcedVideoComposition:
+        AVMutableVideoComposition?
+
+    if let forcedFrameRate,
+       forcedFrameRate > 0 {
+
+        let targetRenderSize =
+            forcedRenderSize
+            ?? sourceVideoTrack.naturalSize
+
+        let videoComposition =
+            AVMutableVideoComposition()
+
+        videoComposition.renderSize =
+            targetRenderSize
+
+        videoComposition.frameDuration =
+            CMTime(
+                value: 1,
+                timescale:
+                    forcedFrameRate
+            )
+
+        let instruction =
+            AVMutableVideoCompositionInstruction()
+
+        instruction.timeRange =
+            CMTimeRange(
+                start: .zero,
+                duration:
+                    videoDuration
+            )
+
+        let layerInstruction =
+            AVMutableVideoCompositionLayerInstruction(
+                assetTrack:
+                    compositionVideoTrack
+            )
+
+        layerInstruction.setTransform(
+            sourceVideoTrack
+                .preferredTransform,
+            at: .zero
+        )
+
+        instruction.layerInstructions = [
+            layerInstruction
+        ]
+
+        videoComposition.instructions = [
+            instruction
+        ]
+
+        forcedVideoComposition =
+            videoComposition
+
+        print(
+            "BriefShow mux forced video:",
+            Int(targetRenderSize.width),
+            "x",
+            Int(targetRenderSize.height),
+            "@",
+            forcedFrameRate,
+            "fps"
+        )
+    }
 
     var audioMix: AVMutableAudioMix?
 
@@ -8298,9 +8438,24 @@ private func muxVideoWithMusic(
     let passthroughIsSafe = audioMix == nil
         && compatiblePresets.contains(AVAssetExportPresetPassthrough)
 
-    let preferredPreset: String = (preferHEVC && passthroughIsSafe)
-        ? AVAssetExportPresetPassthrough
-        : AVAssetExportPresetHighestQuality
+    let preferredPreset: String
+
+    if preferHEVC,
+       compatiblePresets.contains(
+            AVAssetExportPresetHEVCHighestQuality
+       ) {
+
+        preferredPreset =
+            AVAssetExportPresetHEVCHighestQuality
+    } else if preferHEVC,
+              passthroughIsSafe {
+
+        preferredPreset =
+            AVAssetExportPresetPassthrough
+    } else {
+        preferredPreset =
+            AVAssetExportPresetHighestQuality
+    }
 
     print(
         "BriefShow mux preset:",
@@ -8323,6 +8478,8 @@ private func muxVideoWithMusic(
     exportSession.outputURL = outputURL
     exportSession.outputFileType = .mp4
     exportSession.audioMix = audioMix
+    exportSession.videoComposition =
+        forcedVideoComposition
     exportSession.shouldOptimizeForNetworkUse = true
 
     let semaphore = DispatchSemaphore(value: 0)
@@ -9065,6 +9222,8 @@ struct LeftImportPanel: View {
             return "Magazine Toon will require sign in and credits once AI styles are connected."
         case .origamiToon:
             return "Origami Toon will require sign in and credits once AI styles are connected."
+        case .imagination:
+            return "Imagination brings photos to life as 3D cards emerging from deep space."
         }
     }
 
@@ -9182,6 +9341,17 @@ struct ThemePickerPopover: View {
                     isLocked: false
                 ) {
                     selectedTheme = .origami
+                    isPresented = false
+                }
+
+                ThemePickerOption(
+                    title: "Imagination",
+                    subtitle: "Photos emerge as 3D cards from deep space.",
+                    isSelected: selectedTheme == .imagination,
+                    isLocked: false
+                ) {
+                    selectedTheme = .imagination
+                    transitionStyle = .fade
                     isPresented = false
                 }
 
@@ -9471,6 +9641,13 @@ struct FullScreenPreviewSheet: View {
                     height: size.height
                 )
                 .background(Color.black)
+            } else if visualTheme == .imagination {
+                ImaginationCardPage(
+                        activeImage: activePreviewImage,
+                        activePhotoIndex: activePhotoIndex,
+                        transitionProgress: transitionProgress
+                    )
+                .frame(width: size.width, height: size.height)
             } else {
                 ZStack {
                     Color.black
@@ -11925,6 +12102,462 @@ struct OrigamiPanelShape: Shape {
     }
 }
 
+private struct ImaginationDustOverlay: View {
+    let burstToken: Int
+
+    private let particleCount = 90
+
+    @State private var burstStartedAt = Date()
+
+    var body: some View {
+        GeometryReader { proxy in
+            TimelineView(
+                .animation(
+                    minimumInterval: 1.0 / 30.0,
+                    paused: false
+                )
+            ) { timeline in
+                Canvas { context, size in
+                    let currentTime =
+                        timeline.date.timeIntervalSinceReferenceDate
+
+                    let elapsedSinceBurst = max(
+                        0,
+                        timeline.date.timeIntervalSince(burstStartedAt)
+                    )
+
+                    // Jak početni nalet koji se smooth smanjuje.
+                    // Nikada ne pada na nulu jer osnovni swirl ostaje.
+                    let burstStrength = exp(
+                        -elapsedSinceBurst * 0.78
+                    )
+
+                    for index in 0..<particleCount {
+                        drawDustParticle(
+                            index: index,
+                            time: currentTime,
+                            size: size,
+                            burstStrength: burstStrength,
+                            context: &context
+                        )
+                    }
+                }
+            }
+            .frame(
+                width: proxy.size.width,
+                height: proxy.size.height
+            )
+            .allowsHitTesting(false)
+            .onAppear {
+                burstStartedAt = Date()
+            }
+            .onChange(of: burstToken) { _ in
+                // Svaki novi page ponovo aktivira nalet vetra.
+                burstStartedAt = Date()
+            }
+        }
+    }
+
+    private func drawDustParticle(
+        index: Int,
+        time: TimeInterval,
+        size: CGSize,
+        burstStrength: Double,
+        context: inout GraphicsContext
+    ) {
+        guard size.width > 0, size.height > 0 else {
+            return
+        }
+
+        let seed = Double(index + 1)
+
+        let xSeed = random(seed * 12.9898)
+        let ySeed = random(seed * 78.233)
+        let speedSeed = random(seed * 41.719)
+        let phaseSeed = random(seed * 27.113)
+        let radiusSeed = random(seed * 63.771)
+        let opacitySeed = random(seed * 94.331)
+        let directionSeed = random(seed * 36.173)
+
+        let baseX = xSeed * size.width
+        let baseY = ySeed * size.height
+
+        let phase = phaseSeed * Double.pi * 2.0
+
+        // Stalno mirno lebdenje prašine.
+        let baseSpeed =
+            0.10 + speedSeed * 0.18
+
+        let secondarySpeed =
+            0.07 + random(seed * 17.477) * 0.14
+
+        let horizontalRadius =
+            6.0 + radiusSeed * 20.0
+
+        let verticalRadius =
+            5.0 + random(seed * 31.557) * 16.0
+
+        let calmX =
+            sin(time * baseSpeed + phase)
+            * horizontalRadius
+            + cos(
+                time * secondarySpeed
+                + phase * 0.7
+            ) * 5.0
+
+        let calmY =
+            cos(
+                time * baseSpeed * 0.83
+                + phase
+            ) * verticalRadius
+            + sin(
+                time * secondarySpeed * 1.17
+                + phase * 1.2
+            ) * 4.0
+
+        // -------------------------------------------------
+        // Nalet vetra na početku svakog novog page-a.
+        // -------------------------------------------------
+
+        let sideDirection: Double =
+            burstToken.isMultiple(of: 2) ? -1.0 : 1.0
+
+        // Čestice ne idu sve identično.
+        let particleDirection =
+            directionSeed > 0.35
+            ? sideDirection
+            : -sideDirection * 0.35
+
+        let gustSpeed =
+            1.8 + speedSeed * 2.8
+
+        let gustDistance =
+            burstStrength
+            * (42.0 + radiusSeed * 76.0)
+
+        let windX =
+            sin(
+                time * gustSpeed
+                + phase
+            )
+            * gustDistance
+            * particleDirection
+
+        let windY =
+            cos(
+                time * (gustSpeed * 0.72)
+                + phase * 1.4
+            )
+            * gustDistance
+            * 0.38
+
+        // Dodatni swirl pri najjačem naletu.
+        let swirlRadius =
+            burstStrength
+            * (15.0 + radiusSeed * 42.0)
+
+        let swirlSpeed =
+            2.1 + speedSeed * 3.0
+
+        let swirlX =
+            cos(
+                time * swirlSpeed
+                + phase
+            ) * swirlRadius
+
+        let swirlY =
+            sin(
+                time * swirlSpeed
+                + phase
+            ) * swirlRadius * 0.72
+
+        var x =
+            baseX
+            + calmX
+            + windX
+            + swirlX
+
+        var y =
+            baseY
+            + calmY
+            + windY
+            + swirlY
+
+        // Wrap čestica da nikada ne nestanu ili stanu.
+        let margin = 30.0
+
+        x = wrapped(
+            x,
+            minimum: -margin,
+            maximum: size.width + margin
+        )
+
+        y = wrapped(
+            y,
+            minimum: -margin,
+            maximum: size.height + margin
+        )
+
+        // Veličina ostaje mala kao ranije.
+        let particleSize =
+            0.7 + random(seed * 88.231) * 1.6
+
+        // Tokom naleta su malo vidljivije,
+        // ali ne postaju veće.
+        let baseOpacity =
+            0.12 + opacitySeed * 0.38
+
+        let gustOpacityBoost =
+            burstStrength * 0.16
+
+        let finalOpacity = min(
+            0.72,
+            baseOpacity + gustOpacityBoost
+        )
+
+        let particleRect = CGRect(
+            x: x - particleSize / 2,
+            y: y - particleSize / 2,
+            width: particleSize,
+            height: particleSize
+        )
+
+        context.opacity = finalOpacity
+
+        context.fill(
+            Path(ellipseIn: particleRect),
+            with: .color(.white)
+        )
+    }
+
+    private func wrapped(
+        _ value: Double,
+        minimum: Double,
+        maximum: Double
+    ) -> Double {
+        let range = maximum - minimum
+
+        guard range > 0 else {
+            return value
+        }
+
+        var result =
+            (value - minimum)
+            .truncatingRemainder(dividingBy: range)
+
+        if result < 0 {
+            result += range
+        }
+
+        return result + minimum
+    }
+
+    private func random(_ value: Double) -> Double {
+        let result =
+            sin(value) * 43_758.545_312_3
+
+        return result - floor(result)
+    }
+}
+
+
+
+
+struct ImaginationCardPage: View {
+    let activeImage: NSImage?
+    let activePhotoIndex: Int
+    let transitionProgress: Double
+
+    @State private var revealScale: CGFloat = 2.20
+    @State private var revealBlur: CGFloat = 30
+    @State private var revealOffsetX: CGFloat = 0
+    @State private var revealOffsetY: CGFloat = 0
+    @State private var revealTiltY: Double = 0
+    @State private var revealRotationZ: Double = 0
+    @State private var sideIsRight: Bool = false
+    @State private var lastSeenIndex: Int = -1
+
+    private var blackOverlayOpacity: Double {
+        let p = min(1, max(0, transitionProgress))
+        return 1 - abs(1 - 2 * p)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.black
+
+                if let activeImage {
+                    let imageRatio = max(
+                        0.01,
+                        activeImage.size.width / max(1, activeImage.size.height)
+                    )
+
+                    let availableWidth = proxy.size.width * 0.72
+                    let availableHeight = proxy.size.height * 0.76
+
+                    let cardSize: CGSize = {
+                        let availableRatio = availableWidth / availableHeight
+
+                        if imageRatio > availableRatio {
+                            return CGSize(
+                                width: availableWidth,
+                                height: availableWidth / imageRatio
+                            )
+                        } else {
+                            return CGSize(
+                                width: availableHeight * imageRatio,
+                                height: availableHeight
+                            )
+                        }
+                    }()
+
+                    ZStack {
+                        Image(nsImage: activeImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(
+                                width: cardSize.width,
+                                height: cardSize.height
+                            )
+                            .clipped()
+                            .blur(radius: revealBlur)
+                    }
+                    .frame(
+                        width: cardSize.width,
+                        height: cardSize.height
+                    )
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: 22,
+                            style: .continuous
+                        )
+                    )
+                    .compositingGroup()
+                    .rotation3DEffect(
+                        .degrees(revealTiltY),
+                        axis: (x: 0, y: 1, z: 0),
+                        perspective: 0.55
+                    )
+                    .rotationEffect(.degrees(revealRotationZ))
+                    .scaleEffect(revealScale)
+                    .offset(x: revealOffsetX, y: revealOffsetY)
+                    .zIndex(10)
+                }
+
+                // Više prašine, uglavnom sa leve i desne strane.
+                // Oba sloja su iza fotografije.
+                ImaginationDustOverlay(burstToken: activePhotoIndex)
+                    .opacity(0.95)
+                    
+                    .frame(
+                        width: proxy.size.width,
+                        height: proxy.size.height
+                    ).zIndex(20)
+
+                ImaginationDustOverlay(burstToken: activePhotoIndex)
+                    .scaleEffect(1.08)
+                    .offset(y: 24)
+                    .opacity(0.65)
+                    
+                    .frame(
+                        width: proxy.size.width,
+                        height: proxy.size.height
+                    ).zIndex(21)
+
+                Color.black
+                    .opacity(blackOverlayOpacity)
+                    .allowsHitTesting(false)
+                    .zIndex(100)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+            .onAppear {
+                lastSeenIndex = activePhotoIndex
+                triggerReveal()
+            }
+            .onChange(of: activePhotoIndex) { newValue in
+                guard newValue != lastSeenIndex else { return }
+                lastSeenIndex = newValue
+                triggerReveal()
+            }
+        }
+    }
+
+    private func triggerReveal() {
+        let startsOnRight = activePhotoIndex.isMultiple(of: 2)
+        let sideOffset: CGFloat = startsOnRight ? 190 : -190
+
+        // Tri animacije koje se smenjuju:
+        // 0 = postojeća bočna animacija
+        // 1 = slika kreće odozgo i ide malo naniže
+        // 2 = slika kreće odozdo i ide malo nagore
+        let movementStyle = activePhotoIndex % 3
+
+        let startingOffsetY: CGFloat
+        let endingOffsetY: CGFloat
+
+        switch movementStyle {
+        case 1:
+            startingOffsetY = -115
+            endingOffsetY = 45
+
+        case 2:
+            startingOffsetY = 115
+            endingOffsetY = -45
+
+        default:
+            startingOffsetY = 0
+            endingOffsetY = 0
+        }
+
+        // Fotografije se naginju ka unutrašnjoj strani.
+        let startingTiltY: Double = startsOnRight ? -9.0 : 9.0
+        let endingTiltY: Double = startsOnRight ? -4.0 : 4.0
+
+        // Blaga rotacija daje efekat bačenih fotografija.
+        let startingRotationZ: Double = startsOnRight ? 2.4 : -2.4
+        let endingRotationZ: Double = startsOnRight ? 1.0 : -1.0
+
+        var resetTransaction = Transaction()
+        resetTransaction.animation = nil
+
+        withTransaction(resetTransaction) {
+            revealScale = 1.25
+            revealBlur = 30
+            revealOffsetX = sideOffset
+            revealOffsetY = startingOffsetY
+            revealTiltY = startingTiltY
+            revealRotationZ = startingRotationZ
+        }
+
+        // Blur nestaje glatko.
+        withAnimation(.easeOut(duration: 1.80)) {
+            revealBlur = 0
+        }
+
+        // Neprekidno udaljavanje, vertikalno kretanje i blag tilt.
+        // Kreće malo brže, a zatim veoma glatko usporava.
+        // Duže trajanje sprečava da fotografija vizuelno stane
+        // pre nego što sledeća fotografija preuzme kadar.
+        let driftingAnimation = Animation.timingCurve(
+            0.14,
+            0.76,
+            0.30,
+            0.97,
+            duration: 17.0
+        )
+
+        withAnimation(driftingAnimation) {
+            revealScale = 0.96
+            revealOffsetX = sideOffset
+            revealOffsetY = endingOffsetY
+            revealTiltY = endingTiltY
+            revealRotationZ = endingRotationZ
+        }
+    }
+}
+
 struct CenterPreviewPanel: View {
     let activePreviewImage: NSImage?
     let previousPreviewImage: NSImage?
@@ -12053,6 +12686,13 @@ struct CenterPreviewPanel: View {
                                     cornerRadius: 28
                                 )
                             )
+                        } else if visualTheme == .imagination {
+                            ImaginationCardPage(
+                        activeImage: activePreviewImage,
+                        activePhotoIndex: activePhotoIndex,
+                        transitionProgress: transitionProgress
+                    )
+                            .clipShape(RoundedRectangle(cornerRadius: 28))
                         } else {
                             if transitionStyle == .fade, let previousPreviewImage {
                                 Image(nsImage: previousPreviewImage)

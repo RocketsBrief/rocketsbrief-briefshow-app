@@ -780,6 +780,26 @@ struct ContentView: View {
         )
     }
 
+    private var imaginationPreviewSceneCount: Int {
+        let photoCount = selectedPhotoURLs.count
+
+        guard photoCount > 0 else {
+            return 0
+        }
+
+        // Imagination redosled:
+        // single troši 1 fotografiju,
+        // twin troši naredne 2 fotografije.
+        //
+        // Svake 3 fotografije zato čine 2 scene:
+        // single + twin.
+        let completeGroups = photoCount / 3
+        let remainingPhotos = photoCount % 3
+
+        return completeGroups * 2
+            + remainingPhotos
+    }
+
     private var currentPhotoDuration: Double {
         if usesMagazineTheme {
             return magazinePageDuration
@@ -795,7 +815,24 @@ struct ContentView: View {
                 return max(1, secondsPerPhoto)
             }
 
-            return max(0.5, audioPlayer.duration / Double(selectedPhotoURLs.count))
+            if visualTheme == .imagination {
+                return max(
+                    0.5,
+                    audioPlayer.duration
+                        / Double(
+                            max(
+                                1,
+                                imaginationPreviewSceneCount
+                            )
+                        )
+                )
+            }
+
+            return max(
+                0.5,
+                audioPlayer.duration
+                    / Double(selectedPhotoURLs.count)
+            )
         case .customSpeed:
             return max(1, secondsPerPhoto)
         }
@@ -840,7 +877,18 @@ struct ContentView: View {
             return max(0, audioPlayer.duration)
         }
 
-        return currentPhotoDuration * Double(selectedPhotoURLs.count)
+        if visualTheme == .imagination {
+            return currentPhotoDuration
+                * Double(
+                    max(
+                        1,
+                        imaginationPreviewSceneCount
+                    )
+                )
+        }
+
+        return currentPhotoDuration
+            * Double(selectedPhotoURLs.count)
     }
 
     private var isOrigamiOnFinalSettledPage: Bool {
@@ -1465,21 +1513,33 @@ struct ContentView: View {
             magazineRevealElapsedSeconds = 0
         }
 
+        let imaginationConsumedPhotoCount: Int =
+            visualTheme == .imagination
+            && activePhotoIndex % 3 == 1
+            && activePhotoIndex + 1
+                < previewImages.count
+            ? 2
+            : 1
+
         let nextIndex =
             activePhotoIndex
             + (
                 usesMagazineTheme
                 ? currentMagazinePageSlotCount
-                : 1
+                : imaginationConsumedPhotoCount
             )
 
         if nextIndex >= selectedPhotoURLs.count {
             if shouldLoopPreview {
-                previewTotalElapsedSeconds = 0
-                audioPlayer?.volume = 0
-                audioPlayer?.currentTime = 0
-                audioPlayer?.play()
-                moveToPhoto(at: 0)
+                if visualTheme == .imagination {
+                    startPreviewFromBeginning()
+                } else {
+                    previewTotalElapsedSeconds = 0
+                    audioPlayer?.volume = 0
+                    audioPlayer?.currentTime = 0
+                    audioPlayer?.play()
+                    moveToPhoto(at: 0)
+                }
             } else {
                 isPreviewPlaying = false
 
@@ -1499,6 +1559,13 @@ struct ContentView: View {
                                 * 5
                             )
                     )
+                } else if visualTheme == .imagination {
+                    // Imagination twin scena je već prikazala
+                    // i aktivnu i sledeću fotografiju.
+                    // Ne prebacuj ponovo na poslednju fotografiju.
+                    transitionProgress = 1
+                    previousPhotoIndex = nil
+                    isImaginationPageTransitionAnimating = false
                 } else {
                     moveToPhoto(
                         at:
@@ -1678,16 +1745,19 @@ struct ContentView: View {
 
         isImaginationPageTransitionAnimating = true
 
-        // Koristi postojeću Fade Duration vrednost,
-        // ali garantuje dovoljno vremena da se vidi
-        // smooth 0 -> 1 -> 0 black overlay.
-        let duration = min(
-            max(fadeDuration, 0.80),
+        let totalDuration = min(
+            max(fadeDuration, 0.36),
             max(
-                0.80,
+                0.36,
                 currentPhotoDuration * 0.45
             )
         )
+
+        let closingDuration =
+            totalDuration * 0.48
+
+        let openingDuration =
+            totalDuration * 0.52
 
         var setupTransaction = Transaction()
         setupTransaction.animation = nil
@@ -1697,97 +1767,75 @@ struct ContentView: View {
             transitionProgress = 0
         }
 
-        Task { @MainActor in
-            let startedAt =
-                Date.timeIntervalSinceReferenceDate
+        // Prva polovina:
+        // samo glatko zatvaranje crnog overlaya.
+        withAnimation(
+            .easeInOut(
+                duration: closingDuration
+            )
+        ) {
+            transitionProgress = 0.5
+        }
 
-            var didChangePhoto = false
+        DispatchQueue.main.asyncAfter(
+            deadline:
+                .now()
+                + closingDuration
+        ) {
+            var swapTransaction = Transaction()
+            swapTransaction.animation = nil
 
-            while true {
-                guard isPreviewPlaying,
-                      isImaginationPageTransitionAnimating
-                else {
-                    var cancelledTransaction = Transaction()
-                    cancelledTransaction.animation = nil
+            // Fotografija se menja tek kada je kadar
+            // potpuno prekriven crnim overlayem.
+            withTransaction(swapTransaction) {
+                transitionProgress = 0.5
+                activePhotoIndex = newIndex
+            }
 
-                    withTransaction(cancelledTransaction) {
+            // Daj SwiftUI-ju jedan render frame da pripremi:
+            // - novu fotografiju
+            // - card size
+            // - blur slojeve
+            // - dust
+            // - novu reveal animaciju
+            //
+            // Tek nakon toga otvaramo kadar.
+            DispatchQueue.main.asyncAfter(
+                deadline:
+                    .now()
+                    + (1.0 / 30.0)
+            ) {
+                withAnimation(
+                    .easeInOut(
+                        duration:
+                            openingDuration
+                    )
+                ) {
+                    transitionProgress = 1
+                }
+
+                DispatchQueue.main.asyncAfter(
+                    deadline:
+                        .now()
+                        + openingDuration
+                        + 0.02
+                ) {
+                    var completionTransaction =
+                        Transaction()
+
+                    completionTransaction.animation =
+                        nil
+
+                    withTransaction(
+                        completionTransaction
+                    ) {
                         transitionProgress = 1
-                        isImaginationPageTransitionAnimating = false
+                        previousPhotoIndex = nil
+
+                        isImaginationPageTransitionAnimating =
+                            false
                     }
-
-                    return
                 }
-
-                let elapsed =
-                    Date.timeIntervalSinceReferenceDate
-                    - startedAt
-
-                let linearProgress = min(
-                    1,
-                    max(
-                        0,
-                        elapsed / duration
-                    )
-                )
-
-                // Smoothstep easing bez implicitnog SwiftUI
-                // restarta postojeće motion animacije.
-                let easedProgress =
-                    linearProgress
-                    * linearProgress
-                    * (
-                        3
-                        - 2 * linearProgress
-                    )
-
-                // Fotografija se menja samo kada je
-                // black overlay potpuno zatvorio kadar.
-                if !didChangePhoto,
-                   linearProgress >= 0.50 {
-
-                    var midpointTransaction = Transaction()
-                    midpointTransaction.animation = nil
-
-                    withTransaction(midpointTransaction) {
-                        activePhotoIndex = newIndex
-                    }
-
-                    didChangePhoto = true
-                }
-
-                var frameTransaction = Transaction()
-                frameTransaction.animation = nil
-
-                withTransaction(frameTransaction) {
-                    transitionProgress = easedProgress
-                }
-
-                if linearProgress >= 1 {
-                    break
-                }
-
-                try? await Task.sleep(
-                    nanoseconds: 16_666_667
-                )
-            }
-
-            // Sigurnosna zamena ako jedan frame preskoči midpoint.
-            if !didChangePhoto {
-                var photoTransaction = Transaction()
-                photoTransaction.animation = nil
-
-                withTransaction(photoTransaction) {
-                    activePhotoIndex = newIndex
-                }
-            }
-
-            var completionTransaction = Transaction()
-            completionTransaction.animation = nil
-
-            withTransaction(completionTransaction) {
-                transitionProgress = 1
-                previousPhotoIndex = nil
-                isImaginationPageTransitionAnimating = false
             }
         }
     }
@@ -9814,11 +9862,11 @@ struct FullScreenPreviewSheet: View {
                 ImaginationCardPage(
                     activeImage: activePreviewImage,
                     secondaryImage:
-                        previewImages.count > 1
+                        previewImages.indices.contains(
+                            activePhotoIndex + 1
+                        )
                         ? previewImages[
-                            (
-                                activePhotoIndex + 1
-                            ) % previewImages.count
+                            activePhotoIndex + 1
                         ]
                         : nil,
                     activePhotoIndex: activePhotoIndex,
@@ -9827,6 +9875,7 @@ struct FullScreenPreviewSheet: View {
                     playbackRestartToken:
                         imaginationPlaybackRestartToken
                 )
+                .id(activePhotoIndex)
                 .frame(width: size.width, height: size.height)
                 .allowsHitTesting(false)
             } else {
@@ -12548,6 +12597,365 @@ private struct ImaginationDustOverlay: View {
 
 
 
+private struct ImaginationLensLightOverlay: View {
+    let sceneToken: Int
+
+    @State private var cycleStartedAt = Date()
+
+    var body: some View {
+        GeometryReader { proxy in
+            TimelineView(
+                .animation(
+                    minimumInterval: 1.0 / 30.0,
+                    paused: false
+                )
+            ) { timeline in
+                let elapsed = max(
+                    0,
+                    timeline.date
+                        .timeIntervalSince(cycleStartedAt)
+                )
+
+                // Glavna Imagination fotografija počinje
+                // snažno da usporava oko 1.5 sekundi.
+                //
+                // Flare tada počinje brzo da nestaje
+                // i potpuno izlazi iz scene.
+                // Flare movement je 40% sporiji.
+                let flareDuration = 6.72
+
+                let rawProgress = min(
+                    1,
+                    elapsed / flareDuration
+                )
+
+                let movementProgress =
+                    rawProgress
+                    * rawProgress
+                    * (
+                        3
+                        - 2 * rawProgress
+                    )
+
+                let fadeIn = min(
+                    1,
+                    elapsed / 0.22
+                )
+
+                // Flare više ne nestaje kada fotografija
+                // uspori. Ostaje vidljiv dok njegova
+                // putanja fizički ne izađe iz kadra.
+                let visibility =
+                    fadeIn
+
+                let width = proxy.size.width
+                let height = proxy.size.height
+
+                let variant =
+                    abs(sceneToken) % 4
+
+                let startX: CGFloat
+                let endX: CGFloat
+                let flareTargetX: CGFloat
+                let flareTargetY: CGFloat
+
+                switch variant {
+                case 0:
+                    // Gore desno, zatim potpuno van leve ivice.
+                    startX = width * 1.08
+                    endX = -(width * 0.58)
+                    flareTargetX = -(width * 0.34)
+                    flareTargetY = height * 0.72
+
+                case 1:
+                    // Gore levo, zatim potpuno van desne ivice.
+                    startX = -(width * 0.08)
+                    endX = width * 1.58
+                    flareTargetX = width * 1.34
+                    flareTargetY = height * 0.74
+
+                case 2:
+                    // Desna strana prolazi kroz kadar
+                    // i izlazi duboko van leve ivice.
+                    startX = width * 0.96
+                    endX = -(width * 0.50)
+                    flareTargetX = -(width * 0.30)
+                    flareTargetY = height * 0.82
+
+                default:
+                    // Leva strana prolazi kroz kadar
+                    // i izlazi duboko van desne ivice.
+                    startX = width * 0.04
+                    endX = width * 1.52
+                    flareTargetX = width * 1.30
+                    flareTargetY = height * 0.78
+                }
+
+                let sourceX =
+                    interpolate(
+                        from: startX,
+                        to: endX,
+                        progress:
+                            CGFloat(movementProgress)
+                    )
+
+                // Svetlo je iznad gornje ivice,
+                // kao sunce koje udara u objektiv.
+                let sourcePoint = CGPoint(
+                    x: sourceX,
+                    y: -(height * 0.045)
+                )
+
+                let targetPoint = CGPoint(
+                    x: flareTargetX,
+                    y: flareTargetY
+                )
+
+                let pulseA =
+                    0.5
+                    + 0.5
+                    * sin(
+                        elapsed * 1.15
+                        + Double(variant) * 0.63
+                    )
+
+                let pulseB =
+                    0.5
+                    + 0.5
+                    * sin(
+                        elapsed * 0.92
+                        + 1.35
+                        + Double(variant) * 0.31
+                    )
+
+                let pulseC =
+                    0.5
+                    + 0.5
+                    * sin(
+                        elapsed * 1.06
+                        + 2.10
+                        + Double(variant) * 0.22
+                    )
+
+                return AnyView(
+                    ZStack {
+                        // -----------------------------------------
+                        // GLAVNI VELIKI KRUŽNI FLARE
+                        // -----------------------------------------
+
+                        roundFlare(
+                            diameter:
+                                width
+                                * (
+                                    0.50
+                                    + 0.16 * pulseA
+                                ),
+                            opacity:
+                                0.54 * visibility,
+                            blur: 30
+                        )
+                        .position(
+                            pointOnLine(
+                                from: sourcePoint,
+                                to: targetPoint,
+                                progress: 0.26,
+                                xOffset:
+                                    width * 0.018,
+                                yOffset: 0
+                            )
+                        )
+
+                        // -----------------------------------------
+                        // SREDNJI KRUŽNI FLARE
+                        // -----------------------------------------
+
+                        roundFlare(
+                            diameter:
+                                width
+                                * (
+                                    0.28
+                                    + 0.10 * pulseB
+                                ),
+                            opacity:
+                                0.46 * visibility,
+                            blur: 19
+                        )
+                        .position(
+                            pointOnLine(
+                                from: sourcePoint,
+                                to: targetPoint,
+                                progress: 0.50,
+                                xOffset:
+                                    -(width * 0.025),
+                                yOffset:
+                                    height * 0.012
+                            )
+                        )
+
+                        // -----------------------------------------
+                        // TREĆI MANJI, ALI JASNIJI FLARE
+                        // -----------------------------------------
+
+                        roundFlare(
+                            diameter:
+                                width
+                                * (
+                                    0.15
+                                    + 0.065 * pulseC
+                                ),
+                            opacity:
+                                0.58 * visibility,
+                            blur: 11
+                        )
+                        .position(
+                            pointOnLine(
+                                from: sourcePoint,
+                                to: targetPoint,
+                                progress: 0.72,
+                                xOffset:
+                                    width * 0.018,
+                                yOffset:
+                                    -(height * 0.008)
+                            )
+                        )
+                    }
+                    .blendMode(.screen)
+                    .compositingGroup()
+                )
+            }
+            .frame(
+                width: proxy.size.width,
+                height: proxy.size.height
+            )
+            .clipped()
+            .allowsHitTesting(false)
+            .onAppear {
+                cycleStartedAt = Date()
+            }
+            .onChange(of: sceneToken) { _ in
+                // Svaki novi Imagination page dobija
+                // novi flare prolaz i novi variant.
+                cycleStartedAt = Date()
+            }
+        }
+    }
+
+    private func interpolate(
+        from start: CGFloat,
+        to end: CGFloat,
+        progress: CGFloat
+    ) -> CGFloat {
+        start + (end - start) * progress
+    }
+
+    private func pointOnLine(
+        from source: CGPoint,
+        to target: CGPoint,
+        progress: CGFloat,
+        xOffset: CGFloat,
+        yOffset: CGFloat
+    ) -> CGPoint {
+        CGPoint(
+            x:
+                source.x
+                + (
+                    target.x - source.x
+                ) * progress
+                + xOffset,
+            y:
+                source.y
+                + (
+                    target.y - source.y
+                ) * progress
+                + yOffset
+        )
+    }
+
+    private func roundFlare(
+        diameter: CGFloat,
+        opacity: Double,
+        blur: CGFloat
+    ) -> some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    stops: [
+                        .init(
+                            color:
+                                Color.white.opacity(
+                                    0.10
+                                ),
+                            location: 0
+                        ),
+                        .init(
+                            color:
+                                Color(
+                                    red: 1.0,
+                                    green: 0.78,
+                                    blue: 0.46
+                                )
+                                .opacity(0.24),
+                            location: 0.40
+                        ),
+                        .init(
+                            color:
+                                Color(
+                                    red: 0.68,
+                                    green: 0.82,
+                                    blue: 1.0
+                                )
+                                .opacity(0.11),
+                            location: 0.68
+                        ),
+                        .init(
+                            color:
+                                Color.white.opacity(
+                                    0.07
+                                ),
+                            location: 0.86
+                        ),
+                        .init(
+                            color: Color.clear,
+                            location: 1
+                        )
+                    ],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius:
+                        diameter * 0.50
+                )
+            )
+            .overlay(
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.15),
+                                Color(
+                                    red: 1.0,
+                                    green: 0.72,
+                                    blue: 0.42
+                                )
+                                .opacity(0.11),
+                                Color.white.opacity(0.04)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.8
+                    )
+                    .blur(radius: 3)
+            )
+            .frame(
+                width: diameter,
+                height: diameter
+            )
+            .blur(radius: blur)
+            .opacity(opacity)
+    }
+}
+
+
 struct ImaginationCardPage: View {
     let activeImage: NSImage?
     let secondaryImage: NSImage?
@@ -12598,14 +13006,47 @@ struct ImaginationCardPage: View {
     @State private var hasStartedCurrentPhoto: Bool = false
     @State private var lastPlaybackRestartToken: Int = -1
 
-    private var usesTwoPhotoScene: Bool {
+    private var isAlternatingTwinScene: Bool {
         guard secondaryImage != nil else {
             return false
         }
 
-        // Two-photo scena je trenutno prva Imagination
-        // animacija radi neposredne vizuelne provere.
-        return activePhotoIndex == 0
+        // Redosled početnih indeksa:
+        // 0 = single
+        // 1 = twin, koristi 1 i 2
+        // 3 = single
+        // 4 = twin, koristi 4 i 5
+        // 6 = single
+        // 7 = twin, koristi 7 i 8
+        return activePhotoIndex % 3 == 1
+    }
+
+    private var twinSceneVariant: Int {
+        guard isAlternatingTwinScene else {
+            return 0
+        }
+
+        // Tri postojeća twin izgleda kruže redom.
+        return (activePhotoIndex / 3) % 3
+    }
+
+    private var usesSecondTwinScene: Bool {
+        isAlternatingTwinScene
+            && twinSceneVariant == 1
+    }
+
+    private var usesThirdTwinLeftScene: Bool {
+        isAlternatingTwinScene
+            && twinSceneVariant == 2
+    }
+
+    private var usesAngledTwinScene: Bool {
+        usesSecondTwinScene
+            || usesThirdTwinLeftScene
+    }
+
+    private var usesTwoPhotoScene: Bool {
+        isAlternatingTwinScene
     }
 
     private var blackOverlayOpacity: Double {
@@ -12763,9 +13204,19 @@ struct ImaginationCardPage: View {
                                 .scaledToFill()
                                 .frame(
                                     width:
-                                        secondaryCardSize.width,
+                                        secondaryCardSize.width
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        ),
                                     height:
                                         secondaryCardSize.height
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        )
                                 )
                                 .clipped()
                                 .blur(radius: 16)
@@ -12776,8 +13227,18 @@ struct ImaginationCardPage: View {
                                 .opacity(0.20)
                         }
                         .frame(
-                            width: secondaryCardSize.width,
+                            width: secondaryCardSize.width
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        ),
                             height: secondaryCardSize.height
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        )
                         )
                         .clipShape(
                             RoundedRectangle(
@@ -12828,9 +13289,19 @@ struct ImaginationCardPage: View {
                                 .scaledToFill()
                                 .frame(
                                     width:
-                                        secondaryCardSize.width,
+                                        secondaryCardSize.width
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        ),
                                     height:
                                         secondaryCardSize.height
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        )
                                 )
                                 .clipped()
                                 .saturation(
@@ -12847,8 +13318,20 @@ struct ImaginationCardPage: View {
                                 )
                         }
                         .frame(
-                            width: secondaryCardSize.width,
-                            height: secondaryCardSize.height
+                            width:
+                                secondaryCardSize.width
+                                * (
+                                    usesSecondTwinScene
+                                    ? 1.55
+                                    : 1.0
+                                ),
+                            height:
+                                secondaryCardSize.height
+                                * (
+                                    usesSecondTwinScene
+                                    ? 1.55
+                                    : 1.0
+                                )
                         )
                         .clipShape(
                             RoundedRectangle(
@@ -12870,7 +13353,15 @@ struct ImaginationCardPage: View {
                         .rotationEffect(
                             .degrees(secondaryRotationZ)
                         )
-                        .scaleEffect(secondaryScale)
+                        .scaleEffect(
+                            secondaryScale
+                            * (
+                                secondaryCardSize.height
+                                    > secondaryCardSize.width
+                                ? 1.50
+                                : 1.0
+                            )
+                        )
                         .offset(
                             x: secondaryOffsetX,
                             y: secondaryOffsetY
@@ -12887,8 +13378,20 @@ struct ImaginationCardPage: View {
                             .resizable()
                             .scaledToFill()
                             .frame(
-                                width: cardSize.width,
-                                height: cardSize.height
+                                width:
+                                    cardSize.width
+                                    * (
+                                        usesSecondTwinScene
+                                        ? 0.70
+                                        : 1.0
+                                    ),
+                                height:
+                                    cardSize.height
+                                    * (
+                                        usesSecondTwinScene
+                                        ? 0.70
+                                        : 1.0
+                                    )
                             )
                             .clipped()
                             .saturation(revealSaturation)
@@ -12897,8 +13400,20 @@ struct ImaginationCardPage: View {
                             .blur(radius: revealBlur)
                     }
                     .frame(
-                        width: cardSize.width,
-                        height: cardSize.height
+                        width:
+                            cardSize.width
+                            * (
+                                usesSecondTwinScene
+                                ? 0.70
+                                : 1.0
+                            ),
+                        height:
+                            cardSize.height
+                            * (
+                                usesSecondTwinScene
+                                ? 0.70
+                                : 1.0
+                            )
                     )
                     .clipShape(
                         RoundedRectangle(
@@ -12920,13 +13435,35 @@ struct ImaginationCardPage: View {
                     .rotationEffect(
                         .degrees(revealRotationZ)
                     )
-                    .scaleEffect(revealScale)
+                    .scaleEffect(
+                        revealScale
+                        * (
+                            cardSize.height
+                                > cardSize.width
+                            ? (
+                                usesTwoPhotoScene
+                                ? 1.50
+                                : 1.10
+                            )
+                            : 1.0
+                        )
+                    )
                     .offset(
                         x: revealOffsetX,
                         y: revealOffsetY
                     )
                     .zIndex(10)
                 }
+
+                ImaginationLensLightOverlay(
+                    sceneToken: activePhotoIndex
+                )
+                .frame(
+                    width: proxy.size.width,
+                    height: proxy.size.height
+                )
+                .allowsHitTesting(false)
+                .zIndex(18)
 
                 ImaginationDustOverlay(
                     burstToken: activePhotoIndex
@@ -13070,27 +13607,47 @@ struct ImaginationCardPage: View {
             motionSlot == 3
 
         let startingOffsetX: CGFloat =
-            usesThrownCornerMotion
+            usesTwoPhotoScene
             ? (
+                // Obe twin scene dolaze sa svojih
+                // suprotnih spoljnih strana.
                 startsOnRight
-                ? sceneSize.width * 0.52
-                : -(sceneSize.width * 0.52)
+                ? sceneSize.width
+                    * (
+                        usesSecondTwinScene
+                        ? 0.66
+                        : 0.54
+                    )
+                : -(sceneSize.width
+                    * (
+                        usesSecondTwinScene
+                        ? 0.66
+                        : 0.54
+                    ))
             )
             : (
-                usesDiagonalThrownMotion
+                usesThrownCornerMotion
                 ? (
                     startsOnRight
-                    ? -(sceneSize.width * 0.34)
-                    : sceneSize.width * 0.34
+                    ? sceneSize.width * 0.52
+                    : -(sceneSize.width * 0.52)
                 )
                 : (
-                    usesTopCornerMotion
+                    usesDiagonalThrownMotion
                     ? (
                         startsOnRight
-                        ? sceneSize.width * 0.38
-                        : -(sceneSize.width * 0.38)
+                        ? -(sceneSize.width * 0.34)
+                        : sceneSize.width * 0.34
                     )
-                    : sideOffset
+                    : (
+                        usesTopCornerMotion
+                        ? (
+                            startsOnRight
+                            ? sceneSize.width * 0.38
+                            : -(sceneSize.width * 0.38)
+                        )
+                        : sideOffset
+                    )
                 )
             )
 
@@ -13098,15 +13655,34 @@ struct ImaginationCardPage: View {
             usesTwoPhotoScene
             ? (
                 startsOnRight
-                ? sceneSize.width * 0.19
-                : -(sceneSize.width * 0.19)
+                ? sceneSize.width
+                    * (
+                        usesSecondTwinScene
+                        ? 0.25
+                        : 0.19
+                    )
+                : -(sceneSize.width
+                    * (
+                        usesSecondTwinScene
+                        ? 0.25
+                        : 0.19
+                    ))
             )
             : sideOffset
 
         let startingOffsetY: CGFloat
         let endingOffsetY: CGFloat
 
-        if usesThrownCornerMotion {
+        if usesSecondTwinScene {
+            // Drugi twin stil:
+            // glavna desna fotografija ostaje malo niže
+            // kako se kartice ne bi sudarale.
+            startingOffsetY =
+                sceneSize.height * 0.07
+
+            endingOffsetY =
+                sceneSize.height * 0.035
+        } else if usesThrownCornerMotion {
             // Snažno bacanje iz gornjeg spoljnog ugla.
             startingOffsetY =
                 -(sceneSize.height * 0.36)
@@ -13149,8 +13725,11 @@ struct ImaginationCardPage: View {
         }
 
         let startingTiltX: Double =
-            usesThrownCornerMotion
-            ? -10.0
+            usesSecondTwinScene
+            ? -5.0
+            : (
+                usesThrownCornerMotion
+                ? -10.0
             : (
                 usesDiagonalThrownMotion
                 ? -6.5
@@ -13165,9 +13744,14 @@ struct ImaginationCardPage: View {
                 )
             )
 
+        )
+
         let endingTiltX: Double =
-            usesThrownCornerMotion
-            ? 2.5
+            usesSecondTwinScene
+            ? 0.5
+            : (
+                usesThrownCornerMotion
+                ? 2.5
             : (
                 usesDiagonalThrownMotion
                 ? 4.0
@@ -13182,9 +13766,14 @@ struct ImaginationCardPage: View {
                 )
             )
 
+        )
+
         let startingTiltY: Double =
-            usesThrownCornerMotion
-            ? (
+            usesSecondTwinScene
+            ? -9.0
+            : (
+                usesThrownCornerMotion
+                ? (
                 startsOnRight
                 ? -18.0
                 : 18.0
@@ -13215,9 +13804,14 @@ struct ImaginationCardPage: View {
                 )
             )
 
+        )
+
         let endingTiltY: Double =
-            usesThrownCornerMotion
-            ? (
+            usesSecondTwinScene
+            ? -1.2
+            : (
+                usesThrownCornerMotion
+                ? (
                 startsOnRight
                 ? -2.5
                 : 2.5
@@ -13248,9 +13842,14 @@ struct ImaginationCardPage: View {
                 )
             )
 
+        )
+
         let startingRotationZ: Double =
-            usesThrownCornerMotion
-            ? (
+            usesSecondTwinScene
+            ? 8.0
+            : (
+                usesThrownCornerMotion
+                ? (
                 startsOnRight
                 ? 9.0
                 : -9.0
@@ -13281,9 +13880,14 @@ struct ImaginationCardPage: View {
                 )
             )
 
+        )
+
         let endingRotationZ: Double =
-            usesThrownCornerMotion
-            ? (
+            usesSecondTwinScene
+            ? 0.8
+            : (
+                usesThrownCornerMotion
+                ? (
                 startsOnRight
                 ? 0.6
                 : -0.6
@@ -13313,6 +13917,8 @@ struct ImaginationCardPage: View {
                     )
                 )
             )
+
+        )
 
         // Blurry fotografija dobija stvarno suprotan X znak.
         let distantStartingX: CGFloat =
@@ -13367,50 +13973,90 @@ struct ImaginationCardPage: View {
             !startsOnRight
 
         let secondaryStartingX: CGFloat =
-            secondaryStartsOnRight
-            ? sceneSize.width * 0.54
-            : -(sceneSize.width * 0.54)
+            usesSecondTwinScene
+            ? -(sceneSize.width * 0.62)
+            : (
+                secondaryStartsOnRight
+                ? sceneSize.width * 0.54
+                : -(sceneSize.width * 0.54)
+            )
 
         let secondaryEndingX: CGFloat =
-            secondaryStartsOnRight
-            ? sceneSize.width * 0.255
-            : -(sceneSize.width * 0.255)
+            usesSecondTwinScene
+            ? -(sceneSize.width * 0.25)
+            : (
+                secondaryStartsOnRight
+                ? sceneSize.width * 0.255
+                : -(sceneSize.width * 0.255)
+            )
 
         let secondaryStartingY: CGFloat =
-            startsOnRight
-            ? sceneSize.height * 0.20
-            : -(sceneSize.height * 0.18)
+            usesSecondTwinScene
+            ? -(sceneSize.height * 0.16)
+            : (
+                startsOnRight
+                ? sceneSize.height * 0.20
+                : -(sceneSize.height * 0.18)
+            )
 
         let secondaryEndingY: CGFloat =
-            startsOnRight
-            ? sceneSize.height * 0.13
-            : -(sceneSize.height * 0.12)
+            usesSecondTwinScene
+            ? -(sceneSize.height * 0.055)
+            : (
+                startsOnRight
+                ? sceneSize.height * 0.13
+                : -(sceneSize.height * 0.12)
+            )
 
         let secondaryStartingTiltX: Double =
-            startsOnRight ? 7.0 : -7.0
+            usesSecondTwinScene
+            ? 19.0
+            : (
+                startsOnRight ? 7.0 : -7.0
+            )
 
         let secondaryEndingTiltX: Double =
-            startsOnRight ? 2.5 : -2.5
+            usesSecondTwinScene
+            ? 5.0
+            : (
+                startsOnRight ? 2.5 : -2.5
+            )
 
         let secondaryStartingTiltY: Double =
-            secondaryStartsOnRight
-            ? -15.0
-            : 15.0
+            usesSecondTwinScene
+            ? 36.0
+            : (
+                secondaryStartsOnRight
+                ? -15.0
+                : 15.0
+            )
 
         let secondaryEndingTiltY: Double =
-            secondaryStartsOnRight
-            ? -4.5
-            : 4.5
+            usesSecondTwinScene
+            ? 12.0
+            : (
+                secondaryStartsOnRight
+                ? -4.5
+                : 4.5
+            )
 
         let secondaryStartingRotationZ: Double =
-            secondaryStartsOnRight
-            ? 10.0
-            : -10.0
+            usesSecondTwinScene
+            ? -40.0
+            : (
+                secondaryStartsOnRight
+                ? 10.0
+                : -10.0
+            )
 
         let secondaryEndingRotationZ: Double =
-            secondaryStartsOnRight
-            ? 4.8
-            : -4.8
+            usesSecondTwinScene
+            ? -4.0
+            : (
+                secondaryStartsOnRight
+                ? 4.8
+                : -4.8
+            )
 
         // Njena blurry kopija je sa suprotnim X i Y znakom.
         let secondaryDistantStartingX: CGFloat =
@@ -13446,9 +14092,13 @@ struct ImaginationCardPage: View {
             sideIsRight = startsOnRight
 
             revealScale =
-                usesTwoPhotoScene
-                ? 1.08
-                : 1.50
+                usesSecondTwinScene
+                ? 1.45
+                : (
+                    usesTwoPhotoScene
+                    ? 1.08
+                    : 1.50
+                )
 
             revealBlur = 30
             revealSaturation = 0
@@ -13460,7 +14110,11 @@ struct ImaginationCardPage: View {
             revealTiltY = startingTiltY
             revealRotationZ = startingRotationZ
 
-            secondaryScale = 1.02
+            secondaryScale =
+                usesSecondTwinScene
+                ? 0.62
+                : 1.02
+
             secondaryBlur = 30
             secondarySaturation = 0
             secondaryBrightness = 0.12
@@ -13489,8 +14143,9 @@ struct ImaginationCardPage: View {
             distantRotationZ = distantStartingRotationZ
         }
 
-        // Blur završava prvi.
-        withAnimation(.easeOut(duration: 1.08)) {
+        // Blur završava prvi, malo sporije kako bi
+        // početni cinematic reveal trajao nešto duže.
+        withAnimation(.easeOut(duration: 1.35)) {
             revealBlur = 0
 
             if usesTwoPhotoScene {
@@ -13499,14 +14154,14 @@ struct ImaginationCardPage: View {
         }
 
         // Fotografija ostaje black and white tokom
-        // kompletnog blur fade-outa od 1.08 sekundi.
+        // kompletnog blur fade-outa od 1.35 sekundi.
         //
         // Nakon toga automatski prelazi ka potpuno
         // originalnoj fotografiji tokom 1.5 sekundi.
         let colorRevealAnimation =
             Animation
                 .easeInOut(duration: 1.5)
-                .delay(1.08)
+                .delay(1.35)
 
         withAnimation(colorRevealAnimation) {
             revealSaturation = 1
@@ -13535,9 +14190,13 @@ struct ImaginationCardPage: View {
 
         withAnimation(driftingAnimation) {
             revealScale =
-                usesTwoPhotoScene
-                ? 0.70
-                : 0.96
+                usesSecondTwinScene
+                ? 1.05
+                : (
+                    usesTwoPhotoScene
+                    ? 0.70
+                    : 0.96
+                )
 
             revealOffsetX = endingOffsetX
             revealOffsetY = endingOffsetY
@@ -13546,7 +14205,10 @@ struct ImaginationCardPage: View {
             revealRotationZ = endingRotationZ
 
             if usesTwoPhotoScene {
-                secondaryScale = 0.68
+                secondaryScale =
+                    usesSecondTwinScene
+                    ? 0.42
+                    : 0.68
                 secondaryOffsetX = secondaryEndingX
                 secondaryOffsetY = secondaryEndingY
                 secondaryTiltX = secondaryEndingTiltX
@@ -13719,11 +14381,11 @@ struct CenterPreviewPanel: View {
                             ImaginationCardPage(
                                 activeImage: activePreviewImage,
                                 secondaryImage:
-                                    previewImages.count > 1
+                                    previewImages.indices.contains(
+                                        activePhotoIndex + 1
+                                    )
                                     ? previewImages[
-                                        (
-                                            activePhotoIndex + 1
-                                        ) % previewImages.count
+                                        activePhotoIndex + 1
                                     ]
                                     : nil,
                                 activePhotoIndex: activePhotoIndex,
@@ -13734,6 +14396,7 @@ struct CenterPreviewPanel: View {
                                 playbackRestartToken:
                                     imaginationPlaybackRestartToken
                             )
+                            .id(activePhotoIndex)
                             .clipShape(
                                 RoundedRectangle(
                                     cornerRadius: 28

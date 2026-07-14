@@ -116,6 +116,14 @@ struct ContentView: View {
     // Motion fotografije i dust ostaju aktivni dok traje overlay.
     @State private var isImaginationPageTransitionAnimating: Bool = false
 
+    // Uvodni/završni crni overlay (3s na početku, 4s na kraju),
+    // nezavisan od overlaya koji se koristi između stranica.
+    // Reveal animacija kreće normalno odmah, ispod ovog overlaya.
+    @State private var imaginationIntroOutroOpacity: Double = 0
+
+    // Sprečava da se outro sekvenca pokrene više puta dok traje.
+    @State private var isImaginationOutroAnimating: Bool = false
+
     @State private var previewElapsedSeconds: Double = 0
     @State private var previewTotalElapsedSeconds: Double = 0
     @State private var isFullScreenPreviewPresented: Bool = false
@@ -184,6 +192,8 @@ struct ContentView: View {
                         isPreviewPlaying: isPreviewPlaying,
                         imaginationPlaybackRestartToken:
                             imaginationPlaybackRestartToken,
+                        imaginationIntroOutroOpacity:
+                            imaginationIntroOutroOpacity,
                         onAddPhotos: openPhotoPicker,
                         onAddMusic: { slotIndex in
                             openMusicPicker(for: slotIndex)
@@ -271,6 +281,8 @@ struct ContentView: View {
                     isPreviewPlaying: isPreviewPlaying,
                     imaginationPlaybackRestartToken:
                         imaginationPlaybackRestartToken,
+                    imaginationIntroOutroOpacity:
+                        imaginationIntroOutroOpacity,
                     onTogglePreview: togglePreview,
                     onStartFromBeginning: startPreviewFromBeginning,
                     onClose: {
@@ -1107,9 +1119,30 @@ struct ContentView: View {
             if usesMagazineTheme {
                 transitionProgress = 1
                 magazineRevealElapsedSeconds = 0
+            } else if visualTheme == .imagination,
+                      activePhotoIndex == 0,
+                      previewTotalElapsedSeconds == 0 {
+
+                beginImaginationIntroSequence()
             }
         } else {
             audioPlayer?.pause()
+        }
+    }
+
+    // Crni overlay glatko ide sa 1 na 0 tokom 3 sekunde na početku.
+    // Reveal animacija prve fotografije kreće normalno, odmah,
+    // ispod ovog overlaya (isto kao muzika).
+    private func beginImaginationIntroSequence() {
+        var setupTransaction = Transaction()
+        setupTransaction.animation = nil
+
+        withTransaction(setupTransaction) {
+            imaginationIntroOutroOpacity = 1
+        }
+
+        withAnimation(.easeInOut(duration: 3.0)) {
+            imaginationIntroOutroOpacity = 0
         }
     }
 
@@ -1540,6 +1573,39 @@ struct ContentView: View {
                     audioPlayer?.play()
                     moveToPhoto(at: 0)
                 }
+            } else if visualTheme == .imagination {
+                // Imagination twin scena je već prikazala
+                // i aktivnu i sledeću fotografiju.
+                // Ne prebacuj ponovo na poslednju fotografiju.
+                transitionProgress = 1
+                previousPhotoIndex = nil
+                isImaginationPageTransitionAnimating = false
+
+                if !isImaginationOutroAnimating {
+                    isImaginationOutroAnimating = true
+
+                    withAnimation(
+                        .easeInOut(duration: 4.0)
+                    ) {
+                        imaginationIntroOutroOpacity = 1
+                    }
+
+                    // Keep isPreviewPlaying (and thus the existing
+                    // per-page black overlay) true for the full 4s
+                    // outro fade so the drift/dust/flare animations
+                    // keep running underneath while it fades to black.
+                    DispatchQueue.main.asyncAfter(
+                        deadline: .now() + 4.0
+                    ) {
+                        isPreviewPlaying = false
+
+                        previewTotalElapsedSeconds =
+                            totalPreviewDuration
+
+                        audioPlayer?.pause()
+                        isImaginationOutroAnimating = false
+                    }
+                }
             } else {
                 isPreviewPlaying = false
 
@@ -1559,13 +1625,6 @@ struct ContentView: View {
                                 * 5
                             )
                     )
-                } else if visualTheme == .imagination {
-                    // Imagination twin scena je već prikazala
-                    // i aktivnu i sledeću fotografiju.
-                    // Ne prebacuj ponovo na poslednju fotografiju.
-                    transitionProgress = 1
-                    previousPhotoIndex = nil
-                    isImaginationPageTransitionAnimating = false
                 } else {
                     moveToPhoto(
                         at:
@@ -1606,6 +1665,7 @@ struct ContentView: View {
 
         if visualTheme == .imagination {
             imaginationPlaybackRestartToken += 1
+            isImaginationOutroAnimating = false
         }
 
         isPreviewPlaying = true
@@ -1640,6 +1700,10 @@ struct ContentView: View {
             }
         } else {
             transitionProgress = 1
+
+            if visualTheme == .imagination {
+                beginImaginationIntroSequence()
+            }
         }
     }
 
@@ -2074,6 +2138,8 @@ struct ContentView: View {
         previewElapsedSeconds = 0
         previewTotalElapsedSeconds = 0
         isImaginationPageTransitionAnimating = false
+        imaginationIntroOutroOpacity = 0
+        isImaginationOutroAnimating = false
         isPreviewPlaying = false
 
         audioPlayer?.pause()
@@ -2347,6 +2413,15 @@ struct ContentView: View {
                             selectedOrigamiSimultaneousSwapCount,
                         progressHandler:
                             reportRenderProgress
+                    )
+                } else if selectedVisualTheme == .imagination {
+                    try renderImaginationSlideshowVideo(
+                        photoURLs: photoURLs,
+                        outputURL: videoOnlyURL,
+                        resolutionName: resolution,
+                        pageDuration: durationPerPhoto,
+                        fadeDuration: selectedFadeDuration,
+                        progressHandler: reportRenderProgress
                     )
                 } else {
                     try renderSlideshowVideo(
@@ -8052,6 +8127,1555 @@ private func origamiExportRenderSize(
     }
 }
 
+// MARK: - Imagination export
+//
+// Imagination's live preview animates via SwiftUI @State + withAnimation,
+// driven by real wall-clock timers. There is no "render at time T" hook,
+// so exporting it requires a deterministic replica: every value that
+// used to be an animated @State var is instead computed as a pure
+// function of elapsed time (tau) using the same easing curves, and
+// snapshotted frame-by-frame with ImageRenderer, mirroring the approach
+// already used for Origami's SwiftUI export pipeline.
+
+private struct ImaginationExportScene {
+    let sceneIndex: Int
+    let image: NSImage
+    let secondaryImage: NSImage?
+}
+
+private func buildImaginationExportScenes(
+    photoURLs: [URL]
+) -> [ImaginationExportScene] {
+    let loadedImages = photoURLs.map { NSImage(contentsOf: $0) }
+
+    var scenes: [ImaginationExportScene] = []
+    var index = 0
+
+    while index < loadedImages.count {
+        guard let image = loadedImages[index] else {
+            index += 1
+            continue
+        }
+
+        let isTwinCandidate =
+            index % 3 == 1
+            && index + 1 < loadedImages.count
+
+        let secondaryImage: NSImage? =
+            isTwinCandidate
+            ? loadedImages[index + 1]
+            : nil
+
+        let isTwin =
+            isTwinCandidate
+            && secondaryImage != nil
+
+        scenes.append(
+            ImaginationExportScene(
+                sceneIndex: index,
+                image: image,
+                secondaryImage: isTwin ? secondaryImage : nil
+            )
+        )
+
+        index += isTwin ? 2 : 1
+    }
+
+    return scenes
+}
+
+// SwiftUI's timing curves are cubic Beziers. This solves the same
+// curve (via bisection on the x(t) cubic) so exported frames match
+// the live preview's easing instead of a plain linear ramp.
+private func imaginationExportCubicBezier(
+    _ x: Double,
+    _ x1: Double,
+    _ y1: Double,
+    _ x2: Double,
+    _ y2: Double
+) -> Double {
+    let targetX = min(1, max(0, x))
+
+    func sample(_ t: Double, _ first: Double, _ second: Double) -> Double {
+        let inverse = 1 - t
+        return 3 * inverse * inverse * t * first
+            + 3 * inverse * t * t * second
+            + t * t * t
+    }
+
+    var low = 0.0
+    var high = 1.0
+
+    for _ in 0..<20 {
+        let middle = (low + high) * 0.5
+
+        if sample(middle, x1, x2) < targetX {
+            low = middle
+        } else {
+            high = middle
+        }
+    }
+
+    return sample((low + high) * 0.5, y1, y2)
+}
+
+private func imaginationExportBlurProgress(_ tau: Double) -> Double {
+    let raw = min(1, max(0, tau / 1.35))
+    return imaginationExportCubicBezier(raw, 0, 0, 0.58, 1)
+}
+
+private func imaginationExportColorProgress(_ tau: Double) -> Double {
+    guard tau > 1.35 else {
+        return 0
+    }
+
+    let raw = min(1, (tau - 1.35) / 1.5)
+    return imaginationExportCubicBezier(raw, 0.42, 0, 0.58, 1)
+}
+
+private func imaginationExportDriftProgress(_ tau: Double) -> Double {
+    let raw = min(1, max(0, tau / 17.0))
+    return imaginationExportCubicBezier(raw, 0.04, 0.96, 0.13, 0.995)
+}
+
+private func imaginationExportDistantDriftProgress(_ tau: Double) -> Double {
+    let raw = min(1, max(0, tau / 24.2))
+    return imaginationExportCubicBezier(raw, 0.22, 0.62, 0.32, 1.0)
+}
+
+// Start/end targets for one scene's reveal animation. These mirror the
+// per-scene constants computed in the live preview's triggerReveal(),
+// with playbackRestartToken fixed at 0 (a fresh, non-restarted play).
+private struct ImaginationRevealTargets {
+    let revealStartScale: CGFloat
+    let revealEndScale: CGFloat
+    let revealStartOffsetX: CGFloat
+    let revealEndOffsetX: CGFloat
+    let revealStartOffsetY: CGFloat
+    let revealEndOffsetY: CGFloat
+    let revealStartTiltX: Double
+    let revealEndTiltX: Double
+    let revealStartTiltY: Double
+    let revealEndTiltY: Double
+    let revealStartRotationZ: Double
+    let revealEndRotationZ: Double
+
+    let secondaryStartScale: CGFloat
+    let secondaryEndScale: CGFloat
+    let secondaryStartOffsetX: CGFloat
+    let secondaryEndOffsetX: CGFloat
+    let secondaryStartOffsetY: CGFloat
+    let secondaryEndOffsetY: CGFloat
+    let secondaryStartTiltX: Double
+    let secondaryEndTiltX: Double
+    let secondaryStartTiltY: Double
+    let secondaryEndTiltY: Double
+    let secondaryStartRotationZ: Double
+    let secondaryEndRotationZ: Double
+
+    let distantStartScale: CGFloat
+    let distantEndScale: CGFloat
+    let distantStartOffsetX: CGFloat
+    let distantEndOffsetX: CGFloat
+    let distantStartOffsetY: CGFloat
+    let distantEndOffsetY: CGFloat
+    let distantStartTiltY: Double
+    let distantEndTiltY: Double
+    let distantStartRotationZ: Double
+    let distantEndRotationZ: Double
+
+    let secondaryDistantStartScale: CGFloat
+    let secondaryDistantEndScale: CGFloat
+    let secondaryDistantStartOffsetX: CGFloat
+    let secondaryDistantEndOffsetX: CGFloat
+    let secondaryDistantStartOffsetY: CGFloat
+    let secondaryDistantEndOffsetY: CGFloat
+    let secondaryDistantStartTiltY: Double
+    let secondaryDistantEndTiltY: Double
+    let secondaryDistantStartRotationZ: Double
+    let secondaryDistantEndRotationZ: Double
+}
+
+private func computeImaginationRevealTargets(
+    sceneIndex: Int,
+    hasSecondary: Bool,
+    sceneSize: CGSize
+) -> ImaginationRevealTargets {
+    let startsOnRight = sceneIndex.isMultiple(of: 2)
+    let sideOffset: CGFloat = startsOnRight ? 190 : -190
+
+    let motionSlot = (sceneIndex * 3) % 7
+    let movementStyle = motionSlot % 3
+
+    let usesThrownCornerMotion = motionSlot == 5
+    let usesDiagonalThrownMotion = motionSlot == 6
+    let usesTopCornerMotion = motionSlot == 4
+    let usesCrossTiltMotion = motionSlot == 3
+
+    let isAlternatingTwinScene = hasSecondary && sceneIndex % 3 == 1
+    let twinSceneVariant = isAlternatingTwinScene ? (sceneIndex / 3) % 3 : 0
+    let usesSecondTwinScene = isAlternatingTwinScene && twinSceneVariant == 1
+    let usesTwoPhotoScene = isAlternatingTwinScene
+
+    let startingOffsetX: CGFloat =
+        usesTwoPhotoScene
+        ? (
+            startsOnRight
+            ? sceneSize.width * (usesSecondTwinScene ? 0.66 : 0.54)
+            : -(sceneSize.width * (usesSecondTwinScene ? 0.66 : 0.54))
+        )
+        : (
+            usesThrownCornerMotion
+            ? (startsOnRight ? sceneSize.width * 0.52 : -(sceneSize.width * 0.52))
+            : (
+                usesDiagonalThrownMotion
+                ? (startsOnRight ? -(sceneSize.width * 0.34) : sceneSize.width * 0.34)
+                : (
+                    usesTopCornerMotion
+                    ? (startsOnRight ? sceneSize.width * 0.38 : -(sceneSize.width * 0.38))
+                    : sideOffset
+                )
+            )
+        )
+
+    let endingOffsetX: CGFloat =
+        usesTwoPhotoScene
+        ? (
+            startsOnRight
+            ? sceneSize.width * (usesSecondTwinScene ? 0.25 : 0.19)
+            : -(sceneSize.width * (usesSecondTwinScene ? 0.25 : 0.19))
+        )
+        : sideOffset
+
+    let startingOffsetY: CGFloat
+    let endingOffsetY: CGFloat
+
+    if usesSecondTwinScene {
+        startingOffsetY = sceneSize.height * 0.07
+        endingOffsetY = sceneSize.height * 0.035
+    } else if usesThrownCornerMotion {
+        startingOffsetY = -(sceneSize.height * 0.36)
+        endingOffsetY = 18
+    } else if usesDiagonalThrownMotion {
+        startingOffsetY = -(sceneSize.height * 0.28)
+        endingOffsetY = -26
+    } else if usesTopCornerMotion {
+        startingOffsetY = -(sceneSize.height * 0.46)
+        endingOffsetY = 28
+    } else if usesCrossTiltMotion {
+        startingOffsetY = 72
+        endingOffsetY = -34
+    } else {
+        switch movementStyle {
+        case 1:
+            startingOffsetY = -115
+            endingOffsetY = 45
+        case 2:
+            startingOffsetY = 115
+            endingOffsetY = -45
+        default:
+            startingOffsetY = 0
+            endingOffsetY = 0
+        }
+    }
+
+    let startingTiltX: Double =
+        usesSecondTwinScene
+        ? -5.0
+        : (
+            usesThrownCornerMotion
+            ? -10.0
+            : (
+                usesDiagonalThrownMotion
+                ? -6.5
+                : (
+                    usesTopCornerMotion
+                    ? -8.0
+                    : (usesCrossTiltMotion ? -1.5 : 0)
+                )
+            )
+        )
+
+    let endingTiltX: Double =
+        usesSecondTwinScene
+        ? 0.5
+        : (
+            usesThrownCornerMotion
+            ? 2.5
+            : (
+                usesDiagonalThrownMotion
+                ? 4.0
+                : (
+                    usesTopCornerMotion
+                    ? 1.5
+                    : (usesCrossTiltMotion ? 6.5 : 0)
+                )
+            )
+        )
+
+    let startingTiltY: Double =
+        usesSecondTwinScene
+        ? -9.0
+        : (
+            usesThrownCornerMotion
+            ? (startsOnRight ? -18.0 : 18.0)
+            : (
+                usesDiagonalThrownMotion
+                ? (startsOnRight ? 15.0 : -15.0)
+                : (
+                    usesTopCornerMotion
+                    ? (startsOnRight ? -13.0 : 13.0)
+                    : (
+                        usesCrossTiltMotion
+                        ? -12.0
+                        : (startsOnRight ? -9.0 : 9.0)
+                    )
+                )
+            )
+        )
+
+    let endingTiltY: Double =
+        usesSecondTwinScene
+        ? -1.2
+        : (
+            usesThrownCornerMotion
+            ? (startsOnRight ? -2.5 : 2.5)
+            : (
+                usesDiagonalThrownMotion
+                ? (startsOnRight ? -5.0 : 5.0)
+                : (
+                    usesTopCornerMotion
+                    ? (startsOnRight ? -3.0 : 3.0)
+                    : (
+                        usesCrossTiltMotion
+                        ? 7.0
+                        : (startsOnRight ? -4.0 : 4.0)
+                    )
+                )
+            )
+        )
+
+    let startingRotationZ: Double =
+        usesSecondTwinScene
+        ? 8.0
+        : (
+            usesThrownCornerMotion
+            ? (startsOnRight ? 9.0 : -9.0)
+            : (
+                usesDiagonalThrownMotion
+                ? (startsOnRight ? -8.0 : 8.0)
+                : (
+                    usesTopCornerMotion
+                    ? (startsOnRight ? 6.0 : -6.0)
+                    : (
+                        usesCrossTiltMotion
+                        ? 3.2
+                        : (startsOnRight ? 2.4 : -2.4)
+                    )
+                )
+            )
+        )
+
+    let endingRotationZ: Double =
+        usesSecondTwinScene
+        ? 0.8
+        : (
+            usesThrownCornerMotion
+            ? (startsOnRight ? 0.6 : -0.6)
+            : (
+                usesDiagonalThrownMotion
+                ? (startsOnRight ? 1.4 : -1.4)
+                : (
+                    usesTopCornerMotion
+                    ? (startsOnRight ? 1.0 : -1.0)
+                    : (
+                        usesCrossTiltMotion
+                        ? -1.8
+                        : (startsOnRight ? 1.0 : -1.0)
+                    )
+                )
+            )
+        )
+
+    let distantStartingX: CGFloat =
+        startsOnRight ? -(sceneSize.width * 0.425) : sceneSize.width * 0.425
+
+    let distantStartingY: CGFloat
+
+    if startingOffsetY > 0 {
+        distantStartingY = -(sceneSize.height * 0.34)
+    } else if startingOffsetY < 0 {
+        distantStartingY = sceneSize.height * 0.34
+    } else {
+        distantStartingY =
+            sceneIndex.isMultiple(of: 4)
+            ? -(sceneSize.height * 0.34)
+            : sceneSize.height * 0.34
+    }
+
+    let distantStartingTiltY: Double = startsOnRight ? 5.0 : -5.0
+    let distantEndingTiltY: Double = startsOnRight ? 3.0 : -3.0
+    let distantStartingRotationZ: Double = startsOnRight ? -7.0 : 7.0
+    let distantEndingRotationZ: Double = startsOnRight ? -5.0 : 5.0
+
+    let distantEndingX: CGFloat =
+        distantStartingX + (distantStartingX > 0 ? 22 : -22)
+
+    let distantEndingY: CGFloat =
+        distantStartingY + (distantStartingY > 0 ? 16 : -16)
+
+    let secondaryStartsOnRight = !startsOnRight
+
+    let secondaryStartingX: CGFloat =
+        usesSecondTwinScene
+        ? -(sceneSize.width * 0.62)
+        : (
+            secondaryStartsOnRight
+            ? sceneSize.width * 0.54
+            : -(sceneSize.width * 0.54)
+        )
+
+    let secondaryEndingX: CGFloat =
+        usesSecondTwinScene
+        ? -(sceneSize.width * 0.25)
+        : (
+            secondaryStartsOnRight
+            ? sceneSize.width * 0.255
+            : -(sceneSize.width * 0.255)
+        )
+
+    let secondaryStartingY: CGFloat =
+        usesSecondTwinScene
+        ? -(sceneSize.height * 0.16)
+        : (
+            startsOnRight
+            ? sceneSize.height * 0.20
+            : -(sceneSize.height * 0.18)
+        )
+
+    let secondaryEndingY: CGFloat =
+        usesSecondTwinScene
+        ? -(sceneSize.height * 0.055)
+        : (
+            startsOnRight
+            ? sceneSize.height * 0.13
+            : -(sceneSize.height * 0.12)
+        )
+
+    let secondaryStartingTiltX: Double =
+        usesSecondTwinScene ? 19.0 : (startsOnRight ? 7.0 : -7.0)
+
+    let secondaryEndingTiltX: Double =
+        usesSecondTwinScene ? 5.0 : (startsOnRight ? 2.5 : -2.5)
+
+    let secondaryStartingTiltY: Double =
+        usesSecondTwinScene ? 36.0 : (secondaryStartsOnRight ? -15.0 : 15.0)
+
+    let secondaryEndingTiltY: Double =
+        usesSecondTwinScene ? 12.0 : (secondaryStartsOnRight ? -4.5 : 4.5)
+
+    let secondaryStartingRotationZ: Double =
+        usesSecondTwinScene ? -40.0 : (secondaryStartsOnRight ? 10.0 : -10.0)
+
+    let secondaryEndingRotationZ: Double =
+        usesSecondTwinScene ? -4.0 : (secondaryStartsOnRight ? 4.8 : -4.8)
+
+    let secondaryDistantStartingX: CGFloat =
+        secondaryStartsOnRight ? -(sceneSize.width * 0.43) : sceneSize.width * 0.43
+
+    let secondaryDistantStartingY: CGFloat =
+        secondaryStartingY > 0
+        ? -(sceneSize.height * 0.31)
+        : sceneSize.height * 0.31
+
+    let secondaryDistantEndingX: CGFloat =
+        secondaryDistantStartingX + (secondaryDistantStartingX > 0 ? 20 : -20)
+
+    let secondaryDistantEndingY: CGFloat =
+        secondaryDistantStartingY + (secondaryDistantStartingY > 0 ? 15 : -15)
+
+    let revealStartScale: CGFloat =
+        usesSecondTwinScene ? 1.45 : (usesTwoPhotoScene ? 1.08 : 1.50)
+
+    let revealEndScale: CGFloat =
+        usesSecondTwinScene ? 1.05 : (usesTwoPhotoScene ? 0.70 : 0.96)
+
+    let secondaryStartScale: CGFloat =
+        usesSecondTwinScene ? 0.62 : 1.02
+
+    let secondaryEndScale: CGFloat =
+        usesSecondTwinScene ? 0.42 : 0.68
+
+    return ImaginationRevealTargets(
+        revealStartScale: revealStartScale,
+        revealEndScale: revealEndScale,
+        revealStartOffsetX: startingOffsetX,
+        revealEndOffsetX: endingOffsetX,
+        revealStartOffsetY: startingOffsetY,
+        revealEndOffsetY: endingOffsetY,
+        revealStartTiltX: startingTiltX,
+        revealEndTiltX: endingTiltX,
+        revealStartTiltY: startingTiltY,
+        revealEndTiltY: endingTiltY,
+        revealStartRotationZ: startingRotationZ,
+        revealEndRotationZ: endingRotationZ,
+
+        secondaryStartScale: secondaryStartScale,
+        secondaryEndScale: secondaryEndScale,
+        secondaryStartOffsetX: secondaryStartingX,
+        secondaryEndOffsetX: secondaryEndingX,
+        secondaryStartOffsetY: secondaryStartingY,
+        secondaryEndOffsetY: secondaryEndingY,
+        secondaryStartTiltX: secondaryStartingTiltX,
+        secondaryEndTiltX: secondaryEndingTiltX,
+        secondaryStartTiltY: secondaryStartingTiltY,
+        secondaryEndTiltY: secondaryEndingTiltY,
+        secondaryStartRotationZ: secondaryStartingRotationZ,
+        secondaryEndRotationZ: secondaryEndingRotationZ,
+
+        distantStartScale: 1.56156,
+        distantEndScale: 1.20666,
+        distantStartOffsetX: distantStartingX,
+        distantEndOffsetX: distantEndingX,
+        distantStartOffsetY: distantStartingY,
+        distantEndOffsetY: distantEndingY,
+        distantStartTiltY: distantStartingTiltY,
+        distantEndTiltY: distantEndingTiltY,
+        distantStartRotationZ: distantStartingRotationZ,
+        distantEndRotationZ: distantEndingRotationZ,
+
+        secondaryDistantStartScale: 1.20,
+        secondaryDistantEndScale: 0.92,
+        secondaryDistantStartOffsetX: secondaryDistantStartingX,
+        secondaryDistantEndOffsetX: secondaryDistantEndingX,
+        secondaryDistantStartOffsetY: secondaryDistantStartingY,
+        secondaryDistantEndOffsetY: secondaryDistantEndingY,
+        secondaryDistantStartTiltY: secondaryStartsOnRight ? 5.0 : -5.0,
+        secondaryDistantEndTiltY: secondaryStartsOnRight ? 3.0 : -3.0,
+        secondaryDistantStartRotationZ: secondaryStartsOnRight ? -7.0 : 7.0,
+        secondaryDistantEndRotationZ: secondaryStartsOnRight ? -5.0 : 5.0
+    )
+}
+
+private struct ImaginationRevealState {
+    var revealScale: CGFloat
+    var revealBlur: CGFloat
+    var revealSaturation: Double
+    var revealBrightness: Double
+    var revealContrast: Double
+    var revealOffsetX: CGFloat
+    var revealOffsetY: CGFloat
+    var revealTiltX: Double
+    var revealTiltY: Double
+    var revealRotationZ: Double
+
+    var secondaryScale: CGFloat
+    var secondaryBlur: CGFloat
+    var secondarySaturation: Double
+    var secondaryBrightness: Double
+    var secondaryContrast: Double
+    var secondaryOffsetX: CGFloat
+    var secondaryOffsetY: CGFloat
+    var secondaryTiltX: Double
+    var secondaryTiltY: Double
+    var secondaryRotationZ: Double
+
+    var secondaryDistantScale: CGFloat
+    var secondaryDistantOffsetX: CGFloat
+    var secondaryDistantOffsetY: CGFloat
+    var secondaryDistantTiltY: Double
+    var secondaryDistantRotationZ: Double
+
+    var distantScale: CGFloat
+    var distantOffsetX: CGFloat
+    var distantOffsetY: CGFloat
+    var distantTiltY: Double
+    var distantRotationZ: Double
+}
+
+private func imaginationEvaluateReveal(
+    _ targets: ImaginationRevealTargets,
+    tau: Double
+) -> ImaginationRevealState {
+    let blurProgress = imaginationExportBlurProgress(tau)
+    let colorProgress = imaginationExportColorProgress(tau)
+    let driftProgress = imaginationExportDriftProgress(tau)
+    let distantProgress = imaginationExportDistantDriftProgress(tau)
+
+    func lerp(_ start: CGFloat, _ end: CGFloat, _ progress: Double) -> CGFloat {
+        start + (end - start) * CGFloat(progress)
+    }
+
+    func lerpD(_ start: Double, _ end: Double, _ progress: Double) -> Double {
+        start + (end - start) * progress
+    }
+
+    return ImaginationRevealState(
+        revealScale: lerp(targets.revealStartScale, targets.revealEndScale, driftProgress),
+        revealBlur: lerp(30, 0, blurProgress),
+        revealSaturation: lerpD(0, 1, colorProgress),
+        revealBrightness: lerpD(0.12, 0, colorProgress),
+        revealContrast: lerpD(1.12, 1, colorProgress),
+        revealOffsetX: lerp(targets.revealStartOffsetX, targets.revealEndOffsetX, driftProgress),
+        revealOffsetY: lerp(targets.revealStartOffsetY, targets.revealEndOffsetY, driftProgress),
+        revealTiltX: lerpD(targets.revealStartTiltX, targets.revealEndTiltX, driftProgress),
+        revealTiltY: lerpD(targets.revealStartTiltY, targets.revealEndTiltY, driftProgress),
+        revealRotationZ: lerpD(targets.revealStartRotationZ, targets.revealEndRotationZ, driftProgress),
+
+        secondaryScale: lerp(targets.secondaryStartScale, targets.secondaryEndScale, driftProgress),
+        secondaryBlur: lerp(30, 0, blurProgress),
+        secondarySaturation: lerpD(0, 1, colorProgress),
+        secondaryBrightness: lerpD(0.12, 0, colorProgress),
+        secondaryContrast: lerpD(1.12, 1, colorProgress),
+        secondaryOffsetX: lerp(targets.secondaryStartOffsetX, targets.secondaryEndOffsetX, driftProgress),
+        secondaryOffsetY: lerp(targets.secondaryStartOffsetY, targets.secondaryEndOffsetY, driftProgress),
+        secondaryTiltX: lerpD(targets.secondaryStartTiltX, targets.secondaryEndTiltX, driftProgress),
+        secondaryTiltY: lerpD(targets.secondaryStartTiltY, targets.secondaryEndTiltY, driftProgress),
+        secondaryRotationZ: lerpD(targets.secondaryStartRotationZ, targets.secondaryEndRotationZ, driftProgress),
+
+        secondaryDistantScale: lerp(targets.secondaryDistantStartScale, targets.secondaryDistantEndScale, distantProgress),
+        secondaryDistantOffsetX: lerp(targets.secondaryDistantStartOffsetX, targets.secondaryDistantEndOffsetX, distantProgress),
+        secondaryDistantOffsetY: lerp(targets.secondaryDistantStartOffsetY, targets.secondaryDistantEndOffsetY, distantProgress),
+        secondaryDistantTiltY: lerpD(targets.secondaryDistantStartTiltY, targets.secondaryDistantEndTiltY, distantProgress),
+        secondaryDistantRotationZ: lerpD(targets.secondaryDistantStartRotationZ, targets.secondaryDistantEndRotationZ, distantProgress),
+
+        distantScale: lerp(targets.distantStartScale, targets.distantEndScale, distantProgress),
+        distantOffsetX: lerp(targets.distantStartOffsetX, targets.distantEndOffsetX, distantProgress),
+        distantOffsetY: lerp(targets.distantStartOffsetY, targets.distantEndOffsetY, distantProgress),
+        distantTiltY: lerpD(targets.distantStartTiltY, targets.distantEndTiltY, distantProgress),
+        distantRotationZ: lerpD(targets.distantStartRotationZ, targets.distantEndRotationZ, distantProgress)
+    )
+}
+
+// Deterministic replica of ImaginationDustOverlay: same pseudo-random
+// hash per particle, driven by explicit time values instead of
+// TimelineView + Date so a given (time, elapsedSinceBurst) always
+// paints the same frame.
+private struct ImaginationExportDustLayer: View {
+    let time: Double
+    let elapsedSinceBurst: Double
+    let burstToken: Int
+
+    private let particleCount = 90
+
+    var body: some View {
+        GeometryReader { proxy in
+            Canvas { context, size in
+                let burstStrength = exp(-max(0, elapsedSinceBurst) * 0.78)
+
+                for index in 0..<particleCount {
+                    drawDustParticle(
+                        index: index,
+                        time: time,
+                        size: size,
+                        burstStrength: burstStrength,
+                        context: &context
+                    )
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func drawDustParticle(
+        index: Int,
+        time: TimeInterval,
+        size: CGSize,
+        burstStrength: Double,
+        context: inout GraphicsContext
+    ) {
+        guard size.width > 0, size.height > 0 else {
+            return
+        }
+
+        let seed = Double(index + 1)
+
+        let xSeed = random(seed * 12.9898)
+        let ySeed = random(seed * 78.233)
+        let speedSeed = random(seed * 41.719)
+        let phaseSeed = random(seed * 27.113)
+        let radiusSeed = random(seed * 63.771)
+        let opacitySeed = random(seed * 94.331)
+        let directionSeed = random(seed * 36.173)
+
+        let baseX = xSeed * size.width
+        let baseY = ySeed * size.height
+
+        let phase = phaseSeed * Double.pi * 2.0
+
+        let baseSpeed = 0.10 + speedSeed * 0.18
+        let secondarySpeed = 0.07 + random(seed * 17.477) * 0.14
+
+        let horizontalRadius = 6.0 + radiusSeed * 20.0
+        let verticalRadius = 5.0 + random(seed * 31.557) * 16.0
+
+        let calmX =
+            sin(time * baseSpeed + phase) * horizontalRadius
+            + cos(time * secondarySpeed + phase * 0.7) * 5.0
+
+        let calmY =
+            cos(time * baseSpeed * 0.83 + phase) * verticalRadius
+            + sin(time * secondarySpeed * 1.17 + phase * 1.2) * 4.0
+
+        let sideDirection: Double = burstToken.isMultiple(of: 2) ? -1.0 : 1.0
+
+        let particleDirection =
+            directionSeed > 0.35
+            ? sideDirection
+            : -sideDirection * 0.35
+
+        let gustSpeed = 1.8 + speedSeed * 2.8
+        let gustDistance = burstStrength * (42.0 + radiusSeed * 76.0)
+
+        let windX =
+            sin(time * gustSpeed + phase) * gustDistance * particleDirection
+
+        let windY =
+            cos(time * (gustSpeed * 0.72) + phase * 1.4) * gustDistance * 0.38
+
+        let swirlRadius = burstStrength * (15.0 + radiusSeed * 42.0)
+        let swirlSpeed = 2.1 + speedSeed * 3.0
+
+        let swirlX = cos(time * swirlSpeed + phase) * swirlRadius
+        let swirlY = sin(time * swirlSpeed + phase) * swirlRadius * 0.72
+
+        var x = baseX + calmX + windX + swirlX
+        var y = baseY + calmY + windY + swirlY
+
+        let margin = 30.0
+
+        x = wrapped(x, minimum: -margin, maximum: size.width + margin)
+        y = wrapped(y, minimum: -margin, maximum: size.height + margin)
+
+        let particleSize = 0.7 + random(seed * 88.231) * 1.6
+
+        let baseOpacity = 0.12 + opacitySeed * 0.38
+        let gustOpacityBoost = burstStrength * 0.16
+
+        let finalOpacity = min(0.72, baseOpacity + gustOpacityBoost)
+
+        let particleRect = CGRect(
+            x: x - particleSize / 2,
+            y: y - particleSize / 2,
+            width: particleSize,
+            height: particleSize
+        )
+
+        context.opacity = finalOpacity
+
+        context.fill(
+            Path(ellipseIn: particleRect),
+            with: .color(.white)
+        )
+    }
+
+    private func wrapped(
+        _ value: Double,
+        minimum: Double,
+        maximum: Double
+    ) -> Double {
+        let range = maximum - minimum
+
+        guard range > 0 else {
+            return value
+        }
+
+        var result = (value - minimum).truncatingRemainder(dividingBy: range)
+
+        if result < 0 {
+            result += range
+        }
+
+        return result + minimum
+    }
+
+    private func random(_ value: Double) -> Double {
+        let result = sin(value) * 43_758.545_312_3
+        return result - floor(result)
+    }
+}
+
+// Deterministic replica of ImaginationLensLightOverlay, driven by an
+// explicit elapsed value instead of TimelineView + Date.
+private struct ImaginationExportLensFlareLayer: View {
+    let elapsed: Double
+    let sceneToken: Int
+
+    private struct FlareGeometry {
+        let sourcePoint: CGPoint
+        let targetPoint: CGPoint
+        let pulseA: Double
+        let pulseB: Double
+        let pulseC: Double
+        let visibility: Double
+    }
+
+    // Plain (non-View) helper: a bare `switch` performing assignments
+    // inside a @ViewBuilder closure (like GeometryReader's) gets
+    // misparsed as if every case must produce a View. Computing the
+    // geometry here, outside the ViewBuilder closure, avoids that.
+    private func computeGeometry(width: CGFloat, height: CGFloat) -> FlareGeometry {
+        let safeElapsed = max(0, elapsed)
+        let flareDuration = 6.72
+
+        let rawProgress = min(1, safeElapsed / flareDuration)
+
+        let movementProgress =
+            rawProgress * rawProgress * (3 - 2 * rawProgress)
+
+        let visibility = min(1, safeElapsed / 0.22)
+
+        let variant = abs(sceneToken) % 4
+
+        let startX: CGFloat
+        let endX: CGFloat
+        let flareTargetX: CGFloat
+        let flareTargetY: CGFloat
+
+        switch variant {
+        case 0:
+            startX = width * 1.08
+            endX = -(width * 0.58)
+            flareTargetX = -(width * 0.34)
+            flareTargetY = height * 0.72
+
+        case 1:
+            startX = -(width * 0.08)
+            endX = width * 1.58
+            flareTargetX = width * 1.34
+            flareTargetY = height * 0.74
+
+        case 2:
+            startX = width * 0.96
+            endX = -(width * 0.50)
+            flareTargetX = -(width * 0.30)
+            flareTargetY = height * 0.82
+
+        default:
+            startX = width * 0.04
+            endX = width * 1.52
+            flareTargetX = width * 1.30
+            flareTargetY = height * 0.78
+        }
+
+        let sourceX = interpolate(from: startX, to: endX, progress: CGFloat(movementProgress))
+
+        let sourcePoint = CGPoint(x: sourceX, y: -(height * 0.045))
+        let targetPoint = CGPoint(x: flareTargetX, y: flareTargetY)
+
+        let pulseA = 0.5 + 0.5 * sin(safeElapsed * 1.15 + Double(variant) * 0.63)
+        let pulseB = 0.5 + 0.5 * sin(safeElapsed * 0.92 + 1.35 + Double(variant) * 0.31)
+        let pulseC = 0.5 + 0.5 * sin(safeElapsed * 1.06 + 2.10 + Double(variant) * 0.22)
+
+        return FlareGeometry(
+            sourcePoint: sourcePoint,
+            targetPoint: targetPoint,
+            pulseA: pulseA,
+            pulseB: pulseB,
+            pulseC: pulseC,
+            visibility: visibility
+        )
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let height = proxy.size.height
+            let geometry = computeGeometry(width: width, height: height)
+
+            ZStack {
+                roundFlare(
+                    diameter: width * (0.50 + 0.16 * geometry.pulseA),
+                    opacity: 0.54 * geometry.visibility,
+                    blur: 30
+                )
+                .position(
+                    pointOnLine(
+                        from: geometry.sourcePoint,
+                        to: geometry.targetPoint,
+                        progress: 0.26,
+                        xOffset: width * 0.018,
+                        yOffset: 0
+                    )
+                )
+
+                roundFlare(
+                    diameter: width * (0.28 + 0.10 * geometry.pulseB),
+                    opacity: 0.46 * geometry.visibility,
+                    blur: 19
+                )
+                .position(
+                    pointOnLine(
+                        from: geometry.sourcePoint,
+                        to: geometry.targetPoint,
+                        progress: 0.50,
+                        xOffset: -(width * 0.025),
+                        yOffset: height * 0.012
+                    )
+                )
+
+                roundFlare(
+                    diameter: width * (0.15 + 0.065 * geometry.pulseC),
+                    opacity: 0.58 * geometry.visibility,
+                    blur: 11
+                )
+                .position(
+                    pointOnLine(
+                        from: geometry.sourcePoint,
+                        to: geometry.targetPoint,
+                        progress: 0.72,
+                        xOffset: width * 0.018,
+                        yOffset: -(height * 0.008)
+                    )
+                )
+            }
+            .blendMode(.screen)
+            .compositingGroup()
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func interpolate(
+        from start: CGFloat,
+        to end: CGFloat,
+        progress: CGFloat
+    ) -> CGFloat {
+        start + (end - start) * progress
+    }
+
+    private func pointOnLine(
+        from source: CGPoint,
+        to target: CGPoint,
+        progress: CGFloat,
+        xOffset: CGFloat,
+        yOffset: CGFloat
+    ) -> CGPoint {
+        CGPoint(
+            x: source.x + (target.x - source.x) * progress + xOffset,
+            y: source.y + (target.y - source.y) * progress + yOffset
+        )
+    }
+
+    private func roundFlare(
+        diameter: CGFloat,
+        opacity: Double,
+        blur: CGFloat
+    ) -> some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    stops: [
+                        .init(color: Color.white.opacity(0.10), location: 0),
+                        .init(color: Color(red: 1.0, green: 0.78, blue: 0.46).opacity(0.24), location: 0.40),
+                        .init(color: Color(red: 0.68, green: 0.82, blue: 1.0).opacity(0.11), location: 0.68),
+                        .init(color: Color.white.opacity(0.07), location: 0.86),
+                        .init(color: Color.clear, location: 1)
+                    ],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: diameter * 0.50
+                )
+            )
+            .overlay(
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.15),
+                                Color(red: 1.0, green: 0.72, blue: 0.42).opacity(0.11),
+                                Color.white.opacity(0.04)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.8
+                    )
+                    .blur(radius: 3)
+            )
+            .frame(width: diameter, height: diameter)
+            .blur(radius: blur)
+            .opacity(opacity)
+    }
+}
+
+// Stateless, parametric replica of ImaginationCardPage's body: every
+// value that used to be an animated @State var is passed in already
+// evaluated at this frame's tau, so ImageRenderer can snapshot it.
+private struct ImaginationExportSceneView: View {
+    let activeImage: NSImage?
+    let secondaryImage: NSImage?
+    let sceneIndex: Int
+    let hasSecondary: Bool
+    let tau: Double
+    let globalTime: Double
+    let blackOverlayOpacity: Double
+    let state: ImaginationRevealState
+
+    private var isAlternatingTwinScene: Bool {
+        hasSecondary && sceneIndex % 3 == 1
+    }
+
+    private var twinSceneVariant: Int {
+        guard isAlternatingTwinScene else {
+            return 0
+        }
+
+        return (sceneIndex / 3) % 3
+    }
+
+    private var usesSecondTwinScene: Bool {
+        isAlternatingTwinScene && twinSceneVariant == 1
+    }
+
+    private var usesTwoPhotoScene: Bool {
+        isAlternatingTwinScene
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.black
+
+                if let activeImage {
+                    let imageRatio = max(
+                        0.01,
+                        activeImage.size.width / max(1, activeImage.size.height)
+                    )
+
+                    let availableWidth = proxy.size.width * 0.72
+                    let availableHeight = proxy.size.height * 0.76
+
+                    let cardSize: CGSize = {
+                        let availableRatio = availableWidth / availableHeight
+
+                        if imageRatio > availableRatio {
+                            return CGSize(width: availableWidth, height: availableWidth / imageRatio)
+                        } else {
+                            return CGSize(width: availableHeight * imageRatio, height: availableHeight)
+                        }
+                    }()
+
+                    let secondaryCardSize: CGSize? = {
+                        guard let secondaryImage else {
+                            return nil
+                        }
+
+                        let secondaryRatio = max(
+                            0.01,
+                            secondaryImage.size.width / max(1, secondaryImage.size.height)
+                        )
+
+                        let secondaryAvailableWidth = proxy.size.width * 0.48
+                        let secondaryAvailableHeight = proxy.size.height * 0.54
+                        let secondaryAvailableRatio = secondaryAvailableWidth / secondaryAvailableHeight
+
+                        if secondaryRatio > secondaryAvailableRatio {
+                            return CGSize(width: secondaryAvailableWidth, height: secondaryAvailableWidth / secondaryRatio)
+                        }
+
+                        return CGSize(width: secondaryAvailableHeight * secondaryRatio, height: secondaryAvailableHeight)
+                    }()
+
+                    ZStack {
+                        Image(nsImage: activeImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: cardSize.width, height: cardSize.height)
+                            .clipped()
+                            .blur(radius: 16)
+                            .brightness(-0.08)
+                            .contrast(0.92)
+
+                        Color.black.opacity(0.20)
+                    }
+                    .frame(width: cardSize.width, height: cardSize.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .mask(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(Color.white.opacity(0.80))
+                            .padding(30)
+                            .blur(radius: 24)
+                    )
+                    .compositingGroup()
+                    .rotation3DEffect(.degrees(state.distantTiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
+                    .rotationEffect(.degrees(state.distantRotationZ))
+                    .scaleEffect(state.distantScale)
+                    .offset(x: state.distantOffsetX, y: state.distantOffsetY)
+                    .opacity(0.62)
+                    .zIndex(5)
+
+                    if usesTwoPhotoScene, let secondaryImage, let secondaryCardSize {
+                        ZStack {
+                            Image(nsImage: secondaryImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(
+                                    width: secondaryCardSize.width * (usesSecondTwinScene ? 1.55 : 1.0),
+                                    height: secondaryCardSize.height * (usesSecondTwinScene ? 1.55 : 1.0)
+                                )
+                                .clipped()
+                                .blur(radius: 16)
+                                .brightness(-0.08)
+                                .contrast(0.92)
+
+                            Color.black.opacity(0.20)
+                        }
+                        .frame(
+                            width: secondaryCardSize.width * (usesSecondTwinScene ? 1.55 : 1.0),
+                            height: secondaryCardSize.height * (usesSecondTwinScene ? 1.55 : 1.0)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .mask(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(Color.white.opacity(0.80))
+                                .padding(30)
+                                .blur(radius: 24)
+                        )
+                        .compositingGroup()
+                        .rotation3DEffect(.degrees(state.secondaryDistantTiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
+                        .rotationEffect(.degrees(state.secondaryDistantRotationZ))
+                        .scaleEffect(state.secondaryDistantScale)
+                        .offset(x: state.secondaryDistantOffsetX, y: state.secondaryDistantOffsetY)
+                        .opacity(0.62)
+                        .zIndex(6)
+
+                        ZStack {
+                            Image(nsImage: secondaryImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(
+                                    width: secondaryCardSize.width * (usesSecondTwinScene ? 1.55 : 1.0),
+                                    height: secondaryCardSize.height * (usesSecondTwinScene ? 1.55 : 1.0)
+                                )
+                                .clipped()
+                                .saturation(state.secondarySaturation)
+                                .brightness(state.secondaryBrightness)
+                                .contrast(state.secondaryContrast)
+                                .blur(radius: state.secondaryBlur)
+                        }
+                        .frame(
+                            width: secondaryCardSize.width * (usesSecondTwinScene ? 1.55 : 1.0),
+                            height: secondaryCardSize.height * (usesSecondTwinScene ? 1.55 : 1.0)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .compositingGroup()
+                        .rotation3DEffect(.degrees(state.secondaryTiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
+                        .rotation3DEffect(.degrees(state.secondaryTiltX), axis: (x: 1, y: 0, z: 0), perspective: 0.55)
+                        .rotationEffect(.degrees(state.secondaryRotationZ))
+                        .scaleEffect(
+                            state.secondaryScale
+                            * (secondaryCardSize.height > secondaryCardSize.width ? 1.50 : 1.0)
+                        )
+                        .offset(x: state.secondaryOffsetX, y: state.secondaryOffsetY)
+                        .zIndex(12)
+                    }
+
+                    ZStack {
+                        Image(nsImage: activeImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(
+                                width: cardSize.width * (usesSecondTwinScene ? 0.70 : 1.0),
+                                height: cardSize.height * (usesSecondTwinScene ? 0.70 : 1.0)
+                            )
+                            .clipped()
+                            .saturation(state.revealSaturation)
+                            .brightness(state.revealBrightness)
+                            .contrast(state.revealContrast)
+                            .blur(radius: state.revealBlur)
+                    }
+                    .frame(
+                        width: cardSize.width * (usesSecondTwinScene ? 0.70 : 1.0),
+                        height: cardSize.height * (usesSecondTwinScene ? 0.70 : 1.0)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .compositingGroup()
+                    .rotation3DEffect(.degrees(state.revealTiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
+                    .rotation3DEffect(.degrees(state.revealTiltX), axis: (x: 1, y: 0, z: 0), perspective: 0.55)
+                    .rotationEffect(.degrees(state.revealRotationZ))
+                    .scaleEffect(
+                        state.revealScale
+                        * (
+                            cardSize.height > cardSize.width
+                            ? (usesTwoPhotoScene ? 1.50 : 1.10)
+                            : 1.0
+                        )
+                    )
+                    .offset(x: state.revealOffsetX, y: state.revealOffsetY)
+                    .zIndex(10)
+                }
+
+                ImaginationExportLensFlareLayer(elapsed: tau, sceneToken: sceneIndex)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .allowsHitTesting(false)
+                    .zIndex(18)
+
+                ImaginationExportDustLayer(time: globalTime * 1.30, elapsedSinceBurst: tau, burstToken: sceneIndex)
+                    .opacity(0.95)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .zIndex(20)
+
+                ImaginationExportDustLayer(time: globalTime * 1.30, elapsedSinceBurst: tau, burstToken: sceneIndex)
+                    .scaleEffect(1.08)
+                    .offset(y: 24)
+                    .opacity(0.65)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .zIndex(21)
+
+                Color.black
+                    .opacity(blackOverlayOpacity)
+                    .allowsHitTesting(false)
+                    .zIndex(100)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+        }
+    }
+}
+
+private func makeImaginationExportCGImage(
+    scene: ImaginationExportScene,
+    state: ImaginationRevealState,
+    tau: Double,
+    globalTime: Double,
+    blackOverlayOpacity: Double,
+    renderSize: CGSize
+) -> CGImage? {
+    var renderedImage: CGImage?
+
+    let renderBlock = {
+        let frameView = ImaginationExportSceneView(
+            activeImage: scene.image,
+            secondaryImage: scene.secondaryImage,
+            sceneIndex: scene.sceneIndex,
+            hasSecondary: scene.secondaryImage != nil,
+            tau: tau,
+            globalTime: globalTime,
+            blackOverlayOpacity: blackOverlayOpacity,
+            state: state
+        )
+        .frame(width: renderSize.width, height: renderSize.height)
+        .background(Color.black)
+
+        let renderer = ImageRenderer(content: frameView)
+        renderer.proposedSize = ProposedViewSize(width: renderSize.width, height: renderSize.height)
+        renderer.scale = 1
+
+        renderedImage = renderer.cgImage
+    }
+
+    if Thread.isMainThread {
+        renderBlock()
+    } else {
+        DispatchQueue.main.sync(execute: renderBlock)
+    }
+
+    return renderedImage
+}
+
+private func makeImaginationExportPixelBuffer(
+    scene: ImaginationExportScene,
+    state: ImaginationRevealState,
+    tau: Double,
+    globalTime: Double,
+    blackOverlayOpacity: Double,
+    renderSize: CGSize,
+    pixelBufferPool: CVPixelBufferPool?
+) -> CVPixelBuffer? {
+    guard let pixelBufferPool,
+          let frameImage = makeImaginationExportCGImage(
+            scene: scene,
+            state: state,
+            tau: tau,
+            globalTime: globalTime,
+            blackOverlayOpacity: blackOverlayOpacity,
+            renderSize: renderSize
+          )
+    else {
+        return nil
+    }
+
+    var pixelBuffer: CVPixelBuffer?
+
+    let status = CVPixelBufferPoolCreatePixelBuffer(nil, pixelBufferPool, &pixelBuffer)
+
+    guard status == kCVReturnSuccess, let pixelBuffer else {
+        return nil
+    }
+
+    CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+    guard let context = CGContext(
+        data: CVPixelBufferGetBaseAddress(pixelBuffer),
+        width: Int(renderSize.width),
+        height: Int(renderSize.height),
+        bitsPerComponent: 8,
+        bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+    ) else {
+        return nil
+    }
+
+    let canvasRect = CGRect(origin: .zero, size: renderSize)
+
+    context.setFillColor(NSColor.black.cgColor)
+    context.fill(canvasRect)
+    context.interpolationQuality = .high
+    context.draw(frameImage, in: canvasRect)
+
+    return pixelBuffer
+}
+
+private func renderImaginationSlideshowVideo(
+    photoURLs: [URL],
+    outputURL: URL,
+    resolutionName: String,
+    pageDuration: Double,
+    fadeDuration: Double,
+    progressHandler: @escaping @Sendable (Double) -> Void
+) throws {
+    if FileManager.default.fileExists(atPath: outputURL.path) {
+        try FileManager.default.removeItem(at: outputURL)
+    }
+
+    let scenes = buildImaginationExportScenes(photoURLs: photoURLs)
+
+    guard !scenes.isEmpty else {
+        throw BriefShowExportError.couldNotCreatePixelBuffer
+    }
+
+    let renderSize = exportRenderSize(for: resolutionName, photoURLs: photoURLs)
+    let fps: Int32 = 30
+
+    let safePageDuration = max(1.0, pageDuration)
+
+    let totalTransitionDuration = min(
+        max(fadeDuration, 0.36),
+        max(0.36, safePageDuration * 0.45)
+    )
+
+    let closingDuration = totalTransitionDuration * 0.48
+    let openingDuration = totalTransitionDuration * 0.52
+
+    // Intro: 3s black fade (1 -> 0) laid over the very start. Outro: 4s
+    // black fade (0 -> 1) at the very end. Both extend the total export
+    // duration. The reveal animation itself runs continuously and
+    // normally the whole time, starting immediately at t=0 underneath
+    // the intro fade (matching how inter-page transitions already work) —
+    // the overlay is purely cosmetic, it never holds the animation back.
+    let introDuration = 3.0
+    let outroDuration = 4.0
+
+    // Scene 0 gets its window front-padded by introDuration: its own
+    // reveal clock starts at t=0 and simply keeps running underneath
+    // the fade, so there is no discontinuity once the fade clears.
+    let scene0Window = introDuration + safePageDuration
+    let laterSceneWindow = safePageDuration
+
+    let mainDuration = scene0Window + Double(max(0, scenes.count - 1)) * laterSceneWindow
+    let totalDuration = mainDuration + outroDuration
+    let totalFrameCount = max(1, Int(ceil(totalDuration * Double(fps))))
+
+    func windowStart(_ ordinal: Int) -> Double {
+        ordinal <= 0
+            ? 0
+            : scene0Window + Double(ordinal - 1) * laterSceneWindow
+    }
+
+    // The moment each scene's own reveal clock hits tau == 0: scene 0
+    // starts immediately at t=0; every later scene starts right after
+    // the closing (fade-to-black) tail of the previous scene finishes.
+    func revealStart(_ ordinal: Int) -> Double {
+        ordinal <= 0 ? 0 : windowStart(ordinal) + closingDuration
+    }
+
+    let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+
+    let pixelCount = renderSize.width * renderSize.height
+    let shouldUseHEVC =
+        resolutionName.trimmingCharacters(in: .whitespacesAndNewlines) == "Original"
+        || pixelCount > 8_294_400
+
+    let codec: AVVideoCodecType = shouldUseHEVC ? .hevc : .h264
+
+    let compressionProperties: [String: Any] = [
+        AVVideoAverageBitRateKey: exportBitrate(for: renderSize),
+        AVVideoMaxKeyFrameIntervalKey: 30,
+        AVVideoExpectedSourceFrameRateKey: 30
+    ]
+
+    let videoSettings: [String: Any] = [
+        AVVideoCodecKey: codec,
+        AVVideoWidthKey: Int(renderSize.width),
+        AVVideoHeightKey: Int(renderSize.height),
+        AVVideoCompressionPropertiesKey: compressionProperties
+    ]
+
+    guard writer.canApply(outputSettings: videoSettings, forMediaType: .video) else {
+        throw BriefShowExportError.cannotAddVideoInput
+    }
+
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+    input.expectsMediaDataInRealTime = false
+
+    let pixelBufferAttributes: [String: Any] = [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        kCVPixelBufferWidthKey as String: Int(renderSize.width),
+        kCVPixelBufferHeightKey as String: Int(renderSize.height),
+        kCVPixelBufferCGImageCompatibilityKey as String: true,
+        kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
+    ]
+
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+        assetWriterInput: input,
+        sourcePixelBufferAttributes: pixelBufferAttributes
+    )
+
+    guard writer.canAdd(input) else {
+        throw BriefShowExportError.cannotAddVideoInput
+    }
+
+    writer.add(input)
+
+    guard writer.startWriting() else {
+        throw writer.error ?? BriefShowExportError.couldNotStartWriter
+    }
+
+    writer.startSession(atSourceTime: .zero)
+
+    var targetsCache: [Int: ImaginationRevealTargets] = [:]
+
+    func targets(for sceneOrdinal: Int) -> ImaginationRevealTargets {
+        if let cached = targetsCache[sceneOrdinal] {
+            return cached
+        }
+
+        let scene = scenes[sceneOrdinal]
+
+        let computed = computeImaginationRevealTargets(
+            sceneIndex: scene.sceneIndex,
+            hasSecondary: scene.secondaryImage != nil,
+            sceneSize: renderSize
+        )
+
+        targetsCache[sceneOrdinal] = computed
+        return computed
+    }
+
+    var frameNumber: Int64 = 0
+    let frameDuration = CMTime(value: 1, timescale: fps)
+
+    for frameIndex in 0..<totalFrameCount {
+        while !input.isReadyForMoreMediaData {
+            Thread.sleep(forTimeInterval: 0.004)
+        }
+
+        let globalTime = Double(frameIndex) / Double(fps)
+
+        let sceneOrdinal: Int
+        var overlayOpacity: Double
+
+        if globalTime >= mainDuration {
+            // Hold on the last scene — its own reveal/drift keeps
+            // progressing continuously while black fades in.
+            let outroLocal = globalTime - mainDuration
+
+            sceneOrdinal = scenes.count - 1
+
+            overlayOpacity = imaginationExportCubicBezier(
+                outroLocal / outroDuration, 0.42, 0, 0.58, 1
+            )
+        } else {
+            let pageOrdinal: Int = {
+                guard globalTime >= scene0Window else {
+                    return 0
+                }
+
+                return min(
+                    scenes.count - 1,
+                    1 + Int((globalTime - scene0Window) / laterSceneWindow)
+                )
+            }()
+
+            let localTime = globalTime - windowStart(pageOrdinal)
+
+            if pageOrdinal == 0 {
+                sceneOrdinal = 0
+
+                // The closing-to-black transition into page 1 (if any)
+                // is owned entirely by page 1's own window below —
+                // computing it here too would double it up and cause
+                // a visible flicker right at the boundary.
+                if localTime < introDuration {
+                    let introProgress = imaginationExportCubicBezier(
+                        localTime / introDuration, 0.42, 0, 0.58, 1
+                    )
+                    overlayOpacity = 1 - introProgress
+                } else {
+                    overlayOpacity = 0
+                }
+            } else if localTime < closingDuration {
+                sceneOrdinal = pageOrdinal - 1
+
+                let p = min(1, max(0, localTime / closingDuration)) * 0.5
+                overlayOpacity = 1 - abs(1 - 2 * p)
+            } else if localTime < closingDuration + openingDuration {
+                sceneOrdinal = pageOrdinal
+
+                let openingLocal = localTime - closingDuration
+                let p = 0.5 + min(1, max(0, openingLocal / openingDuration)) * 0.5
+                overlayOpacity = 1 - abs(1 - 2 * p)
+            } else {
+                sceneOrdinal = pageOrdinal
+                overlayOpacity = 0
+            }
+        }
+
+        let tau = globalTime - revealStart(sceneOrdinal)
+        let scene = scenes[sceneOrdinal]
+        let sceneTargets = targets(for: sceneOrdinal)
+        let state = imaginationEvaluateReveal(sceneTargets, tau: tau)
+
+        guard let pixelBuffer = makeImaginationExportPixelBuffer(
+            scene: scene,
+            state: state,
+            tau: tau,
+            globalTime: globalTime,
+            blackOverlayOpacity: overlayOpacity,
+            renderSize: renderSize,
+            pixelBufferPool: adaptor.pixelBufferPool
+        ) else {
+            throw BriefShowExportError.couldNotCreatePixelBuffer
+        }
+
+        let presentationTime = CMTimeMultiply(frameDuration, multiplier: Int32(frameNumber))
+        guard adaptor.append(pixelBuffer, withPresentationTime: presentationTime) else {
+            throw writer.error ?? BriefShowExportError.couldNotAppendFrame
+        }
+
+        frameNumber += 1
+
+        progressHandler(min(1, Double(frameNumber) / Double(totalFrameCount)))
+    }
+
+    input.markAsFinished()
+
+    let semaphore = DispatchSemaphore(value: 0)
+    writer.finishWriting {
+        semaphore.signal()
+    }
+    semaphore.wait()
+
+    if writer.status == .failed {
+        throw writer.error ?? BriefShowExportError.writerFailed
+    }
+}
+
 private func exportRenderSize(for resolutionName: String, photoURLs: [URL]) -> CGSize {
     if resolutionName == "480p" {
         return CGSize(width: 854, height: 480)
@@ -9741,6 +11365,7 @@ struct FullScreenPreviewSheet: View {
     let origamiAnimationSeed: Int
     let isPreviewPlaying: Bool
     let imaginationPlaybackRestartToken: Int
+    let imaginationIntroOutroOpacity: Double
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
     let onClose: () -> Void
@@ -9873,7 +11498,9 @@ struct FullScreenPreviewSheet: View {
                     transitionProgress: transitionProgress,
                     isPreviewPlaying: isPreviewPlaying,
                     playbackRestartToken:
-                        imaginationPlaybackRestartToken
+                        imaginationPlaybackRestartToken,
+                    introOutroOverlayOpacity:
+                        imaginationIntroOutroOpacity
                 )
                 .id(activePhotoIndex)
                 .frame(width: size.width, height: size.height)
@@ -12963,6 +14590,7 @@ struct ImaginationCardPage: View {
     let transitionProgress: Double
     let isPreviewPlaying: Bool
     let playbackRestartToken: Int
+    let introOutroOverlayOpacity: Double
 
     @State private var revealScale: CGFloat = 2.20
     @State private var revealBlur: CGFloat = 30
@@ -13491,6 +15119,11 @@ struct ImaginationCardPage: View {
                     .opacity(blackOverlayOpacity)
                     .allowsHitTesting(false)
                     .zIndex(100)
+
+                Color.black
+                    .opacity(introOutroOverlayOpacity)
+                    .allowsHitTesting(false)
+                    .zIndex(200)
             }
             .frame(
                 width: proxy.size.width,
@@ -14281,6 +15914,7 @@ struct CenterPreviewPanel: View {
     let origamiAnimationSeed: Int
     let isPreviewPlaying: Bool
     let imaginationPlaybackRestartToken: Int
+    let imaginationIntroOutroOpacity: Double
     let onAddPhotos: () -> Void
     let onAddMusic: (Int) -> Void
     let onDropPhotos: ([URL]) -> Void
@@ -14288,6 +15922,8 @@ struct CenterPreviewPanel: View {
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
     let onOpenFullScreen: () -> Void
+
+    @State private var isPhotosCardHovered = false
 
     private var usesMagazinePreview: Bool {
         visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
@@ -14394,7 +16030,9 @@ struct CenterPreviewPanel: View {
                                 isPreviewPlaying:
                                     isPreviewPlaying,
                                 playbackRestartToken:
-                                    imaginationPlaybackRestartToken
+                                    imaginationPlaybackRestartToken,
+                                introOutroOverlayOpacity:
+                                    imaginationIntroOutroOpacity
                             )
                             .id(activePhotoIndex)
                             .clipShape(
@@ -14536,16 +16174,19 @@ struct CenterPreviewPanel: View {
                         HStack(spacing: 10) {
                             Image(systemName: "photo.on.rectangle.angled")
                                 .font(.system(size: 19, weight: .medium))
-                                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                                .foregroundColor(isPhotosCardHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390))
+                                .scaleEffect(isPhotosCardHovered ? 1.08 : 1)
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Photos")
                                     .font(.custom("Figtree", size: 13).weight(.medium))
-                                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                                    .foregroundColor(isPhotosCardHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390))
+                                    .scaleEffect(isPhotosCardHovered ? 1.025 : 1, anchor: .leading)
 
                                 Text(photoStatusText)
                                     .font(.custom("Figtree", size: 10.5).weight(.regular))
-                                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                                    .foregroundColor(isPhotosCardHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.82) : Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                                    .scaleEffect(isPhotosCardHovered ? 1.02 : 1, anchor: .leading)
                                     .lineLimit(1)
                             }
 
@@ -14555,24 +16196,32 @@ struct CenterPreviewPanel: View {
                         VStack(spacing: 6) {
                             PhotoImportInfoRow(
                                 icon: "photo.stack",
-                                title: "Select multiple photos"
+                                title: "Select multiple photos",
+                                isHovered: isPhotosCardHovered
                             )
 
                             PhotoImportInfoRow(
                                 icon: "arrow.down.doc",
-                                title: "Drag & drop supported"
+                                title: "Drag & drop supported",
+                                isHovered: isPhotosCardHovered
                             )
 
                             PhotoImportInfoRow(
                                 icon: "arrow.left.arrow.right",
-                                title: "Reorder anytime in Timeline"
+                                title: "Reorder anytime in Timeline",
+                                isHovered: isPhotosCardHovered
                             )
                         }
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HoverScaleButtonStyle(isHovered: isPhotosCardHovered))
+                .onHover { hovering in
+                    withAnimation(.linear(duration: 0.10)) {
+                        isPhotosCardHovered = hovering
+                    }
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -14596,44 +16245,17 @@ struct CenterPreviewPanel: View {
 
                     VStack(spacing: 6) {
                         ForEach(0..<3, id: \.self) { index in
-                            HStack(spacing: 8) {
-                                Image(systemName: selectedMusicURLs.indices.contains(index) ? "music.note" : "plus")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.8))
-                                    .frame(width: 18, height: 18)
-                                    .background(Color.white.opacity(0.48))
-                                    .clipShape(Circle())
-
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text("Track \(index + 1)")
-                                        .font(.custom("Figtree", size: 10).weight(.medium))
-                                        .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
-
-                                    Text(
-                                        selectedMusicURLs.indices.contains(index)
-                                            ? selectedMusicURLs[index].lastPathComponent
-                                            : index == 0 ? "Add main track" : "Optional"
-                                    )
-                                    .font(.custom("Figtree", size: 10.5).weight(.regular))
-                                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                            MusicTrackRow(
+                                index: index,
+                                hasTrack: selectedMusicURLs.indices.contains(index),
+                                subtitle:
+                                    selectedMusicURLs.indices.contains(index)
+                                        ? selectedMusicURLs[index].lastPathComponent
+                                        : index == 0 ? "Add main track" : "Optional",
+                                action: {
+                                    onAddMusic(index)
                                 }
-
-                                Spacer()
-                            }
-                            .padding(.horizontal, 8)
-                            .frame(height: 34)
-                            .background(Color.white.opacity(0.28))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.8), lineWidth: 1)
                             )
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .contentShape(RoundedRectangle(cornerRadius: 10))
-                            .onTapGesture {
-                                onAddMusic(index)
-                            }
                         }
                     }
                 }
@@ -14686,31 +16308,88 @@ struct CenterPreviewPanel: View {
 struct PhotoImportInfoRow: View {
     let icon: String
     let title: String
+    let isHovered: Bool
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.8))
+                .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.8))
                 .frame(width: 18, height: 18)
                 .background(Color.white.opacity(0.48))
                 .clipShape(Circle())
+                .scaleEffect(isHovered ? 1.08 : 1)
 
             Text(title)
                 .font(.custom("Figtree", size: 10.5).weight(.regular))
-                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.9) : Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                .scaleEffect(isHovered ? 1.02 : 1, anchor: .leading)
                 .lineLimit(1)
 
             Spacer()
         }
         .padding(.horizontal, 8)
         .frame(height: 34)
-        .background(Color.white.opacity(0.28))
+        .background(isHovered ? Color.white.opacity(0.42) : Color.white.opacity(0.28))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.8), lineWidth: 1)
+                .stroke(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.8) : Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.8), lineWidth: isHovered ? 1.6 : 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .animation(.linear(duration: 0.10), value: isHovered)
+    }
+}
+
+struct MusicTrackRow: View {
+    let index: Int
+    let hasTrack: Bool
+    let subtitle: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: hasTrack ? "music.note" : "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.8))
+                    .frame(width: 18, height: 18)
+                    .background(Color.white.opacity(0.48))
+                    .clipShape(Circle())
+                    .scaleEffect(isHovered ? 1.08 : 1)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Track \(index + 1)")
+                        .font(.custom("Figtree", size: 10).weight(.medium))
+                        .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390))
+                        .scaleEffect(isHovered ? 1.03 : 1, anchor: .leading)
+
+                    Text(subtitle)
+                        .font(.custom("Figtree", size: 10.5).weight(.regular))
+                        .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.82) : Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                        .scaleEffect(isHovered ? 1.02 : 1, anchor: .leading)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 34)
+            .background(isHovered ? Color.white.opacity(0.42) : Color.white.opacity(0.28))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.8) : Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.8), lineWidth: isHovered ? 1.6 : 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(HoverScaleButtonStyle(isHovered: isHovered))
+        .animation(.linear(duration: 0.10), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
 
@@ -15617,6 +17296,16 @@ struct SettingRow: View {
                 .font(.custom("Figtree", size: 12).weight(.regular))
                 .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
         }
+    }
+}
+
+struct HoverScaleButtonStyle: ButtonStyle {
+    let isHovered: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(.linear(duration: 0.08), value: configuration.isPressed)
     }
 }
 

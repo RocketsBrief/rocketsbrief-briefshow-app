@@ -72,6 +72,7 @@ struct ContentView: View {
     @State private var transitionStyle: SlideshowTransitionStyle = .fade
     @State private var visualTheme: SlideshowVisualTheme = .singleFade
     @State private var selectedExportResolution: String = "4K"
+    @State private var selectedExportFormat: String = "MP4"
     @State private var isExportingVideo: Bool = false
     @State private var exportStatusText: String?
     @State private var exportProgress: Double = 0
@@ -212,6 +213,7 @@ struct ContentView: View {
                     )
                     RightExportPanel(
                         selectedResolution: $selectedExportResolution,
+                        selectedFormat: $selectedExportFormat,
                         selectedMusicURL: selectedMusicURL,
                         selectedMusicCount: selectedMusicTrackCount,
                         canExport: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
@@ -2384,11 +2386,13 @@ struct ContentView: View {
             return
         }
 
+        let isMOVExport = selectedExportFormat == "MOV"
+
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.mpeg4Movie]
+        panel.allowedContentTypes = [isMOVExport ? .quickTimeMovie : .mpeg4Movie]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        panel.nameFieldStringValue = "BriefShow-\(selectedExportResolution).mp4"
+        panel.nameFieldStringValue = "BriefShow-\(selectedExportResolution).\(isMOVExport ? "mov" : "mp4")"
 
         if panel.runModal() == .OK, let outputURL = panel.url {
             startVideoExport(to: outputURL)
@@ -2410,6 +2414,7 @@ struct ContentView: View {
         let photoURLs = selectedPhotoURLs
         let musicURLs = selectedMusicURLs
         let resolution = selectedExportResolution
+        let exportFileType: AVFileType = selectedExportFormat == "MOV" ? .mov : .mp4
         let durationPerPhoto = max(0.25, currentPhotoDuration)
         let selectedTransitionStyle = transitionStyle
         let selectedFadeDuration = fadeDuration
@@ -2497,6 +2502,7 @@ struct ContentView: View {
                             selectedMagazineImageFade,
                         imageDelaySeconds:
                             selectedMagazineImageDelay,
+                        fileType: exportFileType,
                         progressHandler:
                             reportRenderProgress
                     )
@@ -2511,6 +2517,7 @@ struct ContentView: View {
                             selectedOrigamiImagesBeforePageChange,
                         simultaneousSwapCount:
                             selectedOrigamiSimultaneousSwapCount,
+                        fileType: exportFileType,
                         progressHandler:
                             reportRenderProgress
                     )
@@ -2521,6 +2528,7 @@ struct ContentView: View {
                         resolutionName: resolution,
                         pageDuration: durationPerPhoto,
                         fadeDuration: selectedFadeDuration,
+                        fileType: exportFileType,
                         progressHandler: reportRenderProgress
                     )
                 } else {
@@ -2533,6 +2541,7 @@ struct ContentView: View {
                             selectedTransitionStyle,
                         fadeDuration:
                             selectedFadeDuration,
+                        fileType: exportFileType,
                         progressHandler:
                             reportRenderProgress
                     )
@@ -2560,6 +2569,7 @@ struct ContentView: View {
                         videoURL: videoOnlyURL,
                         musicURLs: musicURLs,
                         outputURL: outputURL,
+                        outputFileType: exportFileType,
                         fadeInSeconds:
                             selectedMusicFadeIn,
                         fadeOutSeconds:
@@ -4744,6 +4754,7 @@ private func renderMagazineSlideshowVideo(
     pageDuration: Double,
     imageFadeSeconds: Double,
     imageDelaySeconds: Double,
+    fileType: AVFileType = .mp4,
     progressHandler: @escaping @Sendable (Double) -> Void
 ) throws {
     if FileManager.default
@@ -4822,7 +4833,7 @@ private func renderMagazineSlideshowVideo(
             outputURL:
                 outputURL,
             fileType:
-                .mp4
+                fileType
         )
 
     // H.264 is used for the Magazine renderer because
@@ -7440,6 +7451,7 @@ private func renderOrigamiSlideshowVideo(
     pageDuration: Double,
     imagesBeforePageChange: Int,
     simultaneousSwapCount: Int,
+    fileType: AVFileType = .mp4,
     progressHandler:
         @escaping @Sendable (Double) -> Void
 ) throws {
@@ -7597,7 +7609,7 @@ private func renderOrigamiSlideshowVideo(
         try AVAssetWriter(
             outputURL:
                 outputURL,
-            fileType: .mp4
+            fileType: fileType
         )
 
     let pixelCount =
@@ -8018,6 +8030,7 @@ private func renderSlideshowVideo(
     secondsPerPhoto: Double,
     transitionStyle: SlideshowTransitionStyle,
     fadeDuration: Double,
+    fileType: AVFileType = .mp4,
     progressHandler: @escaping @Sendable (Double) -> Void
 ) throws {
     if FileManager.default.fileExists(atPath: outputURL.path) {
@@ -8038,7 +8051,7 @@ private func renderSlideshowVideo(
         max(1, Int(Double(framesPerPhoto) * 0.45))
     ))
 
-    let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+    let writer = try AVAssetWriter(outputURL: outputURL, fileType: fileType)
 
     let pixelCount = renderSize.width * renderSize.height
     let shouldUseHEVC = resolutionName.trimmingCharacters(in: .whitespacesAndNewlines) == "Original" || pixelCount > 8_294_400
@@ -9546,6 +9559,7 @@ private func renderImaginationSlideshowVideo(
     resolutionName: String,
     pageDuration: Double,
     fadeDuration: Double,
+    fileType: AVFileType = .mp4,
     progressHandler: @escaping @Sendable (Double) -> Void
 ) throws {
     if FileManager.default.fileExists(atPath: outputURL.path) {
@@ -9603,7 +9617,7 @@ private func renderImaginationSlideshowVideo(
         ordinal <= 0 ? 0 : windowStart(ordinal) + closingDuration
     }
 
-    let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+    let writer = try AVAssetWriter(outputURL: outputURL, fileType: fileType)
 
     let pixelCount = renderSize.width * renderSize.height
     let shouldUseHEVC =
@@ -10041,6 +10055,7 @@ private func muxVideoWithMusic(
     videoURL: URL,
     musicURLs: [URL],
     outputURL: URL,
+    outputFileType: AVFileType = .mp4,
     fadeInSeconds: Double,
     fadeOutSeconds: Double,
     preferHEVC: Bool,
@@ -10410,7 +10425,7 @@ private func muxVideoWithMusic(
     }
 
     exportSession.outputURL = outputURL
-    exportSession.outputFileType = .mp4
+    exportSession.outputFileType = outputFileType
     exportSession.audioMix = audioMix
     exportSession.videoComposition =
         forcedVideoComposition
@@ -10876,7 +10891,7 @@ struct DisclaimerNoticeModal: View {
         ),
         (
             "Usage analytics",
-            "BriefShow reports two anonymous counts to RocketsBrief: how many videos have been exported, and how many separate Macs run BriefShow. Neither includes your files, photos, music, exported videos, or any personal information — and this is separate from, and in addition to, the email address you provide only if you create an account."
+            "BriefShow shares only two basic metrics with RocketsBrief: how many videos have been exported, and how many separate machines run BriefShow. To protect your privacy, the app generates a strictly randomized installation ID that has no connection to your hardware, device serial numbers, or network configuration. Neither count includes your files, photos, music, exported videos, or any personal information — and this metric is completely separate from, and in addition to, the email address you provide only if you create an account."
         )
     ]
 
@@ -11897,6 +11912,50 @@ struct FullScreenPreviewSheet: View {
     }
 }
 
+private struct HoverTooltipArrow: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Hover-only tooltip styled like a native macOS popover (frosted glass +
+/// arrow), but a plain non-interactive overlay rather than an actual
+/// `.popover`. A real popover eats the first click on the button underneath
+/// it (used to dismiss itself), forcing a second click to trigger the
+/// action - this reproduces the look without that side effect.
+private struct HoverTooltipBubble: View {
+    let label: String
+    let textColor: Color
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(label)
+                .font(.custom("Figtree", size: 11).weight(.medium))
+                .foregroundColor(textColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+                )
+
+            HoverTooltipArrow()
+                .fill(.regularMaterial)
+                .frame(width: 11, height: 6)
+                .offset(y: -1)
+        }
+        .fixedSize()
+        .shadow(color: Color.black.opacity(0.22), radius: 8, y: 3)
+        .allowsHitTesting(false)
+    }
+}
+
 private struct FullscreenIconButton: View {
     let systemName: String
     let label: String
@@ -11911,17 +11970,19 @@ private struct FullscreenIconButton: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(.white.opacity(isDisabled ? 0.35 : 0.96))
                 .frame(width: 34, height: 34)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .onHover { hovering in
             isHovered = hovering && !isDisabled
         }
-        .popover(isPresented: $isHovered, arrowEdge: .top) {
-            Text(label)
-                .font(.custom("Figtree", size: 11).weight(.medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+        .overlay(alignment: .top) {
+            if isHovered && !isDisabled {
+                HoverTooltipBubble(label: label, textColor: .white)
+                    .offset(y: -44)
+                    .transition(.opacity)
+            }
         }
     }
 }
@@ -16517,6 +16578,15 @@ struct CenterPreviewPanel: View {
                     .stroke(AppColors.border, lineWidth: 4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 34))
+            .overlayPreferenceValue(PreviewTooltipPreferenceKey.self) { items in
+                GeometryReader { proxy in
+                    ForEach(items) { item in
+                        let rect = proxy[item.anchor]
+                        HoverTooltipBubble(label: item.label, textColor: AppColors.ink)
+                            .position(x: rect.midX, y: rect.minY - 26)
+                    }
+                }
+            }
             .zIndex(50)
 
             HStack(spacing: 10) {
@@ -16667,6 +16737,28 @@ struct CenterPreviewPanel: View {
     }
 }
 
+/// A VStack gives siblings no defined paint order when one overflows its own
+/// bounds (unlike a ZStack, `.zIndex` has no effect there), so a tooltip that
+/// pops up above its button can end up rendered behind an earlier sibling
+/// (e.g. the preview photo card above the button row). Anchor preferences
+/// sidestep that: each button reports its frame only while hovered, and the
+/// tooltip is actually drawn once, in a single overlay attached higher up
+/// (see `CenterPreviewPanel`'s `.overlayPreferenceValue`), which is
+/// guaranteed to paint above everything below it.
+private struct PreviewTooltipAnchor: Identifiable {
+    let id: UUID
+    let label: String
+    let anchor: Anchor<CGRect>
+}
+
+private struct PreviewTooltipPreferenceKey: PreferenceKey {
+    static var defaultValue: [PreviewTooltipAnchor] = []
+
+    static func reduce(value: inout [PreviewTooltipAnchor], nextValue: () -> [PreviewTooltipAnchor]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
 private struct PreviewIconButton: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     let systemName: String
@@ -16675,6 +16767,7 @@ private struct PreviewIconButton: View {
     let action: () -> Void
 
     @State private var isHovered = false
+    @State private var tooltipID = UUID()
 
     private var activeColor: Color {
         isHovered && !isDisabled ? AppColors.hoverInk : AppColors.ink
@@ -16693,6 +16786,7 @@ private struct PreviewIconButton: View {
                         .stroke(activeColor.opacity(isHovered && !isDisabled ? 1 : 0.7), lineWidth: isHovered && !isDisabled ? 2.2 : 1.6)
                 )
                 .clipShape(Circle())
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
@@ -16701,11 +16795,8 @@ private struct PreviewIconButton: View {
         .onHover { hovering in
             isHovered = hovering && !isDisabled
         }
-        .popover(isPresented: $isHovered, arrowEdge: .top) {
-            Text(label)
-                .font(.custom("Figtree", size: 11).weight(.medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+        .anchorPreference(key: PreviewTooltipPreferenceKey.self, value: .bounds) { anchor in
+            (isHovered && !isDisabled) ? [PreviewTooltipAnchor(id: tooltipID, label: label, anchor: anchor)] : []
         }
     }
 }
@@ -16806,6 +16897,7 @@ struct MusicTrackRow: View {
 struct RightExportPanel: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     @Binding var selectedResolution: String
+    @Binding var selectedFormat: String
     let selectedMusicURL: URL?
     let selectedMusicCount: Int
     let canExport: Bool
@@ -16827,7 +16919,7 @@ struct RightExportPanel: View {
                     .font(.custom("Figtree", size: 13).weight(.medium))
                     .foregroundColor(AppColors.ink)
 
-                SettingRow(label: "Format", value: "MP4")
+                SettingRow(label: "Format", value: selectedFormat)
                 SettingRow(label: "Codec", value: selectedResolution == "Original" ? "H.265" : "H.264")
                 SettingRow(label: "Resolution", value: selectedResolution)
                 SettingRow(label: "FPS", value: "30")
@@ -16936,8 +17028,18 @@ struct RightExportPanel: View {
                 VStack(alignment: .leading, spacing: 7) {
                     SettingRow(label: "Resolution", value: selectedResolution)
                     SettingRow(label: "Size", value: exportSizeText(for: selectedResolution))
-                    SettingRow(label: "Format", value: "MP4")
                     SettingRow(label: "Audio", value: exportAudioText)
+                }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Format")
+                        .font(.custom("Figtree", size: 12).weight(.regular))
+                        .foregroundColor(AppColors.muted)
+
+                    HStack(spacing: 8) {
+                        exportFormatButton("MP4")
+                        exportFormatButton("MOV")
+                    }
                 }
 
                 Text("Choose where to save this \(selectedResolution) slideshow video.")
@@ -16994,6 +17096,15 @@ struct RightExportPanel: View {
             if canExport && !isExporting {
                 isShowingExportConfirmation = true
             }
+        }
+    }
+
+    private func exportFormatButton(_ format: String) -> some View {
+        TimingModeButton(
+            title: format,
+            isSelected: selectedFormat == format
+        ) {
+            selectedFormat = format
         }
     }
 

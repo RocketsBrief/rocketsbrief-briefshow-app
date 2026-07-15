@@ -11782,41 +11782,49 @@ struct FullScreenPreviewSheet: View {
     }
 
     private var fullscreenBottomControls: some View {
-        HStack(alignment: .center, spacing: 12) {
-            HStack(spacing: 8) {
-                fullscreenIconButton(
-                    systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
-                    label: isPreviewPlaying ? "Stop Preview" : "Play Preview",
-                    isDisabled: photoCount == 0 || isPreparingPhotos,
-                    action: onTogglePreview
-                )
+        GeometryReader { proxy in
+            HStack(alignment: .center, spacing: 12) {
+                HStack(spacing: 8) {
+                    fullscreenIconButton(
+                        systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
+                        label: isPreviewPlaying ? "Stop Preview" : "Play Preview",
+                        isDisabled: photoCount == 0 || isPreparingPhotos,
+                        action: onTogglePreview
+                    )
 
-                fullscreenIconButton(
-                    systemName: "arrow.counterclockwise",
-                    label: "Play From Beginning",
-                    isDisabled: photoCount == 0 || isPreparingPhotos,
-                    action: onStartFromBeginning
-                )
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .background(Color.black.opacity(0.62))
-            .clipShape(RoundedRectangle(cornerRadius: 999))
-            .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
-
-            fullscreenScrubber
-                .frame(height: 16)
-
-            Text(timeCounterText)
-                .font(.custom("Figtree", size: 12).weight(.medium))
-                .foregroundColor(.white.opacity(0.96))
-                .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.68))
+                    fullscreenIconButton(
+                        systemName: "arrow.counterclockwise",
+                        label: "Play From Beginning",
+                        isDisabled: photoCount == 0 || isPreparingPhotos,
+                        action: onStartFromBeginning
+                    )
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(Color.black.opacity(0.62))
                 .clipShape(RoundedRectangle(cornerRadius: 999))
                 .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
+
+                Spacer(minLength: 12)
+
+                fullscreenScrubber
+                    .frame(width: max(120, proxy.size.width * 0.42), height: 16)
+
+                Spacer(minLength: 12)
+
+                Text(timeCounterText)
+                    .font(.custom("Figtree", size: 12).weight(.medium))
+                    .foregroundColor(.white.opacity(0.96))
+                    .lineLimit(1)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.68))
+                    .clipShape(RoundedRectangle(cornerRadius: 999))
+                    .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
+            }
+            .frame(width: proxy.size.width)
         }
+        .frame(height: 52)
     }
 
     private func fullscreenIconButton(
@@ -16689,7 +16697,7 @@ private struct PreviewIconButton: View {
         .onHover { hovering in
             isHovered = hovering && !isDisabled
         }
-        .overlay(alignment: .bottom) {
+        .overlay(alignment: .top) {
             if isHovered && !isDisabled {
                 Text(label)
                     .font(.custom("Figtree", size: 10.5).weight(.medium))
@@ -16700,7 +16708,7 @@ private struct PreviewIconButton: View {
                     .padding(.vertical, 4)
                     .background(AppColors.hoverInk)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .offset(y: 30)
+                    .offset(y: -30)
                     .transition(.opacity)
                     .zIndex(50)
             }

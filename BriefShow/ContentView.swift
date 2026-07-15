@@ -11786,12 +11786,14 @@ struct FullScreenPreviewSheet: View {
             HStack(spacing: 8) {
                 fullscreenIconButton(
                     systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
+                    label: isPreviewPlaying ? "Stop Preview" : "Play Preview",
                     isDisabled: photoCount == 0 || isPreparingPhotos,
                     action: onTogglePreview
                 )
 
                 fullscreenIconButton(
                     systemName: "arrow.counterclockwise",
+                    label: "Play From Beginning",
                     isDisabled: photoCount == 0 || isPreparingPhotos,
                     action: onStartFromBeginning
                 )
@@ -11819,17 +11821,11 @@ struct FullScreenPreviewSheet: View {
 
     private func fullscreenIconButton(
         systemName: String,
+        label: String,
         isDisabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(.white.opacity(isDisabled ? 0.35 : 0.96))
-                .frame(width: 34, height: 34)
-        }
-        .buttonStyle(.plain)
-        .disabled(isDisabled)
+        FullscreenIconButton(systemName: systemName, label: label, isDisabled: isDisabled, action: action)
     }
 
     private var fullscreenScrubber: some View {
@@ -11875,6 +11871,45 @@ struct FullScreenPreviewSheet: View {
                         isScrubbing = false
                     }
             )
+        }
+    }
+}
+
+private struct FullscreenIconButton: View {
+    let systemName: String
+    let label: String
+    let isDisabled: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.white.opacity(isDisabled ? 0.35 : 0.96))
+                .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .onHover { hovering in
+            isHovered = hovering && !isDisabled
+        }
+        .overlay(alignment: .bottom) {
+            if isHovered && !isDisabled {
+                Text(label)
+                    .font(.custom("Figtree", size: 10.5).weight(.medium))
+                    .foregroundColor(.black)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.96))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .offset(y: 30)
+                    .transition(.opacity)
+                    .zIndex(50)
+            }
         }
     }
 }
@@ -16429,18 +16464,21 @@ struct CenterPreviewPanel: View {
                 HStack(spacing: 10) {
                     previewIconButton(
                         systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
+                        label: isPreviewPlaying ? "Stop Preview" : "Play Preview",
                         isDisabled: photoCount == 0 || isPreparingPhotos,
                         action: onTogglePreview
                     )
 
                     previewIconButton(
                         systemName: "arrow.counterclockwise",
+                        label: "Play From Beginning",
                         isDisabled: photoCount == 0 || isPreparingPhotos,
                         action: onStartFromBeginning
                     )
 
                     previewIconButton(
                         systemName: "arrow.up.left.and.arrow.down.right",
+                        label: "Full Screen",
                         isDisabled: photoCount == 0 || isPreparingPhotos,
                         action: onOpenFullScreen
                     )
@@ -16608,16 +16646,18 @@ struct CenterPreviewPanel: View {
 
     private func previewIconButton(
         systemName: String,
+        label: String,
         isDisabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        PreviewIconButton(systemName: systemName, isDisabled: isDisabled, action: action)
+        PreviewIconButton(systemName: systemName, label: label, isDisabled: isDisabled, action: action)
     }
 }
 
 private struct PreviewIconButton: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     let systemName: String
+    let label: String
     let isDisabled: Bool
     let action: () -> Void
 
@@ -16646,7 +16686,23 @@ private struct PreviewIconButton: View {
         .opacity(isDisabled ? 0.55 : 1)
         .animation(.linear(duration: 0.10), value: isHovered)
         .onHover { hovering in
-            isHovered = hovering
+            isHovered = hovering && !isDisabled
+        }
+        .overlay(alignment: .bottom) {
+            if isHovered && !isDisabled {
+                Text(label)
+                    .font(.custom("Figtree", size: 10.5).weight(.medium))
+                    .foregroundColor(AppColors.background)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(AppColors.hoverInk)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .offset(y: 30)
+                    .transition(.opacity)
+                    .zIndex(50)
+            }
         }
     }
 }

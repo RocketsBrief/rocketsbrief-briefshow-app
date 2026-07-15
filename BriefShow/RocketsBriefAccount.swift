@@ -450,3 +450,39 @@ enum ExportCounter {
         pendingCount = max(0, pendingCount - countToSend)
     }
 }
+
+/// Checks in a per-Mac random ID so the admin panel can show roughly how
+/// many distinct Macs run BriefShow, and how many are online right now.
+/// Doesn't identify a person - just this one installation. Nothing is
+/// persisted/queued if the check-in fails (unlike ExportCounter); a Mac
+/// that's offline right now will just show as "not seen recently" until
+/// its next successful check-in, which is the whole point of the signal.
+enum DeviceCheckIn {
+    private static let defaultsKey = "briefshow.deviceID"
+
+    private static var deviceID: String {
+        if let existing = UserDefaults.standard.string(forKey: defaultsKey) {
+            return existing
+        }
+
+        let newID = UUID().uuidString
+        UserDefaults.standard.set(newID, forKey: defaultsKey)
+        return newID
+    }
+
+    static func checkIn() async {
+        guard let url = URL(string: "\(RocketsBriefConfig.supabaseURL)/rest/v1/briefshow_devices") else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(RocketsBriefConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        request.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "device_id": deviceID,
+            "last_seen_at": ISO8601DateFormatter().string(from: Date())
+        ])
+
+        _ = try? await URLSession.shared.data(for: request)
+    }
+}

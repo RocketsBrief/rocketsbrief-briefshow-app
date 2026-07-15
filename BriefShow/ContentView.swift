@@ -333,9 +333,13 @@ struct ContentView: View {
         .onReceive(Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()) { _ in
             advancePreviewIfNeeded(delta: 1.0 / 60.0)
         }
+        .onReceive(Timer.publish(every: 600, on: .main, in: .common).autoconnect()) { _ in
+            Task { await DeviceCheckIn.checkIn() }
+        }
         .task {
             await remoteStatus.refresh()
             await ExportCounter.flush()
+            await DeviceCheckIn.checkIn()
         }
     }
 

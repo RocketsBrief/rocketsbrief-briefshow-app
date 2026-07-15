@@ -10924,7 +10924,7 @@ struct DisclaimerNoticeModal: View {
                         }
                     }
 
-                    Text("By using BriefShow or supporting RocketsBrief, you agree that you are responsible for your own use of the tool and any content or output you create with it.")
+                    Text("By using BriefShow, you agree to this entire Disclaimer & Usage Notice, including that you are responsible for your own use of the tool and any content or output you create with it.")
                         .font(.custom("Figtree", size: 12).weight(.semibold))
                         .foregroundColor(AppColors.hoverInk)
                         .lineSpacing(3)

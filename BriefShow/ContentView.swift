@@ -10521,6 +10521,7 @@ struct HeaderView: View {
 
                             Text("RocketsBrief")
                         }
+                        .frame(height: 15)
                     }
                     .buttonStyle(HeaderLinkButtonStyle())
                 .overlay(alignment: .topTrailing) {
@@ -10550,6 +10551,7 @@ struct HeaderView: View {
 
                         Text("Support")
                     }
+                    .frame(height: 15)
                 }
                 .buttonStyle(HeaderLinkButtonStyle())
                 .overlay(alignment: .topTrailing) {

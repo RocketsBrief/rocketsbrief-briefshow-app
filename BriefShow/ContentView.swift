@@ -10471,6 +10471,7 @@ struct HeaderView: View {
     @ObservedObject private var remoteStatus = AppRemoteStatus.shared
     @Binding var isProfileModalPresented: Bool
     @State private var isRocketsBriefHovered = false
+    @State private var isSupportHovered = false
     @State private var isFundMissionHovered = false
     @State private var isDisclaimerHovered = false
     @State private var isDisclaimerNoticePresented = false
@@ -10533,6 +10534,30 @@ struct HeaderView: View {
                 .onHover { hovering in
                     withAnimation(.linear(duration: 0.12)) {
                         isRocketsBriefHovered = hovering
+                    }
+                }
+
+                Button {
+                    if let url = URL(string: "https://www.rocketsbrief.com/support") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Text("Support")
+                        .frame(width: 86, height: 15)
+                        .fixedSize(horizontal: false, vertical: false)
+                }
+                .buttonStyle(HeaderLinkButtonStyle())
+                .overlay(alignment: .topTrailing) {
+                    if isSupportHovered {
+                        SupportHoverCard()
+                            .offset(x: -6, y: 48)
+                            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
+                            .zIndex(300)
+                    }
+                }
+                .onHover { hovering in
+                    withAnimation(.linear(duration: 0.12)) {
+                        isSupportHovered = hovering
                     }
                 }
 
@@ -10614,6 +10639,36 @@ struct RocketsBriefHoverCard: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Text("Click RocketsBrief to open the site.")
+                .font(.custom("Figtree", size: 10.5).weight(.semibold))
+                .foregroundColor(AppColors.hoverInk)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: 270, alignment: .leading)
+        .background(AppColors.background)
+        .overlay(
+            RoundedRectangle(cornerRadius: 26)
+                .stroke(AppColors.border, lineWidth: 3)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 26))
+        .shadow(color: Color.black.opacity(0.13), radius: 18, x: 0, y: 10)
+    }
+}
+
+struct SupportHoverCard: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Need help, or have a theme idea?")
+                .font(.custom("Figtree", size: 14).weight(.medium))
+                .foregroundColor(AppColors.ink)
+
+            Text("Opens the RocketsBrief support chat. Sign in or create a free account first if you haven't already.")
+                .font(.custom("Figtree", size: 11).weight(.regular))
+                .foregroundColor(AppColors.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Click Support to open the chat.")
                 .font(.custom("Figtree", size: 10.5).weight(.semibold))
                 .foregroundColor(AppColors.hoverInk)
         }
@@ -11256,7 +11311,7 @@ struct ThemePickerPopover: View {
 
                 ThemePickerInfoCard(
                     icon: "bubble.left.and.bubble.right.fill",
-                    text: "Have an idea for a theme, or need help with something? Use the RocketsBrief button above to visit rocketsbrief.com, sign up for a free account, and message us directly through the support chat."
+                    text: "Have an idea for a theme, or need help with something? Click Support above — sign in or create a free account, and message us directly through the support chat."
                 )
             }
         }

@@ -10873,6 +10873,10 @@ struct DisclaimerNoticeModal: View {
         (
             "Account data and email use",
             "If BriefShow ever requires a free account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
+        ),
+        (
+            "Usage analytics",
+            "BriefShow reports two anonymous counts to RocketsBrief: how many videos have been exported, and how many separate Macs run BriefShow. Neither includes your files, photos, music, exported videos, or any personal information — and this is separate from, and in addition to, the email address you provide only if you create an account."
         )
     ]
 

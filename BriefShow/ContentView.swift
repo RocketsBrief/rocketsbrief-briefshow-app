@@ -31,6 +31,9 @@ enum SlideshowVisualTheme: String {
 
 struct ContentView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
+    @ObservedObject private var accountManager = AccountManager.shared
+    @ObservedObject private var remoteStatus = AppRemoteStatus.shared
+    @State private var isUpdateBannerDismissed = false
     @State private var selectedPhotoURLs: [URL] = []
     @State private var previewImages: [NSImage] = []
     @State private var isPreparingPhotos: Bool = false
@@ -294,6 +297,25 @@ struct ContentView: View {
                 .zIndex(9999)
                 .transition(.opacity)
             }
+
+            if remoteStatus.isLocked && !accountManager.isSignedIn {
+                LockedAccessOverlay(lockMessage: remoteStatus.config?.lockMessage)
+                    .ignoresSafeArea()
+                    .zIndex(20000)
+                    .transition(.opacity)
+            } else if remoteStatus.isUpdateAvailable && !isUpdateBannerDismissed {
+                UpdateAvailableModal(
+                    latestVersion: remoteStatus.config?.latestVersion ?? remoteStatus.currentVersion,
+                    downloadURL: remoteStatus.config?.downloadUrl,
+                    releaseNotes: remoteStatus.config?.releaseNotes,
+                    onDismiss: {
+                        isUpdateBannerDismissed = true
+                    }
+                )
+                .ignoresSafeArea()
+                .zIndex(19000)
+                .transition(.opacity)
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
         .frame(
@@ -304,6 +326,9 @@ struct ContentView: View {
         )
         .onReceive(Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()) { _ in
             advancePreviewIfNeeded(delta: 1.0 / 60.0)
+        }
+        .task {
+            await remoteStatus.refresh()
         }
     }
 
@@ -10440,6 +10465,7 @@ private func loadDroppedFileURLs(
 
 struct HeaderView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
+    @ObservedObject private var accountManager = AccountManager.shared
     @State private var isRocketsBriefHovered = false
     @State private var isFundMissionHovered = false
     @State private var isDisclaimerHovered = false
@@ -10550,6 +10576,10 @@ struct HeaderView: View {
                     withAnimation(.linear(duration: 0.12)) {
                         isDisclaimerHovered = hovering
                     }
+                }
+
+                if let session = accountManager.session {
+                    ProfileBadge(session: session)
                 }
                 }
             }

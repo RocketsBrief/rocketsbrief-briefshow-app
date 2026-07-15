@@ -335,6 +335,7 @@ struct ContentView: View {
         }
         .task {
             await remoteStatus.refresh()
+            await ExportCounter.flush()
         }
     }
 
@@ -2592,6 +2593,7 @@ struct ContentView: View {
                     isExportingVideo = false
                     exportStatusText =
                         "Export complete · 100%: \(outputURL.lastPathComponent)"
+                    ExportCounter.recordExport()
                 }
             } catch {
                 DispatchQueue.main.async {

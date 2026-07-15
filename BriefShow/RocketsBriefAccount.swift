@@ -405,3 +405,48 @@ final class AppRemoteStatus: ObservableObject {
         }
     }
 }
+
+/// Counts successful video exports and reports them to RocketsBrief.
+/// Every export increments a locally persisted count first (so nothing is
+/// lost if the Mac is offline or the app quits), then tries to send it.
+/// A failed send just leaves the count pending for the next attempt - on
+/// next launch, or after the next export - so an offline Mac keeps
+/// collecting silently and reports everything in one batch once it's back
+/// online.
+enum ExportCounter {
+    private static let defaultsKey = "briefshow.pendingExportCount"
+
+    private static var pendingCount: Int {
+        get { UserDefaults.standard.integer(forKey: defaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: defaultsKey) }
+    }
+
+    static func recordExport() {
+        pendingCount += 1
+        Task { await flush() }
+    }
+
+    static func flush() async {
+        let countToSend = pendingCount
+        guard countToSend > 0,
+              let url = URL(string: "\(RocketsBriefConfig.supabaseURL)/rest/v1/briefshow_export_events")
+        else {
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(RocketsBriefConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["count": countToSend])
+
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode)
+        else {
+            return
+        }
+
+        pendingCount = max(0, pendingCount - countToSend)
+    }
+}

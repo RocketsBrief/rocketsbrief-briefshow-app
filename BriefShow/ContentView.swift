@@ -8623,7 +8623,11 @@ private func computeImaginationRevealTargets(
 
     let secondaryStartingX: CGFloat =
         usesSecondTwinScene
-        ? -(sceneSize.width * 0.62)
+        ? (
+            secondaryStartsOnRight
+            ? sceneSize.width * 0.62
+            : -(sceneSize.width * 0.62)
+        )
         : (
             secondaryStartsOnRight
             ? sceneSize.width * 0.54
@@ -8632,7 +8636,11 @@ private func computeImaginationRevealTargets(
 
     let secondaryEndingX: CGFloat =
         usesSecondTwinScene
-        ? -(sceneSize.width * 0.25)
+        ? (
+            secondaryStartsOnRight
+            ? sceneSize.width * 0.25
+            : -(sceneSize.width * 0.25)
+        )
         : (
             secondaryStartsOnRight
             ? sceneSize.width * 0.255
@@ -9255,6 +9263,7 @@ private struct ImaginationExportSceneView: View {
                             .frame(width: cardSize.width, height: cardSize.height)
                             .clipped()
                             .blur(radius: 16)
+                            .saturation(0)
                             .brightness(-0.08)
                             .contrast(0.92)
 
@@ -9287,6 +9296,7 @@ private struct ImaginationExportSceneView: View {
                                 )
                                 .clipped()
                                 .blur(radius: 16)
+                                .saturation(0)
                                 .brightness(-0.08)
                                 .contrast(0.92)
 
@@ -15059,6 +15069,7 @@ struct ImaginationCardPage: View {
                             )
                             .clipped()
                             .blur(radius: 16)
+                            .saturation(0)
                             .brightness(-0.08)
                             .contrast(0.92)
 
@@ -15133,6 +15144,7 @@ struct ImaginationCardPage: View {
                                 )
                                 .clipped()
                                 .blur(radius: 16)
+                                .saturation(0)
                                 .brightness(-0.08)
                                 .contrast(0.92)
 
@@ -15892,7 +15904,11 @@ struct ImaginationCardPage: View {
 
         let secondaryStartingX: CGFloat =
             usesSecondTwinScene
-            ? -(sceneSize.width * 0.62)
+            ? (
+                secondaryStartsOnRight
+                ? sceneSize.width * 0.62
+                : -(sceneSize.width * 0.62)
+            )
             : (
                 secondaryStartsOnRight
                 ? sceneSize.width * 0.54
@@ -15901,7 +15917,11 @@ struct ImaginationCardPage: View {
 
         let secondaryEndingX: CGFloat =
             usesSecondTwinScene
-            ? -(sceneSize.width * 0.25)
+            ? (
+                secondaryStartsOnRight
+                ? sceneSize.width * 0.25
+                : -(sceneSize.width * 0.25)
+            )
             : (
                 secondaryStartsOnRight
                 ? sceneSize.width * 0.255

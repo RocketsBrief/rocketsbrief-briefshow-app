@@ -428,11 +428,13 @@ struct UpdateRequiredOverlay: View {
 
                 if showInstallGuide {
                     VStack(alignment: .leading, spacing: 10) {
-                        installStep(1, "Click \"Download Update\" above. It opens the download page in your browser.")
-                        installStep(2, "Open the downloaded file and drag the new BriefShow into your Applications folder, replacing the old version.")
-                        installStep(3, "BriefShow is still in active development, so it isn't distributed through the Mac App Store yet. When you first open it, macOS will say it \"was blocked to protect your Mac.\" Open System Settings → Privacy & Security, scroll down to the Security section, and click \"Open Anyway\" next to BriefShow.")
-                        installStep(4, "Open BriefShow again. Click \"Open Anyway\" once more in the dialog, then enter your Mac's login password when asked. Choose \"Always Allow\" so you won't be asked again.")
-                        installStep(5, "That's it. BriefShow will open normally from then on.")
+                        installStep(1, "Click \"Download Update\" above. It opens the BriefShow release page on GitHub in your browser.")
+                        installStep(2, "On that page, under \"Assets\", click the file named \"BriefShow-macOS-Universal.zip\" to start the download.")
+                        installStep(3, "Quit BriefShow if it's currently open.")
+                        installStep(4, "Open the downloaded file, then drag the new BriefShow into your Applications folder. Choose \"Replace\" when asked.")
+                        installStep(5, "BriefShow is still in active development, so it isn't distributed through the Mac App Store yet. When you first open it, macOS will say it \"was blocked to protect your Mac.\" Open System Settings → Privacy & Security, scroll down to the Security section, and click \"Open Anyway\" next to BriefShow.")
+                        installStep(6, "Open BriefShow again. Click \"Open Anyway\" once more in the dialog, then enter your Mac's login password when asked. Choose \"Always Allow\" so you won't be asked again.")
+                        installStep(7, "That's it. BriefShow will open normally from then on.")
                     }
                     .padding(14)
                     .background(AppColors.panel)

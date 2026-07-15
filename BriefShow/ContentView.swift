@@ -10470,6 +10470,7 @@ private func loadDroppedFileURLs(
 struct HeaderView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     @ObservedObject private var accountManager = AccountManager.shared
+    @ObservedObject private var remoteStatus = AppRemoteStatus.shared
     @Binding var isProfileModalPresented: Bool
     @State private var isRocketsBriefHovered = false
     @State private var isFundMissionHovered = false
@@ -10583,7 +10584,7 @@ struct HeaderView: View {
                     }
                 }
 
-                if let session = accountManager.session {
+                if remoteStatus.isLocked, let session = accountManager.session {
                     Button {
                         isProfileModalPresented = true
                     } label: {

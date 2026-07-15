@@ -430,8 +430,9 @@ struct UpdateRequiredOverlay: View {
                     VStack(alignment: .leading, spacing: 10) {
                         installStep(1, "Click \"Download Update\" above. It opens the download page in your browser.")
                         installStep(2, "Open the downloaded file and drag the new BriefShow into your Applications folder, replacing the old version.")
-                        installStep(3, "BriefShow is still in active development, so it isn't distributed through the Mac App Store yet. The first time you open the new version, macOS may show a warning that it can't verify the developer. Right-click (or Control-click) the BriefShow icon and choose \"Open\", then click \"Open\" again in the dialog that appears. You only need to do this once per update.")
-                        installStep(4, "That's it. BriefShow will open normally from then on.")
+                        installStep(3, "BriefShow is still in active development, so it isn't distributed through the Mac App Store yet. When you first open it, macOS will say it \"was blocked to protect your Mac.\" Open System Settings → Privacy & Security, scroll down to the Security section, and click \"Open Anyway\" next to BriefShow.")
+                        installStep(4, "Open BriefShow again. Click \"Open Anyway\" once more in the dialog, then enter your Mac's login password when asked. Choose \"Always Allow\" so you won't be asked again.")
+                        installStep(5, "That's it. BriefShow will open normally from then on.")
                     }
                     .padding(14)
                     .background(AppColors.panel)

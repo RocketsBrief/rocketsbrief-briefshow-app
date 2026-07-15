@@ -11893,6 +11893,8 @@ private struct FullscreenIconButton: View {
     let isDisabled: Bool
     let action: () -> Void
 
+    @State private var isHovered = false
+
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
@@ -11902,7 +11904,15 @@ private struct FullscreenIconButton: View {
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
-        .help(label)
+        .onHover { hovering in
+            isHovered = hovering && !isDisabled
+        }
+        .popover(isPresented: $isHovered, arrowEdge: .top) {
+            Text(label)
+                .font(.custom("Figtree", size: 11).weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+        }
     }
 }
 
@@ -16681,7 +16691,12 @@ private struct PreviewIconButton: View {
         .onHover { hovering in
             isHovered = hovering && !isDisabled
         }
-        .help(label)
+        .popover(isPresented: $isHovered, arrowEdge: .top) {
+            Text(label)
+                .font(.custom("Figtree", size: 11).weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+        }
     }
 }
 

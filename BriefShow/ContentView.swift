@@ -30,6 +30,7 @@ enum SlideshowVisualTheme: String {
 }
 
 struct ContentView: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     @State private var selectedPhotoURLs: [URL] = []
     @State private var previewImages: [NSImage] = []
     @State private var isPreparingPhotos: Bool = false
@@ -137,7 +138,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.957, green: 0.937, blue: 0.910)
+            AppColors.background
                 .ignoresSafeArea()
 
             VStack(spacing: 10) {
@@ -239,7 +240,7 @@ struct ContentView: View {
 
                     Text("© 2026 RocketsBrief. All rights reserved.")
                         .font(.custom("Figtree", size: 10.5).weight(.regular))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.62))
+                        .foregroundColor(AppColors.muted.opacity(0.62))
                         .lineLimit(1)
 
                     Spacer()
@@ -10438,6 +10439,7 @@ private func loadDroppedFileURLs(
 }
 
 struct HeaderView: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     @State private var isRocketsBriefHovered = false
     @State private var isFundMissionHovered = false
     @State private var isDisclaimerHovered = false
@@ -10446,21 +10448,28 @@ struct HeaderView: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 0) {
-                    Text("Brief")
-                        .font(.custom("Unbounded", size: 28).weight(.black))
-                        .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
-                        .tracking(-2.4)
+                HStack(spacing: 14) {
+                    HStack(spacing: 0) {
+                        Text("Brief")
+                            .font(.custom("Unbounded", size: 28).weight(.black))
+                            .foregroundColor(AppColors.ink)
+                            .tracking(-2.4)
 
-                    Text("Show")
-                        .font(.custom("Unbounded", size: 28).weight(.black))
-                        .foregroundColor(Color(red: 0.500, green: 0.525, blue: 0.575))
-                        .tracking(-2.4)
+                        Text("Show")
+                            .font(.custom("Unbounded", size: 28).weight(.black))
+                            .foregroundColor(AppColors.inkSecondary)
+                            .tracking(-2.4)
+                    }
+
+                    HStack(spacing: 8) {
+                        ThemeToggleButton(theme: .white, selected: $themeManager.current)
+                        ThemeToggleButton(theme: .buttery, selected: $themeManager.current)
+                    }
                 }
 
                 Text("Create high-resolution photo slideshows with music.")
                     .font(.custom("Figtree", size: 13).weight(.medium))
-                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                    .foregroundColor(AppColors.muted)
             }
 
             Spacer()
@@ -10553,28 +10562,29 @@ struct HeaderView: View {
 }
 
 struct RocketsBriefHoverCard: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Need a website, web app, or mobile app?")
                 .font(.custom("Figtree", size: 14).weight(.medium))
-                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                .foregroundColor(AppColors.ink)
 
             Text("Visit RocketsBrief and turn your idea into a hosted preview from just $5.")
                 .font(.custom("Figtree", size: 11).weight(.regular))
-                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text("Click RocketsBrief to open the site.")
-                .font(.custom("Figtree", size: 10.5).weight(.medium))
-                .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+                .font(.custom("Figtree", size: 10.5).weight(.semibold))
+                .foregroundColor(AppColors.hoverInk)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .frame(width: 270, alignment: .leading)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(AppColors.background)
         .overlay(
             RoundedRectangle(cornerRadius: 26)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 3)
+                .stroke(AppColors.border, lineWidth: 3)
         )
         .clipShape(RoundedRectangle(cornerRadius: 26))
         .shadow(color: Color.black.opacity(0.13), radius: 18, x: 0, y: 10)
@@ -10582,28 +10592,29 @@ struct RocketsBriefHoverCard: View {
 }
 
 struct FundMissionHoverCard: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Enjoying BriefShow?")
                 .font(.custom("Figtree", size: 14).weight(.medium))
-                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                .foregroundColor(AppColors.ink)
 
             Text("BriefShow is free to use. Your support helps RocketsBrief build more AI-powered tools, creative apps, and digital products — including some that may stay free for the community.")
                 .font(.custom("Figtree", size: 11).weight(.regular))
-                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text("Click Fund Mission to support RocketsBrief.")
-                .font(.custom("Figtree", size: 10.5).weight(.medium))
-                .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+                .font(.custom("Figtree", size: 10.5).weight(.semibold))
+                .foregroundColor(AppColors.hoverInk)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .frame(width: 285, alignment: .leading)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(AppColors.background)
         .overlay(
             RoundedRectangle(cornerRadius: 26)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 3)
+                .stroke(AppColors.border, lineWidth: 3)
         )
         .clipShape(RoundedRectangle(cornerRadius: 26))
         .shadow(color: Color.black.opacity(0.13), radius: 18, x: 0, y: 10)
@@ -10611,28 +10622,29 @@ struct FundMissionHoverCard: View {
 }
 
 struct DisclaimerHoverCard: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Disclaimer & Usage Notice")
                 .font(.custom("Figtree", size: 14).weight(.medium))
-                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                .foregroundColor(AppColors.ink)
 
             Text("Read the usage notice for BriefShow and RocketsBrief products, including user responsibility, voluntary support terms, limitations, and prohibited use.")
                 .font(.custom("Figtree", size: 11).weight(.regular))
-                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text("Click Disclaimer to read the full notice.")
-                .font(.custom("Figtree", size: 10.5).weight(.medium))
-                .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+                .font(.custom("Figtree", size: 10.5).weight(.semibold))
+                .foregroundColor(AppColors.hoverInk)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .frame(width: 315, alignment: .leading)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(AppColors.background)
         .overlay(
             RoundedRectangle(cornerRadius: 26)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 3)
+                .stroke(AppColors.border, lineWidth: 3)
         )
         .clipShape(RoundedRectangle(cornerRadius: 26))
         .shadow(color: Color.black.opacity(0.13), radius: 18, x: 0, y: 10)
@@ -10640,6 +10652,7 @@ struct DisclaimerHoverCard: View {
 }
 
 struct DisclaimerNoticeModal: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     @Environment(\.dismiss) private var dismiss
 
     private let noticeSections: [(String, String)] = [
@@ -10675,11 +10688,11 @@ struct DisclaimerNoticeModal: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Disclaimer & Usage Notice")
                         .font(.custom("Figtree", size: 24).weight(.semibold))
-                        .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                        .foregroundColor(AppColors.ink)
 
                     Text("For BriefShow and RocketsBrief products")
                         .font(.custom("Figtree", size: 12.5).weight(.regular))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                        .foregroundColor(AppColors.muted)
                 }
 
                 Spacer()
@@ -10703,19 +10716,19 @@ struct DisclaimerNoticeModal: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(section.0)
                                 .font(.custom("Figtree", size: 14).weight(.semibold))
-                                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                                .foregroundColor(AppColors.ink)
 
                             Text(section.1)
                                 .font(.custom("Figtree", size: 12).weight(.regular))
-                                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                                .foregroundColor(AppColors.muted)
                                 .lineSpacing(3)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
 
                     Text("By using BriefShow or supporting RocketsBrief, you agree that you are responsible for your own use of the tool and any content or output you create with it.")
-                        .font(.custom("Figtree", size: 12).weight(.medium))
-                        .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+                        .font(.custom("Figtree", size: 12).weight(.semibold))
+                        .foregroundColor(AppColors.hoverInk)
                         .lineSpacing(3)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 2)
@@ -10725,11 +10738,12 @@ struct DisclaimerNoticeModal: View {
             }
         }
         .frame(width: 640, height: 620)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(AppColors.background)
     }
 }
 
 struct LeftImportPanel: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     @Binding var timingMode: SlideshowTimingMode
     @Binding var secondsPerPhoto: Double
     @Binding var fadeDuration: Double
@@ -10753,12 +10767,12 @@ struct LeftImportPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Slideshow Settings")
                     .font(.custom("Figtree", size: 13).weight(.medium))
-                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                    .foregroundColor(AppColors.ink)
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Theme")
                         .font(.custom("Figtree", size: 11.5).weight(.medium))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                        .foregroundColor(AppColors.muted)
 
                     Button {
                         isThemePickerPresented.toggle()
@@ -10767,12 +10781,14 @@ struct LeftImportPanel: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(visualTheme.rawValue)
                                     .font(.custom("Figtree", size: 12.5).weight(.medium))
-                                    .foregroundColor(isThemeButtonHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390))
+                                    .fontWeight(isThemeButtonHovered ? .semibold : nil)
+                                    .foregroundColor(isThemeButtonHovered ? AppColors.hoverInk : AppColors.ink)
                                     .scaleEffect(isThemeButtonHovered ? 1.025 : 1, anchor: .leading)
 
                                 Text("Choose Theme")
                                     .font(.custom("Figtree", size: 10.5).weight(.regular))
-                                    .foregroundColor(isThemeButtonHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.82) : Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                                    .fontWeight(isThemeButtonHovered ? .semibold : nil)
+                                    .foregroundColor(isThemeButtonHovered ? AppColors.hoverInk.opacity(0.82) : AppColors.muted.opacity(0.72))
                                     .scaleEffect(isThemeButtonHovered ? 1.02 : 1, anchor: .leading)
                             }
 
@@ -10780,7 +10796,7 @@ struct LeftImportPanel: View {
 
                             Image(systemName: "sparkles")
                                 .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+                                .foregroundColor(AppColors.hoverInk)
                                 .scaleEffect(isThemeButtonHovered ? 1.08 : 1)
                         }
                         .padding(.horizontal, 14)
@@ -10789,10 +10805,10 @@ struct LeftImportPanel: View {
                         .contentShape(RoundedRectangle(cornerRadius: 18))
                     }
                     .buttonStyle(PlainButtonStyle())
-                    .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                    .background(AppColors.panel)
                     .overlay(
                         RoundedRectangle(cornerRadius: 18)
-                            .stroke(isThemeButtonHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 2)
+                            .stroke(isThemeButtonHovered ? AppColors.hoverInk : AppColors.border, lineWidth: 2)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 18))
                     .onHover { hovering in
@@ -10817,7 +10833,7 @@ struct LeftImportPanel: View {
 
                     Text(themeHelperText)
                         .font(.custom("Figtree", size: 10.5).weight(.regular))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                        .foregroundColor(AppColors.muted.opacity(0.72))
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -10968,38 +10984,38 @@ struct LeftImportPanel: View {
                 Toggle("Loop Preview", isOn: $shouldLoopPreview)
                     .toggleStyle(.checkbox)
                     .font(.custom("Figtree", size: 12).weight(.medium))
-                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                    .foregroundColor(AppColors.ink)
                     .padding(.top, 2)
 
                 Text(timingModeHelperText)
                     .font(.custom("Figtree", size: 11).weight(.regular))
-                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                    .foregroundColor(AppColors.muted.opacity(0.78))
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                    .background(AppColors.panel)
                     .overlay(
                         RoundedRectangle(cornerRadius: 18)
-                            .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 2)
+                            .stroke(AppColors.border.opacity(0.85), lineWidth: 2)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 18))
                     .padding(.top, 2)
             }
             .padding(14)
-            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+            .background(AppColors.background)
             .overlay(
                 RoundedRectangle(cornerRadius: 24)
-                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+                    .stroke(AppColors.border, lineWidth: 4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 24))
         }
         .padding(14)
         .frame(width: 290)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(AppColors.background)
         .overlay(
             RoundedRectangle(cornerRadius: 34)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+                .stroke(AppColors.border, lineWidth: 4)
         )
         .clipShape(RoundedRectangle(cornerRadius: 34))
         
@@ -11093,6 +11109,7 @@ struct LeftImportPanel: View {
 }
 
 struct ThemePickerPopover: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     @Binding var selectedTheme: SlideshowVisualTheme
     @Binding var transitionStyle: SlideshowTransitionStyle
     @Binding var timingMode: SlideshowTimingMode
@@ -11109,7 +11126,7 @@ struct ThemePickerPopover: View {
             HStack(alignment: .center) {
                 Text("Choose Theme")
                     .font(.custom("Figtree", size: 22).weight(.semibold))
-                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                    .foregroundColor(AppColors.ink)
 
                 Spacer()
 
@@ -11125,7 +11142,7 @@ struct ThemePickerPopover: View {
 
             Text("Pick the slideshow style. AI Toon themes will be available later with sign in and credits.")
                 .font(.custom("Figtree", size: 12).weight(.regular))
-                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
@@ -11216,11 +11233,12 @@ struct ThemePickerPopover: View {
         }
         .padding(22)
         .frame(width: 500, height: 680, alignment: .topLeading)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(AppColors.background)
     }
 }
 
 struct ThemePickerSectionTitle: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let title: String
 
     init(_ title: String) {
@@ -11230,12 +11248,13 @@ struct ThemePickerSectionTitle: View {
     var body: some View {
         Text(title)
             .font(.custom("Figtree", size: 11.5).weight(.semibold))
-            .foregroundColor(Color(red: 0.000, green: 0.610, blue: 0.760))
+            .foregroundColor(AppColors.hoverInk)
             .padding(.top, 2)
     }
 }
 
 struct ThemePickerOption: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let title: String
     let subtitle: String
     let isSelected: Bool
@@ -11255,23 +11274,24 @@ struct ThemePickerOption: View {
                     HStack(spacing: 6) {
                         Text(title)
                             .font(.custom("Figtree", size: 12.5).weight(.medium))
+                            .fontWeight(isSelected || (isHovered && !isLocked) ? .semibold : nil)
                             .foregroundColor(titleColor)
-                            .scaleEffect(isHovered && !isLocked ? 1.025 : 1, anchor: .leading)
+                            .scaleEffect(isSelected || (isHovered && !isLocked) ? 1.025 : 1, anchor: .leading)
 
                         if isLocked {
                             Text("Locked")
                                 .font(.custom("Figtree", size: 9.5).weight(.semibold))
-                                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                                .foregroundColor(AppColors.muted)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
-                                .background(Color(red: 0.900, green: 0.870, blue: 0.810))
+                                .background(AppColors.panelAlt)
                                 .clipShape(RoundedRectangle(cornerRadius: 999))
                         }
                     }
 
                     Text(subtitle)
                         .font(.custom("Figtree", size: 10.5).weight(.regular))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(isLocked ? 0.55 : 0.78))
+                        .foregroundColor(AppColors.muted.opacity(isLocked ? 0.55 : 0.78))
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -11288,7 +11308,7 @@ struct ThemePickerOption: View {
             .background(backgroundColor)
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .stroke(borderColor, lineWidth: isSelected ? 2.5 : 1.5)
+                    .stroke(borderColor, lineWidth: isSelected ? 1.9 : 1.5)
             )
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
@@ -11303,40 +11323,41 @@ struct ThemePickerOption: View {
 
     private var titleColor: Color {
         if isLocked {
-            return Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.55)
+            return AppColors.muted.opacity(0.55)
         }
 
-        if isHovered || isSelected {
-            return Color(red: 0.000, green: 0.610, blue: 0.760)
+        if isSelected || isHovered {
+            return AppColors.hoverInk
         }
 
-        return Color(red: 0.315, green: 0.340, blue: 0.390)
+        return AppColors.ink
     }
 
     private var iconColor: Color {
         if isSelected || (isHovered && !isLocked) {
-            return Color(red: 0.000, green: 0.610, blue: 0.760)
+            return AppColors.hoverInk
         }
 
-        return Color(red: 0.390, green: 0.390, blue: 0.390).opacity(isLocked ? 0.45 : 0.50)
+        return AppColors.muted.opacity(isLocked ? 0.45 : 0.50)
     }
 
     private var backgroundColor: Color {
         isSelected
-            ? Color(red: 0.930, green: 0.900, blue: 0.850)
-            : Color(red: 0.957, green: 0.937, blue: 0.910)
+            ? AppColors.panel
+            : AppColors.background
     }
 
     private var borderColor: Color {
         if isSelected || (isHovered && !isLocked) {
-            return Color(red: 0.000, green: 0.610, blue: 0.760)
+            return AppColors.hoverInk
         }
 
-        return Color(red: 0.820, green: 0.780, blue: 0.710).opacity(isLocked ? 0.45 : 0.85)
+        return AppColors.border.opacity(isLocked ? 0.45 : 0.85)
     }
 }
 
 struct FullScreenPreviewSheet: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let activePreviewImage: NSImage?
     let previousPreviewImage: NSImage?
     let activePhotoName: String
@@ -11538,12 +11559,12 @@ struct FullScreenPreviewSheet: View {
         } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 13, weight: .bold))
-                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                .foregroundColor(AppColors.ink)
                 .frame(width: 34, height: 34)
-                .background(Color(red: 0.957, green: 0.937, blue: 0.910).opacity(0.96))
+                .background(AppColors.background.opacity(0.96))
                 .overlay(
                     RoundedRectangle(cornerRadius: 999)
-                        .stroke(Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.75), lineWidth: 1.5)
+                        .stroke(AppColors.ink.opacity(0.75), lineWidth: 1.5)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 999))
                 .shadow(color: Color.black.opacity(0.34), radius: 8, x: 0, y: 3)
@@ -15882,6 +15903,7 @@ struct ImaginationCardPage: View {
 }
 
 struct CenterPreviewPanel: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let activePreviewImage: NSImage?
     let previousPreviewImage: NSImage?
     let activePhotoName: String
@@ -15945,7 +15967,7 @@ struct CenterPreviewPanel: View {
                 PanelTitle(title: "Preview", subtitle: "Your slideshow will appear here")
                 ZStack {
                     RoundedRectangle(cornerRadius: 34)
-                        .fill(activePreviewImage == nil && !isPreparingPhotos && NSImage(named: "ScreenSketch") != nil ? Color.clear : Color.black)
+                        .fill(activePreviewImage == nil && !isPreparingPhotos ? AppColors.panel : Color.black)
 
                     if let activePreviewImage {
                         if usesMagazinePreview {
@@ -16089,26 +16111,18 @@ struct CenterPreviewPanel: View {
                                 .foregroundColor(.white.opacity(0.65))
                         }
                     } else {
-                        if NSImage(named: "ScreenSketch") != nil {
-                            Image("ScreenSketch")
-                                .resizable()
-                                .scaledToFill()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 28))
-                        } else {
-                            VStack(spacing: 16) {
-                                Image(systemName: "play.rectangle.fill")
-                                    .font(.system(size: 42))
-                                    .foregroundColor(Color(red: 0.957, green: 0.863, blue: 0.545))
+                        VStack(spacing: 16) {
+                            Image(systemName: "photo.on.rectangle.angled")
+                                .font(.system(size: 42, weight: .light))
+                                .foregroundColor(AppColors.muted.opacity(0.55))
 
-                                Text("No slideshow yet")
-                                    .font(.custom("Figtree", size: 13).weight(.medium))
-                                    .foregroundColor(.white)
+                            Text("No slideshow yet")
+                                .font(.custom("Figtree", size: 13).weight(.semibold))
+                                .foregroundColor(AppColors.ink)
 
-                                Text("Add photos and music to generate a preview.")
-                                    .font(.custom("Figtree", size: 14).weight(.medium))
-                                    .foregroundColor(.white.opacity(0.65))
-                            }
+                            Text("Add photos and music to generate a preview.")
+                                .font(.custom("Figtree", size: 14).weight(.medium))
+                                .foregroundColor(AppColors.muted)
                         }
                     }
                 }
@@ -16155,16 +16169,16 @@ struct CenterPreviewPanel: View {
 
                     Text(timeCounterText)
                         .font(.custom("Figtree", size: 12).weight(.regular))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                        .foregroundColor(AppColors.muted)
                         .lineLimit(1)
                 }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .top)
-            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+            .background(AppColors.background)
             .overlay(
                 RoundedRectangle(cornerRadius: 34)
-                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+                    .stroke(AppColors.border, lineWidth: 4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 34))
 
@@ -16173,19 +16187,21 @@ struct CenterPreviewPanel: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 10) {
                             Image(systemName: "photo.on.rectangle.angled")
-                                .font(.system(size: 19, weight: .medium))
-                                .foregroundColor(isPhotosCardHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390))
+                                .font(.system(size: 19, weight: isPhotosCardHovered ? .semibold : .medium))
+                                .foregroundColor(isPhotosCardHovered ? AppColors.hoverInk : AppColors.ink)
                                 .scaleEffect(isPhotosCardHovered ? 1.08 : 1)
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Photos")
                                     .font(.custom("Figtree", size: 13).weight(.medium))
-                                    .foregroundColor(isPhotosCardHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390))
+                                    .fontWeight(isPhotosCardHovered ? .semibold : nil)
+                                    .foregroundColor(isPhotosCardHovered ? AppColors.hoverInk : AppColors.ink)
                                     .scaleEffect(isPhotosCardHovered ? 1.025 : 1, anchor: .leading)
 
                                 Text(photoStatusText)
                                     .font(.custom("Figtree", size: 10.5).weight(.regular))
-                                    .foregroundColor(isPhotosCardHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.82) : Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                                    .fontWeight(isPhotosCardHovered ? .semibold : nil)
+                                    .foregroundColor(isPhotosCardHovered ? AppColors.hoverInk.opacity(0.82) : AppColors.muted.opacity(0.72))
                                     .scaleEffect(isPhotosCardHovered ? 1.02 : 1, anchor: .leading)
                                     .lineLimit(1)
                             }
@@ -16227,16 +16243,16 @@ struct CenterPreviewPanel: View {
                     HStack {
                         Image(systemName: "music.note.list")
                             .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                            .foregroundColor(AppColors.ink)
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Music Playlist")
                                 .font(.custom("Figtree", size: 13).weight(.medium))
-                                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                                .foregroundColor(AppColors.ink)
 
                             Text("Up to 3 tracks • repeats until slideshow ends")
                                 .font(.custom("Figtree", size: 10.5).weight(.regular))
-                                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                                .foregroundColor(AppColors.muted.opacity(0.72))
                                 .lineLimit(1)
                         }
 
@@ -16265,10 +16281,10 @@ struct CenterPreviewPanel: View {
             .padding(12)
             .frame(maxWidth: .infinity)
             .contentShape(RoundedRectangle(cornerRadius: 34))
-            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+            .background(AppColors.background)
             .overlay(
                 RoundedRectangle(cornerRadius: 34)
-                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+                    .stroke(AppColors.border, lineWidth: 4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 34))
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -16306,6 +16322,7 @@ struct CenterPreviewPanel: View {
 }
 
 struct PhotoImportInfoRow: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let icon: String
     let title: String
     let isHovered: Bool
@@ -16313,8 +16330,8 @@ struct PhotoImportInfoRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.8))
+                .font(.system(size: 10, weight: isHovered ? .semibold : .semibold))
+                .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink.opacity(0.8))
                 .frame(width: 18, height: 18)
                 .background(Color.white.opacity(0.48))
                 .clipShape(Circle())
@@ -16322,7 +16339,8 @@ struct PhotoImportInfoRow: View {
 
             Text(title)
                 .font(.custom("Figtree", size: 10.5).weight(.regular))
-                .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.9) : Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                .fontWeight(isHovered ? .semibold : nil)
+                .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.muted.opacity(0.78))
                 .scaleEffect(isHovered ? 1.02 : 1, anchor: .leading)
                 .lineLimit(1)
 
@@ -16333,7 +16351,7 @@ struct PhotoImportInfoRow: View {
         .background(isHovered ? Color.white.opacity(0.42) : Color.white.opacity(0.28))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.8) : Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.8), lineWidth: isHovered ? 1.6 : 1)
+                .stroke(isHovered ? AppColors.hoverInk.opacity(0.8) : AppColors.border.opacity(0.8), lineWidth: isHovered ? 1.6 : 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .animation(.linear(duration: 0.10), value: isHovered)
@@ -16341,6 +16359,7 @@ struct PhotoImportInfoRow: View {
 }
 
 struct MusicTrackRow: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let index: Int
     let hasTrack: Bool
     let subtitle: String
@@ -16352,8 +16371,8 @@ struct MusicTrackRow: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: hasTrack ? "music.note" : "plus")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.8))
+                    .font(.system(size: 10, weight: isHovered ? .semibold : .semibold))
+                    .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink.opacity(0.8))
                     .frame(width: 18, height: 18)
                     .background(Color.white.opacity(0.48))
                     .clipShape(Circle())
@@ -16362,12 +16381,14 @@ struct MusicTrackRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Track \(index + 1)")
                         .font(.custom("Figtree", size: 10).weight(.medium))
-                        .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390))
+                        .fontWeight(isHovered ? .semibold : nil)
+                        .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink)
                         .scaleEffect(isHovered ? 1.03 : 1, anchor: .leading)
 
                     Text(subtitle)
                         .font(.custom("Figtree", size: 10.5).weight(.regular))
-                        .foregroundColor(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.82) : Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.72))
+                        .fontWeight(isHovered ? .semibold : nil)
+                        .foregroundColor(isHovered ? AppColors.hoverInk.opacity(0.82) : AppColors.muted.opacity(0.72))
                         .scaleEffect(isHovered ? 1.02 : 1, anchor: .leading)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -16380,7 +16401,7 @@ struct MusicTrackRow: View {
             .background(isHovered ? Color.white.opacity(0.42) : Color.white.opacity(0.28))
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760).opacity(0.8) : Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.8), lineWidth: isHovered ? 1.6 : 1)
+                    .stroke(isHovered ? AppColors.hoverInk.opacity(0.8) : AppColors.border.opacity(0.8), lineWidth: isHovered ? 1.6 : 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .contentShape(RoundedRectangle(cornerRadius: 10))
@@ -16394,6 +16415,7 @@ struct MusicTrackRow: View {
 }
 
 struct RightExportPanel: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     @Binding var selectedResolution: String
     let selectedMusicURL: URL?
     let selectedMusicCount: Int
@@ -16414,7 +16436,7 @@ struct RightExportPanel: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Video Settings")
                     .font(.custom("Figtree", size: 13).weight(.medium))
-                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                    .foregroundColor(AppColors.ink)
 
                 SettingRow(label: "Format", value: "MP4")
                 SettingRow(label: "Codec", value: selectedResolution == "Original" ? "H.265" : "H.264")
@@ -16424,7 +16446,7 @@ struct RightExportPanel: View {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("Export Size")
                         .font(.custom("Figtree", size: 12).weight(.regular))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                        .foregroundColor(AppColors.muted)
 
                     VStack(spacing: 8) {
                         HStack(spacing: 8) {
@@ -16447,7 +16469,7 @@ struct RightExportPanel: View {
                 HStack(spacing: 8) {
                     Text(exportStatusText ?? exportHelperText)
                         .font(.custom("Figtree", size: 11).weight(.regular))
-                        .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                        .foregroundColor(AppColors.muted.opacity(0.78))
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -16468,37 +16490,37 @@ struct RightExportPanel: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                .background(AppColors.panel)
                 .overlay(
                     RoundedRectangle(cornerRadius: 18)
-                        .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85), lineWidth: 2)
+                        .stroke(AppColors.border.opacity(0.85), lineWidth: 2)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 18))
                 .padding(.top, 2)
 
             }
             .padding(14)
-            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+            .background(AppColors.background)
             .overlay(
                 RoundedRectangle(cornerRadius: 24)
-                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+                    .stroke(AppColors.border, lineWidth: 4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 24))
 
         }
         .padding(14)
         .frame(width: 290)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(AppColors.background)
         .overlay(
             RoundedRectangle(cornerRadius: 34)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+                .stroke(AppColors.border, lineWidth: 4)
         )
         .clipShape(RoundedRectangle(cornerRadius: 34))
         .popover(isPresented: $isShowingExportConfirmation, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Export Video")
                     .font(.custom("Figtree", size: 14).weight(.medium))
-                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                    .foregroundColor(AppColors.ink)
 
                 if selectedResolution == "Original" {
                     VStack(alignment: .leading, spacing: 5) {
@@ -16531,7 +16553,7 @@ struct RightExportPanel: View {
 
                 Text("Choose where to save this \(selectedResolution) slideshow video.")
                     .font(.custom("Figtree", size: 11).weight(.regular))
-                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                    .foregroundColor(AppColors.muted.opacity(0.78))
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 8) {
@@ -16540,10 +16562,10 @@ struct RightExportPanel: View {
                     }
                     .buttonStyle(.plain)
                     .font(.custom("Figtree", size: 11).weight(.medium))
-                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.78))
+                    .foregroundColor(AppColors.muted.opacity(0.78))
                     .padding(.horizontal, 13)
                     .padding(.vertical, 8)
-                    .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                    .background(AppColors.panel)
                     .clipShape(RoundedRectangle(cornerRadius: 999))
 
                     Button {
@@ -16552,13 +16574,13 @@ struct RightExportPanel: View {
                     } label: {
                         Text(isExporting ? "Exporting…" : "Export Video")
                             .font(.custom("Figtree", size: 11).weight(.medium))
-                            .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                            .foregroundColor(AppColors.ink)
                             .padding(.horizontal, 13)
                             .padding(.vertical, 8)
-                            .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                            .background(AppColors.panel)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 999)
-                                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 1.7)
+                                    .stroke(AppColors.border, lineWidth: 1.7)
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 999))
                     }
@@ -16568,7 +16590,7 @@ struct RightExportPanel: View {
             }
             .padding(16)
             .frame(width: 260)
-            .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+            .background(AppColors.background)
         }
         
     }
@@ -16617,6 +16639,7 @@ struct RightExportPanel: View {
 }
 
 struct TimelinePanel: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     @Binding var photoURLs: [URL]
     @Binding var previewImages: [NSImage]
     let musicURL: URL?
@@ -16685,10 +16708,10 @@ struct TimelinePanel: View {
             }
         }
         .padding(14)
-        .background(Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(AppColors.background)
         .overlay(
             RoundedRectangle(cornerRadius: 34)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: 4)
+                .stroke(AppColors.border, lineWidth: 4)
         )
         .clipShape(RoundedRectangle(cornerRadius: 34))
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -16721,74 +16744,12 @@ struct TimelinePanel: View {
 }
 
 
-enum EmptyTimelineSceneKind: Int, CaseIterable, Identifiable {
-    case coupleSideBySide
-    case coupleLooking
-    case beachWalk
-    case womanSolo
-    case manSolo
-    case poolCouple
-    case palmWoman
-
-    var id: Int { rawValue }
-
-    var symbol: String {
-        switch self {
-        case .coupleSideBySide:
-            return "person.2"
-        case .coupleLooking:
-            return "heart"
-        case .beachWalk:
-            return "figure.walk"
-        case .womanSolo:
-            return "person.crop.circle"
-        case .manSolo:
-            return "person.crop.circle"
-        case .poolCouple:
-            return "water.waves"
-        case .palmWoman:
-            return "leaf"
-        }
-    }
-
-    var detailSymbol: String? {
-        switch self {
-        case .coupleSideBySide:
-            return "sparkles"
-        case .coupleLooking:
-            return "person.2"
-        case .beachWalk:
-            return "sun.max"
-        case .womanSolo:
-            return "sparkle"
-        case .manSolo:
-            return "camera"
-        case .poolCouple:
-            return "building.2"
-        case .palmWoman:
-            return "camera.aperture"
-        }
-    }
-}
-
 struct EmptyTimelineStoryboard: View {
-    private var dummyImageNames: [String] {
-        (1...8)
-            .map { "DummyTimeline\($0)" }
-            .filter { NSImage(named: $0) != nil }
-    }
-
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
-                if dummyImageNames.isEmpty {
-                    ForEach(EmptyTimelineSceneKind.allCases) { scene in
-                        EmptyTimelineSceneThumb(scene: scene)
-                    }
-                } else {
-                    ForEach(dummyImageNames, id: \.self) { imageName in
-                        EmptyTimelineImageThumb(imageName: imageName)
-                    }
+                ForEach(0..<8, id: \.self) { _ in
+                    EmptyTimelinePlaceholderThumb()
                 }
 
                 Spacer(minLength: 0)
@@ -16798,194 +16759,26 @@ struct EmptyTimelineStoryboard: View {
     }
 }
 
-struct EmptyTimelineImageThumb: View {
-    let imageName: String
-
+struct EmptyTimelinePlaceholderThumb: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     var body: some View {
-        Image(imageName)
-            .resizable()
-            .aspectRatio(contentMode: .fill)
-            .frame(width: 132, height: 56)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+        RoundedRectangle(cornerRadius: 14)
+            .fill(AppColors.panel)
+            .frame(width: 92, height: 56)
+            .overlay(
+                Image(systemName: "photo")
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundColor(AppColors.muted.opacity(0.55))
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
-                    .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.88), lineWidth: 2.4)
+                    .stroke(AppColors.border.opacity(0.75), style: StrokeStyle(lineWidth: 1.6, dash: [4, 4]))
             )
     }
 }
 
-struct EmptyTimelineSceneThumb: View {
-    let scene: EmptyTimelineSceneKind
-
-    private let ink = Color(red: 0.315, green: 0.340, blue: 0.390)
-    private let paper = Color(red: 0.930, green: 0.900, blue: 0.850)
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 14)
-                .fill(paper.opacity(0.54))
-
-            SketchSceneBackground(scene: scene)
-
-            Image(systemName: scene.symbol)
-                .font(.system(size: 22, weight: .regular))
-                .foregroundColor(ink.opacity(0.78))
-                .offset(mainSymbolOffset)
-
-            if let detailSymbol = scene.detailSymbol {
-                Image(systemName: detailSymbol)
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(ink.opacity(0.45))
-                    .offset(detailSymbolOffset)
-            }
-
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.88), lineWidth: 2.4)
-        }
-        .frame(width: 92, height: 56)
-    }
-
-    private var mainSymbolOffset: CGSize {
-        switch scene {
-        case .beachWalk:
-            return CGSize(width: -14, height: 3)
-        case .poolCouple:
-            return CGSize(width: -12, height: 5)
-        case .palmWoman:
-            return CGSize(width: 14, height: 4)
-        default:
-            return CGSize(width: 0, height: 0)
-        }
-    }
-
-    private var detailSymbolOffset: CGSize {
-        switch scene {
-        case .coupleSideBySide:
-            return CGSize(width: 25, height: -16)
-        case .coupleLooking:
-            return CGSize(width: -24, height: 13)
-        case .beachWalk:
-            return CGSize(width: 25, height: -16)
-        case .womanSolo:
-            return CGSize(width: 24, height: -15)
-        case .manSolo:
-            return CGSize(width: 24, height: -15)
-        case .poolCouple:
-            return CGSize(width: 22, height: -13)
-        case .palmWoman:
-            return CGSize(width: -22, height: -13)
-        }
-    }
-}
-
-struct SketchSceneBackground: View {
-    let scene: EmptyTimelineSceneKind
-
-    private let ink = Color(red: 0.315, green: 0.340, blue: 0.390)
-    private let blue = Color(red: 0.000, green: 0.610, blue: 0.760)
-
-    var body: some View {
-        ZStack {
-            commonSketchLines
-
-            switch scene {
-            case .coupleSideBySide, .coupleLooking:
-                portraitFrame
-
-            case .beachWalk:
-                beachLines
-                palmTree
-                    .offset(x: 24, y: -2)
-
-            case .womanSolo:
-                portraitFrame
-                softOval
-                    .offset(x: 15, y: -2)
-
-            case .manSolo:
-                portraitFrame
-                softOval
-                    .offset(x: -15, y: -2)
-
-            case .poolCouple:
-                poolLines
-
-            case .palmWoman:
-                palmTree
-                    .rotationEffect(.degrees(-10))
-                    .offset(x: -20, y: 3)
-                beachLines
-            }
-        }
-        .frame(width: 92, height: 56)
-        .clipped()
-    }
-
-    private var commonSketchLines: some View {
-        Path { path in
-            path.move(to: CGPoint(x: 10, y: 45))
-            path.addCurve(to: CGPoint(x: 82, y: 45), control1: CGPoint(x: 25, y: 39), control2: CGPoint(x: 60, y: 52))
-
-            path.move(to: CGPoint(x: 15, y: 12))
-            path.addCurve(to: CGPoint(x: 76, y: 13), control1: CGPoint(x: 32, y: 8), control2: CGPoint(x: 58, y: 18))
-        }
-        .stroke(ink.opacity(0.18), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
-    }
-
-    private var portraitFrame: some View {
-        RoundedRectangle(cornerRadius: 10)
-            .stroke(ink.opacity(0.18), lineWidth: 1.5)
-            .frame(width: 58, height: 38)
-    }
-
-    private var softOval: some View {
-        Ellipse()
-            .stroke(ink.opacity(0.16), lineWidth: 1.5)
-            .frame(width: 30, height: 38)
-    }
-
-    private var beachLines: some View {
-        Path { path in
-            path.move(to: CGPoint(x: 8, y: 40))
-            path.addCurve(to: CGPoint(x: 84, y: 40), control1: CGPoint(x: 28, y: 34), control2: CGPoint(x: 58, y: 48))
-
-            path.move(to: CGPoint(x: 12, y: 48))
-            path.addLine(to: CGPoint(x: 86, y: 48))
-        }
-        .stroke(ink.opacity(0.22), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-    }
-
-    private var poolLines: some View {
-        Path { path in
-            path.move(to: CGPoint(x: 8, y: 38))
-            path.addCurve(to: CGPoint(x: 84, y: 38), control1: CGPoint(x: 24, y: 28), control2: CGPoint(x: 58, y: 48))
-
-            path.move(to: CGPoint(x: 8, y: 47))
-            path.addCurve(to: CGPoint(x: 84, y: 47), control1: CGPoint(x: 24, y: 37), control2: CGPoint(x: 58, y: 57))
-        }
-        .stroke(blue.opacity(0.42), style: StrokeStyle(lineWidth: 2, lineCap: .round))
-    }
-
-    private var palmTree: some View {
-        Path { path in
-            path.move(to: CGPoint(x: 30, y: 50))
-            path.addQuadCurve(to: CGPoint(x: 42, y: 16), control: CGPoint(x: 26, y: 31))
-
-            path.move(to: CGPoint(x: 42, y: 16))
-            path.addLine(to: CGPoint(x: 24, y: 21))
-            path.move(to: CGPoint(x: 42, y: 16))
-            path.addLine(to: CGPoint(x: 60, y: 20))
-            path.move(to: CGPoint(x: 42, y: 16))
-            path.addLine(to: CGPoint(x: 33, y: 8))
-            path.move(to: CGPoint(x: 42, y: 16))
-            path.addLine(to: CGPoint(x: 51, y: 8))
-        }
-        .stroke(ink.opacity(0.30), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
-        .frame(width: 70, height: 52)
-    }
-}
-
 struct TimelinePhotoThumb: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let index: Int
     let url: URL
     let isActive: Bool
@@ -16993,7 +16786,7 @@ struct TimelinePhotoThumb: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             RoundedRectangle(cornerRadius: 14)
-                .fill(Color(red: 0.930, green: 0.900, blue: 0.850))
+                .fill(AppColors.panel)
 
             if let image = NSImage(contentsOf: url) {
                 Image(nsImage: image)
@@ -17004,7 +16797,7 @@ struct TimelinePhotoThumb: View {
             } else {
                 Image(systemName: "photo")
                     .font(.system(size: 18))
-                    .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390).opacity(0.65))
+                    .foregroundColor(AppColors.muted.opacity(0.65))
                     .frame(width: 92, height: 56)
             }
 
@@ -17026,8 +16819,8 @@ struct TimelinePhotoThumb: View {
 
     private var borderColor: Color {
         isActive
-            ? Color(red: 0.000, green: 0.610, blue: 0.760)
-            : Color(red: 0.820, green: 0.780, blue: 0.710).opacity(0.85)
+            ? AppColors.hoverInk
+            : AppColors.border.opacity(0.85)
     }
 }
 
@@ -17087,6 +16880,7 @@ struct TimelinePhotoDropDelegate: DropDelegate {
 }
 
 struct PanelTitle: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let title: String
     let subtitle: String
 
@@ -17094,16 +16888,17 @@ struct PanelTitle: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(.custom("Figtree", size: 17).weight(.medium))
-                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                .foregroundColor(AppColors.ink)
 
             Text(subtitle)
                 .font(.custom("Figtree", size: 13).weight(.regular))
-                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .foregroundColor(AppColors.muted)
         }
     }
 }
 
 struct DropCard: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let icon: String
     let title: String
     let subtitle: String
@@ -17133,7 +16928,7 @@ struct DropCard: View {
 
                     Text(subtitle)
                         .font(.custom("Figtree", size: 10).weight(.regular))
-                        .foregroundColor(isHovered ? activeColor.opacity(0.82) : Color(red: 0.390, green: 0.390, blue: 0.390))
+                        .foregroundColor(isHovered ? activeColor.opacity(0.82) : AppColors.muted)
                         .lineLimit(1)
                         .multilineTextAlignment(.center)
                 }
@@ -17141,10 +16936,10 @@ struct DropCard: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 9)
-        .background(isHovered ? Color(red: 0.930, green: 0.900, blue: 0.850) : Color(red: 0.957, green: 0.937, blue: 0.910))
+        .background(isHovered ? AppColors.panel : AppColors.background)
         .overlay(
             RoundedRectangle(cornerRadius: 22)
-                .stroke(isHovered ? activeColor : Color(red: 0.820, green: 0.780, blue: 0.710), lineWidth: isHovered ? 3.4 : 3)
+                .stroke(isHovered ? activeColor : AppColors.border, lineWidth: isHovered ? 3.4 : 3)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22))
         .animation(.linear(duration: 0.10), value: isHovered)
@@ -17154,13 +16949,14 @@ struct DropCard: View {
     }
 
     private var activeColor: Color {
-        isHovered ? Color(red: 0.000, green: 0.610, blue: 0.760) : Color(red: 0.315, green: 0.340, blue: 0.390)
+        isHovered ? AppColors.hoverInk : AppColors.ink
     }
 }
 
 
 
 struct TimingModeButton: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let title: String
     let isSelected: Bool
     let action: () -> Void
@@ -17171,17 +16967,18 @@ struct TimingModeButton: View {
         Button(action: action) {
             Text(title)
                 .font(.custom("Figtree", size: 11).weight(.medium))
+                .fontWeight(isSelected || isHovered ? .semibold : nil)
                 .foregroundColor(activeColor)
                 .lineLimit(1)
-                .scaleEffect(isHovered ? 1.035 : 1)
+                .scaleEffect(isSelected || isHovered ? 1.035 : 1)
                 .animation(.linear(duration: 0.10), value: isHovered)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 7)
                 .frame(maxWidth: .infinity)
-                .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                .background(AppColors.panel)
                 .overlay(
                     RoundedRectangle(cornerRadius: 999)
-                        .stroke(activeColor.opacity(isSelected || isHovered ? 1 : 0.7), lineWidth: isSelected || isHovered ? 2.2 : 1.6)
+                        .stroke(borderColor.opacity(isSelected || isHovered ? 1 : 0.7), lineWidth: isSelected || isHovered ? 1.8 : 1.4)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 999))
         }
@@ -17193,14 +16990,23 @@ struct TimingModeButton: View {
 
     private var activeColor: Color {
         if isSelected || isHovered {
-            return Color(red: 0.000, green: 0.610, blue: 0.760)
+            return AppColors.hoverInk
         }
 
-        return Color(red: 0.315, green: 0.340, blue: 0.390)
+        return AppColors.ink
+    }
+
+    private var borderColor: Color {
+        if isSelected || isHovered {
+            return AppColors.hoverInk
+        }
+
+        return AppColors.border
     }
 }
 
 struct PreviewControlButton: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let title: String
     let isDisabled: Bool
     let action: () -> Void
@@ -17211,6 +17017,7 @@ struct PreviewControlButton: View {
         Button(action: action) {
             Text(title)
                 .font(.custom("Figtree", size: 11).weight(.medium))
+                .fontWeight(isHovered && !isDisabled ? .semibold : nil)
                 .foregroundColor(activeColor)
                 .lineLimit(1)
                 .scaleEffect(isHovered && !isDisabled ? 1.035 : 1)
@@ -17218,7 +17025,7 @@ struct PreviewControlButton: View {
                 .padding(.horizontal, 9)
                 .padding(.vertical, 7)
                 .frame(width: 150)
-                .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+                .background(AppColors.panel)
                 .overlay(
                     RoundedRectangle(cornerRadius: 999)
                         .stroke(activeColor.opacity(isHovered && !isDisabled ? 1 : 0.7), lineWidth: isHovered && !isDisabled ? 2.2 : 1.6)
@@ -17235,14 +17042,15 @@ struct PreviewControlButton: View {
 
     private var activeColor: Color {
         if isHovered && !isDisabled {
-            return Color(red: 0.000, green: 0.610, blue: 0.760)
+            return AppColors.hoverInk
         }
 
-        return Color(red: 0.315, green: 0.340, blue: 0.390)
+        return AppColors.ink
     }
 }
 
 struct CompactStepperRow: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let label: String
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -17253,7 +17061,7 @@ struct CompactStepperRow: View {
         HStack(spacing: 10) {
             Text(label)
                 .font(.custom("Figtree", size: 12).weight(.regular))
-                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .foregroundColor(AppColors.muted)
 
             Spacer()
 
@@ -17264,7 +17072,7 @@ struct CompactStepperRow: View {
             ) {
                 Text(formattedValue)
                     .font(.custom("Figtree", size: 12).weight(.regular))
-                    .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                    .foregroundColor(AppColors.ink)
                     .frame(minWidth: 34, alignment: .trailing)
             }
             .frame(width: 104)
@@ -17281,6 +17089,7 @@ struct CompactStepperRow: View {
 }
 
 struct SettingRow: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let label: String
     let value: String
 
@@ -17288,13 +17097,13 @@ struct SettingRow: View {
         HStack {
             Text(label)
                 .font(.custom("Figtree", size: 12).weight(.regular))
-                .foregroundColor(Color(red: 0.390, green: 0.390, blue: 0.390))
+                .foregroundColor(AppColors.muted)
 
             Spacer()
 
             Text(value)
                 .font(.custom("Figtree", size: 12).weight(.regular))
-                .foregroundColor(Color(red: 0.315, green: 0.340, blue: 0.390))
+                .foregroundColor(AppColors.ink)
         }
     }
 }
@@ -17316,6 +17125,7 @@ struct HeaderLinkButtonStyle: ButtonStyle {
 }
 
 struct HeaderLinkButtonLabel: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let configuration: ButtonStyle.Configuration
 
     @State private var isHovered = false
@@ -17323,6 +17133,7 @@ struct HeaderLinkButtonLabel: View {
     var body: some View {
         configuration.label
             .font(.custom("Figtree", size: 11).weight(.medium))
+            .fontWeight(isHovered ? .semibold : nil)
             .foregroundColor(textColor)
             .lineLimit(1)
             .scaleEffect(configuration.isPressed ? 0.985 : (isHovered ? 1.025 : 1))
@@ -17330,10 +17141,10 @@ struct HeaderLinkButtonLabel: View {
             .animation(.linear(duration: 0.08), value: configuration.isPressed)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
-            .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+            .background(AppColors.panel)
             .overlay(
                 RoundedRectangle(cornerRadius: 999)
-                    .stroke(borderColor, lineWidth: isHovered ? 2.2 : 1.6)
+                    .stroke(borderColor, lineWidth: isHovered ? 1.8 : 1.4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 999))
             .onHover { hovering in
@@ -17343,14 +17154,14 @@ struct HeaderLinkButtonLabel: View {
 
     private var textColor: Color {
         isHovered
-            ? Color(red: 0.000, green: 0.610, blue: 0.760)
-            : Color(red: 0.315, green: 0.340, blue: 0.390)
+            ? AppColors.hoverInk
+            : AppColors.ink
     }
 
     private var borderColor: Color {
         isHovered
-            ? Color(red: 0.000, green: 0.610, blue: 0.760)
-            : Color(red: 0.315, green: 0.340, blue: 0.390).opacity(0.7)
+            ? AppColors.hoverInk
+            : AppColors.ink.opacity(0.7)
     }
 }
 
@@ -17373,6 +17184,7 @@ struct PrimaryBrutalButtonStyle: ButtonStyle {
 }
 
 struct HoverButtonLabel: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
     let configuration: ButtonStyle.Configuration
     let isPrimary: Bool
 
@@ -17381,6 +17193,7 @@ struct HoverButtonLabel: View {
     var body: some View {
         configuration.label
             .font(.custom("Figtree", size: 11).weight(.medium))
+            .fontWeight(isHovered ? .semibold : nil)
             .foregroundColor(textColor)
             .lineLimit(1)
             .scaleEffect(configuration.isPressed ? 0.985 : (isHovered ? 1.035 : 1))
@@ -17388,10 +17201,10 @@ struct HoverButtonLabel: View {
             .animation(.linear(duration: 0.08), value: configuration.isPressed)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
-            .background(Color(red: 0.930, green: 0.900, blue: 0.850))
+            .background(AppColors.panel)
             .overlay(
                 RoundedRectangle(cornerRadius: 999)
-                    .stroke(borderColor, lineWidth: isHovered ? 2.2 : 1.6)
+                    .stroke(borderColor, lineWidth: isHovered ? 1.8 : 1.4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 999))
             .onHover { hovering in
@@ -17401,14 +17214,14 @@ struct HoverButtonLabel: View {
 
     private var textColor: Color {
         isHovered
-            ? Color(red: 0.000, green: 0.610, blue: 0.760)
-            : Color(red: 0.315, green: 0.340, blue: 0.390)
+            ? AppColors.hoverInk
+            : AppColors.ink
     }
 
     private var borderColor: Color {
         isHovered
-            ? Color(red: 0.000, green: 0.610, blue: 0.760)
-            : Color(red: 0.820, green: 0.780, blue: 0.710)
+            ? AppColors.hoverInk
+            : AppColors.border
     }
 }
 

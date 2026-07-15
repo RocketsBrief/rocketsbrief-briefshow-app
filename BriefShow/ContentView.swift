@@ -10787,7 +10787,7 @@ struct DisclaimerNoticeModal: View {
         ),
         (
             "Copyright and ownership",
-            "BriefShow is created by and is the property of the RocketsBrief Team. You are welcome to share or recommend BriefShow to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow, in whole or in part, without prior written consent from RocketsBrief."
+            "BriefShow is created by and is the property of the RocketsBrief Team. You are welcome to share or recommend BriefShow to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow, in whole or in part."
         ),
         (
             "Account data and email use",

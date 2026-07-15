@@ -10542,9 +10542,14 @@ struct HeaderView: View {
                         NSWorkspace.shared.open(url)
                     }
                 } label: {
-                    Text("Support")
-                        .frame(width: 86, height: 15)
-                        .fixedSize(horizontal: false, vertical: false)
+                    HStack(spacing: 6) {
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 15, height: 15)
+
+                        Text("Support")
+                    }
                 }
                 .buttonStyle(HeaderLinkButtonStyle())
                 .overlay(alignment: .topTrailing) {
@@ -11311,7 +11316,7 @@ struct ThemePickerPopover: View {
 
                 ThemePickerInfoCard(
                     icon: "bubble.left.and.bubble.right.fill",
-                    text: "Have an idea for a theme, or need help with something? Click Support above — sign in or create a free account, and message us directly through the support chat."
+                    text: "Need help or want to report a bug? Click Support above. Sign in or create a free account, then message us directly through the support chat."
                 )
             }
         }

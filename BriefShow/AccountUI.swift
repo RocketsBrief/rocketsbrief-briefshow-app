@@ -45,6 +45,301 @@ struct ProfileBadge: View {
     }
 }
 
+struct ProfileSettingsModal: View {
+    @ObservedObject var accountManager = AccountManager.shared
+    let onClose: () -> Void
+
+    @State private var isIconPickerExpanded = false
+    @State private var isSendingPasswordReset = false
+    @State private var passwordResetMessage: String?
+    @State private var isDeleteConfirmationExpanded = false
+    @State private var deleteConfirmationText = ""
+    @State private var isDeleting = false
+    @State private var deleteErrorMessage: String?
+
+    private var avatarURL: URL? {
+        guard let session = accountManager.session else { return nil }
+        return URL(string: "\(RocketsBriefConfig.profileIconBaseURL)/\(session.avatarKey).png")
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+                .onTapGesture { onClose() }
+
+            if let session = accountManager.session {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .top, spacing: 12) {
+                        AsyncImage(url: avatarURL) { phase in
+                            if let image = phase.image {
+                                image.resizable().scaledToFit().padding(4)
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .foregroundColor(AppColors.muted)
+                            }
+                        }
+                        .frame(width: 44, height: 44)
+                        .background(AppColors.panel)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(AppColors.border, lineWidth: 1.2))
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.name)
+                                .font(.custom("Figtree", size: 15).weight(.bold))
+                                .foregroundColor(AppColors.ink)
+                            Text(session.email)
+                                .font(.custom("Figtree", size: 11.5).weight(.regular))
+                                .foregroundColor(AppColors.muted)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            onClose()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(AppColors.muted)
+                                .padding(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    settingsRow(icon: "globe", title: "RocketsBrief") {
+                        if let url = URL(string: RocketsBriefConfig.webBaseURL) {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        settingsRow(icon: "photo.circle", title: "Change profile icon") {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                isIconPickerExpanded.toggle()
+                            }
+                        }
+
+                        if isIconPickerExpanded {
+                            iconGrid(currentKey: session.avatarKey)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        settingsRow(icon: "key", title: isSendingPasswordReset ? "Sending…" : "Change password") {
+                            Task {
+                                isSendingPasswordReset = true
+                                let success = await accountManager.requestPasswordReset()
+                                passwordResetMessage = success
+                                    ? "We sent a password reset link to \(session.email). Open it in your browser to set a new password."
+                                    : "Couldn't send the reset email. Try again."
+                                isSendingPasswordReset = false
+                            }
+                        }
+                        .disabled(isSendingPasswordReset)
+
+                        if let passwordResetMessage {
+                            Text(passwordResetMessage)
+                                .font(.custom("Figtree", size: 11).weight(.regular))
+                                .foregroundColor(AppColors.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(AppColors.ink)
+
+                            Text("Credits: \(accountManager.credits.map(String.init) ?? "—")")
+                                .font(.custom("Figtree", size: 13).weight(.semibold))
+                                .foregroundColor(AppColors.ink)
+
+                            Spacer()
+                        }
+
+                        Text("Credits and free prompts are shared with your RocketsBrief account. If you have credits or a free prompt available, head to rocketsbrief.com to build websites and web apps with the AI Builder.")
+                            .font(.custom("Figtree", size: 10.5).weight(.regular))
+                            .foregroundColor(AppColors.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(12)
+                    .background(AppColors.panel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(AppColors.border, lineWidth: 1.2)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                    settingsRow(icon: "rectangle.portrait.and.arrow.right", title: "Sign Out") {
+                        accountManager.signOut()
+                        onClose()
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                isDeleteConfirmationExpanded.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "trash")
+                                Text("Delete Account")
+                                Spacer()
+                            }
+                            .font(.custom("Figtree", size: 12.5).weight(.semibold))
+                            .foregroundColor(Color(red: 0.620, green: 0.180, blue: 0.160))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                        }
+                        .buttonStyle(.plain)
+                        .background(Color(red: 0.620, green: 0.180, blue: 0.160).opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color(red: 0.620, green: 0.180, blue: 0.160).opacity(0.35), lineWidth: 1.2)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                        if isDeleteConfirmationExpanded {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("This removes your account access, credits, projects and saved previews. This cannot be undone. Type DELETE to confirm.")
+                                    .font(.custom("Figtree", size: 11).weight(.regular))
+                                    .foregroundColor(AppColors.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                TextField("Type DELETE", text: $deleteConfirmationText)
+                                    .textFieldStyle(.plain)
+                                    .font(.custom("Figtree", size: 12).weight(.regular))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .background(AppColors.background)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .stroke(AppColors.border, lineWidth: 1.2)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                                if let deleteErrorMessage {
+                                    Text(deleteErrorMessage)
+                                        .font(.custom("Figtree", size: 11).weight(.medium))
+                                        .foregroundColor(Color(red: 0.620, green: 0.180, blue: 0.160))
+                                }
+
+                                Button {
+                                    Task {
+                                        isDeleting = true
+                                        deleteErrorMessage = nil
+                                        let result = await accountManager.deleteAccount()
+                                        isDeleting = false
+                                        if result.success {
+                                            onClose()
+                                        } else {
+                                            deleteErrorMessage = result.message
+                                        }
+                                    }
+                                } label: {
+                                    HStack {
+                                        Spacer()
+                                        Text(isDeleting ? "Deleting…" : "Permanently delete my account")
+                                            .font(.custom("Figtree", size: 12).weight(.semibold))
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, 9)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundColor(.white)
+                                .background(Color(red: 0.620, green: 0.180, blue: 0.160))
+                                .clipShape(RoundedRectangle(cornerRadius: 999))
+                                .disabled(deleteConfirmationText != "DELETE" || isDeleting)
+                                .opacity(deleteConfirmationText != "DELETE" ? 0.5 : 1)
+                            }
+                            .padding(12)
+                            .background(Color(red: 0.620, green: 0.180, blue: 0.160).opacity(0.06))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color(red: 0.620, green: 0.180, blue: 0.160).opacity(0.25), lineWidth: 1.2)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                }
+                .padding(24)
+                .frame(width: 400)
+                .background(AppColors.background)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24)
+                        .stroke(AppColors.border, lineWidth: 2)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 24))
+                .shadow(color: Color.black.opacity(0.3), radius: 30, y: 12)
+            }
+        }
+        .task {
+            await accountManager.fetchCredits()
+        }
+    }
+
+    private func settingsRow(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .medium))
+                Text(title)
+                    .font(.custom("Figtree", size: 12.5).weight(.medium))
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(AppColors.muted)
+            }
+            .foregroundColor(AppColors.ink)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+        .background(AppColors.panel)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(AppColors.border, lineWidth: 1.2)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func iconGrid(currentKey: String) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 8) {
+            ForEach(RocketsBriefConfig.profileIconKeys, id: \.self) { key in
+                Button {
+                    Task {
+                        await accountManager.changeProfileIcon(key)
+                    }
+                } label: {
+                    AsyncImage(url: URL(string: "\(RocketsBriefConfig.profileIconBaseURL)/\(key).png")) { phase in
+                        if let image = phase.image {
+                            image.resizable().scaledToFit().padding(5)
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                    .background(AppColors.background)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(key == currentKey ? AppColors.hoverInk : AppColors.border, lineWidth: key == currentKey ? 2 : 1.2)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .background(AppColors.panel)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(AppColors.border, lineWidth: 1.2)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
 struct UpdateAvailableModal: View {
     let latestVersion: String
     let downloadURL: String?

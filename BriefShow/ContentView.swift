@@ -34,6 +34,7 @@ struct ContentView: View {
     @ObservedObject private var accountManager = AccountManager.shared
     @ObservedObject private var remoteStatus = AppRemoteStatus.shared
     @State private var isUpdateBannerDismissed = false
+    @State private var isProfileModalPresented = false
     @State private var selectedPhotoURLs: [URL] = []
     @State private var previewImages: [NSImage] = []
     @State private var isPreparingPhotos: Bool = false
@@ -145,7 +146,7 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 10) {
-                HeaderView()
+                HeaderView(isProfileModalPresented: $isProfileModalPresented)
 
                 HStack(alignment: .top, spacing: 14) {
                     LeftImportPanel(
@@ -314,6 +315,15 @@ struct ContentView: View {
                 )
                 .ignoresSafeArea()
                 .zIndex(19000)
+                .transition(.opacity)
+            }
+
+            if isProfileModalPresented {
+                ProfileSettingsModal(onClose: {
+                    isProfileModalPresented = false
+                })
+                .ignoresSafeArea()
+                .zIndex(18000)
                 .transition(.opacity)
             }
         }
@@ -10466,6 +10476,7 @@ private func loadDroppedFileURLs(
 struct HeaderView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     @ObservedObject private var accountManager = AccountManager.shared
+    @Binding var isProfileModalPresented: Bool
     @State private var isRocketsBriefHovered = false
     @State private var isFundMissionHovered = false
     @State private var isDisclaimerHovered = false
@@ -10579,7 +10590,12 @@ struct HeaderView: View {
                 }
 
                 if let session = accountManager.session {
-                    ProfileBadge(session: session)
+                    Button {
+                        isProfileModalPresented = true
+                    } label: {
+                        ProfileBadge(session: session)
+                    }
+                    .buttonStyle(.plain)
                 }
                 }
             }

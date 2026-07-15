@@ -6,6 +6,7 @@ enum RocketsBriefConfig {
     static let supabaseURL = "https://gzbkpnogeegyntoznzzn.supabase.co"
     static let supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd6Ymtwbm9nZWVneW50b3puenpuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwOTc3MzksImV4cCI6MjA5NjY3MzczOX0.oWImudetcwAemwZTRRERWRNPQ4PmCRRhZVHRwnY7mhY"
     static let profileIconBaseURL = "https://rocketsbrief.com/profile-icons"
+    static let webBaseURL = "https://www.rocketsbrief.com"
 
     static let profileIconKeys = [
         "blue-planet", "yellow-planet", "orange-planet", "planet-ring",
@@ -79,6 +80,7 @@ final class AccountManager: ObservableObject {
     @Published var isBusy = false
     @Published var errorMessage: String?
     @Published var pendingConfirmationEmail: String?
+    @Published var credits: Int?
 
     private init() {
         session = KeychainStore.load()
@@ -185,8 +187,10 @@ final class AccountManager: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-                let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error_description"] as? String
-                errorMessage = message ?? "Sign in failed. Check your email and password."
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let message = (json?["error_description"] as? String) ?? (json?["msg"] as? String)
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                errorMessage = message ?? "Sign in failed (\(statusCode)). Check your email and password."
                 if existingAvatarKey == nil {
                     signOut()
                 }
@@ -225,6 +229,7 @@ final class AccountManager: ObservableObject {
 
             session = newSession
             KeychainStore.save(newSession)
+            await fetchCredits()
         } catch {
             errorMessage = "Couldn't reach RocketsBrief. Check your internet connection."
         }
@@ -262,6 +267,85 @@ final class AccountManager: ObservableObject {
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["user_id": userId, "avatar_key": avatarKey])
 
         _ = try? await URLSession.shared.data(for: request)
+    }
+
+    func changeProfileIcon(_ avatarKey: String) async {
+        guard let current = session else { return }
+
+        await upsertAvatarKey(userId: current.userId, accessToken: current.accessToken, avatarKey: avatarKey)
+
+        var updated = current
+        updated.avatarKey = avatarKey
+        session = updated
+        KeychainStore.save(updated)
+    }
+
+    func fetchCredits() async {
+        guard let current = session,
+              let url = URL(string: "\(RocketsBriefConfig.supabaseURL)/rest/v1/user_credits?user_id=eq.\(current.userId)&select=credits")
+        else { return }
+
+        var request = URLRequest(url: url)
+        request.setValue(RocketsBriefConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(current.accessToken)", forHTTPHeaderField: "Authorization")
+
+        if let (data, _) = try? await URLSession.shared.data(for: request),
+           let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+           let value = rows.first?["credits"] {
+            if let intValue = value as? Int {
+                credits = intValue
+            } else if let numberValue = value as? NSNumber {
+                credits = numberValue.intValue
+            }
+        }
+    }
+
+    @discardableResult
+    func requestPasswordReset() async -> Bool {
+        guard let current = session,
+              let url = URL(string: "\(RocketsBriefConfig.supabaseURL)/auth/v1/recover")
+        else { return false }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(RocketsBriefConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "email": current.email,
+            "options": ["redirectTo": "\(RocketsBriefConfig.webBaseURL)/reset-password"]
+        ])
+
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let httpResponse = response as? HTTPURLResponse
+        else { return false }
+
+        return (200...299).contains(httpResponse.statusCode)
+    }
+
+    func deleteAccount() async -> (success: Bool, message: String) {
+        guard let current = session,
+              let url = URL(string: "\(RocketsBriefConfig.webBaseURL)/api/auth/delete-account")
+        else { return (false, "Please sign in again before deleting your account.") }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(current.accessToken)", forHTTPHeaderField: "Authorization")
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let httpResponse = response as? HTTPURLResponse
+        else {
+            return (false, "Couldn't reach RocketsBrief. Check your internet connection.")
+        }
+
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let message = (json?["error"] as? String) ?? (json?["message"] as? String)
+
+        if (200...299).contains(httpResponse.statusCode) {
+            signOut()
+            return (true, message ?? "Your account was deleted.")
+        }
+
+        return (false, message ?? "Could not delete account. Please try again.")
     }
 }
 

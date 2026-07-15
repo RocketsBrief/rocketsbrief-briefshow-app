@@ -11782,42 +11782,38 @@ struct FullScreenPreviewSheet: View {
     }
 
     private var fullscreenBottomControls: some View {
-        VStack(spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
+            HStack(spacing: 8) {
+                fullscreenIconButton(
+                    systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
+                    isDisabled: photoCount == 0 || isPreparingPhotos,
+                    action: onTogglePreview
+                )
+
+                fullscreenIconButton(
+                    systemName: "arrow.counterclockwise",
+                    isDisabled: photoCount == 0 || isPreparingPhotos,
+                    action: onStartFromBeginning
+                )
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(Color.black.opacity(0.62))
+            .clipShape(RoundedRectangle(cornerRadius: 999))
+            .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
+
             fullscreenScrubber
                 .frame(height: 16)
 
-            HStack(alignment: .center, spacing: 10) {
-                HStack(spacing: 8) {
-                    fullscreenIconButton(
-                        systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
-                        isDisabled: photoCount == 0 || isPreparingPhotos,
-                        action: onTogglePreview
-                    )
-
-                    fullscreenIconButton(
-                        systemName: "arrow.counterclockwise",
-                        isDisabled: photoCount == 0 || isPreparingPhotos,
-                        action: onStartFromBeginning
-                    )
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 9)
-                .background(Color.black.opacity(0.62))
+            Text(timeCounterText)
+                .font(.custom("Figtree", size: 12).weight(.medium))
+                .foregroundColor(.white.opacity(0.96))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.68))
                 .clipShape(RoundedRectangle(cornerRadius: 999))
                 .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
-
-                Spacer()
-
-                Text(timeCounterText)
-                    .font(.custom("Figtree", size: 12).weight(.medium))
-                    .foregroundColor(.white.opacity(0.96))
-                    .lineLimit(1)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.black.opacity(0.68))
-                    .clipShape(RoundedRectangle(cornerRadius: 999))
-                    .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
-            }
         }
     }
 
@@ -16430,26 +16426,32 @@ struct CenterPreviewPanel: View {
                     }
                 }
 
-                HStack {
-                    PreviewControlButton(
-                        title: isPreviewPlaying ? "Stop Preview" : "Play Preview",
+                HStack(spacing: 10) {
+                    previewIconButton(
+                        systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
                         isDisabled: photoCount == 0 || isPreparingPhotos,
                         action: onTogglePreview
                     )
 
-                    PreviewControlButton(
-                        title: "Play From Beginning",
+                    previewIconButton(
+                        systemName: "arrow.counterclockwise",
                         isDisabled: photoCount == 0 || isPreparingPhotos,
                         action: onStartFromBeginning
                     )
 
-                    PreviewControlButton(
-                        title: "Full Screen",
+                    previewIconButton(
+                        systemName: "arrow.up.left.and.arrow.down.right",
                         isDisabled: photoCount == 0 || isPreparingPhotos,
                         action: onOpenFullScreen
                     )
 
-                    Spacer()
+                    Text("Full Screen shows the true, exported look of your slideshow.")
+                        .font(.custom("Figtree", size: 10.5).weight(.regular))
+                        .foregroundColor(AppColors.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Spacer(minLength: 8)
 
                     Text(timeCounterText)
                         .font(.custom("Figtree", size: 12).weight(.regular))
@@ -16602,6 +16604,50 @@ struct CenterPreviewPanel: View {
 
     private var musicStatusText: String {
         selectedMusicURL?.lastPathComponent ?? "MP3, WAV or M4A soundtrack"
+    }
+
+    private func previewIconButton(
+        systemName: String,
+        isDisabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        PreviewIconButton(systemName: systemName, isDisabled: isDisabled, action: action)
+    }
+}
+
+private struct PreviewIconButton: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+    let systemName: String
+    let isDisabled: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    private var activeColor: Color {
+        isHovered && !isDisabled ? AppColors.hoverInk : AppColors.ink
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: isHovered && !isDisabled ? .semibold : .medium))
+                .foregroundColor(activeColor)
+                .scaleEffect(isHovered && !isDisabled ? 1.08 : 1)
+                .frame(width: 34, height: 34)
+                .background(AppColors.panel)
+                .overlay(
+                    Circle()
+                        .stroke(activeColor.opacity(isHovered && !isDisabled ? 1 : 0.7), lineWidth: isHovered && !isDisabled ? 2.2 : 1.6)
+                )
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.55 : 1)
+        .animation(.linear(duration: 0.10), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
 
@@ -17286,50 +17332,6 @@ struct TimingModeButton: View {
         }
 
         return AppColors.border
-    }
-}
-
-struct PreviewControlButton: View {
-    @ObservedObject private var themeManager = ThemeManager.shared
-    let title: String
-    let isDisabled: Bool
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.custom("Figtree", size: 11).weight(.medium))
-                .fontWeight(isHovered && !isDisabled ? .semibold : nil)
-                .foregroundColor(activeColor)
-                .lineLimit(1)
-                .scaleEffect(isHovered && !isDisabled ? 1.035 : 1)
-                .animation(.linear(duration: 0.10), value: isHovered)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .frame(width: 150)
-                .background(AppColors.panel)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 999)
-                        .stroke(activeColor.opacity(isHovered && !isDisabled ? 1 : 0.7), lineWidth: isHovered && !isDisabled ? 2.2 : 1.6)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 999))
-        }
-        .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.55 : 1)
-        .onHover { hovering in
-            isHovered = hovering
-        }
-    }
-
-    private var activeColor: Color {
-        if isHovered && !isDisabled {
-            return AppColors.hoverInk
-        }
-
-        return AppColors.ink
     }
 }
 

@@ -33,7 +33,6 @@ struct ContentView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     @ObservedObject private var accountManager = AccountManager.shared
     @ObservedObject private var remoteStatus = AppRemoteStatus.shared
-    @State private var isUpdateBannerDismissed = false
     @State private var isProfileModalPresented = false
     @State private var selectedPhotoURLs: [URL] = []
     @State private var previewImages: [NSImage] = []
@@ -299,26 +298,21 @@ struct ContentView: View {
                 .transition(.opacity)
             }
 
-            if remoteStatus.isLocked && !accountManager.isSignedIn {
-                LockedAccessOverlay(lockMessage: remoteStatus.config?.lockMessage)
-                    .ignoresSafeArea()
-                    .zIndex(20000)
-                    .transition(.opacity)
-            } else if remoteStatus.isUpdateAvailable && !isUpdateBannerDismissed {
-                UpdateAvailableModal(
+            if remoteStatus.isUpdateAvailable {
+                UpdateRequiredOverlay(
                     latestVersion: remoteStatus.config?.latestVersion ?? remoteStatus.currentVersion,
                     downloadURL: remoteStatus.config?.downloadUrl,
-                    releaseNotes: remoteStatus.config?.releaseNotes,
-                    onDismiss: {
-                        isUpdateBannerDismissed = true
-                    }
+                    releaseNotes: remoteStatus.config?.releaseNotes
                 )
                 .ignoresSafeArea()
-                .zIndex(19000)
+                .zIndex(20000)
                 .transition(.opacity)
-            }
-
-            if isProfileModalPresented {
+            } else if remoteStatus.isLocked && !accountManager.isSignedIn {
+                LockedAccessOverlay(lockMessage: remoteStatus.config?.lockMessage)
+                    .ignoresSafeArea()
+                    .zIndex(19000)
+                    .transition(.opacity)
+            } else if isProfileModalPresented {
                 ProfileSettingsModal(onClose: {
                     isProfileModalPresented = false
                 })

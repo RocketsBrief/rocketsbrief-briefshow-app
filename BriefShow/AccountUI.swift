@@ -361,49 +361,33 @@ struct ProfileSettingsModal: View {
     }
 }
 
-struct UpdateAvailableModal: View {
+struct UpdateRequiredOverlay: View {
     let latestVersion: String
     let downloadURL: String?
     let releaseNotes: String?
-    let onDismiss: () -> Void
 
     @State private var showInstallGuide = false
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.45)
+            Color.black.opacity(0.55)
                 .ignoresSafeArea()
-                .onTapGesture { onDismiss() }
 
             VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .top) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 22))
-                            .foregroundColor(AppColors.hoverInk)
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(AppColors.hoverInk)
 
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("A new version of BriefShow is available")
-                                .font(.custom("Figtree", size: 15).weight(.bold))
-                                .foregroundColor(AppColors.ink)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("A new version of BriefShow is required")
+                            .font(.custom("Figtree", size: 15).weight(.bold))
+                            .foregroundColor(AppColors.ink)
 
-                            Text("Version \(latestVersion) is ready to download.")
-                                .font(.custom("Figtree", size: 12).weight(.regular))
-                                .foregroundColor(AppColors.muted)
-                        }
-                    }
-
-                    Spacer()
-
-                    Button {
-                        onDismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .semibold))
+                        Text("Update to version \(latestVersion) to keep using BriefShow.")
+                            .font(.custom("Figtree", size: 12).weight(.regular))
                             .foregroundColor(AppColors.muted)
-                            .padding(6)
                     }
-                    .buttonStyle(.plain)
                 }
 
                 if let releaseNotes, !releaseNotes.isEmpty {
@@ -463,19 +447,6 @@ struct UpdateAvailableModal: View {
                         .foregroundColor(AppColors.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-
-                Button {
-                    onDismiss()
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text("Remind me later")
-                            .font(.custom("Figtree", size: 12).weight(.medium))
-                        Spacer()
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(AppColors.muted)
             }
             .padding(24)
             .frame(width: 440)

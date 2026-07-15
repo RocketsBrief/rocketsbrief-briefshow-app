@@ -16505,6 +16505,7 @@ struct CenterPreviewPanel: View {
                     .stroke(AppColors.border, lineWidth: 4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 34))
+            .zIndex(50)
 
             HStack(spacing: 10) {
                 Button(action: onAddPhotos) {

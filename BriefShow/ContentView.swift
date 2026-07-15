@@ -10747,7 +10747,7 @@ struct SupportHoverCard: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Need help, or have a theme idea?")
+            Text("Need help, or have a bug to report?")
                 .font(.custom("Figtree", size: 14).weight(.medium))
                 .foregroundColor(AppColors.ink)
 

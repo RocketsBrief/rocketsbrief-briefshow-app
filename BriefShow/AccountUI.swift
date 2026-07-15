@@ -1,5 +1,63 @@
 import SwiftUI
 
+struct ProfileSettingsRow: View {
+    let icon: String
+    let title: String
+    var tint: Color? = nil
+    var showsChevron: Bool = true
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    private var contentColor: Color {
+        if let tint {
+            return tint
+        }
+        return isHovered ? AppColors.hoverInk : AppColors.ink
+    }
+
+    private var rowBackground: Color {
+        if let tint {
+            return tint.opacity(isHovered ? 0.14 : 0.08)
+        }
+        return isHovered ? AppColors.background : AppColors.panel
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: isHovered ? .semibold : .medium))
+                Text(title)
+                    .font(.custom("Figtree", size: 12.5).weight(isHovered ? .semibold : .medium))
+                Spacer()
+                if showsChevron {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(AppColors.muted)
+                }
+            }
+            .foregroundColor(contentColor)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(isHovered ? 1.012 : 1)
+        .background(rowBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isHovered ? contentColor : (tint?.opacity(0.35) ?? AppColors.border), lineWidth: isHovered ? 1.6 : 1.2)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .animation(.linear(duration: 0.10), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
 struct ProfileBadge: View {
     let session: RocketsBriefSession
 
@@ -106,14 +164,40 @@ struct ProfileSettingsModal: View {
                         .buttonStyle(.plain)
                     }
 
-                    settingsRow(icon: "globe", title: "RocketsBrief") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(AppColors.ink)
+
+                            Text("Credits: \(accountManager.credits.map(String.init) ?? "—")")
+                                .font(.custom("Figtree", size: 13).weight(.semibold))
+                                .foregroundColor(AppColors.ink)
+
+                            Spacer()
+                        }
+
+                        Text("Use your credits at rocketsbrief.com! Launch the AI Builder and create your next web app or mobile app in seconds.")
+                            .font(.custom("Figtree", size: 10.5).weight(.regular))
+                            .foregroundColor(AppColors.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(12)
+                    .background(AppColors.panel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(AppColors.border, lineWidth: 1.2)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                    ProfileSettingsRow(icon: "globe", title: "RocketsBrief") {
                         if let url = URL(string: RocketsBriefConfig.webBaseURL) {
                             NSWorkspace.shared.open(url)
                         }
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
-                        settingsRow(icon: "photo.circle", title: "Change profile icon") {
+                        ProfileSettingsRow(icon: "photo.circle", title: "Change profile icon") {
                             withAnimation(.easeInOut(duration: 0.15)) {
                                 isIconPickerExpanded.toggle()
                             }
@@ -125,7 +209,7 @@ struct ProfileSettingsModal: View {
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        settingsRow(icon: "key", title: isSendingPasswordReset ? "Sending…" : "Change password") {
+                        ProfileSettingsRow(icon: "key", title: isSendingPasswordReset ? "Sending…" : "Change password") {
                             Task {
                                 isSendingPasswordReset = true
                                 let success = await accountManager.requestPasswordReset()
@@ -145,60 +229,22 @@ struct ProfileSettingsModal: View {
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 14))
-                                .foregroundColor(AppColors.ink)
-
-                            Text("Credits: \(accountManager.credits.map(String.init) ?? "—")")
-                                .font(.custom("Figtree", size: 13).weight(.semibold))
-                                .foregroundColor(AppColors.ink)
-
-                            Spacer()
-                        }
-
-                        Text("Credits and free prompts are shared with your RocketsBrief account. If you have credits or a free prompt available, head to rocketsbrief.com to build websites and web apps with the AI Builder.")
-                            .font(.custom("Figtree", size: 10.5).weight(.regular))
-                            .foregroundColor(AppColors.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(12)
-                    .background(AppColors.panel)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14)
-                            .stroke(AppColors.border, lineWidth: 1.2)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-
-                    settingsRow(icon: "rectangle.portrait.and.arrow.right", title: "Sign Out") {
+                    ProfileSettingsRow(icon: "rectangle.portrait.and.arrow.right", title: "Sign Out") {
                         accountManager.signOut()
                         onClose()
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Button {
+                        ProfileSettingsRow(
+                            icon: "trash",
+                            title: "Delete Account",
+                            tint: Color(red: 0.620, green: 0.180, blue: 0.160),
+                            showsChevron: false
+                        ) {
                             withAnimation(.easeInOut(duration: 0.15)) {
                                 isDeleteConfirmationExpanded.toggle()
                             }
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "trash")
-                                Text("Delete Account")
-                                Spacer()
-                            }
-                            .font(.custom("Figtree", size: 12.5).weight(.semibold))
-                            .foregroundColor(Color(red: 0.620, green: 0.180, blue: 0.160))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
                         }
-                        .buttonStyle(.plain)
-                        .background(Color(red: 0.620, green: 0.180, blue: 0.160).opacity(0.08))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color(red: 0.620, green: 0.180, blue: 0.160).opacity(0.35), lineWidth: 1.2)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
 
                         if isDeleteConfirmationExpanded {
                             VStack(alignment: .leading, spacing: 8) {
@@ -277,31 +323,6 @@ struct ProfileSettingsModal: View {
         .task {
             await accountManager.fetchCredits()
         }
-    }
-
-    private func settingsRow(icon: String, title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
-                Text(title)
-                    .font(.custom("Figtree", size: 12.5).weight(.medium))
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(AppColors.muted)
-            }
-            .foregroundColor(AppColors.ink)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-        }
-        .buttonStyle(.plain)
-        .background(AppColors.panel)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(AppColors.border, lineWidth: 1.2)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private func iconGrid(currentKey: String) -> some View {

@@ -8887,7 +8887,11 @@ private func drawImaginationExportDustParticles(
         return result + minimum
     }
 
-    let particleCount = 90
+    // Export renders at a much larger pixel size than the on-screen
+    // preview, so the same particle count that reads as "dusty" in the
+    // small preview canvas looks nearly empty spread across a 4K frame.
+    // More particles (not bigger ones) keeps the same look at any size.
+    let particleCount = 240
     let burstStrength = exp(-max(0, elapsedSinceBurst) * 0.78)
     let center = CGPoint(x: size.width / 2, y: size.height / 2)
 
@@ -16708,7 +16712,8 @@ private struct PreviewIconButton: View {
                     .padding(.vertical, 4)
                     .background(AppColors.hoverInk)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .offset(y: -30)
+                    .shadow(color: Color.black.opacity(0.22), radius: 5, y: 2)
+                    .offset(y: -42)
                     .transition(.opacity)
                     .zIndex(50)
             }

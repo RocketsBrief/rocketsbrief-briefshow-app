@@ -24,8 +24,6 @@ enum SlideshowVisualTheme: String {
     case magazineFamily = "Magazine Family"
     case magazineCouples = "Magazine Couples"
     case origami = "Origami"
-    case magazineToon = "Magazine Toon"
-    case origamiToon = "Origami Toon"
     case imagination = "Imagination"
 }
 
@@ -11114,10 +11112,6 @@ struct LeftImportPanel: View {
             return "Magazine Couples will use romantic layouts for portraits, weddings, and trips."
         case .origami:
             return "Origami will use geometric panel-style pages inspired by folded paper movement."
-        case .magazineToon:
-            return "Magazine Toon will require sign in and credits once AI styles are connected."
-        case .origamiToon:
-            return "Origami Toon will require sign in and credits once AI styles are connected."
         case .imagination:
             return "Imagination brings photos to life as 3D cards emerging from deep space."
         }
@@ -11181,7 +11175,7 @@ struct ThemePickerPopover: View {
                 .buttonStyle(HeaderLinkButtonStyle())
             }
 
-            Text("Pick the slideshow style. AI Toon themes will be available later with sign in and credits.")
+            Text("Pick the slideshow style. New themes are added regularly as BriefShow keeps improving.")
                 .font(.custom("Figtree", size: 12).weight(.regular))
                 .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -11253,28 +11247,51 @@ struct ThemePickerPopover: View {
                     isPresented = false
                 }
 
-                ThemePickerSectionTitle("AI Toon Styles")
+                ThemePickerSectionTitle("More Themes Coming")
 
-                ThemePickerOption(
-                    title: "Magazine Toon",
-                    subtitle: "AI cartoon photo processing + magazine layout. Coming soon.",
-                    isSelected: false,
-                    isLocked: true,
-                    action: {}
+                ThemePickerInfoCard(
+                    icon: "hammer.fill",
+                    text: "BriefShow is still in active development, so new themes can show up at any time. Keep the app updated to unlock them as soon as they're ready."
                 )
 
-                ThemePickerOption(
-                    title: "Origami Toon",
-                    subtitle: "AI cartoon photo processing + origami layout. Coming soon.",
-                    isSelected: false,
-                    isLocked: true,
-                    action: {}
+                ThemePickerInfoCard(
+                    icon: "bubble.left.and.bubble.right.fill",
+                    text: "Have an idea for a theme, or need help with something? Use the RocketsBrief button above to visit rocketsbrief.com, sign up for a free account, and message us directly through the support chat."
                 )
             }
         }
         .padding(22)
         .frame(width: 500, height: 680, alignment: .topLeading)
         .background(AppColors.background)
+    }
+}
+
+struct ThemePickerInfoCard: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(AppColors.muted)
+                .frame(width: 20)
+
+            Text(text)
+                .font(.custom("Figtree", size: 12).weight(.regular))
+                .foregroundColor(AppColors.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColors.panel)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(AppColors.border, lineWidth: 1.2)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 

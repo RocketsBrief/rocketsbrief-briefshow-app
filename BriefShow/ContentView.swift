@@ -10780,6 +10780,18 @@ struct DisclaimerNoticeModal: View {
         (
             "Right to limit access",
             "RocketsBrief may refuse, limit, suspend, or remove access to any product or service if it believes a user is violating these terms, applicable law, third-party rights, payment processor rules, or creating risk for RocketsBrief, other users, or the public."
+        ),
+        (
+            "Future changes to BriefShow",
+            "RocketsBrief may change, add, remove, lock, or discontinue any feature, theme, or part of BriefShow at any time, without notice. This includes requiring a free account sign-up to continue using BriefShow, and introducing paid features, subscriptions, or pricing for BriefShow in the future. By continuing to use BriefShow, you agree that these changes may happen at any time."
+        ),
+        (
+            "Copyright and ownership",
+            "BriefShow is created by and is the property of the RocketsBrief Team. You are welcome to share or recommend BriefShow to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow, in whole or in part, without prior written consent from RocketsBrief."
+        ),
+        (
+            "Account data and email use",
+            "If BriefShow ever requires a free account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
         )
     ]
 

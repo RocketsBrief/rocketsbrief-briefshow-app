@@ -11893,8 +11893,6 @@ private struct FullscreenIconButton: View {
     let isDisabled: Bool
     let action: () -> Void
 
-    @State private var isHovered = false
-
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
@@ -11904,25 +11902,7 @@ private struct FullscreenIconButton: View {
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
-        .onHover { hovering in
-            isHovered = hovering && !isDisabled
-        }
-        .overlay(alignment: .bottom) {
-            if isHovered && !isDisabled {
-                Text(label)
-                    .font(.custom("Figtree", size: 10.5).weight(.medium))
-                    .foregroundColor(.black)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.96))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .offset(y: 30)
-                    .transition(.opacity)
-                    .zIndex(50)
-            }
-        }
+        .help(label)
     }
 }
 
@@ -16701,23 +16681,7 @@ private struct PreviewIconButton: View {
         .onHover { hovering in
             isHovered = hovering && !isDisabled
         }
-        .overlay(alignment: .top) {
-            if isHovered && !isDisabled {
-                Text(label)
-                    .font(.custom("Figtree", size: 10.5).weight(.medium))
-                    .foregroundColor(AppColors.background)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(AppColors.hoverInk)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .shadow(color: Color.black.opacity(0.22), radius: 5, y: 2)
-                    .offset(y: -42)
-                    .transition(.opacity)
-                    .zIndex(50)
-            }
-        }
+        .help(label)
     }
 }
 

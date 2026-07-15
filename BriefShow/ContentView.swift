@@ -8775,48 +8775,48 @@ private func imaginationEvaluateReveal(
     )
 }
 
-// Deterministic replica of ImaginationDustOverlay: same pseudo-random
-// hash per particle, driven by explicit time values instead of
-// TimelineView + Date so a given (time, elapsedSinceBurst) always
-// paints the same frame.
-private struct ImaginationExportDustLayer: View {
-    let time: Double
-    let elapsedSinceBurst: Double
-    let burstToken: Int
-
-    private let particleCount = 90
-
-    var body: some View {
-        GeometryReader { proxy in
-            Canvas { context, size in
-                let burstStrength = exp(-max(0, elapsedSinceBurst) * 0.78)
-
-                for index in 0..<particleCount {
-                    drawDustParticle(
-                        index: index,
-                        time: time,
-                        size: size,
-                        burstStrength: burstStrength,
-                        context: &context
-                    )
-                }
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .allowsHitTesting(false)
-        }
+// Deterministic replica of ImaginationDustOverlay's particle math, but
+// painted straight onto the export CGContext (after the photo frame is
+// drawn) instead of composited as a SwiftUI layer. ImageRenderer's
+// offscreen snapshot doesn't reliably preserve zIndex ordering across
+// .compositingGroup()/.mask() siblings, which is why dust used to be
+// invisible or stuck behind the photo in exported video.
+private func drawImaginationExportDustParticles(
+    into context: CGContext,
+    time: Double,
+    elapsedSinceBurst: Double,
+    burstToken: Int,
+    size: CGSize,
+    opacityMultiplier: Double,
+    scale: CGFloat = 1,
+    offset: CGSize = .zero
+) {
+    guard size.width > 0, size.height > 0 else {
+        return
     }
 
-    private func drawDustParticle(
-        index: Int,
-        time: TimeInterval,
-        size: CGSize,
-        burstStrength: Double,
-        context: inout GraphicsContext
-    ) {
-        guard size.width > 0, size.height > 0 else {
-            return
-        }
+    func random(_ value: Double) -> Double {
+        let result = sin(value) * 43_758.545_312_3
+        return result - floor(result)
+    }
 
+    func wrapped(_ value: Double, minimum: Double, maximum: Double) -> Double {
+        let range = maximum - minimum
+        guard range > 0 else {
+            return value
+        }
+        var result = (value - minimum).truncatingRemainder(dividingBy: range)
+        if result < 0 {
+            result += range
+        }
+        return result + minimum
+    }
+
+    let particleCount = 90
+    let burstStrength = exp(-max(0, elapsedSinceBurst) * 0.78)
+    let center = CGPoint(x: size.width / 2, y: size.height / 2)
+
+    for index in 0..<particleCount {
         let seed = Double(index + 1)
 
         let xSeed = random(seed * 12.9898)
@@ -8876,12 +8876,15 @@ private struct ImaginationExportDustLayer: View {
         x = wrapped(x, minimum: -margin, maximum: size.width + margin)
         y = wrapped(y, minimum: -margin, maximum: size.height + margin)
 
-        let particleSize = 0.7 + random(seed * 88.231) * 1.6
+        x = (x - center.x) * scale + center.x + offset.width
+        y = (y - center.y) * scale + center.y + offset.height
+
+        let particleSize = (0.7 + random(seed * 88.231) * 1.6) * scale
 
         let baseOpacity = 0.12 + opacitySeed * 0.38
         let gustOpacityBoost = burstStrength * 0.16
 
-        let finalOpacity = min(0.72, baseOpacity + gustOpacityBoost)
+        let finalOpacity = min(0.72, baseOpacity + gustOpacityBoost) * opacityMultiplier
 
         let particleRect = CGRect(
             x: x - particleSize / 2,
@@ -8890,37 +8893,8 @@ private struct ImaginationExportDustLayer: View {
             height: particleSize
         )
 
-        context.opacity = finalOpacity
-
-        context.fill(
-            Path(ellipseIn: particleRect),
-            with: .color(.white)
-        )
-    }
-
-    private func wrapped(
-        _ value: Double,
-        minimum: Double,
-        maximum: Double
-    ) -> Double {
-        let range = maximum - minimum
-
-        guard range > 0 else {
-            return value
-        }
-
-        var result = (value - minimum).truncatingRemainder(dividingBy: range)
-
-        if result < 0 {
-            result += range
-        }
-
-        return result + minimum
-    }
-
-    private func random(_ value: Double) -> Double {
-        let result = sin(value) * 43_758.545_312_3
-        return result - floor(result)
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: finalOpacity))
+        context.fillEllipse(in: particleRect)
     }
 }
 
@@ -9340,23 +9314,6 @@ private struct ImaginationExportSceneView: View {
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .allowsHitTesting(false)
                     .zIndex(18)
-
-                ImaginationExportDustLayer(time: globalTime * 1.30, elapsedSinceBurst: tau, burstToken: sceneIndex)
-                    .opacity(0.95)
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .zIndex(20)
-
-                ImaginationExportDustLayer(time: globalTime * 1.30, elapsedSinceBurst: tau, burstToken: sceneIndex)
-                    .scaleEffect(1.08)
-                    .offset(y: 24)
-                    .opacity(0.65)
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .zIndex(21)
-
-                Color.black
-                    .opacity(blackOverlayOpacity)
-                    .allowsHitTesting(false)
-                    .zIndex(100)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
@@ -9455,6 +9412,43 @@ private func makeImaginationExportPixelBuffer(
     context.fill(canvasRect)
     context.interpolationQuality = .high
     context.draw(frameImage, in: canvasRect)
+
+    // Dust is painted directly onto the bitmap (after the photo, before the
+    // fade-to-black) instead of going through ImageRenderer, so it's
+    // guaranteed to land on top of the photo the same way it does in the
+    // live preview. Flip to a top-left origin first since Core Graphics
+    // primitive fills (unlike image draws) use the context's native
+    // bottom-left coordinate space.
+    context.saveGState()
+    context.translateBy(x: 0, y: renderSize.height)
+    context.scaleBy(x: 1, y: -1)
+
+    drawImaginationExportDustParticles(
+        into: context,
+        time: globalTime * 1.30,
+        elapsedSinceBurst: tau,
+        burstToken: scene.sceneIndex,
+        size: renderSize,
+        opacityMultiplier: 0.95
+    )
+
+    drawImaginationExportDustParticles(
+        into: context,
+        time: globalTime * 1.30,
+        elapsedSinceBurst: tau,
+        burstToken: scene.sceneIndex,
+        size: renderSize,
+        opacityMultiplier: 0.65,
+        scale: 1.08,
+        offset: CGSize(width: 0, height: 24)
+    )
+
+    context.restoreGState()
+
+    if blackOverlayOpacity > 0 {
+        context.setFillColor(NSColor.black.withAlphaComponent(blackOverlayOpacity).cgColor)
+        context.fill(canvasRect)
+    }
 
     return pixelBuffer
 }

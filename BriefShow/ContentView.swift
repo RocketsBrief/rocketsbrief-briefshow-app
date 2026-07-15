@@ -285,8 +285,12 @@ struct ContentView: View {
                         imaginationPlaybackRestartToken,
                     imaginationIntroOutroOpacity:
                         imaginationIntroOutroOpacity,
+                    previewProgress: totalPreviewDuration > 0 ? min(1, previewTotalElapsedSeconds / totalPreviewDuration) : 0,
                     onTogglePreview: togglePreview,
                     onStartFromBeginning: startPreviewFromBeginning,
+                    onSeek: { fraction in
+                        seekPreview(toFraction: fraction)
+                    },
                     onClose: {
                         closeCinemaFullScreenPreview()
                     }
@@ -1733,6 +1737,69 @@ struct ContentView: View {
                 beginImaginationIntroSequence()
             }
         }
+    }
+
+    private func seekPreview(toFraction fraction: Double) {
+        guard !selectedPhotoURLs.isEmpty,
+              !isPreparingPhotos,
+              !previewImages.isEmpty,
+              totalPreviewDuration > 0
+        else {
+            return
+        }
+
+        let clampedFraction = min(1, max(0, fraction))
+        let targetElapsed = clampedFraction * totalPreviewDuration
+        let photoCount = selectedPhotoURLs.count
+
+        // Snap to the nearest photo/page boundary instead of an exact mid-fade
+        // frame - Origami/Imagination drive their in-between visuals through
+        // async, animated state with no simple inverse, so landing on a
+        // settled boundary is far safer than trying to reconstruct it.
+        previousPhotoIndex = nil
+        transitionProgress = 1
+        previewElapsedSeconds = 0
+
+        activePhotoIndex = min(
+            photoCount - 1,
+            Int((clampedFraction * Double(photoCount)).rounded(.down))
+        )
+
+        resetOrigamiInternalSwapState()
+        previousOrigamiPageImages = []
+        previousOrigamiPageReplacements = [:]
+        previousOrigamiPageAnimationVariant = 0
+        origamiWholePageFoldProgress = 1
+
+        isImaginationPageTransitionAnimating = false
+        isImaginationOutroAnimating = false
+        imaginationIntroOutroOpacity = 0
+        imaginationPlaybackRestartToken += 1
+
+        if usesMagazineTheme {
+            let pageCount = max(1, magazinePreviewPageCount)
+            magazinePageIndex = min(
+                pageCount - 1,
+                Int((clampedFraction * Double(pageCount)).rounded(.down))
+            )
+            magazineRevealElapsedSeconds = 0
+        }
+
+        if usesOrigamiTheme {
+            let pageCount = max(1, origamiPlanMetrics.pages)
+            origamiPageIndex = min(
+                pageCount - 1,
+                Int((clampedFraction * Double(pageCount)).rounded(.down))
+            )
+        }
+
+        previewTotalElapsedSeconds = targetElapsed
+
+        if selectedMusicURLs.count == 1, let audioPlayer, audioPlayer.duration > 0 {
+            audioPlayer.currentTime = targetElapsed.truncatingRemainder(dividingBy: audioPlayer.duration)
+        }
+
+        updateAudioFadeOut()
     }
 
     private func updateMusicPlaylistPlayback(delta: Double) {
@@ -11513,9 +11580,14 @@ struct FullScreenPreviewSheet: View {
     let isPreviewPlaying: Bool
     let imaginationPlaybackRestartToken: Int
     let imaginationIntroOutroOpacity: Double
+    let previewProgress: Double
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
+    let onSeek: (Double) -> Void
     let onClose: () -> Void
+
+    @State private var isScrubbing = false
+    @State private var scrubProgress: Double = 0
 
     private var usesMagazinePreview: Bool {
         visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
@@ -11700,37 +11772,103 @@ struct FullScreenPreviewSheet: View {
     }
 
     private var fullscreenBottomControls: some View {
-        HStack(alignment: .center, spacing: 10) {
-            HStack(spacing: 10) {
-                PreviewControlButton(
-                    title: isPreviewPlaying ? "Stop Preview" : "Play Preview",
-                    isDisabled: photoCount == 0 || isPreparingPhotos,
-                    action: onTogglePreview
-                )
+        VStack(spacing: 12) {
+            fullscreenScrubber
+                .frame(height: 16)
 
-                PreviewControlButton(
-                    title: "Play From Beginning",
-                    isDisabled: photoCount == 0 || isPreparingPhotos,
-                    action: onStartFromBeginning
-                )
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .background(Color.black.opacity(0.62))
-            .clipShape(RoundedRectangle(cornerRadius: 999))
-            .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
+            HStack(alignment: .center, spacing: 10) {
+                HStack(spacing: 8) {
+                    fullscreenIconButton(
+                        systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
+                        isDisabled: photoCount == 0 || isPreparingPhotos,
+                        action: onTogglePreview
+                    )
 
-            Spacer()
-
-            Text(timeCounterText)
-                .font(.custom("Figtree", size: 12).weight(.medium))
-                .foregroundColor(.white.opacity(0.96))
-                .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.68))
+                    fullscreenIconButton(
+                        systemName: "arrow.counterclockwise",
+                        isDisabled: photoCount == 0 || isPreparingPhotos,
+                        action: onStartFromBeginning
+                    )
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(Color.black.opacity(0.62))
                 .clipShape(RoundedRectangle(cornerRadius: 999))
                 .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
+
+                Spacer()
+
+                Text(timeCounterText)
+                    .font(.custom("Figtree", size: 12).weight(.medium))
+                    .foregroundColor(.white.opacity(0.96))
+                    .lineLimit(1)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.68))
+                    .clipShape(RoundedRectangle(cornerRadius: 999))
+                    .shadow(color: Color.black.opacity(0.30), radius: 10, x: 0, y: 4)
+            }
+        }
+    }
+
+    private func fullscreenIconButton(
+        systemName: String,
+        isDisabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.white.opacity(isDisabled ? 0.35 : 0.96))
+                .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+    }
+
+    private var fullscreenScrubber: some View {
+        let displayedProgress = isScrubbing ? scrubProgress : previewProgress
+
+        return GeometryReader { proxy in
+            let trackWidth = proxy.size.width
+            let knobX = trackWidth * displayedProgress
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.24))
+                    .frame(height: 4)
+
+                Capsule()
+                    .fill(Color.white.opacity(0.92))
+                    .frame(width: max(0, knobX), height: 4)
+
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 13, height: 13)
+                    .shadow(color: Color.black.opacity(0.4), radius: 4, y: 1)
+                    .offset(x: max(0, min(trackWidth, knobX)) - 6.5)
+                    .scaleEffect(isScrubbing ? 1.25 : 1)
+                    .animation(.easeOut(duration: 0.12), value: isScrubbing)
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard photoCount > 0, !isPreparingPhotos, trackWidth > 0 else { return }
+                        isScrubbing = true
+                        scrubProgress = min(1, max(0, value.location.x / trackWidth))
+                    }
+                    .onEnded { value in
+                        guard photoCount > 0, !isPreparingPhotos, trackWidth > 0 else {
+                            isScrubbing = false
+                            return
+                        }
+                        let finalProgress = min(1, max(0, value.location.x / trackWidth))
+                        onSeek(finalProgress)
+                        isScrubbing = false
+                    }
+            )
         }
     }
 }

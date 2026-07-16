@@ -20,11 +20,11 @@ enum SlideshowTransitionStyle: String {
 enum SlideshowVisualTheme: String {
     case singleFade = "Single Fade"
     case singleBlink = "Single Blink"
-    case magazine = "Magazine"
+    case magazine = "Kousei"
     case magazineFamily = "Magazine Family"
     case magazineCouples = "Magazine Couples"
-    case origami = "Origami"
-    case imagination = "Imagination"
+    case origami = "Kirigami"
+    case imagination = "Kanata"
 }
 
 struct ContentView: View {
@@ -11279,15 +11279,15 @@ struct LeftImportPanel: View {
         case .singleBlink:
             return "Single Blink keeps one photo per slide with fast clean cuts."
         case .magazine:
-            return "Magazine will create editorial pages with one, three, or more photos per page."
+            return "Kousei will create editorial pages with one, three, or more photos per page."
         case .magazineFamily:
             return "Magazine Family will use warmer layouts for group and family photos."
         case .magazineCouples:
             return "Magazine Couples will use romantic layouts for portraits, weddings, and trips."
         case .origami:
-            return "Origami will use geometric panel-style pages inspired by folded paper movement."
+            return "Kirigami will use geometric panel-style pages inspired by folded paper movement."
         case .imagination:
-            return "Imagination brings photos to life as 3D cards emerging from deep space."
+            return "Kanata brings photos to life as 3D cards emerging from deep space."
         }
     }
 
@@ -11297,7 +11297,7 @@ struct LeftImportPanel: View {
         }
 
         if usesMagazineSettings {
-            return "For Magazine, Image Fade In controls alpha 0→1, Start Delay controls when the next image begins, and Seconds / Page controls how long the full page waits before the next empty page starts."
+            return "For Kousei, Image Fade In controls alpha 0→1, Start Delay controls when the next image begins, and Seconds / Page controls how long the full page waits before the next empty page starts."
         }
 
         switch timingMode {
@@ -11382,7 +11382,7 @@ struct ThemePickerPopover: View {
                 ThemePickerSectionTitle("Other")
 
                 ThemePickerOption(
-                    title: "Magazine",
+                    title: "Kousei",
                     subtitle: "Editorial pages with one, three, or more photos.",
                     isSelected: selectedTheme == .magazine,
                     isLocked: false
@@ -11400,7 +11400,7 @@ struct ThemePickerPopover: View {
                 }
 
                 ThemePickerOption(
-                    title: "Origami",
+                    title: "Kirigami",
                     subtitle: "Geometric folded-panel movement and page layouts.",
                     isSelected: selectedTheme == .origami,
                     isLocked: false
@@ -11410,7 +11410,7 @@ struct ThemePickerPopover: View {
                 }
 
                 ThemePickerOption(
-                    title: "Imagination",
+                    title: "Kanata",
                     subtitle: "Photos emerge as 3D cards from deep space.",
                     isSelected: selectedTheme == .imagination,
                     isLocked: false

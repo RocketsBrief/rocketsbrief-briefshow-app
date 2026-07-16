@@ -10,9 +10,73 @@
 		0E35F2A72FFBD04700EBB3B2 /* BriefShow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BriefShow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		0E35F2C02FFBD04900EBB3B2 /* Exceptions for "BriefShow" folder in "BriefShow" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"ContentView.swift.before_additional_thrown_motions",
+				"ContentView.swift.before_imagination_background_card",
+				"ContentView.swift.before_imagination_blend_edges_slow",
+				"ContentView.swift.before_imagination_blur_zero_test",
+				"ContentView.swift.before_imagination_blur05_vertical_center",
+				"ContentView.swift.before_imagination_blur10_edge0_center90",
+				"ContentView.swift.before_imagination_blur10_scale30",
+				"ContentView.swift.before_imagination_blur20_scale50",
+				"ContentView.swift.before_imagination_blur5_closer",
+				"ContentView.swift.before_imagination_blurry_bigger_center",
+				"ContentView.swift.before_imagination_blurry_soft_edges",
+				"ContentView.swift.before_imagination_blurry_total_blur_minus20",
+				"ContentView.swift.before_imagination_color_and_lighter_duplicate_fix",
+				"ContentView.swift.before_imagination_color_transition_2_5s",
+				"ContentView.swift.before_imagination_cross_tilt_motion",
+				"ContentView.swift.before_imagination_dark_opposite_corner",
+				"ContentView.swift.before_imagination_dust_30_percent_faster",
+				"ContentView.swift.before_imagination_force_image_blur_20",
+				"ContentView.swift.before_imagination_force_zero_blur_test",
+				"ContentView.swift.before_imagination_high_key_bw_then_color",
+				"ContentView.swift.before_imagination_hit_testing_fix",
+				"ContentView.swift.before_imagination_image_blur_1",
+				"ContentView.swift.before_imagination_lighter_duplicate",
+				"ContentView.swift.before_imagination_main_blur_faster_40",
+				"ContentView.swift.before_imagination_main_drift_start_faster20",
+				"ContentView.swift.before_imagination_main_start_scale_plus20",
+				"ContentView.swift.before_imagination_mask_blur_10",
+				"ContentView.swift.before_imagination_mask_blur_30",
+				"ContentView.swift.before_imagination_mask_plus10_center",
+				"ContentView.swift.before_imagination_play_only",
+				"ContentView.swift.before_imagination_random_motion_order",
+				"ContentView.swift.before_imagination_real_opposite_corner",
+				"ContentView.swift.before_imagination_restore_original_color",
+				"ContentView.swift.before_imagination_seconds_per_page",
+				"ContentView.swift.before_imagination_settings_fixed",
+				"ContentView.swift.before_imagination_settings_playback",
+				"ContentView.swift.before_imagination_single_fast_slow_motion",
+				"ContentView.swift.before_imagination_softer_bw_1_5s_color",
+				"ContentView.swift.before_imagination_stronger_bw_levels_2s_color",
+				"ContentView.swift.before_imagination_top_corner_motion",
+				"ContentView.swift.before_imagination_water_hit_motion",
+				"ContentView.swift.before-dust-continuous-fix",
+				"ContentView.swift.before-dust-swirl-continuous-fix",
+				"ContentView.swift.before-imagination-card-tilt",
+				"ContentView.swift.before-imagination-dust-3x",
+				"ContentView.swift.before-imagination-dust-full-area",
+				"ContentView.swift.before-imagination-dust-wind-burst",
+				"ContentView.swift.before-imagination-round-fix",
+				"ContentView.swift.before-imagination-side-position",
+				"ContentView.swift.before-imagination-smooth-zoom-fix",
+				"ContentView.swift.before-imagination-soft-deceleration",
+				"ContentView.swift.before-imagination-vertical-motion",
+			);
+			target = 0E35F2A62FFBD04700EBB3B2 /* BriefShow */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		0E35F2A92FFBD04700EBB3B2 /* BriefShow */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				0E35F2C02FFBD04900EBB3B2 /* Exceptions for "BriefShow" folder in "BriefShow" target */,
+			);
 			path = BriefShow;
 			sourceTree = "<group>";
 		};
@@ -251,7 +315,7 @@
 				CODE_SIGN_ENTITLEMENTS = BriefShow/BriefShow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -261,7 +325,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.2;
+				MARKETING_VERSION = 2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.rocketsbrief.BriefShow;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -282,7 +346,7 @@
 				CODE_SIGN_ENTITLEMENTS = BriefShow/BriefShow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -292,7 +356,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.2;
+				MARKETING_VERSION = 2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.rocketsbrief.BriefShow;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

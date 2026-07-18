@@ -12671,6 +12671,7 @@ struct OrigamiPreviewPage: View {
         case one
         case twoPortrait
         case twoLandscape
+        case twoLandscapeModerate
         case twoMixed
         case threePortrait
         case threeLandscape
@@ -12751,8 +12752,17 @@ struct OrigamiPreviewPage: View {
                 return .twoPortrait
             }
 
-            if landscapeCount == 2 {
+            // Only stack into tall, ultra-wide slots when both
+            // photos are actually wide/panoramic. Moderate
+            // landscape shots (4:3, 3:2, and similar) belong
+            // side by side, or a stacked layout would crop off
+            // most of their width.
+            if wideCount == 2 {
                 return .twoLandscape
+            }
+
+            if landscapeCount == 2 {
+                return .twoLandscapeModerate
             }
 
             return .twoMixed
@@ -13205,11 +13215,32 @@ struct OrigamiPreviewPage: View {
         let angle =
             94 * foldProgress
 
+        // Match the static tile's headroom-preserving crop so the
+        // image doesn't visibly jump the instant the swap finishes.
+        let oldHeadroomOffset =
+            headroomPreservingCropOffset(
+                imageSize: oldImage.size,
+                frameSize: size
+            )
+
+        let newHeadroomOffset =
+            headroomPreservingCropOffset(
+                imageSize: newImage.size,
+                frameSize: size
+            )
+
         ZStack {
             // New image stays behind the old image.
             Image(nsImage: newImage)
                 .resizable()
                 .scaledToFill()
+                .frame(
+                    width: width,
+                    height: height
+                )
+                .offset(
+                    y: newHeadroomOffset
+                )
                 .frame(
                     width: width,
                     height: height
@@ -13225,7 +13256,7 @@ struct OrigamiPreviewPage: View {
                 ),
                 cropOffset: CGSize(
                     width: width * 0.25,
-                    height: 0
+                    height: oldHeadroomOffset
                 ),
                 position: CGPoint(
                     x: width * 0.25,
@@ -13250,7 +13281,7 @@ struct OrigamiPreviewPage: View {
                 ),
                 cropOffset: CGSize(
                     width: -width * 0.25,
-                    height: 0
+                    height: oldHeadroomOffset
                 ),
                 position: CGPoint(
                     x: width * 0.75,
@@ -13303,11 +13334,32 @@ struct OrigamiPreviewPage: View {
         let angle =
             92 * foldProgress
 
+        // Match the static tile's headroom-preserving crop so the
+        // image doesn't visibly jump the instant the swap finishes.
+        let oldHeadroomOffset =
+            headroomPreservingCropOffset(
+                imageSize: oldImage.size,
+                frameSize: size
+            )
+
+        let newHeadroomOffset =
+            headroomPreservingCropOffset(
+                imageSize: newImage.size,
+                frameSize: size
+            )
+
         ZStack {
             // New image stays behind all four old quarters.
             Image(nsImage: newImage)
                 .resizable()
                 .scaledToFill()
+                .frame(
+                    width: width,
+                    height: height
+                )
+                .offset(
+                    y: newHeadroomOffset
+                )
                 .frame(
                     width: width,
                     height: height
@@ -13320,7 +13372,7 @@ struct OrigamiPreviewPage: View {
                 panelSize: panelSize,
                 cropOffset: CGSize(
                     width: width * 0.25,
-                    height: height * 0.25
+                    height: height * 0.25 + oldHeadroomOffset
                 ),
                 position: CGPoint(
                     x: width * 0.25,
@@ -13342,7 +13394,7 @@ struct OrigamiPreviewPage: View {
                 panelSize: panelSize,
                 cropOffset: CGSize(
                     width: -width * 0.25,
-                    height: height * 0.25
+                    height: height * 0.25 + oldHeadroomOffset
                 ),
                 position: CGPoint(
                     x: width * 0.75,
@@ -13364,7 +13416,7 @@ struct OrigamiPreviewPage: View {
                 panelSize: panelSize,
                 cropOffset: CGSize(
                     width: width * 0.25,
-                    height: -height * 0.25
+                    height: -height * 0.25 + oldHeadroomOffset
                 ),
                 position: CGPoint(
                     x: width * 0.25,
@@ -13386,7 +13438,7 @@ struct OrigamiPreviewPage: View {
                 panelSize: panelSize,
                 cropOffset: CGSize(
                     width: -width * 0.25,
-                    height: -height * 0.25
+                    height: -height * 0.25 + oldHeadroomOffset
                 ),
                 position: CGPoint(
                     x: width * 0.75,
@@ -13664,6 +13716,22 @@ struct OrigamiPreviewPage: View {
             )
 
             VStack(spacing: 0) {
+                tile(ordered[0])
+                tile(ordered[1])
+            }
+
+        case .twoLandscapeModerate:
+            // 4:3/3:2-style photos aren't wide enough for the
+            // stacked layout above without losing most of their
+            // width, so place them side by side instead.
+            let ordered = bestImageOrder(
+                for: [
+                    canvasAspect * 0.50,
+                    canvasAspect * 0.50
+                ]
+            )
+
+            HStack(spacing: 0) {
                 tile(ordered[0])
                 tile(ordered[1])
             }

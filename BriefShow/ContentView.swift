@@ -447,12 +447,26 @@ struct ContentView: View {
     private var magazinePageDuration: Double {
         let fadeSeconds = max(0.05, magazineImageFadeSeconds)
         let delaySeconds = max(0, magazineImageDelaySeconds)
+        let fillSeconds = fadeSeconds + (delaySeconds * 5)
+
+        if timingMode == .followMusic,
+           let audioPlayer,
+           selectedPhotoURLs.count > 0 {
+            let pageCount = max(1, magazinePreviewPageCount)
+            let musicPageDuration = audioPlayer.duration / Double(pageCount)
+
+            // Images still fill in at the normal Fade / Start Delay speed;
+            // whatever music time is left over becomes the page hold, so
+            // all pages together add up to exactly the music duration.
+            return max(fillSeconds, musicPageDuration)
+        }
+
         let pageHoldSeconds = timingMode == .customSpeed ? max(0, secondsPerPhoto) : 0
 
         // 6 image slots on one magazine page:
         // image 1 starts at 0, each next image starts after Start Delay.
         // Seconds / Page is extra hold time after all images are visible.
-        return max(1, fadeSeconds + (delaySeconds * 5) + pageHoldSeconds)
+        return max(1, fillSeconds + pageHoldSeconds)
     }
 
     private var magazineLayoutVariant: Int {
@@ -648,7 +662,7 @@ struct ContentView: View {
             + currentOrigamiReplacementCount
     }
 
-    private var origamiInternalHoldDuration: Double {
+    private var origamiBaseHoldDuration: Double {
         max(
             1.0,
             min(
@@ -656,6 +670,39 @@ struct ContentView: View {
                 origamiInternalHoldSeconds
             )
         )
+    }
+
+    private var origamiInternalHoldDuration: Double {
+        guard timingMode == .followMusic,
+              let audioPlayer,
+              selectedPhotoURLs.count > 0
+        else {
+            return origamiBaseHoldDuration
+        }
+
+        let metrics = origamiPlanMetrics
+
+        guard metrics.holds > 0 else {
+            return origamiBaseHoldDuration
+        }
+
+        let initialRevealDuration =
+            metrics.pages > 0 ? origamiTransitionDuration : 0
+
+        let wholePageFoldDuration =
+            Double(max(0, metrics.pages - 1)) * 1.30
+
+        let nonHoldDuration =
+            Double(metrics.swaps) * origamiInternalSwapDuration
+            + initialRevealDuration
+            + wholePageFoldDuration
+
+        let remainingDuration = audioPlayer.duration - nonHoldDuration
+
+        // Swaps and fold transitions keep their normal pace; whatever
+        // music time is left over is spread across the holds, so the
+        // whole slideshow adds up to exactly the music duration.
+        return max(0.5, remainingDuration / Double(metrics.holds))
     }
 
     private var origamiInternalSwapDuration: Double {
@@ -826,7 +873,7 @@ struct ContentView: View {
             1.20,
             max(
                 0.78,
-                currentPhotoDuration * 0.30
+                origamiBaseHoldDuration * 0.30
             )
         )
     }
@@ -4406,6 +4453,39 @@ private func magazineExportLayoutRects(
     }
 }
 
+// Returns the vertical offset (SwiftUI-style: y increases downward) that a
+// `.scaledToFill()` image should be shifted by so a person's head is not
+// cropped away. Only applies when the crop trims top/bottom (a portrait
+// photo placed in a wider slot) - left/right crops are left centered since
+// they rarely cut through a face the same way.
+private func headroomPreservingCropOffset(
+    imageSize: CGSize,
+    frameSize: CGSize,
+    topCropFraction: CGFloat = 0.15
+) -> CGFloat {
+    guard imageSize.width > 0, imageSize.height > 0,
+          frameSize.width > 0, frameSize.height > 0
+    else {
+        return 0
+    }
+
+    let imageAspect = imageSize.width / imageSize.height
+    let frameAspect = frameSize.width / frameSize.height
+
+    guard imageAspect <= frameAspect else {
+        return 0
+    }
+
+    let drawHeight = frameSize.width / imageAspect
+    let overflow = drawHeight - frameSize.height
+
+    guard overflow > 0 else {
+        return 0
+    }
+
+    return overflow * (0.5 - topCropFraction)
+}
+
 private func drawMagazineExportImage(
     _ image: CGImage,
     in rect: CGRect,
@@ -4470,12 +4550,22 @@ private func drawMagazineExportImage(
         let drawHeight =
             drawWidth / imageAspect
 
+        // CGContext's Y axis increases upward, so subtracting the
+        // headroom offset shifts the drawn image down, preserving
+        // more of its top (where a head usually is) from being clipped.
+        let headroomOffset =
+            headroomPreservingCropOffset(
+                imageSize: CGSize(width: imageWidth, height: imageHeight),
+                frameSize: rect.size
+            )
+
         drawRect = CGRect(
             x:
                 rect.minX,
             y:
                 rect.midY
-                - drawHeight / 2,
+                - drawHeight / 2
+                - headroomOffset,
             width:
                 drawWidth,
             height:
@@ -5978,11 +6068,21 @@ private func drawOrigamiExportImage(
         let drawHeight =
             drawWidth / imageAspect
 
+        // CGContext's Y axis increases upward, so subtracting the
+        // headroom offset shifts the drawn image down, preserving
+        // more of its top (where a head usually is) from being clipped.
+        let headroomOffset =
+            headroomPreservingCropOffset(
+                imageSize: CGSize(width: CGFloat(image.width), height: CGFloat(image.height)),
+                frameSize: rect.size
+            )
+
         drawRect = CGRect(
             x: rect.minX,
             y:
                 rect.midY
-                - drawHeight / 2,
+                - drawHeight / 2
+                - headroomOffset,
             width: drawWidth,
             height: drawHeight
         )
@@ -12524,6 +12624,13 @@ struct MagazineImageTile: View {
                     .resizable()
                     .scaledToFill()
                     .frame(width: proxy.size.width, height: proxy.size.height)
+                    .offset(
+                        y: headroomPreservingCropOffset(
+                            imageSize: image.size,
+                            frameSize: proxy.size
+                        )
+                    )
+                    .frame(width: proxy.size.width, height: proxy.size.height)
                     .clipped()
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -13398,6 +13505,18 @@ struct OrigamiPreviewPage: View {
                             )
                             .resizable()
                             .scaledToFill()
+                            .frame(
+                                width:
+                                    proxy.size.width,
+                                height:
+                                    proxy.size.height
+                            )
+                            .offset(
+                                y: headroomPreservingCropOffset(
+                                    imageSize: displayedImage.size,
+                                    frameSize: proxy.size
+                                )
+                            )
                             .frame(
                                 width:
                                     proxy.size.width,

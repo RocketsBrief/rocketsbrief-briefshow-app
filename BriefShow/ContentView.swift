@@ -27,6 +27,136 @@ enum SlideshowVisualTheme: String {
     case imagination = "Kanata"
 }
 
+// A per-photo manual crop override for Kousei-family pages. `focusX`/`focusY`
+// pin the point of the image (0...1, CSS object-position style) that stays
+// centered in whatever slot the photo lands in; `zoom` (>=1) crops in tighter
+// beyond the default cover-fill. Defaults reproduce the previous fixed
+// "headroom preserving" auto-crop so untouched photos render unchanged.
+struct MagazinePhotoCrop: Equatable {
+    var focusX: Double = 0.5
+    var focusY: Double = 0.15
+    var zoom: Double = 1
+
+    static let `default` = MagazinePhotoCrop()
+}
+
+private func magazineCropRenderSize(
+    imageSize: CGSize,
+    frameSize: CGSize,
+    zoom: CGFloat
+) -> CGSize {
+    guard imageSize.width > 0, imageSize.height > 0,
+          frameSize.width > 0, frameSize.height > 0
+    else {
+        return frameSize
+    }
+
+    let coverScale = max(
+        frameSize.width / imageSize.width,
+        frameSize.height / imageSize.height
+    )
+
+    let safeZoom = max(1, zoom)
+
+    return CGSize(
+        width: imageSize.width * coverScale * safeZoom,
+        height: imageSize.height * coverScale * safeZoom
+    )
+}
+
+// Returns the SwiftUI-convention offset (y increases downward) to apply to an
+// aspect-filled, `zoom`-scaled image so that `crop`'s focus point stays
+// visible. Callers drawing with a Core Graphics context (y increases upward)
+// should negate the height component.
+private func magazineCropOffset(
+    imageSize: CGSize,
+    frameSize: CGSize,
+    crop: MagazinePhotoCrop
+) -> CGSize {
+    let renderedSize = magazineCropRenderSize(
+        imageSize: imageSize,
+        frameSize: frameSize,
+        zoom: CGFloat(crop.zoom)
+    )
+
+    let overflowX = renderedSize.width - frameSize.width
+    let overflowY = renderedSize.height - frameSize.height
+    let focusX = min(1, max(0, crop.focusX))
+    let focusY = min(1, max(0, crop.focusY))
+
+    return CGSize(
+        width: overflowX * (0.5 - focusX),
+        height: overflowY * (0.5 - focusY)
+    )
+}
+
+// Mirrors OrigamiPreviewPage's own photo classification thresholds (kept as
+// a separate pure function rather than refactoring that view, so existing
+// Kirigami layout selection is never at risk of changing). Kirigami's
+// layouts are built specifically to match each photo's own shape to a
+// same-shaped slot, so a photo's own aspect class is a good stand-in for
+// whatever slot it will actually land in, without simulating the full
+// multi-photo page layout.
+private enum PhotoAspectClass {
+    case ultraPortrait
+    case portrait
+    case square
+    case landscape
+    case wide
+    case ultraWide
+}
+
+private func photoAspectClass(for ratio: CGFloat) -> PhotoAspectClass {
+    switch ratio {
+    case ..<0.72:
+        return .ultraPortrait
+    case ..<0.90:
+        return .portrait
+    case ..<1.15:
+        return .square
+    case ..<1.70:
+        return .landscape
+    case ..<2.30:
+        return .wide
+    default:
+        return .ultraWide
+    }
+}
+
+private func representativeAspectRatio(for photoClass: PhotoAspectClass) -> CGFloat {
+    switch photoClass {
+    case .ultraPortrait:
+        return 0.65
+    case .portrait:
+        return 0.8
+    case .square:
+        return 1
+    case .landscape:
+        return 1.4
+    case .wide:
+        return 2
+    case .ultraWide:
+        return 2.6
+    }
+}
+
+// Fraction of the image's area that stays visible when it's cover-fit into
+// a `targetAspectRatio` frame at zoom 1 (no manual crop). Used to flag
+// photos that need cropping attention before the client has looked at them.
+private func magazineCropVisibleAreaFraction(
+    imageAspectRatio: CGFloat,
+    targetAspectRatio: CGFloat
+) -> Double {
+    guard imageAspectRatio > 0, targetAspectRatio > 0 else {
+        return 1
+    }
+
+    return Double(
+        min(imageAspectRatio, targetAspectRatio)
+        / max(imageAspectRatio, targetAspectRatio)
+    )
+}
+
 struct ContentView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     @ObservedObject private var accountManager = AccountManager.shared
@@ -82,6 +212,8 @@ struct ContentView: View {
     @State private var magazineRevealElapsedSeconds: Double = 0
     @State private var magazinePageIndex: Int = 0
     @State private var origamiPageIndex: Int = 0
+    @State private var photoCropTransforms: [URL: MagazinePhotoCrop] = [:]
+    @State private var isCropEditorPresented: Bool = false
 
     // The Origami page remains fixed while individual
     // image slots are replaced one at a time.
@@ -159,7 +291,11 @@ struct ContentView: View {
                         musicFadeOutSeconds: $musicFadeOutSeconds,
                         shouldLoopPreview: $shouldLoopPreview,
                         transitionStyle: $transitionStyle,
-                        visualTheme: $visualTheme
+                        visualTheme: $visualTheme,
+                        hasPhotos: !selectedPhotoURLs.isEmpty,
+                        onOpenCropEditor: {
+                            isCropEditorPresented = true
+                        }
                     )
                     CenterPreviewPanel(
                         activePreviewImage: activePreviewImage,
@@ -190,6 +326,7 @@ struct ContentView: View {
                         magazineImageFadeSeconds: magazineImageFadeSeconds,
                         magazineImageDelaySeconds: magazineImageDelaySeconds,
                         magazineLayoutSeed: magazinePageIndex,
+                        photoCropByImageIdentity: photoCropByImageIdentity,
                         magazinePageSlotCount: currentPreviewPageSlotCount,
                         origamiAnimationSeed: origamiPageIndex,
                         isPreviewPlaying: isPreviewPlaying,
@@ -280,6 +417,7 @@ struct ContentView: View {
                     magazineImageFadeSeconds: magazineImageFadeSeconds,
                     magazineImageDelaySeconds: magazineImageDelaySeconds,
                     magazineLayoutSeed: magazinePageIndex,
+                    photoCropByImageIdentity: photoCropByImageIdentity,
                     magazinePageSlotCount: currentPreviewPageSlotCount,
                     origamiAnimationSeed: origamiPageIndex,
                     isPreviewPlaying: isPreviewPlaying,
@@ -299,6 +437,25 @@ struct ContentView: View {
                 )
                 .ignoresSafeArea()
                 .zIndex(9999)
+                .transition(.opacity)
+            }
+
+            if isCropEditorPresented {
+                MagazineCropEditorSheet(
+                    photoURLs: selectedPhotoURLs,
+                    previewImages: previewImages,
+                    visualTheme: visualTheme,
+                    pageRanges:
+                        visualTheme == .origami
+                        ? origamiReviewPageRanges
+                        : magazineReviewPageRanges,
+                    cropTransforms: $photoCropTransforms,
+                    onClose: {
+                        isCropEditorPresented = false
+                    }
+                )
+                .ignoresSafeArea()
+                .zIndex(15000)
                 .transition(.opacity)
             }
 
@@ -442,6 +599,104 @@ struct ContentView: View {
 
     private var usesPagedTheme: Bool {
         usesMagazineTheme || usesOrigamiTheme
+    }
+
+    // Lets Kousei preview tiles look up a manual crop for the exact NSImage
+    // instance they were handed, without threading photo URLs through the
+    // whole preview view hierarchy (previewImages/selectedPhotoURLs already
+    // share NSImage instances everywhere they're sliced or passed down).
+    private var photoCropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop] {
+        guard !photoCropTransforms.isEmpty else {
+            return [:]
+        }
+
+        var result: [ObjectIdentifier: MagazinePhotoCrop] = [:]
+
+        for (index, url) in selectedPhotoURLs.enumerated()
+        where previewImages.indices.contains(index) {
+            if let crop = photoCropTransforms[url] {
+                result[ObjectIdentifier(previewImages[index])] = crop
+            }
+        }
+
+        return result
+    }
+
+    // Groups previewImages into the same page sizes Kousei actually uses,
+    // so the Crop editor can show real page layouts to review before going
+    // to full preview. Uses the same slot-count decision the live preview
+    // uses, so the grouping matches what will actually be shown.
+    private var magazineReviewPageRanges: [Range<Int>] {
+        var ranges: [Range<Int>] = []
+        var consumed = 0
+        var pageIndex = 0
+        let total = previewImages.count
+
+        while consumed < total {
+            let remaining = total - consumed
+
+            let count = max(
+                1,
+                min(
+                    6,
+                    adaptiveMagazineSlotCount(
+                        pageIndex: pageIndex,
+                        startIndex: consumed,
+                        remainingPhotos: remaining
+                    )
+                )
+            )
+
+            let end = min(total, consumed + count)
+
+            guard end > consumed else {
+                break
+            }
+
+            ranges.append(consumed..<end)
+            consumed = end
+            pageIndex += 1
+        }
+
+        return ranges
+    }
+
+    // Same idea for Kirigami, chunked using its real base-slot-count cycle
+    // (3, 5, 6, 2, 4). Swap-in replacement photos are folded into later
+    // review pages instead of simulated mid-page, so every photo still gets
+    // reviewed exactly once without reproducing the swap animation timing.
+    private var origamiReviewPageRanges: [Range<Int>] {
+        var ranges: [Range<Int>] = []
+        var consumed = 0
+        var pageIndex = 0
+        let total = previewImages.count
+
+        while consumed < total {
+            let remaining = total - consumed
+
+            let count = max(
+                1,
+                min(
+                    6,
+                    plannedOrigamiSlotCount(
+                        pageIndex: pageIndex,
+                        remainingPhotos: remaining
+                    )
+                )
+            )
+
+            let end = min(total, consumed + count)
+
+            guard end > consumed else {
+                break
+            }
+
+            ranges.append(consumed..<end)
+            consumed = end
+            pageIndex += 1
+        }
+
+        return ranges
     }
 
     private var magazinePageDuration: Double {
@@ -2339,10 +2594,12 @@ struct ContentView: View {
         let preparationStartedAt = Date()
 
         DispatchQueue.global(qos: .userInitiated).async {
+            var preparedURLs: [URL] = []
             var preparedImages: [NSImage] = []
 
             for url in sortedURLs {
                 if let image = makePreviewImage(from: url) {
+                    preparedURLs.append(url)
                     preparedImages.append(image)
                 }
 
@@ -2357,6 +2614,10 @@ struct ContentView: View {
                 let remainingLoadingTime = max(0, 0.7 - elapsed)
 
                 DispatchQueue.main.asyncAfter(deadline: .now() + remainingLoadingTime) {
+                    // Keep selectedPhotoURLs and previewImages perfectly
+                    // aligned by index — the rest of the app (crop lookup,
+                    // drag reorder, active-photo tracking) assumes it.
+                    selectedPhotoURLs = preparedURLs
                     previewImages = preparedImages
                     preparedPhotoCount = preparedImages.count
                     isPreparingPhotos = false
@@ -2470,6 +2731,8 @@ struct ContentView: View {
             magazineImageFadeSeconds
         let selectedMagazineImageDelay =
             magazineImageDelaySeconds
+        let selectedPhotoCropTransforms =
+            photoCropTransforms
         let selectedOrigamiHoldSeconds =
             origamiInternalHoldSeconds
 
@@ -2549,6 +2812,10 @@ struct ContentView: View {
                             selectedMagazineImageFade,
                         imageDelaySeconds:
                             selectedMagazineImageDelay,
+                        revealStyle:
+                            selectedTransitionStyle,
+                        cropTransforms:
+                            selectedPhotoCropTransforms,
                         fileType: exportFileType,
                         progressHandler:
                             reportRenderProgress
@@ -2564,6 +2831,8 @@ struct ContentView: View {
                             selectedOrigamiImagesBeforePageChange,
                         simultaneousSwapCount:
                             selectedOrigamiSimultaneousSwapCount,
+                        cropTransforms:
+                            selectedPhotoCropTransforms,
                         fileType: exportFileType,
                         progressHandler:
                             reportRenderProgress
@@ -4491,6 +4760,7 @@ private func drawMagazineExportImage(
     in rect: CGRect,
     alpha: CGFloat,
     shadowScale: CGFloat,
+    crop: MagazinePhotoCrop,
     context: CGContext
 ) {
     guard rect.width > 0,
@@ -4517,61 +4787,37 @@ private func drawMagazineExportImage(
         return
     }
 
-    let imageAspect =
-        imageWidth / imageHeight
-
-    let rectAspect =
-        rect.width / rect.height
-
-    let drawRect: CGRect
-
-    if imageAspect > rectAspect {
-        let drawHeight =
-            rect.height
-
-        let drawWidth =
-            drawHeight * imageAspect
-
-        drawRect = CGRect(
-            x:
-                rect.midX
-                - drawWidth / 2,
-            y:
-                rect.minY,
-            width:
-                drawWidth,
-            height:
-                drawHeight
+    let renderedSize =
+        magazineCropRenderSize(
+            imageSize: CGSize(width: imageWidth, height: imageHeight),
+            frameSize: rect.size,
+            zoom: CGFloat(crop.zoom)
         )
-    } else {
-        let drawWidth =
-            rect.width
 
-        let drawHeight =
-            drawWidth / imageAspect
-
-        // CGContext's Y axis increases upward, so subtracting the
-        // headroom offset shifts the drawn image down, preserving
-        // more of its top (where a head usually is) from being clipped.
-        let headroomOffset =
-            headroomPreservingCropOffset(
-                imageSize: CGSize(width: imageWidth, height: imageHeight),
-                frameSize: rect.size
-            )
-
-        drawRect = CGRect(
-            x:
-                rect.minX,
-            y:
-                rect.midY
-                - drawHeight / 2
-                - headroomOffset,
-            width:
-                drawWidth,
-            height:
-                drawHeight
+    // magazineCropOffset returns SwiftUI-convention offsets (y grows
+    // downward), matching MagazineImageTile. CGContext's Y axis increases
+    // upward, so the height component is negated here.
+    let cropOffset =
+        magazineCropOffset(
+            imageSize: CGSize(width: imageWidth, height: imageHeight),
+            frameSize: rect.size,
+            crop: crop
         )
-    }
+
+    let drawRect = CGRect(
+        x:
+            rect.midX
+            - renderedSize.width / 2
+            + cropOffset.width,
+        y:
+            rect.midY
+            - renderedSize.height / 2
+            - cropOffset.height,
+        width:
+            renderedSize.width,
+        height:
+            renderedSize.height
+    )
 
     // Match MagazineImageTile Preview shadow.
     let hiddenAmount =
@@ -4653,6 +4899,8 @@ private func makeMagazineExportPixelBuffer(
     localTime: Double,
     imageFadeSeconds: Double,
     imageDelaySeconds: Double,
+    revealStyle: SlideshowTransitionStyle,
+    cropTransforms: [URL: MagazinePhotoCrop],
     renderSize: CGSize,
     pixelBufferPool: CVPixelBufferPool?
 ) -> CVPixelBuffer? {
@@ -4805,22 +5053,27 @@ private func makeMagazineExportPixelBuffer(
             Double(index)
             * delaySeconds
 
-        let rawAlpha =
-            (
-                localTime
-                - startTime
-            )
-            / fadeSeconds
+        let elapsed =
+            localTime
+            - startTime
 
-        let alpha = CGFloat(
-            min(
-                1,
-                max(
-                    0,
-                    rawAlpha
+        let alpha: CGFloat
+
+        if revealStyle == .blink {
+            alpha = elapsed >= 0 ? 1 : 0
+        } else {
+            let rawAlpha = elapsed / fadeSeconds
+
+            alpha = CGFloat(
+                min(
+                    1,
+                    max(
+                        0,
+                        rawAlpha
+                    )
                 )
             )
-        )
+        }
 
         drawMagazineExportImage(
             orderedPhotos[index].image,
@@ -4830,6 +5083,7 @@ private func makeMagazineExportPixelBuffer(
                 0.5,
                 pageWidth / 780
             ),
+            crop: cropTransforms[orderedPhotos[index].url] ?? .default,
             context: context
         )
     }
@@ -4844,6 +5098,8 @@ private func renderMagazineSlideshowVideo(
     pageDuration: Double,
     imageFadeSeconds: Double,
     imageDelaySeconds: Double,
+    revealStyle: SlideshowTransitionStyle,
+    cropTransforms: [URL: MagazinePhotoCrop],
     fileType: AVFileType = .mp4,
     progressHandler: @escaping @Sendable (Double) -> Void
 ) throws {
@@ -5110,6 +5366,10 @@ private func renderMagazineSlideshowVideo(
                         imageFadeSeconds,
                     imageDelaySeconds:
                         imageDelaySeconds,
+                    revealStyle:
+                        revealStyle,
+                    cropTransforms:
+                        cropTransforms,
                     renderSize:
                         renderSize,
                     pixelBufferPool:
@@ -6271,15 +6531,26 @@ private func origamiSwiftUIExportTargetSlots(
 private func buildOrigamiSwiftUIExportPages(
     photoURLs: [URL],
     imagesBeforePageChange: Int,
-    simultaneousSwapCount: Int
-) -> [OrigamiSwiftUIExportPage] {
-    let loadedImages =
-        photoURLs.compactMap {
-            NSImage(contentsOf: $0)
+    simultaneousSwapCount: Int,
+    cropTransforms: [URL: MagazinePhotoCrop]
+) -> (pages: [OrigamiSwiftUIExportPage], cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]) {
+    let loadedPhotoPairs: [(url: URL, image: NSImage)] =
+        photoURLs.compactMap { url in
+            NSImage(contentsOf: url).map { (url: url, image: $0) }
         }
 
+    var cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop] = [:]
+
+    for pair in loadedPhotoPairs {
+        if let crop = cropTransforms[pair.url] {
+            cropByImageIdentity[ObjectIdentifier(pair.image)] = crop
+        }
+    }
+
+    let loadedImages = loadedPhotoPairs.map(\.image)
+
     guard !loadedImages.isEmpty else {
-        return []
+        return ([], cropByImageIdentity)
     }
 
     let cycle = [3, 5, 6, 2, 4]
@@ -6492,7 +6763,7 @@ private func buildOrigamiSwiftUIExportPages(
         pageIndex += 1
     }
 
-    return pages
+    return (pages, cropByImageIdentity)
 }
 
 private func origamiSwiftUIExportSmoothstep(
@@ -6640,6 +6911,9 @@ private struct OrigamiSwiftUIExportFrameView:
     let blackOverlayOpacity:
         Double
 
+    let cropByImageIdentity:
+        [ObjectIdentifier: MagazinePhotoCrop]
+
     var body: some View {
         ZStack {
             Color.black
@@ -6660,7 +6934,9 @@ private struct OrigamiSwiftUIExportFrameView:
                 transitionProgress:
                     transitionProgress,
                 animationVariant:
-                    page.pageIndex
+                    page.pageIndex,
+                cropByImageIdentity:
+                    cropByImageIdentity
             )
 
             if let previousPage {
@@ -6675,7 +6951,9 @@ private struct OrigamiSwiftUIExportFrameView:
                         previousPage
                             .pageIndex,
                     progress:
-                        wholePageFoldProgress
+                        wholePageFoldProgress,
+                    cropByImageIdentity:
+                        cropByImageIdentity
                 )
                 .allowsHitTesting(false)
                 .zIndex(100)
@@ -6713,6 +6991,7 @@ private func makeOrigamiSwiftUIExportCGImage(
         OrigamiSwiftUIExportPage?,
     wholePageFoldProgress: Double,
     blackOverlayOpacity: Double,
+    cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop],
     renderSize: CGSize
 ) -> CGImage? {
     var renderedImage: CGImage?
@@ -6737,7 +7016,9 @@ private func makeOrigamiSwiftUIExportCGImage(
                 wholePageFoldProgress:
                     wholePageFoldProgress,
                 blackOverlayOpacity:
-                    blackOverlayOpacity
+                    blackOverlayOpacity,
+                cropByImageIdentity:
+                    cropByImageIdentity
             )
             .frame(
                 width:
@@ -6794,6 +7075,7 @@ private func makeOrigamiSwiftUIExportPixelBuffer(
         OrigamiSwiftUIExportPage?,
     wholePageFoldProgress: Double,
     blackOverlayOpacity: Double,
+    cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop],
     renderSize: CGSize,
     pixelBufferPool:
         CVPixelBufferPool?
@@ -6819,6 +7101,8 @@ private func makeOrigamiSwiftUIExportPixelBuffer(
                     wholePageFoldProgress,
                 blackOverlayOpacity:
                     blackOverlayOpacity,
+                cropByImageIdentity:
+                    cropByImageIdentity,
                 renderSize:
                     renderSize
             )
@@ -7551,6 +7835,7 @@ private func renderOrigamiSlideshowVideo(
     pageDuration: Double,
     imagesBeforePageChange: Int,
     simultaneousSwapCount: Int,
+    cropTransforms: [URL: MagazinePhotoCrop],
     fileType: AVFileType = .mp4,
     progressHandler:
         @escaping @Sendable (Double) -> Void
@@ -7563,14 +7848,16 @@ private func renderOrigamiSlideshowVideo(
         )
     }
 
-    let pages =
+    let (pages, cropByImageIdentity) =
         buildOrigamiSwiftUIExportPages(
             photoURLs:
                 photoURLs,
             imagesBeforePageChange:
                 imagesBeforePageChange,
             simultaneousSwapCount:
-                simultaneousSwapCount
+                simultaneousSwapCount,
+            cropTransforms:
+                cropTransforms
         )
 
     guard !pages.isEmpty else {
@@ -8047,6 +8334,8 @@ private func renderOrigamiSlideshowVideo(
                     wholePageFoldProgress,
                 blackOverlayOpacity:
                     blackOverlayOpacity,
+                cropByImageIdentity:
+                    cropByImageIdentity,
                 renderSize:
                     renderSize,
                 pixelBufferPool:
@@ -11069,6 +11358,8 @@ struct LeftImportPanel: View {
     @Binding var shouldLoopPreview: Bool
     @Binding var transitionStyle: SlideshowTransitionStyle
     @Binding var visualTheme: SlideshowVisualTheme
+    let hasPhotos: Bool
+    let onOpenCropEditor: () -> Void
 
     @State private var isThemePickerPresented = false
     @State private var isThemeButtonHovered = false
@@ -11253,19 +11544,39 @@ struct LeftImportPanel: View {
                             step: 1,
                             suffix: ""
                         )
+
+                        cropPhotosButton
                     }
                     .padding(.top, 2)
                 }
 
                 if usesMagazineSettings {
                     VStack(alignment: .leading, spacing: 6) {
-                        CompactStepperRow(
-                            label: "Image Fade In",
-                            value: $magazineImageFadeSeconds,
-                            range: 0.2...2.0,
-                            step: 0.1,
-                            suffix: "s"
-                        )
+                        HStack(spacing: 8) {
+                            TimingModeButton(
+                                title: "Fade",
+                                isSelected: transitionStyle == .fade
+                            ) {
+                                transitionStyle = .fade
+                            }
+
+                            TimingModeButton(
+                                title: "Blink",
+                                isSelected: transitionStyle == .blink
+                            ) {
+                                transitionStyle = .blink
+                            }
+                        }
+
+                        if transitionStyle == .fade {
+                            CompactStepperRow(
+                                label: "Image Fade In",
+                                value: $magazineImageFadeSeconds,
+                                range: 0.2...2.0,
+                                step: 0.1,
+                                suffix: "s"
+                            )
+                        }
 
                         CompactStepperRow(
                             label: "Start Delay",
@@ -11274,6 +11585,8 @@ struct LeftImportPanel: View {
                             step: 0.1,
                             suffix: "s"
                         )
+
+                        cropPhotosButton
                     }
                     .padding(.top, 2)
                 }
@@ -11338,6 +11651,31 @@ struct LeftImportPanel: View {
         visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
     }
 
+    private var cropPhotosButton: some View {
+        Button(action: onOpenCropEditor) {
+            HStack(spacing: 6) {
+                Image(systemName: "crop")
+                    .font(.system(size: 11, weight: .semibold))
+
+                Text("Crop Photos")
+                    .font(.custom("Figtree", size: 12).weight(.medium))
+            }
+            .foregroundColor(hasPhotos ? AppColors.ink : AppColors.muted.opacity(0.5))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(AppColors.panel)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(AppColors.border.opacity(hasPhotos ? 1 : 0.5), lineWidth: 1.6)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasPhotos)
+        .padding(.top, 2)
+    }
+
     private var maxAllowedFadeDuration: Double {
         guard timingMode == .customSpeed else {
             return 3
@@ -11355,6 +11693,10 @@ struct LeftImportPanel: View {
     }
 
     private func enforceFadeLimit() {
+        guard !usesMagazineSettings else {
+            return
+        }
+
         let maxFade = maxAllowedFadeDuration
 
         if maxFade == 0 {
@@ -11397,6 +11739,10 @@ struct LeftImportPanel: View {
         }
 
         if usesMagazineSettings {
+            if transitionStyle == .blink {
+                return "Blink is active, so each photo pops in instantly. Start Delay controls when the next image appears, and Seconds / Page controls how long the full page waits before the next empty page starts."
+            }
+
             return "For Kousei, Image Fade In controls alpha 0→1, Start Delay controls when the next image begins, and Seconds / Page controls how long the full page waits before the next empty page starts."
         }
 
@@ -11413,6 +11759,524 @@ struct LeftImportPanel: View {
             }
 
             return "Fade is limited to stay shorter than each photo duration, so the slideshow stays clean and professional."
+        }
+    }
+}
+
+struct MagazineCropEditorSheet: View {
+    let photoURLs: [URL]
+    let previewImages: [NSImage]
+    let visualTheme: SlideshowVisualTheme
+    let pageRanges: [Range<Int>]
+    @Binding var cropTransforms: [URL: MagazinePhotoCrop]
+    let onClose: () -> Void
+
+    // Above this, the default crop loses enough of the photo to flag it.
+    private let cropWarningThreshold: Double = 0.32
+
+    @State private var selectedIndex: Int = 0
+    @State private var currentPageIndex: Int = 0
+    @State private var isViewingSinglePhoto: Bool = false
+
+    private var photoCount: Int {
+        min(photoURLs.count, previewImages.count)
+    }
+
+    private var selectedCrop: Binding<MagazinePhotoCrop> {
+        crop(for: selectedIndex)
+    }
+
+    private func crop(for index: Int) -> Binding<MagazinePhotoCrop> {
+        guard photoURLs.indices.contains(index) else {
+            return .constant(.default)
+        }
+
+        let url = photoURLs[index]
+
+        return Binding(
+            get: { cropTransforms[url] ?? .default },
+            set: { cropTransforms[url] = $0 }
+        )
+    }
+
+    // Only a visual guide in the editor — the real slot rect varies slightly
+    // by page layout, but a focus-point crop is forgiving of that variance.
+    private func editorAspectRatio(for index: Int) -> CGFloat {
+        guard previewImages.indices.contains(index) else {
+            return 1
+        }
+
+        let size = previewImages[index].size
+
+        guard size.width > 0, size.height > 0 else {
+            return 1
+        }
+
+        let ratio = size.width / size.height
+
+        if visualTheme == .origami {
+            return representativeAspectRatio(for: photoAspectClass(for: ratio))
+        }
+
+        if ratio < 0.82 {
+            return 0.8
+        }
+
+        if ratio > 1.18 {
+            return 1.5
+        }
+
+        return 1
+    }
+
+    // How much of the photo would be lost with no manual crop at all —
+    // used to flag photos worth checking before the client pages through
+    // everything.
+    private func defaultCropSeverity(for index: Int) -> Double {
+        guard previewImages.indices.contains(index) else {
+            return 0
+        }
+
+        let size = previewImages[index].size
+
+        guard size.width > 0, size.height > 0 else {
+            return 0
+        }
+
+        let ratio = size.width / size.height
+        let target = editorAspectRatio(for: index)
+        let visibleFraction = magazineCropVisibleAreaFraction(
+            imageAspectRatio: ratio,
+            targetAspectRatio: target
+        )
+
+        return 1 - visibleFraction
+    }
+
+    private func needsCropAttention(at index: Int) -> Bool {
+        guard photoURLs.indices.contains(index) else {
+            return false
+        }
+
+        guard cropTransforms[photoURLs[index]] == nil else {
+            // Already looked at and adjusted (or intentionally left as is).
+            return false
+        }
+
+        return defaultCropSeverity(for: index) > cropWarningThreshold
+    }
+
+    private var cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop] {
+        guard !cropTransforms.isEmpty else {
+            return [:]
+        }
+
+        var result: [ObjectIdentifier: MagazinePhotoCrop] = [:]
+
+        for (index, url) in photoURLs.enumerated()
+        where previewImages.indices.contains(index) {
+            if let crop = cropTransforms[url] {
+                result[ObjectIdentifier(previewImages[index])] = crop
+            }
+        }
+
+        return result
+    }
+
+    private var currentPageRange: Range<Int>? {
+        guard pageRanges.indices.contains(currentPageIndex) else {
+            return nil
+        }
+
+        return pageRanges[currentPageIndex]
+    }
+
+    private func openPhoto(at index: Int) {
+        selectedIndex = index
+        isViewingSinglePhoto = true
+    }
+
+    private func returnToPages() {
+        if let pageIndex = pageRanges.firstIndex(where: { $0.contains(selectedIndex) }) {
+            currentPageIndex = pageIndex
+        }
+
+        isViewingSinglePhoto = false
+    }
+
+    private var showsPageBrowser: Bool {
+        !isViewingSinglePhoto && !pageRanges.isEmpty
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .onTapGesture { onClose() }
+
+            VStack(alignment: .leading, spacing: 16) {
+                header
+
+                if photoCount == 0 {
+                    Text("Add photos first to set a manual crop.")
+                        .font(.custom("Figtree", size: 13).weight(.regular))
+                        .foregroundColor(AppColors.muted)
+                        .frame(width: 560, height: 420)
+                } else if showsPageBrowser {
+                    pageBrowser
+                } else if previewImages.indices.contains(selectedIndex) {
+                    singlePhotoEditor
+                }
+            }
+            .padding(24)
+            .frame(width: 608)
+            .background(AppColors.background)
+            .clipShape(RoundedRectangle(cornerRadius: 28))
+            .overlay(
+                RoundedRectangle(cornerRadius: 28)
+                    .stroke(AppColors.border, lineWidth: 4)
+            )
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Crop Photos")
+                    .font(.custom("Figtree", size: 20).weight(.semibold))
+                    .foregroundColor(AppColors.ink)
+
+                Text(
+                    showsPageBrowser
+                    ? "Browse pages exactly as they'll look, then tap a photo to fine-tune its crop."
+                    : "Drag to reposition, pinch or use the slider to zoom in on exactly what should stay in frame."
+                )
+                .font(.custom("Figtree", size: 11.5).weight(.regular))
+                .foregroundColor(AppColors.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(HeaderLinkButtonStyle())
+        }
+    }
+
+    @ViewBuilder
+    private var pageBrowser: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button {
+                    currentPageIndex = max(0, currentPageIndex - 1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(HeaderLinkButtonStyle())
+                .disabled(currentPageIndex <= 0)
+
+                Spacer()
+
+                Text("Page \(currentPageIndex + 1) of \(pageRanges.count)")
+                    .font(.custom("Figtree", size: 12.5).weight(.medium))
+                    .foregroundColor(AppColors.ink)
+
+                Spacer()
+
+                Button {
+                    currentPageIndex = min(pageRanges.count - 1, currentPageIndex + 1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(HeaderLinkButtonStyle())
+                .disabled(currentPageIndex >= pageRanges.count - 1)
+            }
+            .frame(width: 560)
+
+            if let range = currentPageRange {
+                Group {
+                    if visualTheme == .origami {
+                        OrigamiPreviewPage(
+                            images: Array(previewImages[range]),
+                            slotReplacementImages: [:],
+                            activeSwapImages: [:],
+                            activeSwapStyles: [:],
+                            swapProgress: 1,
+                            activePhotoName: "",
+                            showsPhotoName: false,
+                            transitionProgress: 1,
+                            animationVariant: currentPageIndex,
+                            cropByImageIdentity: cropByImageIdentity
+                        )
+                    } else {
+                        MagazinePreviewPage(
+                            images: Array(previewImages[range]),
+                            theme: visualTheme,
+                            activePhotoName: "",
+                            activePhotoIndex: 0,
+                            transitionProgress: 1,
+                            imageFadeSeconds: 0.3,
+                            imageDelaySeconds: 0.3,
+                            revealStyle: .fade,
+                            layoutSeed: currentPageIndex,
+                            cropByImageIdentity: cropByImageIdentity
+                        )
+                    }
+                }
+                .frame(width: 560, height: 315)
+                .background(Color.black)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(AppColors.border, lineWidth: 2)
+                )
+
+                thumbnailRow(for: Array(range))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var singlePhotoEditor: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if !pageRanges.isEmpty {
+                Button {
+                    returnToPages()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .semibold))
+
+                        Text("Back to Pages")
+                            .font(.custom("Figtree", size: 11.5).weight(.medium))
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(AppColors.hoverInk)
+            }
+
+            MagazineCropEditorTile(
+                image: previewImages[selectedIndex],
+                targetAspectRatio: editorAspectRatio(for: selectedIndex),
+                crop: selectedCrop
+            )
+            .frame(width: 560, height: 420)
+            .background(Color.black)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(AppColors.border, lineWidth: 2)
+            )
+
+            if needsCropAttention(at: selectedIndex) {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+
+                    Text(
+                        "About \(Int((defaultCropSeverity(for: selectedIndex) * 100).rounded()))% of this photo would be cropped away by default — worth a look."
+                    )
+                    .font(.custom("Figtree", size: 11.5).weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundColor(.orange)
+            }
+
+            controls
+            thumbnailRow(for: Array(0..<photoCount))
+        }
+    }
+
+    private var controls: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "minus.magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundColor(AppColors.muted)
+
+            Slider(value: selectedCrop.zoom, in: 1...3)
+
+            Image(systemName: "plus.magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundColor(AppColors.muted)
+
+            Button("Reset") {
+                selectedCrop.wrappedValue = .default
+            }
+            .buttonStyle(.plain)
+            .font(.custom("Figtree", size: 11.5).weight(.medium))
+            .foregroundColor(AppColors.hoverInk)
+        }
+    }
+
+    private func thumbnailRow(for indices: [Int]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(indices, id: \.self) { index in
+                    Button {
+                        openPhoto(at: index)
+                    } label: {
+                        Image(nsImage: previewImages[index])
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 52, height: 52)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(
+                                        isViewingSinglePhoto && index == selectedIndex ? AppColors.hoverInk : Color.clear,
+                                        lineWidth: 2.5
+                                    )
+                            )
+                            .overlay(alignment: .topTrailing) {
+                                if needsCropAttention(at: index) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(3)
+                                        .background(Circle().fill(Color.orange))
+                                        .padding(3)
+                                } else if cropTransforms[photoURLs[index]] != nil {
+                                    Circle()
+                                        .fill(AppColors.hoverInk)
+                                        .frame(width: 8, height: 8)
+                                        .padding(3)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .frame(height: 60)
+    }
+}
+
+struct MagazineCropEditorTile: View {
+    let image: NSImage
+    let targetAspectRatio: CGFloat
+    @Binding var crop: MagazinePhotoCrop
+
+    @State private var dragTranslation: CGSize = .zero
+    @GestureState private var magnifyBy: CGFloat = 1
+
+    var body: some View {
+        GeometryReader { proxy in
+            let frameSize = editorFrameSize(in: proxy.size)
+            let liveZoom = max(1, crop.zoom * Double(magnifyBy))
+
+            let liveCrop = MagazinePhotoCrop(
+                focusX: crop.focusX,
+                focusY: crop.focusY,
+                zoom: liveZoom
+            )
+
+            let baseOffset = magazineCropOffset(
+                imageSize: image.size,
+                frameSize: frameSize,
+                crop: liveCrop
+            )
+
+            ZStack {
+                Color.black
+
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: frameSize.width, height: frameSize.height)
+                    .scaleEffect(liveZoom)
+                    .offset(
+                        CGSize(
+                            width: baseOffset.width + dragTranslation.width,
+                            height: baseOffset.height + dragTranslation.height
+                        )
+                    )
+                    .frame(width: frameSize.width, height: frameSize.height)
+                    .clipped()
+            }
+            .frame(width: frameSize.width, height: frameSize.height)
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        dragTranslation = value.translation
+                    }
+                    .onEnded { value in
+                        commitDrag(
+                            translation: value.translation,
+                            imageSize: image.size,
+                            frameSize: frameSize
+                        )
+                        dragTranslation = .zero
+                    }
+            )
+            .simultaneousGesture(
+                MagnificationGesture()
+                    .updating($magnifyBy) { value, state, _ in
+                        state = value
+                    }
+                    .onEnded { value in
+                        crop.zoom = min(3, max(1, crop.zoom * value))
+                    }
+            )
+        }
+        .clipped()
+    }
+
+    private func editorFrameSize(in containerSize: CGSize) -> CGSize {
+        guard containerSize.width > 0, containerSize.height > 0 else {
+            return containerSize
+        }
+
+        let containerAspect = containerSize.width / containerSize.height
+
+        if targetAspectRatio > containerAspect {
+            return CGSize(
+                width: containerSize.width,
+                height: containerSize.width / targetAspectRatio
+            )
+        }
+
+        return CGSize(
+            width: containerSize.height * targetAspectRatio,
+            height: containerSize.height
+        )
+    }
+
+    private func commitDrag(translation: CGSize, imageSize: CGSize, frameSize: CGSize) {
+        let renderedSize = magazineCropRenderSize(
+            imageSize: imageSize,
+            frameSize: frameSize,
+            zoom: CGFloat(crop.zoom)
+        )
+
+        let overflowX = renderedSize.width - frameSize.width
+        let overflowY = renderedSize.height - frameSize.height
+
+        let currentOffset = magazineCropOffset(
+            imageSize: imageSize,
+            frameSize: frameSize,
+            crop: crop
+        )
+
+        if overflowX > 1 {
+            let newOffsetX = currentOffset.width + translation.width
+            crop.focusX = min(1, max(0, 0.5 - newOffsetX / overflowX))
+        }
+
+        if overflowY > 1 {
+            let newOffsetY = currentOffset.height + translation.height
+            crop.focusY = min(1, max(0, 0.5 - newOffsetY / overflowY))
         }
     }
 }
@@ -11714,6 +12578,7 @@ struct FullScreenPreviewSheet: View {
     let magazineImageFadeSeconds: Double
     let magazineImageDelaySeconds: Double
     let magazineLayoutSeed: Int
+    let photoCropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
     let magazinePageSlotCount: Int
     let origamiAnimationSeed: Int
     let isPreviewPlaying: Bool
@@ -11789,7 +12654,9 @@ struct FullScreenPreviewSheet: View {
                         transitionProgress: transitionProgress,
                         imageFadeSeconds: magazineImageFadeSeconds,
                         imageDelaySeconds: magazineImageDelaySeconds,
-                        layoutSeed: magazineLayoutSeed
+                        revealStyle: transitionStyle,
+                        layoutSeed: magazineLayoutSeed,
+                        cropByImageIdentity: photoCropByImageIdentity
                     )
 
                     Color.black
@@ -11801,6 +12668,7 @@ struct FullScreenPreviewSheet: View {
                 }
                 .frame(width: size.width, height: size.height)
                 .background(Color.black)
+                .drawingGroup()
             } else if visualTheme == .origami {
                 ZStack {
                     OrigamiPreviewPage(
@@ -11812,7 +12680,8 @@ struct FullScreenPreviewSheet: View {
                         activePhotoName: activePhotoName,
                         showsPhotoName: false,
                         transitionProgress: transitionProgress,
-                        animationVariant: origamiAnimationSeed
+                        animationVariant: origamiAnimationSeed,
+                        cropByImageIdentity: photoCropByImageIdentity
                     )
 
                     if !previousOrigamiPageImages.isEmpty {
@@ -11823,7 +12692,8 @@ struct FullScreenPreviewSheet: View {
                             animationVariant:
                                 previousOrigamiPageAnimationVariant,
                             progress:
-                                origamiWholePageFoldProgress
+                                origamiWholePageFoldProgress,
+                            cropByImageIdentity: photoCropByImageIdentity
                         )
                         .allowsHitTesting(false)
                         .zIndex(100)
@@ -11877,6 +12747,7 @@ struct FullScreenPreviewSheet: View {
                 }
                 .frame(width: size.width, height: size.height)
                 .background(Color.black)
+                .drawingGroup()
             }
         } else {
             ZStack {
@@ -12107,7 +12978,9 @@ struct MagazinePreviewPage: View {
     let transitionProgress: Double
     let imageFadeSeconds: Double
     let imageDelaySeconds: Double
+    let revealStyle: SlideshowTransitionStyle
     let layoutSeed: Int
+    let cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
 
     private enum PhotoShape {
         case landscape
@@ -12541,7 +13414,8 @@ struct MagazinePreviewPage: View {
         if let image = imageForSlot(slot) {
             MagazineImageTile(
                 image: image,
-                appearAmount: appearAmount(forRevealOrder: revealOrder)
+                appearAmount: appearAmount(forRevealOrder: revealOrder),
+                crop: cropByImageIdentity[ObjectIdentifier(image)] ?? .default
             )
         } else {
             Color.white
@@ -12590,14 +13464,20 @@ struct MagazinePreviewPage: View {
         let delaySeconds = max(0, imageDelaySeconds)
         let revealOnlySeconds = max(fadeSeconds, fadeSeconds + (delaySeconds * 5))
         let startSeconds = Double(order) * delaySeconds
-        let raw = ((transitionProgress * revealOnlySeconds) - startSeconds) / fadeSeconds
-        return min(1, max(0, raw))
+        let elapsedSeconds = (transitionProgress * revealOnlySeconds) - startSeconds
+
+        if revealStyle == .blink {
+            return elapsedSeconds >= 0 ? 1 : 0
+        }
+
+        return min(1, max(0, elapsedSeconds / fadeSeconds))
     }
 }
 
 struct MagazineImageTile: View {
     let image: NSImage
     let appearAmount: Double
+    let crop: MagazinePhotoCrop
 
     private var revealShadowOpacity: Double {
         0.085 + (1 - appearAmount) * 0.34
@@ -12615,7 +13495,7 @@ struct MagazineImageTile: View {
         -0.8 - ((1 - appearAmount) * 2.4)
     }
 
-    var body: some View {
+    private var tileContent: some View {
         GeometryReader { proxy in
             ZStack {
                 Color.white
@@ -12624,10 +13504,12 @@ struct MagazineImageTile: View {
                     .resizable()
                     .scaledToFill()
                     .frame(width: proxy.size.width, height: proxy.size.height)
+                    .scaleEffect(max(1, crop.zoom))
                     .offset(
-                        y: headroomPreservingCropOffset(
+                        magazineCropOffset(
                             imageSize: image.size,
-                            frameSize: proxy.size
+                            frameSize: proxy.size,
+                            crop: crop
                         )
                     )
                     .frame(width: proxy.size.width, height: proxy.size.height)
@@ -12638,12 +13520,23 @@ struct MagazineImageTile: View {
             .opacity(appearAmount)
         }
         .clipped()
-        .shadow(
-            color: Color.black.opacity(revealShadowOpacity),
-            radius: revealShadowRadius,
-            x: revealShadowXOffset,
-            y: revealShadowYOffset
-        )
+    }
+
+    var body: some View {
+        // The drop shadow only matters while the photo is fading in; once
+        // fully revealed, skipping it removes a continuous blur-compositing
+        // cost that adds up across a full page of tiles on weaker GPUs.
+        if appearAmount < 1 {
+            tileContent
+                .shadow(
+                    color: Color.black.opacity(revealShadowOpacity),
+                    radius: revealShadowRadius,
+                    x: revealShadowXOffset,
+                    y: revealShadowYOffset
+                )
+        } else {
+            tileContent
+        }
     }
 }
 
@@ -12657,6 +13550,11 @@ struct OrigamiPreviewPage: View {
     let showsPhotoName: Bool
     let transitionProgress: Double
     let animationVariant: Int
+    let cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
+
+    private func crop(for image: NSImage) -> MagazinePhotoCrop {
+        cropByImageIdentity[ObjectIdentifier(image)] ?? .default
+    }
 
     private enum OrigamiPhotoClass {
         case ultraPortrait
@@ -13136,6 +14034,7 @@ struct OrigamiPreviewPage: View {
         fullSize: CGSize,
         panelSize: CGSize,
         cropOffset: CGSize,
+        zoom: Double = 1,
         position: CGPoint,
         anchor: UnitPoint,
         axis: (
@@ -13153,6 +14052,7 @@ struct OrigamiPreviewPage: View {
                 width: fullSize.width,
                 height: fullSize.height
             )
+            .scaleEffect(max(1, zoom))
             .offset(
                 x: cropOffset.width,
                 y: cropOffset.height
@@ -13215,18 +14115,23 @@ struct OrigamiPreviewPage: View {
         let angle =
             94 * foldProgress
 
-        // Match the static tile's headroom-preserving crop so the
-        // image doesn't visibly jump the instant the swap finishes.
-        let oldHeadroomOffset =
-            headroomPreservingCropOffset(
+        // Match the static tile's manual crop so the image doesn't
+        // visibly jump the instant the swap finishes.
+        let oldCrop = crop(for: oldImage)
+        let newCrop = crop(for: newImage)
+
+        let oldCropOffset =
+            magazineCropOffset(
                 imageSize: oldImage.size,
-                frameSize: size
+                frameSize: size,
+                crop: oldCrop
             )
 
-        let newHeadroomOffset =
-            headroomPreservingCropOffset(
+        let newCropOffset =
+            magazineCropOffset(
                 imageSize: newImage.size,
-                frameSize: size
+                frameSize: size,
+                crop: newCrop
             )
 
         ZStack {
@@ -13238,9 +14143,8 @@ struct OrigamiPreviewPage: View {
                     width: width,
                     height: height
                 )
-                .offset(
-                    y: newHeadroomOffset
-                )
+                .scaleEffect(max(1, newCrop.zoom))
+                .offset(newCropOffset)
                 .frame(
                     width: width,
                     height: height
@@ -13255,9 +14159,10 @@ struct OrigamiPreviewPage: View {
                     height: height
                 ),
                 cropOffset: CGSize(
-                    width: width * 0.25,
-                    height: oldHeadroomOffset
+                    width: width * 0.25 + oldCropOffset.width,
+                    height: oldCropOffset.height
                 ),
+                zoom: oldCrop.zoom,
                 position: CGPoint(
                     x: width * 0.25,
                     y: height * 0.5
@@ -13280,9 +14185,10 @@ struct OrigamiPreviewPage: View {
                     height: height
                 ),
                 cropOffset: CGSize(
-                    width: -width * 0.25,
-                    height: oldHeadroomOffset
+                    width: -width * 0.25 + oldCropOffset.width,
+                    height: oldCropOffset.height
                 ),
+                zoom: oldCrop.zoom,
                 position: CGPoint(
                     x: width * 0.75,
                     y: height * 0.5
@@ -13334,18 +14240,23 @@ struct OrigamiPreviewPage: View {
         let angle =
             92 * foldProgress
 
-        // Match the static tile's headroom-preserving crop so the
-        // image doesn't visibly jump the instant the swap finishes.
-        let oldHeadroomOffset =
-            headroomPreservingCropOffset(
+        // Match the static tile's manual crop so the image doesn't
+        // visibly jump the instant the swap finishes.
+        let oldCrop = crop(for: oldImage)
+        let newCrop = crop(for: newImage)
+
+        let oldCropOffset =
+            magazineCropOffset(
                 imageSize: oldImage.size,
-                frameSize: size
+                frameSize: size,
+                crop: oldCrop
             )
 
-        let newHeadroomOffset =
-            headroomPreservingCropOffset(
+        let newCropOffset =
+            magazineCropOffset(
                 imageSize: newImage.size,
-                frameSize: size
+                frameSize: size,
+                crop: newCrop
             )
 
         ZStack {
@@ -13357,9 +14268,8 @@ struct OrigamiPreviewPage: View {
                     width: width,
                     height: height
                 )
-                .offset(
-                    y: newHeadroomOffset
-                )
+                .scaleEffect(max(1, newCrop.zoom))
+                .offset(newCropOffset)
                 .frame(
                     width: width,
                     height: height
@@ -13371,9 +14281,10 @@ struct OrigamiPreviewPage: View {
                 fullSize: size,
                 panelSize: panelSize,
                 cropOffset: CGSize(
-                    width: width * 0.25,
-                    height: height * 0.25 + oldHeadroomOffset
+                    width: width * 0.25 + oldCropOffset.width,
+                    height: height * 0.25 + oldCropOffset.height
                 ),
+                zoom: oldCrop.zoom,
                 position: CGPoint(
                     x: width * 0.25,
                     y: height * 0.25
@@ -13393,9 +14304,10 @@ struct OrigamiPreviewPage: View {
                 fullSize: size,
                 panelSize: panelSize,
                 cropOffset: CGSize(
-                    width: -width * 0.25,
-                    height: height * 0.25 + oldHeadroomOffset
+                    width: -width * 0.25 + oldCropOffset.width,
+                    height: height * 0.25 + oldCropOffset.height
                 ),
+                zoom: oldCrop.zoom,
                 position: CGPoint(
                     x: width * 0.75,
                     y: height * 0.25
@@ -13415,9 +14327,10 @@ struct OrigamiPreviewPage: View {
                 fullSize: size,
                 panelSize: panelSize,
                 cropOffset: CGSize(
-                    width: width * 0.25,
-                    height: -height * 0.25 + oldHeadroomOffset
+                    width: width * 0.25 + oldCropOffset.width,
+                    height: -height * 0.25 + oldCropOffset.height
                 ),
+                zoom: oldCrop.zoom,
                 position: CGPoint(
                     x: width * 0.25,
                     y: height * 0.75
@@ -13437,9 +14350,10 @@ struct OrigamiPreviewPage: View {
                 fullSize: size,
                 panelSize: panelSize,
                 cropOffset: CGSize(
-                    width: -width * 0.25,
-                    height: -height * 0.25 + oldHeadroomOffset
+                    width: -width * 0.25 + oldCropOffset.width,
+                    height: -height * 0.25 + oldCropOffset.height
                 ),
+                zoom: oldCrop.zoom,
                 position: CGPoint(
                     x: width * 0.75,
                     y: height * 0.75
@@ -13563,10 +14477,14 @@ struct OrigamiPreviewPage: View {
                                 height:
                                     proxy.size.height
                             )
+                            .scaleEffect(
+                                max(1, crop(for: displayedImage).zoom)
+                            )
                             .offset(
-                                y: headroomPreservingCropOffset(
+                                magazineCropOffset(
                                     imageSize: displayedImage.size,
-                                    frameSize: proxy.size
+                                    frameSize: proxy.size,
+                                    crop: crop(for: displayedImage)
                                 )
                             )
                             .frame(
@@ -14104,6 +15022,7 @@ struct OrigamiWholePageHalfFoldOverlay: View {
     let slotReplacementImages: [Int: NSImage]
     let animationVariant: Int
     let progress: Double
+    let cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
 
     private var safeProgress: Double {
         min(
@@ -14140,7 +15059,9 @@ struct OrigamiWholePageHalfFoldOverlay: View {
                 showsPhotoName: false,
                 transitionProgress: 1,
                 animationVariant:
-                    animationVariant
+                    animationVariant,
+                cropByImageIdentity:
+                    cropByImageIdentity
             )
             .frame(
                 width: width,
@@ -16507,6 +17428,7 @@ struct CenterPreviewPanel: View {
     let magazineImageFadeSeconds: Double
     let magazineImageDelaySeconds: Double
     let magazineLayoutSeed: Int
+    let photoCropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
     let magazinePageSlotCount: Int
     let origamiAnimationSeed: Int
     let isPreviewPlaying: Bool
@@ -16555,7 +17477,9 @@ struct CenterPreviewPanel: View {
                                     transitionProgress: transitionProgress,
                                     imageFadeSeconds: magazineImageFadeSeconds,
                                     imageDelaySeconds: magazineImageDelaySeconds,
-                                    layoutSeed: magazineLayoutSeed
+                                    revealStyle: transitionStyle,
+                                    layoutSeed: magazineLayoutSeed,
+                                    cropByImageIdentity: photoCropByImageIdentity
                                 )
 
                                 Color.black
@@ -16581,7 +17505,8 @@ struct CenterPreviewPanel: View {
                                     activePhotoName: activePhotoName,
                                     showsPhotoName: true,
                                     transitionProgress: transitionProgress,
-                                    animationVariant: origamiAnimationSeed
+                                    animationVariant: origamiAnimationSeed,
+                                    cropByImageIdentity: photoCropByImageIdentity
                                 )
 
                                 if !previousOrigamiPageImages.isEmpty {
@@ -16592,7 +17517,8 @@ struct CenterPreviewPanel: View {
                                         animationVariant:
                                             previousOrigamiPageAnimationVariant,
                                         progress:
-                                            origamiWholePageFoldProgress
+                                            origamiWholePageFoldProgress,
+                                        cropByImageIdentity: photoCropByImageIdentity
                                     )
                                     .allowsHitTesting(false)
                                     .zIndex(100)

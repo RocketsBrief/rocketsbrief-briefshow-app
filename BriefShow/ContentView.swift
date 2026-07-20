@@ -11908,6 +11908,27 @@ struct MagazineCropEditorSheet: View {
         !isViewingSinglePhoto && !pageRanges.isEmpty
     }
 
+    private var pageBrowserHint: String {
+        guard showsPageBrowser else {
+            return "Drag to reposition, pinch or use the slider to zoom in on exactly what should stay in frame."
+        }
+
+        return "Drag any photo above to reposition it, or tap its thumbnail below to zoom in and fine-tune."
+    }
+
+    // Maps an NSImage rendered in the page preview back to its source URL,
+    // so a drag right on the page preview can commit into cropTransforms
+    // (keyed by URL) without the client ever leaving the page view.
+    private func url(for image: NSImage) -> URL? {
+        guard let index = previewImages.firstIndex(where: { $0 === image }),
+              photoURLs.indices.contains(index)
+        else {
+            return nil
+        }
+
+        return photoURLs[index]
+    }
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.55)
@@ -11946,11 +11967,7 @@ struct MagazineCropEditorSheet: View {
                     .font(.custom("Figtree", size: 20).weight(.semibold))
                     .foregroundColor(AppColors.ink)
 
-                Text(
-                    showsPageBrowser
-                    ? "Browse pages exactly as they'll look, then tap a photo to fine-tune its crop."
-                    : "Drag to reposition, pinch or use the slider to zoom in on exactly what should stay in frame."
-                )
+                Text(pageBrowserHint)
                 .font(.custom("Figtree", size: 11.5).weight(.regular))
                 .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -12016,7 +12033,14 @@ struct MagazineCropEditorSheet: View {
                             showsPhotoName: false,
                             transitionProgress: 1,
                             animationVariant: currentPageIndex,
-                            cropByImageIdentity: cropByImageIdentity
+                            cropByImageIdentity: cropByImageIdentity,
+                            onCropChange: { image, newCrop in
+                                guard let url = url(for: image) else {
+                                    return
+                                }
+
+                                cropTransforms[url] = newCrop
+                            }
                         )
                     } else {
                         MagazinePreviewPage(
@@ -12029,7 +12053,14 @@ struct MagazineCropEditorSheet: View {
                             imageDelaySeconds: 0.3,
                             revealStyle: .fade,
                             layoutSeed: currentPageIndex,
-                            cropByImageIdentity: cropByImageIdentity
+                            cropByImageIdentity: cropByImageIdentity,
+                            onCropChange: { image, newCrop in
+                                guard let url = url(for: image) else {
+                                    return
+                                }
+
+                                cropTransforms[url] = newCrop
+                            }
                         )
                     }
                 }
@@ -12981,6 +13012,9 @@ struct MagazinePreviewPage: View {
     let revealStyle: SlideshowTransitionStyle
     let layoutSeed: Int
     let cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
+    // Only wired up by the Kousei crop editor's page preview — every other
+    // caller leaves this nil and tiles render exactly as they did before.
+    var onCropChange: ((NSImage, MagazinePhotoCrop) -> Void)? = nil
 
     private enum PhotoShape {
         case landscape
@@ -13415,7 +13449,10 @@ struct MagazinePreviewPage: View {
             MagazineImageTile(
                 image: image,
                 appearAmount: appearAmount(forRevealOrder: revealOrder),
-                crop: cropByImageIdentity[ObjectIdentifier(image)] ?? .default
+                crop: cropByImageIdentity[ObjectIdentifier(image)] ?? .default,
+                onCropChange: onCropChange.map { callback in
+                    { newCrop in callback(image, newCrop) }
+                }
             )
         } else {
             Color.white
@@ -13478,6 +13515,12 @@ struct MagazineImageTile: View {
     let image: NSImage
     let appearAmount: Double
     let crop: MagazinePhotoCrop
+    // Only set by the Kousei crop editor's page preview, so every other
+    // caller (slideshow playback, export rendering) keeps rendering this
+    // tile exactly as before with no gesture attached.
+    var onCropChange: ((MagazinePhotoCrop) -> Void)? = nil
+
+    @State private var dragTranslation: CGSize = .zero
 
     private var revealShadowOpacity: Double {
         0.085 + (1 - appearAmount) * 0.34
@@ -13497,6 +13540,12 @@ struct MagazineImageTile: View {
 
     private var tileContent: some View {
         GeometryReader { proxy in
+            let baseOffset = magazineCropOffset(
+                imageSize: image.size,
+                frameSize: proxy.size,
+                crop: crop
+            )
+
             ZStack {
                 Color.white
 
@@ -13506,10 +13555,9 @@ struct MagazineImageTile: View {
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .scaleEffect(max(1, crop.zoom))
                     .offset(
-                        magazineCropOffset(
-                            imageSize: image.size,
-                            frameSize: proxy.size,
-                            crop: crop
+                        CGSize(
+                            width: baseOffset.width + dragTranslation.width,
+                            height: baseOffset.height + dragTranslation.height
                         )
                     )
                     .frame(width: proxy.size.width, height: proxy.size.height)
@@ -13518,8 +13566,59 @@ struct MagazineImageTile: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
             .opacity(appearAmount)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        dragTranslation = value.translation
+                    }
+                    .onEnded { value in
+                        commitDrag(
+                            translation: value.translation,
+                            imageSize: image.size,
+                            frameSize: proxy.size
+                        )
+                        dragTranslation = .zero
+                    },
+                including: onCropChange != nil ? .all : .subviews
+            )
         }
         .clipped()
+    }
+
+    private func commitDrag(translation: CGSize, imageSize: CGSize, frameSize: CGSize) {
+        guard let onCropChange else {
+            return
+        }
+
+        let renderedSize = magazineCropRenderSize(
+            imageSize: imageSize,
+            frameSize: frameSize,
+            zoom: CGFloat(crop.zoom)
+        )
+
+        let overflowX = renderedSize.width - frameSize.width
+        let overflowY = renderedSize.height - frameSize.height
+
+        let currentOffset = magazineCropOffset(
+            imageSize: imageSize,
+            frameSize: frameSize,
+            crop: crop
+        )
+
+        var newCrop = crop
+
+        if overflowX > 1 {
+            let newOffsetX = currentOffset.width + translation.width
+            newCrop.focusX = min(1, max(0, 0.5 - newOffsetX / overflowX))
+        }
+
+        if overflowY > 1 {
+            let newOffsetY = currentOffset.height + translation.height
+            newCrop.focusY = min(1, max(0, 0.5 - newOffsetY / overflowY))
+        }
+
+        onCropChange(newCrop)
     }
 
     var body: some View {
@@ -13540,6 +13639,88 @@ struct MagazineImageTile: View {
     }
 }
 
+// Renders a single Kirigami slot's photo at rest (no fold/swap animation).
+// Broken out as its own View so each slot gets independent @State for its
+// own drag-to-reposition gesture rather than one shared across the whole page.
+private struct OrigamiCropImage: View {
+    let image: NSImage
+    let crop: MagazinePhotoCrop
+    var onCropChange: ((MagazinePhotoCrop) -> Void)? = nil
+
+    @State private var dragTranslation: CGSize = .zero
+
+    var body: some View {
+        GeometryReader { proxy in
+            let baseOffset = magazineCropOffset(
+                imageSize: image.size,
+                frameSize: proxy.size,
+                crop: crop
+            )
+
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .scaleEffect(max(1, crop.zoom))
+                .offset(
+                    CGSize(
+                        width: baseOffset.width + dragTranslation.width,
+                        height: baseOffset.height + dragTranslation.height
+                    )
+                )
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 2)
+                        .onChanged { value in
+                            dragTranslation = value.translation
+                        }
+                        .onEnded { value in
+                            commitDrag(translation: value.translation, frameSize: proxy.size)
+                            dragTranslation = .zero
+                        },
+                    including: onCropChange != nil ? .all : .subviews
+                )
+        }
+    }
+
+    private func commitDrag(translation: CGSize, frameSize: CGSize) {
+        guard let onCropChange else {
+            return
+        }
+
+        let renderedSize = magazineCropRenderSize(
+            imageSize: image.size,
+            frameSize: frameSize,
+            zoom: CGFloat(crop.zoom)
+        )
+
+        let overflowX = renderedSize.width - frameSize.width
+        let overflowY = renderedSize.height - frameSize.height
+
+        let currentOffset = magazineCropOffset(
+            imageSize: image.size,
+            frameSize: frameSize,
+            crop: crop
+        )
+
+        var newCrop = crop
+
+        if overflowX > 1 {
+            let newOffsetX = currentOffset.width + translation.width
+            newCrop.focusX = min(1, max(0, 0.5 - newOffsetX / overflowX))
+        }
+
+        if overflowY > 1 {
+            let newOffsetY = currentOffset.height + translation.height
+            newCrop.focusY = min(1, max(0, 0.5 - newOffsetY / overflowY))
+        }
+
+        onCropChange(newCrop)
+    }
+}
+
 struct OrigamiPreviewPage: View {
     let images: [NSImage]
     let slotReplacementImages: [Int: NSImage]
@@ -13551,6 +13732,9 @@ struct OrigamiPreviewPage: View {
     let transitionProgress: Double
     let animationVariant: Int
     let cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
+    // Only wired up by the Kirigami crop editor's page preview — every other
+    // caller leaves this nil and tiles render exactly as they did before.
+    var onCropChange: ((NSImage, MagazinePhotoCrop) -> Void)? = nil
 
     private func crop(for image: NSImage) -> MagazinePhotoCrop {
         cropByImageIdentity[ObjectIdentifier(image)] ?? .default
@@ -14465,35 +14649,13 @@ struct OrigamiPreviewPage: View {
                                     proxy.size
                             )
                         } else {
-                            Image(
-                                nsImage:
-                                    displayedImage
+                            OrigamiCropImage(
+                                image: displayedImage,
+                                crop: crop(for: displayedImage),
+                                onCropChange: onCropChange.map { callback in
+                                    { newCrop in callback(displayedImage, newCrop) }
+                                }
                             )
-                            .resizable()
-                            .scaledToFill()
-                            .frame(
-                                width:
-                                    proxy.size.width,
-                                height:
-                                    proxy.size.height
-                            )
-                            .scaleEffect(
-                                max(1, crop(for: displayedImage).zoom)
-                            )
-                            .offset(
-                                magazineCropOffset(
-                                    imageSize: displayedImage.size,
-                                    frameSize: proxy.size,
-                                    crop: crop(for: displayedImage)
-                                )
-                            )
-                            .frame(
-                                width:
-                                    proxy.size.width,
-                                height:
-                                    proxy.size.height
-                            )
-                            .clipped()
                         }
 
                         Color.black

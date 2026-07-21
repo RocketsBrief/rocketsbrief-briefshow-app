@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import Combine
 import AVFoundation
+import AVKit
 import ImageIO
 import CoreImage
 import CoreGraphics
@@ -10,6 +11,17 @@ import CoreGraphics
 enum SlideshowTimingMode: String {
     case followMusic = "Follow Music"
     case customSpeed = "Custom Speed"
+}
+
+// How the live "Preview" card renders the slideshow. The two "live" modes
+// drive the same real-time SwiftUI animation timer at a different tick rate;
+// "renderedVideo" instead pre-renders the slideshow to an actual 1080p video
+// file once and plays that back, which is perfectly smooth on weak hardware
+// since it's just video playback rather than real-time compositing.
+enum PreviewRenderMode: String {
+    case liveFPS30
+    case liveFPS60
+    case renderedVideo
 }
 
 enum SlideshowTransitionStyle: String {
@@ -210,6 +222,11 @@ struct ContentView: View {
     @State private var previousPhotoIndex: Int?
     @State private var transitionProgress: Double = 1
     @State private var magazineRevealElapsedSeconds: Double = 0
+    // Cached copy of the per-photo-set layout seed used by
+    // plannedMagazineSlotCount, recomputed only when selectedPhotoURLs
+    // actually changes instead of re-hashing every filename on every
+    // 60fps preview tick.
+    @State private var magazinePhotoSeed: Int = 0
     @State private var magazinePageIndex: Int = 0
     @State private var origamiPageIndex: Int = 0
     @State private var photoCropTransforms: [URL: MagazinePhotoCrop] = [:]
@@ -262,6 +279,21 @@ struct ContentView: View {
     @State private var previewElapsedSeconds: Double = 0
     @State private var previewTotalElapsedSeconds: Double = 0
     @State private var isFullScreenPreviewPresented: Bool = false
+
+    // Preview rendering mode (30fps live / 60fps live / pre-rendered 1080p
+    // video) plus the pre-rendered-video bookkeeping: the tick counter lets
+    // the single 60Hz timer skip every other tick for 30fps mode instead of
+    // needing a second Timer publisher; the signature is a cheap fingerprint
+    // of everything that affects the rendered output, used to detect when a
+    // previously prepared preview video has gone stale and needs re-rendering.
+    @State private var previewRenderMode: PreviewRenderMode = .liveFPS60
+    @State private var previewTickCounter: Int = 0
+    @State private var previewVideoPlayer: AVPlayer?
+    @State private var preparedPreviewVideoURL: URL?
+    @State private var preparedPreviewVideoSignature: String?
+    @State private var isPreparingPreviewVideo: Bool = false
+    @State private var previewVideoPrepareProgress: Double = 0
+    @State private var previewVideoPrepareError: String?
     @State private var savedWindowFrame: NSRect?
     @State private var savedPresentationOptions: NSApplication.PresentationOptions = []
     @State private var savedTitlebarAppearsTransparent: Bool = false
@@ -346,6 +378,14 @@ struct ContentView: View {
                         onStartFromBeginning: startPreviewFromBeginning,
                         onOpenFullScreen: {
                             openCinemaFullScreenPreview()
+                        },
+                        previewRenderMode: previewRenderMode,
+                        previewVideoPlayer: previewVideoPlayer,
+                        isPreparingPreviewVideo: isPreparingPreviewVideo,
+                        previewVideoPrepareProgress: previewVideoPrepareProgress,
+                        previewVideoPrepareError: previewVideoPrepareError,
+                        onSelectPreviewRenderMode: { mode in
+                            selectPreviewRenderMode(mode)
                         }
                     )
                     RightExportPanel(
@@ -433,7 +473,9 @@ struct ContentView: View {
                     },
                     onClose: {
                         closeCinemaFullScreenPreview()
-                    }
+                    },
+                    previewRenderMode: previewRenderMode,
+                    previewVideoPlayer: previewVideoPlayer
                 )
                 .ignoresSafeArea()
                 .zIndex(9999)
@@ -489,8 +531,24 @@ struct ContentView: View {
             maxWidth: .infinity,
             alignment: .top
         )
+        .onChange(of: selectedPhotoURLs) { newValue in
+            updateMagazinePhotoSeed(for: newValue)
+        }
         .onReceive(Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()) { _ in
-            advancePreviewIfNeeded(delta: 1.0 / 60.0)
+            switch previewRenderMode {
+            case .renderedVideo:
+                // Playback is driven by previewVideoPlayer (AVPlayer) itself,
+                // not by this tick-based animation state.
+                break
+            case .liveFPS60:
+                advancePreviewIfNeeded(delta: 1.0 / 60.0)
+            case .liveFPS30:
+                previewTickCounter += 1
+                guard previewTickCounter % 2 == 0 else {
+                    break
+                }
+                advancePreviewIfNeeded(delta: 1.0 / 30.0)
+            }
         }
         .onReceive(Timer.publish(every: 600, on: .main, in: .common).autoconnect()) { _ in
             Task { await DeviceCheckIn.checkIn() }
@@ -733,15 +791,7 @@ struct ContentView: View {
             return 0
         }
 
-        let photoSeed = selectedPhotoURLs.enumerated().reduce(0) { total, item in
-            let nameScore = item.element.lastPathComponent.unicodeScalars.reduce(0) { partial, scalar in
-                partial + Int(scalar.value)
-            }
-
-            return total + ((item.offset + 1) * nameScore)
-        }
-
-        let safeSeed = abs(photoSeed)
+        let safeSeed = abs(magazinePhotoSeed)
 
         if pageIndex <= 0 {
             let firstPageChoices = [2, 3, 4]
@@ -2557,6 +2607,248 @@ struct ContentView: View {
         preparedPhotoCount = 0
         isPreparingPhotos = false
         resetPreviewState()
+        discardPreparedPreviewVideo()
+    }
+
+    private func discardPreparedPreviewVideo() {
+        previewVideoPlayer?.pause()
+        previewVideoPlayer = nil
+
+        if let staleURL = preparedPreviewVideoURL {
+            try? FileManager.default.removeItem(at: staleURL)
+        }
+
+        preparedPreviewVideoURL = nil
+        preparedPreviewVideoSignature = nil
+        isPreparingPreviewVideo = false
+        previewVideoPrepareProgress = 0
+        previewVideoPrepareError = nil
+    }
+
+    private func selectPreviewRenderMode(_ mode: PreviewRenderMode) {
+        guard mode != previewRenderMode else {
+            if mode == .renderedVideo {
+                prepareRenderedPreviewVideo(thenPlay: false)
+            }
+            return
+        }
+
+        if previewRenderMode == .renderedVideo {
+            previewVideoPlayer?.pause()
+        }
+
+        previewRenderMode = mode
+
+        if mode == .renderedVideo {
+            isPreviewPlaying = false
+            audioPlayer?.pause()
+            prepareRenderedPreviewVideo(thenPlay: false)
+        }
+    }
+
+    // A cheap fingerprint of everything that affects the rendered pixels of
+    // the preview video (photos, crops, theme, and all its timing knobs).
+    // Compared against the signature the currently-prepared video was built
+    // from, so switching a setting after preparing automatically triggers a
+    // fresh render instead of silently playing a stale preview.
+    private func currentPreviewVideoSignature() -> String {
+        var pieces: [String] = [
+            visualTheme.rawValue,
+            transitionStyle.rawValue,
+            String(format: "%.3f", fadeDuration),
+            String(format: "%.3f", magazineImageFadeSeconds),
+            String(format: "%.3f", magazineImageDelaySeconds),
+            String(format: "%.3f", origamiInternalHoldSeconds),
+            String(origamiImagesBeforePageChange),
+            String(origamiSimultaneousSwapCount),
+            String(format: "%.3f", currentPhotoDuration),
+            String(format: "%.3f", musicFadeInSeconds),
+            String(format: "%.3f", musicFadeOutSeconds)
+        ]
+
+        pieces.append(contentsOf: selectedPhotoURLs.map { $0.path })
+        pieces.append(contentsOf: selectedMusicURLs.map { $0.path })
+
+        for url in selectedPhotoURLs {
+            if let crop = photoCropTransforms[url] {
+                pieces.append("\(url.path)=\(crop.focusX)-\(crop.focusY)-\(crop.zoom)")
+            }
+        }
+
+        return pieces.joined(separator: "|")
+    }
+
+    // Renders the current slideshow to a small 1080p video file, reusing the
+    // exact same per-theme renderers the real export uses, then plays it
+    // back with AVPlayer instead of the live timer-driven animation. Video
+    // playback can't stutter the way real-time SwiftUI compositing can on
+    // weak hardware, at the cost of a short one-time render before playback
+    // starts. Opt-in via the FPS/Video toggle in the Preview card.
+    private func prepareRenderedPreviewVideo(thenPlay: Bool) {
+        guard !selectedPhotoURLs.isEmpty, !isPreparingPhotos else {
+            return
+        }
+
+        let signature = currentPreviewVideoSignature()
+
+        if signature == preparedPreviewVideoSignature,
+           let existingURL = preparedPreviewVideoURL,
+           FileManager.default.fileExists(atPath: existingURL.path) {
+            if previewVideoPlayer == nil {
+                previewVideoPlayer = AVPlayer(url: existingURL)
+            }
+
+            if thenPlay {
+                previewVideoPlayer?.seek(to: .zero)
+                previewVideoPlayer?.play()
+            }
+
+            return
+        }
+
+        guard !isPreparingPreviewVideo else {
+            return
+        }
+
+        isPreparingPreviewVideo = true
+        previewVideoPrepareProgress = 0
+        previewVideoPrepareError = nil
+        isPreviewPlaying = false
+        audioPlayer?.pause()
+        previewVideoPlayer?.pause()
+
+        let previousURL = preparedPreviewVideoURL
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BriefShow-preview-\(UUID().uuidString).mp4")
+
+        let photoURLs = selectedPhotoURLs
+        let musicURLs = selectedMusicURLs
+        let durationPerPhoto = max(0.25, currentPhotoDuration)
+        let selectedTransitionStyle = transitionStyle
+        let selectedFadeDuration = fadeDuration
+        let selectedVisualTheme = visualTheme
+        let selectedMagazineImageFade = magazineImageFadeSeconds
+        let selectedMagazineImageDelay = magazineImageDelaySeconds
+        let selectedPhotoCropTransforms = photoCropTransforms
+        let selectedOrigamiHoldSeconds = origamiInternalHoldSeconds
+        let selectedOrigamiImagesBeforePageChange = origamiImagesBeforePageChange
+        let selectedOrigamiSimultaneousSwapCount = origamiSimultaneousSwapCount
+        let selectedMusicFadeIn = musicFadeInSeconds
+        let selectedMusicFadeOut = musicFadeOutSeconds
+
+        let reportProgress: @Sendable (Double) -> Void = { rawProgress in
+            let clamped = max(0, min(1, rawProgress))
+
+            DispatchQueue.main.async {
+                previewVideoPrepareProgress = clamped * (musicURLs.isEmpty ? 1 : 0.9)
+            }
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let videoOnlyURL = musicURLs.isEmpty ? cacheURL : temporaryVideoURL(for: cacheURL)
+
+                if selectedVisualTheme == .magazine
+                    || selectedVisualTheme == .magazineFamily
+                    || selectedVisualTheme == .magazineCouples {
+
+                    try renderMagazineSlideshowVideo(
+                        photoURLs: photoURLs,
+                        outputURL: videoOnlyURL,
+                        resolutionName: "1080p",
+                        pageDuration: durationPerPhoto,
+                        imageFadeSeconds: selectedMagazineImageFade,
+                        imageDelaySeconds: selectedMagazineImageDelay,
+                        revealStyle: selectedTransitionStyle,
+                        cropTransforms: selectedPhotoCropTransforms,
+                        fileType: .mp4,
+                        progressHandler: reportProgress
+                    )
+                } else if selectedVisualTheme == .origami {
+                    try renderOrigamiSlideshowVideo(
+                        photoURLs: photoURLs,
+                        outputURL: videoOnlyURL,
+                        resolutionName: "1080p",
+                        pageDuration: selectedOrigamiHoldSeconds,
+                        imagesBeforePageChange: selectedOrigamiImagesBeforePageChange,
+                        simultaneousSwapCount: selectedOrigamiSimultaneousSwapCount,
+                        cropTransforms: selectedPhotoCropTransforms,
+                        fileType: .mp4,
+                        progressHandler: reportProgress
+                    )
+                } else if selectedVisualTheme == .imagination {
+                    try renderImaginationSlideshowVideo(
+                        photoURLs: photoURLs,
+                        outputURL: videoOnlyURL,
+                        resolutionName: "1080p",
+                        pageDuration: durationPerPhoto,
+                        fadeDuration: selectedFadeDuration,
+                        fileType: .mp4,
+                        progressHandler: reportProgress
+                    )
+                } else {
+                    try renderSlideshowVideo(
+                        photoURLs: photoURLs,
+                        outputURL: videoOnlyURL,
+                        resolutionName: "1080p",
+                        secondsPerPhoto: durationPerPhoto,
+                        transitionStyle: selectedTransitionStyle,
+                        fadeDuration: selectedFadeDuration,
+                        fileType: .mp4,
+                        progressHandler: reportProgress
+                    )
+                }
+
+                if !musicURLs.isEmpty {
+                    DispatchQueue.main.async {
+                        previewVideoPrepareProgress = 0.92
+                    }
+
+                    try muxVideoWithMusic(
+                        videoURL: videoOnlyURL,
+                        musicURLs: musicURLs,
+                        outputURL: cacheURL,
+                        outputFileType: .mp4,
+                        fadeInSeconds: selectedMusicFadeIn,
+                        fadeOutSeconds: selectedMusicFadeOut,
+                        preferHEVC: false
+                    )
+
+                    try? FileManager.default.removeItem(at: videoOnlyURL)
+                }
+
+                DispatchQueue.main.async {
+                    if let previousURL, previousURL != cacheURL {
+                        try? FileManager.default.removeItem(at: previousURL)
+                    }
+
+                    previewVideoPrepareProgress = 1
+                    isPreparingPreviewVideo = false
+                    preparedPreviewVideoURL = cacheURL
+                    preparedPreviewVideoSignature = signature
+                    previewVideoPlayer = AVPlayer(url: cacheURL)
+
+                    if thenPlay {
+                        previewVideoPlayer?.play()
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isPreparingPreviewVideo = false
+                    previewVideoPrepareError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func updateMagazinePhotoSeed(for urls: [URL]) {
+        magazinePhotoSeed = urls.enumerated().reduce(0) { total, item in
+            let nameScore = item.element.lastPathComponent.unicodeScalars.reduce(0) { partial, scalar in
+                partial + Int(scalar.value)
+            }
+
+            return total + ((item.offset + 1) * nameScore)
+        }
     }
 
     private func openPhotoPicker() {
@@ -12620,6 +12912,8 @@ struct FullScreenPreviewSheet: View {
     let onStartFromBeginning: () -> Void
     let onSeek: (Double) -> Void
     let onClose: () -> Void
+    let previewRenderMode: PreviewRenderMode
+    let previewVideoPlayer: AVPlayer?
 
     @State private var isScrubbing = false
     @State private var scrubProgress: Double = 0
@@ -12649,14 +12943,27 @@ struct FullScreenPreviewSheet: View {
                     .background(Color.black)
                     .ignoresSafeArea()
 
+                // Always mounted (never conditionally inserted/removed) so its
+                // NSViewRepresentable identity stays stable across mode
+                // switches — see the matching comment in CenterPreviewPanel.
+                AVPlayerViewRepresentable(player: previewVideoPlayer)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .opacity(previewRenderMode == .renderedVideo && previewVideoPlayer != nil ? 1 : 0)
+                    .allowsHitTesting(previewRenderMode == .renderedVideo && previewVideoPlayer != nil)
+                    .ignoresSafeArea()
+
                 fullscreenCloseButton
                     .position(x: proxy.size.width - 44, y: 44)
                     .zIndex(1000)
 
-                fullscreenBottomControls
-                    .frame(width: max(420, proxy.size.width - 56))
-                    .position(x: proxy.size.width / 2, y: proxy.size.height - 74)
-                    .zIndex(1000)
+                // In video mode, AVKit's own play/pause/scrub overlay
+                // (part of VideoPlayer above) replaces these custom controls.
+                if !(previewRenderMode == .renderedVideo && previewVideoPlayer != nil) {
+                    fullscreenBottomControls
+                        .frame(width: max(420, proxy.size.width - 56))
+                        .position(x: proxy.size.width / 2, y: proxy.size.height - 74)
+                        .zIndex(1000)
+                }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .background(Color.black)
@@ -12674,7 +12981,9 @@ struct FullScreenPreviewSheet: View {
 
     @ViewBuilder
     private func fittedPreviewContent(in size: CGSize) -> some View {
-        if let activePreviewImage {
+        if previewRenderMode == .renderedVideo && previewVideoPlayer != nil {
+            EmptyView()
+        } else if let activePreviewImage {
             if usesMagazinePreview {
                 ZStack {
                     MagazinePreviewPage(
@@ -12742,6 +13051,7 @@ struct FullScreenPreviewSheet: View {
                     height: size.height
                 )
                 .background(Color.black)
+                .drawingGroup()
             } else if visualTheme == .imagination {
                 ImaginationCardPage(
                     activeImage: activePreviewImage,
@@ -17560,6 +17870,102 @@ struct ImaginationCardPage: View {
     }
 }
 
+// Three-way toggle shown in the top-right corner of the Preview card:
+// live playback at 30fps, live playback at 60fps (default), or a
+// pre-rendered 1080p video that plays back via AVKit instead of real-time
+// SwiftUI compositing. Hover any button to see what it does.
+// A thin NSViewRepresentable over AppKit's own AVPlayerView, used instead of
+// SwiftUI's VideoPlayer. VideoPlayer's generic SwiftUI/AVKit bridging metadata
+// reliably crashed at first construction in this Xcode/macOS combination
+// (a Swift runtime fatal error deep in framework code, in both Debug and
+// Release builds, with zero app frames involved) — AVPlayerView sidesteps
+// that code path entirely while still giving the same floating transport
+// controls (play/pause/scrub).
+struct AVPlayerViewRepresentable: NSViewRepresentable {
+    let player: AVPlayer?
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .floating
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        if nsView.player !== player {
+            nsView.player = player
+        }
+    }
+}
+
+struct PreviewRenderModeButtons: View {
+    let mode: PreviewRenderMode
+    let onSelect: (PreviewRenderMode) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            pill(
+                .liveFPS30,
+                label: "30",
+                help: "Live preview at 30fps. Lighter on older or weaker Macs, at the cost of slightly less fluid motion."
+            )
+
+            pill(
+                .liveFPS60,
+                label: "60",
+                help: "Live preview at 60fps (default). The smoothest motion, but can stutter on weaker hardware."
+            )
+
+            pill(
+                .renderedVideo,
+                systemImage: "film",
+                help: "Prepares the slideshow as a real 1080p video once, then plays that back. Never stutters, even on weak hardware — takes a moment to prepare before it starts playing."
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func pill(_ target: PreviewRenderMode, label: String, help: String) -> some View {
+        pillButton(target: target, help: help) {
+            Text(label)
+                .font(.custom("Figtree", size: 11).weight(.bold))
+        }
+    }
+
+    @ViewBuilder
+    private func pill(_ target: PreviewRenderMode, systemImage: String, help: String) -> some View {
+        pillButton(target: target, help: help) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .bold))
+        }
+    }
+
+    @ViewBuilder
+    private func pillButton<Label: View>(
+        target: PreviewRenderMode,
+        help: String,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        let isActive = mode == target
+
+        Button {
+            onSelect(target)
+        } label: {
+            label()
+                .frame(width: 26, height: 20)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(isActive ? AppColors.panel : AppColors.inkSecondary)
+        .background(isActive ? AppColors.ink : AppColors.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 999))
+        .overlay(
+            RoundedRectangle(cornerRadius: 999)
+                .stroke(AppColors.ink.opacity(isActive ? 0 : 0.35), lineWidth: 1.2)
+        )
+        .help(help)
+    }
+}
+
 struct CenterPreviewPanel: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     let activePreviewImage: NSImage?
@@ -17603,6 +18009,12 @@ struct CenterPreviewPanel: View {
     let onTogglePreview: () -> Void
     let onStartFromBeginning: () -> Void
     let onOpenFullScreen: () -> Void
+    let previewRenderMode: PreviewRenderMode
+    let previewVideoPlayer: AVPlayer?
+    let isPreparingPreviewVideo: Bool
+    let previewVideoPrepareProgress: Double
+    let previewVideoPrepareError: String?
+    let onSelectPreviewRenderMode: (PreviewRenderMode) -> Void
 
     @State private var isPhotosCardHovered = false
 
@@ -17623,12 +18035,65 @@ struct CenterPreviewPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 12) {
-                PanelTitle(title: "Preview", subtitle: "Your slideshow will appear here")
+                HStack(alignment: .top) {
+                    PanelTitle(title: "Preview", subtitle: "Your slideshow will appear here")
+                    Spacer()
+                    PreviewRenderModeButtons(mode: previewRenderMode, onSelect: onSelectPreviewRenderMode)
+                }
                 ZStack {
                     RoundedRectangle(cornerRadius: 34)
                         .fill(activePreviewImage == nil && !isPreparingPhotos ? AppColors.panel : Color.black)
 
-                    if let activePreviewImage {
+                    // Always mounted (never conditionally inserted/removed) so its
+                    // NSViewRepresentable identity stays stable across mode
+                    // switches — swapping it in/out of the tree via if/else during
+                    // an animated transition is what triggered a SwiftUI/AVKit
+                    // metadata crash the first time the video became ready.
+                    AVPlayerViewRepresentable(player: previewVideoPlayer)
+                        .clipShape(RoundedRectangle(cornerRadius: 34))
+                        .opacity(previewRenderMode == .renderedVideo && previewVideoPlayer != nil ? 1 : 0)
+                        .allowsHitTesting(previewRenderMode == .renderedVideo && previewVideoPlayer != nil)
+
+                    if previewRenderMode == .renderedVideo {
+                        if previewVideoPlayer != nil {
+                            EmptyView()
+                        } else if isPreparingPreviewVideo {
+                            VStack(spacing: 12) {
+                                ProgressView(value: previewVideoPrepareProgress)
+                                    .frame(width: 180)
+
+                                Text("Preparing 1080p preview video… \(Int(previewVideoPrepareProgress * 100))%")
+                                    .font(.custom("Figtree", size: 12).weight(.medium))
+                                    .foregroundColor(.white.opacity(0.75))
+                            }
+                        } else if let previewVideoPrepareError {
+                            VStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .font(.system(size: 28, weight: .light))
+                                    .foregroundColor(.white.opacity(0.6))
+
+                                Text("Couldn't prepare preview video: \(previewVideoPrepareError)")
+                                    .font(.custom("Figtree", size: 12).weight(.medium))
+                                    .foregroundColor(.white.opacity(0.75))
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 24)
+                            }
+                        } else {
+                            VStack(spacing: 16) {
+                                Image(systemName: "film")
+                                    .font(.system(size: 42, weight: .light))
+                                    .foregroundColor(AppColors.muted.opacity(0.55))
+
+                                Text("Video preview mode")
+                                    .font(.custom("Figtree", size: 13).weight(.semibold))
+                                    .foregroundColor(AppColors.ink)
+
+                                Text("Add photos to prepare a 1080p preview video.")
+                                    .font(.custom("Figtree", size: 14).weight(.medium))
+                                    .foregroundColor(AppColors.muted)
+                            }
+                        }
+                    } else if let activePreviewImage {
                         if usesMagazinePreview {
                             ZStack {
                                 MagazinePreviewPage(
@@ -17656,6 +18121,7 @@ struct CenterPreviewPanel: View {
                                     cornerRadius: 28
                                 )
                             )
+                            .drawingGroup()
                         } else if visualTheme == .origami {
                             ZStack {
                                 OrigamiPreviewPage(
@@ -17698,6 +18164,7 @@ struct CenterPreviewPanel: View {
                                     cornerRadius: 28
                                 )
                             )
+                            .drawingGroup()
                         } else if visualTheme == .imagination {
                             ImaginationCardPage(
                                 activeImage: activePreviewImage,
@@ -17810,19 +18277,21 @@ struct CenterPreviewPanel: View {
                 }
 
                 HStack(spacing: 10) {
-                    previewIconButton(
-                        systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
-                        label: isPreviewPlaying ? "Stop Preview" : "Play Preview",
-                        isDisabled: photoCount == 0 || isPreparingPhotos,
-                        action: onTogglePreview
-                    )
+                    if previewRenderMode != .renderedVideo {
+                        previewIconButton(
+                            systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
+                            label: isPreviewPlaying ? "Stop Preview" : "Play Preview",
+                            isDisabled: photoCount == 0 || isPreparingPhotos,
+                            action: onTogglePreview
+                        )
 
-                    previewIconButton(
-                        systemName: "arrow.counterclockwise",
-                        label: "Play From Beginning",
-                        isDisabled: photoCount == 0 || isPreparingPhotos,
-                        action: onStartFromBeginning
-                    )
+                        previewIconButton(
+                            systemName: "arrow.counterclockwise",
+                            label: "Play From Beginning",
+                            isDisabled: photoCount == 0 || isPreparingPhotos,
+                            action: onStartFromBeginning
+                        )
+                    }
 
                     previewIconButton(
                         systemName: "arrow.up.left.and.arrow.down.right",
@@ -17831,7 +18300,11 @@ struct CenterPreviewPanel: View {
                         action: onOpenFullScreen
                     )
 
-                    Text("Full Screen shows the true, exported look of your slideshow.")
+                    Text(
+                        previewRenderMode == .renderedVideo
+                            ? "Video mode uses the play/pause/scrub controls built into the player above."
+                            : "Full Screen shows the true, exported look of your slideshow."
+                    )
                         .font(.custom("Figtree", size: 10.5).weight(.regular))
                         .foregroundColor(AppColors.muted)
                         .lineLimit(1)
@@ -17839,10 +18312,12 @@ struct CenterPreviewPanel: View {
 
                     Spacer(minLength: 8)
 
-                    Text(timeCounterText)
-                        .font(.custom("Figtree", size: 12).weight(.regular))
-                        .foregroundColor(AppColors.muted)
-                        .lineLimit(1)
+                    if previewRenderMode != .renderedVideo {
+                        Text(timeCounterText)
+                            .font(.custom("Figtree", size: 12).weight(.regular))
+                            .foregroundColor(AppColors.muted)
+                            .lineLimit(1)
+                    }
                 }
             }
             .padding(12)

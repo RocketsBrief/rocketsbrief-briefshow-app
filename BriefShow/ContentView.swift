@@ -179,6 +179,197 @@ private func magazineCropVisibleAreaFraction(
     )
 }
 
+// A deterministic (non-animated) reconstruction of one Kirigami page's
+// settled state: which photos are the page's own base-slot photos, and
+// which later photos get folded into an existing slot as swap-in
+// replacements — and into which slot. Mirrors ContentView's
+// plannedOrigamiSlotCount / plannedOrigamiReplacementCount /
+// origamiReplacementTargetSlots exactly, but as pure functions so the crop
+// editor can reproduce the same result without a live playback session.
+// Without this, the editor showed every photo in its own freshly-chosen
+// slot, while live playback force-fits swap-in photos into a slot sized
+// for a different photo — so a crop set in the editor didn't match what
+// actually played.
+struct OrigamiPagePlan {
+    let baseRange: Range<Int>
+    let consumedRange: Range<Int>
+    let slotByReplacementIndex: [Int: Int]
+}
+
+private func origamiPlanAspectRatio(_ image: NSImage) -> Double {
+    guard image.size.height > 0 else {
+        return 1
+    }
+
+    return Double(image.size.width / image.size.height)
+}
+
+private func origamiPlanOrientationClass(_ image: NSImage) -> Int {
+    let ratio = origamiPlanAspectRatio(image)
+
+    if ratio > 1.15 {
+        return 1
+    }
+
+    if ratio < 0.85 {
+        return -1
+    }
+
+    return 0
+}
+
+private func origamiPlanSlotCount(pageIndex: Int, remainingPhotos: Int) -> Int {
+    guard remainingPhotos > 0 else {
+        return 0
+    }
+
+    let cycle = [3, 5, 6, 2, 4]
+    let safePageIndex = max(0, pageIndex)
+
+    var plannedCount = min(
+        cycle[safePageIndex % cycle.count],
+        remainingPhotos
+    )
+
+    if remainingPhotos - plannedCount == 1, plannedCount > 2 {
+        plannedCount -= 1
+    }
+
+    return max(1, min(6, plannedCount))
+}
+
+private func origamiPlanReplacementCount(
+    baseSlotCount: Int,
+    remainingPhotos: Int,
+    imagesBeforePageChange: Int
+) -> Int {
+    let requestedReplacementCount = max(0, min(6, imagesBeforePageChange))
+
+    var replacementCount = min(
+        requestedReplacementCount,
+        baseSlotCount,
+        max(0, remainingPhotos - baseSlotCount)
+    )
+
+    if remainingPhotos - baseSlotCount - replacementCount == 1,
+       replacementCount > 0 {
+        replacementCount -= 1
+    }
+
+    return replacementCount
+}
+
+private func origamiPlanReplacementTargetSlots(
+    for incomingImages: [NSImage],
+    baseImages: [NSImage],
+    runningReplacements: inout [Int: NSImage]
+) -> [Int] {
+    guard !baseImages.isEmpty else {
+        return []
+    }
+
+    var availableSlots = Array(0..<baseImages.count)
+    var targets: [Int] = []
+
+    for incomingImage in incomingImages {
+        guard !availableSlots.isEmpty else {
+            break
+        }
+
+        let incomingRatio = origamiPlanAspectRatio(incomingImage)
+        let incomingOrientation = origamiPlanOrientationClass(incomingImage)
+
+        let target = availableSlots.min { leftSlot, rightSlot in
+            func score(for slot: Int) -> Double {
+                guard baseImages.indices.contains(slot) else {
+                    return 100
+                }
+
+                let currentImage = runningReplacements[slot] ?? baseImages[slot]
+                let currentRatio = origamiPlanAspectRatio(currentImage)
+                let currentOrientation = origamiPlanOrientationClass(currentImage)
+                let orientationPenalty = incomingOrientation == currentOrientation ? 0 : 8
+                let ratioPenalty = abs(
+                    log(max(0.05, incomingRatio) / max(0.05, currentRatio))
+                )
+
+                return Double(orientationPenalty) + ratioPenalty
+            }
+
+            return score(for: leftSlot) < score(for: rightSlot)
+        }!
+
+        targets.append(target)
+        availableSlots.removeAll { $0 == target }
+        runningReplacements[target] = incomingImage
+    }
+
+    return targets
+}
+
+private func buildOrigamiPagePlans(
+    previewImages: [NSImage],
+    imagesBeforePageChange: Int
+) -> [OrigamiPagePlan] {
+    var plans: [OrigamiPagePlan] = []
+    var consumed = 0
+    var pageIndex = 0
+    let total = previewImages.count
+
+    while consumed < total {
+        let remaining = total - consumed
+
+        let baseSlotCount = origamiPlanSlotCount(
+            pageIndex: pageIndex,
+            remainingPhotos: remaining
+        )
+
+        let baseEnd = min(total, consumed + baseSlotCount)
+
+        guard baseEnd > consumed else {
+            break
+        }
+
+        let baseRange = consumed..<baseEnd
+        let baseImages = Array(previewImages[baseRange])
+
+        let replacementCount = origamiPlanReplacementCount(
+            baseSlotCount: baseImages.count,
+            remainingPhotos: remaining,
+            imagesBeforePageChange: imagesBeforePageChange
+        )
+
+        let replacementEnd = min(total, baseEnd + replacementCount)
+        let incomingImages = Array(previewImages[baseEnd..<replacementEnd])
+
+        var runningReplacements: [Int: NSImage] = [:]
+        let targetSlots = origamiPlanReplacementTargetSlots(
+            for: incomingImages,
+            baseImages: baseImages,
+            runningReplacements: &runningReplacements
+        )
+
+        var slotByReplacementIndex: [Int: Int] = [:]
+
+        for (offset, slot) in targetSlots.enumerated() {
+            slotByReplacementIndex[baseEnd + offset] = slot
+        }
+
+        plans.append(
+            OrigamiPagePlan(
+                baseRange: baseRange,
+                consumedRange: consumed..<replacementEnd,
+                slotByReplacementIndex: slotByReplacementIndex
+            )
+        )
+
+        consumed = replacementEnd
+        pageIndex += 1
+    }
+
+    return plans
+}
+
 struct ContentView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     @ObservedObject private var accountManager = AccountManager.shared
@@ -525,8 +716,12 @@ struct ContentView: View {
                     visualTheme: visualTheme,
                     pageRanges:
                         visualTheme == .origami
-                        ? origamiReviewPageRanges
+                        ? origamiReviewPagePlans.map { $0.consumedRange }
                         : magazineReviewPageRanges,
+                    origamiPagePlans:
+                        visualTheme == .origami
+                        ? origamiReviewPagePlans
+                        : [],
                     cropTransforms: $photoCropTransforms,
                     onClose: {
                         isCropEditorPresented = false
@@ -758,42 +953,16 @@ struct ContentView: View {
         return ranges
     }
 
-    // Same idea for Kirigami, chunked using its real base-slot-count cycle
-    // (3, 5, 6, 2, 4). Swap-in replacement photos are folded into later
-    // review pages instead of simulated mid-page, so every photo still gets
-    // reviewed exactly once without reproducing the swap animation timing.
-    private var origamiReviewPageRanges: [Range<Int>] {
-        var ranges: [Range<Int>] = []
-        var consumed = 0
-        var pageIndex = 0
-        let total = previewImages.count
-
-        while consumed < total {
-            let remaining = total - consumed
-
-            let count = max(
-                1,
-                min(
-                    6,
-                    plannedOrigamiSlotCount(
-                        pageIndex: pageIndex,
-                        remainingPhotos: remaining
-                    )
-                )
-            )
-
-            let end = min(total, consumed + count)
-
-            guard end > consumed else {
-                break
-            }
-
-            ranges.append(consumed..<end)
-            consumed = end
-            pageIndex += 1
-        }
-
-        return ranges
+    // Same idea for Kirigami, but reconstructed with buildOrigamiPagePlans
+    // so a review "page" spans exactly the photos a real Kirigami page
+    // consumes — its base slots plus whichever later photos fold into them
+    // as swap-in replacements — instead of pretending every photo lands in
+    // its own fresh, ideally-shaped slot.
+    private var origamiReviewPagePlans: [OrigamiPagePlan] {
+        buildOrigamiPagePlans(
+            previewImages: previewImages,
+            imagesBeforePageChange: origamiImagesBeforePageChange
+        )
     }
 
     private var magazinePageDuration: Double {
@@ -3344,6 +3513,8 @@ struct ContentView: View {
     }
 
     private func prepareAudioPlayer(for url: URL?) {
+        audioPlayer?.stop()
+
         guard let url else {
             audioPlayer = nil
             return
@@ -12195,8 +12366,38 @@ struct MagazineCropEditorSheet: View {
     let previewImages: [NSImage]
     let visualTheme: SlideshowVisualTheme
     let pageRanges: [Range<Int>]
+    let origamiPagePlans: [OrigamiPagePlan]
     @Binding var cropTransforms: [URL: MagazinePhotoCrop]
     let onClose: () -> Void
+
+    // For a photo that's a Kirigami swap-in replacement, the aspect ratio of
+    // the base-slot photo whose slot it actually lands in — so the
+    // single-photo fine-tune editor's frame matches the slot it's really
+    // squeezed into, not an ideal slot for its own shape.
+    private var origamiAnchorAspectRatioByIndex: [Int: CGFloat] {
+        guard !origamiPagePlans.isEmpty else {
+            return [:]
+        }
+
+        var result: [Int: CGFloat] = [:]
+
+        for plan in origamiPagePlans {
+            let baseImages = Array(previewImages[plan.baseRange])
+
+            for (photoIndex, slot) in plan.slotByReplacementIndex
+            where baseImages.indices.contains(slot) {
+                let size = baseImages[slot].size
+
+                guard size.width > 0, size.height > 0 else {
+                    continue
+                }
+
+                result[photoIndex] = size.width / size.height
+            }
+        }
+
+        return result
+    }
 
     // Above this, the default crop loses enough of the photo to flag it.
     private let cropWarningThreshold: Double = 0.32
@@ -12231,6 +12432,11 @@ struct MagazineCropEditorSheet: View {
     private func editorAspectRatio(for index: Int) -> CGFloat {
         guard previewImages.indices.contains(index) else {
             return 1
+        }
+
+        if visualTheme == .origami,
+           let anchorRatio = origamiAnchorAspectRatioByIndex[index] {
+            return representativeAspectRatio(for: photoAspectClass(for: anchorRatio))
         }
 
         let size = previewImages[index].size
@@ -12450,9 +12656,27 @@ struct MagazineCropEditorSheet: View {
             if let range = currentPageRange {
                 Group {
                     if visualTheme == .origami {
+                        let plan = origamiPagePlans.indices.contains(currentPageIndex)
+                            ? origamiPagePlans[currentPageIndex]
+                            : nil
+
+                        let baseImages = plan.map { Array(previewImages[$0.baseRange]) }
+                            ?? Array(previewImages[range])
+
+                        let slotReplacementImages: [Int: NSImage] =
+                            (plan?.slotByReplacementIndex ?? [:]).reduce(into: [:]) { result, pair in
+                                let (photoIndex, slot) = pair
+
+                                guard previewImages.indices.contains(photoIndex) else {
+                                    return
+                                }
+
+                                result[slot] = previewImages[photoIndex]
+                            }
+
                         OrigamiPreviewPage(
-                            images: Array(previewImages[range]),
-                            slotReplacementImages: [:],
+                            images: baseImages,
+                            slotReplacementImages: slotReplacementImages,
                             activeSwapImages: [:],
                             activeSwapStyles: [:],
                             swapProgress: 1,

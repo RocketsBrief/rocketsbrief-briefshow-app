@@ -7,6 +7,7 @@ import AVKit
 import ImageIO
 import CoreImage
 import CoreGraphics
+import QuartzCore
 
 enum SlideshowTimingMode: String {
     case followMusic = "Follow Music"
@@ -489,6 +490,7 @@ struct ContentView: View {
     // previously prepared preview video has gone stale and needs re-rendering.
     @State private var previewRenderMode: PreviewRenderMode = .liveFPS60
     @State private var previewTickCounter: Int = 0
+    @State private var previewTickLastTimestamp: CFTimeInterval?
     @State private var previewVideoPlayer: AVPlayer?
     @State private var preparedPreviewVideoURL: URL?
     @State private var preparedPreviewVideoSignature: String?
@@ -770,15 +772,15 @@ struct ContentView: View {
             case .renderedVideo, .renderedVideo4K:
                 // Playback is driven by previewVideoPlayer (AVPlayer) itself,
                 // not by this tick-based animation state.
-                break
+                previewTickLastTimestamp = nil
             case .liveFPS60:
-                advancePreviewIfNeeded(delta: 1.0 / 60.0)
+                advancePreviewIfNeeded(delta: measuredPreviewTickDelta())
             case .liveFPS30:
                 previewTickCounter += 1
                 guard previewTickCounter % 2 == 0 else {
                     break
                 }
-                advancePreviewIfNeeded(delta: 1.0 / 30.0)
+                advancePreviewIfNeeded(delta: measuredPreviewTickDelta())
             }
         }
         .onReceive(Timer.publish(every: 600, on: .main, in: .common).autoconnect()) { _ in
@@ -2067,6 +2069,30 @@ struct ContentView: View {
             origamiSwapProgress = 1
             isOrigamiSwapAnimating = false
         }
+    }
+
+    // The 1/60s tick timer only fires that often when the main thread keeps
+    // up; under render load (heavy Kirigami fold animations, 4K live
+    // preview) ticks arrive late or get coalesced. Advancing the preview
+    // clock by a fixed 1/60s per tick regardless made it drift behind real
+    // time — and behind the audio player, which keeps real hardware time
+    // independent of tick timing — so in Follow Music the photos fell
+    // further and further behind the music and the track finished (and,
+    // for a single track, looped) before the preview had caught up.
+    // Measuring the actual elapsed time keeps the preview clock locked to
+    // real time regardless of dropped ticks.
+    private func measuredPreviewTickDelta() -> Double {
+        let now = CACurrentMediaTime()
+
+        defer {
+            previewTickLastTimestamp = now
+        }
+
+        guard let lastTimestamp = previewTickLastTimestamp else {
+            return 1.0 / 60.0
+        }
+
+        return min(0.5, max(0, now - lastTimestamp))
     }
 
     private func advancePreviewIfNeeded(

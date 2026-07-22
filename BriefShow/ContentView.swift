@@ -15,13 +15,23 @@ enum SlideshowTimingMode: String {
 
 // How the live "Preview" card renders the slideshow. The two "live" modes
 // drive the same real-time SwiftUI animation timer at a different tick rate;
-// "renderedVideo" instead pre-renders the slideshow to an actual 1080p video
-// file once and plays that back, which is perfectly smooth on weak hardware
-// since it's just video playback rather than real-time compositing.
+// the two "rendered" modes instead pre-render the slideshow to an actual
+// video file once (at 1080p or 4K) and play that back, which is perfectly
+// smooth on weak hardware since it's just video playback rather than
+// real-time compositing.
 enum PreviewRenderMode: String {
     case liveFPS30
     case liveFPS60
     case renderedVideo
+    case renderedVideo4K
+
+    var isRenderedVideo: Bool {
+        self == .renderedVideo || self == .renderedVideo4K
+    }
+
+    var videoResolutionName: String {
+        self == .renderedVideo4K ? "4K" : "1080p"
+    }
 }
 
 enum SlideshowTransitionStyle: String {
@@ -430,6 +440,32 @@ struct ContentView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .top)
+            .overlayPreferenceValue(PreviewTooltipPreferenceKey.self) { items in
+                // Reads the same preference key CenterPreviewPanel's buttons report into,
+                // but attached at the window root so the bubble always paints above every
+                // other view (header, panels) instead of being subject to VStack's
+                // undefined paint order for siblings that overlap outside their own bounds.
+                GeometryReader { proxy in
+                    ForEach(items) { item in
+                        let rect = proxy[item.anchor]
+                        HoverTooltipBubble(
+                            label: item.label,
+                            textColor: AppColors.ink,
+                            arrowEdge: item.placement == .above ? .bottom : .top
+                        )
+                        // Anchored by the arrow-tip edge (not the bubble's center) via a
+                        // zero-height frame, so bubbles of different text length (e.g. the
+                        // short 30/60fps labels vs. the longer 1080p one) all line up at the
+                        // same distance from their button instead of drifting with height.
+                        .frame(height: 0, alignment: item.placement == .above ? .bottom : .top)
+                        .position(
+                            x: rect.midX,
+                            y: item.placement == .above ? rect.minY - 6 : rect.maxY + 6
+                        )
+                    }
+                }
+                .allowsHitTesting(false)
+            }
 
             if isFullScreenPreviewPresented {
                 FullScreenPreviewSheet(
@@ -536,7 +572,7 @@ struct ContentView: View {
         }
         .onReceive(Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()) { _ in
             switch previewRenderMode {
-            case .renderedVideo:
+            case .renderedVideo, .renderedVideo4K:
                 // Playback is driven by previewVideoPlayer (AVPlayer) itself,
                 // not by this tick-based animation state.
                 break
@@ -688,6 +724,7 @@ struct ContentView: View {
         var ranges: [Range<Int>] = []
         var consumed = 0
         var pageIndex = 0
+        var previousSlotCount: Int? = nil
         let total = previewImages.count
 
         while consumed < total {
@@ -700,7 +737,8 @@ struct ContentView: View {
                     adaptiveMagazineSlotCount(
                         pageIndex: pageIndex,
                         startIndex: consumed,
-                        remainingPhotos: remaining
+                        remainingPhotos: remaining,
+                        previousSlotCount: previousSlotCount
                     )
                 )
             )
@@ -714,6 +752,7 @@ struct ContentView: View {
             ranges.append(consumed..<end)
             consumed = end
             pageIndex += 1
+            previousSlotCount = count
         }
 
         return ranges
@@ -816,7 +855,30 @@ struct ContentView: View {
         return min(plannedCount, remainingPhotos)
     }
 
-    private func adaptiveMagazineSlotCount(pageIndex: Int, startIndex: Int, remainingPhotos: Int) -> Int {
+    private func adaptiveMagazineSlotCount(
+        pageIndex: Int,
+        startIndex: Int,
+        remainingPhotos: Int,
+        previousSlotCount: Int? = nil
+    ) -> Int {
+        let rawCount = rawAdaptiveMagazineSlotCount(
+            pageIndex: pageIndex,
+            startIndex: startIndex,
+            remainingPhotos: remainingPhotos
+        )
+
+        // Two consecutive Kousei pages with the same photo count read as
+        // repetitive (e.g. two back-to-back 2-photo spreads), so nudge this
+        // page to the next size in line instead when that happens.
+        guard let previousSlotCount, rawCount == previousSlotCount, remainingPhotos > rawCount else {
+            return rawCount
+        }
+
+        let alternative = rawCount >= 6 ? 5 : rawCount + 1
+        return min(alternative, remainingPhotos)
+    }
+
+    private func rawAdaptiveMagazineSlotCount(pageIndex: Int, startIndex: Int, remainingPhotos: Int) -> Int {
         let plannedCount = plannedMagazineSlotCount(pageIndex: pageIndex, remainingPhotos: remainingPhotos)
 
         guard plannedCount > 0, !previewImages.isEmpty else {
@@ -872,10 +934,19 @@ struct ContentView: View {
     }
 
     private var currentMagazinePageSlotCount: Int {
-        adaptiveMagazineSlotCount(
+        // Cheap O(1) approximation of the previous page's count (just the
+        // seed-driven cycle value, skipping the aspect-ratio pass) so the
+        // anti-repeat nudge in adaptiveMagazineSlotCount can kick in here too
+        // without redoing a full magazineReviewPageRanges walk every frame.
+        let previous: Int? = magazinePageIndex > 0
+            ? plannedMagazineSlotCount(pageIndex: magazinePageIndex - 1, remainingPhotos: selectedPhotoURLs.count)
+            : nil
+
+        return adaptiveMagazineSlotCount(
             pageIndex: magazinePageIndex,
             startIndex: activePhotoIndex,
-            remainingPhotos: selectedPhotoURLs.count - activePhotoIndex
+            remainingPhotos: selectedPhotoURLs.count - activePhotoIndex,
+            previousSlotCount: previous
         )
     }
 
@@ -1029,6 +1100,7 @@ struct ContentView: View {
 
         var pageIndex = 0
         var consumedPhotos = 0
+        var previousSlotCount: Int? = nil
 
         while consumedPhotos < selectedPhotoURLs.count {
             let remainingPhotos = selectedPhotoURLs.count - consumedPhotos
@@ -1037,12 +1109,14 @@ struct ContentView: View {
                 adaptiveMagazineSlotCount(
                     pageIndex: pageIndex,
                     startIndex: consumedPhotos,
-                    remainingPhotos: remainingPhotos
+                    remainingPhotos: remainingPhotos,
+                    previousSlotCount: previousSlotCount
                 )
             )
 
             consumedPhotos += slotCount
             pageIndex += 1
+            previousSlotCount = slotCount
         }
 
         return pageIndex
@@ -2627,19 +2701,19 @@ struct ContentView: View {
 
     private func selectPreviewRenderMode(_ mode: PreviewRenderMode) {
         guard mode != previewRenderMode else {
-            if mode == .renderedVideo {
+            if mode.isRenderedVideo {
                 prepareRenderedPreviewVideo(thenPlay: false)
             }
             return
         }
 
-        if previewRenderMode == .renderedVideo {
+        if previewRenderMode.isRenderedVideo {
             previewVideoPlayer?.pause()
         }
 
         previewRenderMode = mode
 
-        if mode == .renderedVideo {
+        if mode.isRenderedVideo {
             isPreviewPlaying = false
             audioPlayer?.pause()
             prepareRenderedPreviewVideo(thenPlay: false)
@@ -2653,6 +2727,7 @@ struct ContentView: View {
     // fresh render instead of silently playing a stale preview.
     private func currentPreviewVideoSignature() -> String {
         var pieces: [String] = [
+            previewRenderMode.videoResolutionName,
             visualTheme.rawValue,
             transitionStyle.rawValue,
             String(format: "%.3f", fadeDuration),
@@ -2717,10 +2792,18 @@ struct ContentView: View {
         audioPlayer?.pause()
         previewVideoPlayer?.pause()
 
+        // Clear the stale player immediately rather than only on completion —
+        // otherwise the UI sees previewVideoPlayer != nil the whole time this
+        // re-render is in flight and keeps showing the previous render's
+        // frozen last frame (e.g. a leftover Kousei video) instead of the
+        // black "preparing…" state below.
+        previewVideoPlayer = nil
+
         let previousURL = preparedPreviewVideoURL
         let cacheURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BriefShow-preview-\(UUID().uuidString).mp4")
 
+        let selectedResolutionName = previewRenderMode.videoResolutionName
         let photoURLs = selectedPhotoURLs
         let musicURLs = selectedMusicURLs
         let durationPerPhoto = max(0.25, currentPhotoDuration)
@@ -2755,7 +2838,7 @@ struct ContentView: View {
                     try renderMagazineSlideshowVideo(
                         photoURLs: photoURLs,
                         outputURL: videoOnlyURL,
-                        resolutionName: "1080p",
+                        resolutionName: selectedResolutionName,
                         pageDuration: durationPerPhoto,
                         imageFadeSeconds: selectedMagazineImageFade,
                         imageDelaySeconds: selectedMagazineImageDelay,
@@ -2768,7 +2851,7 @@ struct ContentView: View {
                     try renderOrigamiSlideshowVideo(
                         photoURLs: photoURLs,
                         outputURL: videoOnlyURL,
-                        resolutionName: "1080p",
+                        resolutionName: selectedResolutionName,
                         pageDuration: selectedOrigamiHoldSeconds,
                         imagesBeforePageChange: selectedOrigamiImagesBeforePageChange,
                         simultaneousSwapCount: selectedOrigamiSimultaneousSwapCount,
@@ -2780,7 +2863,7 @@ struct ContentView: View {
                     try renderImaginationSlideshowVideo(
                         photoURLs: photoURLs,
                         outputURL: videoOnlyURL,
-                        resolutionName: "1080p",
+                        resolutionName: selectedResolutionName,
                         pageDuration: durationPerPhoto,
                         fadeDuration: selectedFadeDuration,
                         fileType: .mp4,
@@ -2790,7 +2873,7 @@ struct ContentView: View {
                     try renderSlideshowVideo(
                         photoURLs: photoURLs,
                         outputURL: videoOnlyURL,
-                        resolutionName: "1080p",
+                        resolutionName: selectedResolutionName,
                         secondsPerPhoto: durationPerPhoto,
                         transitionStyle: selectedTransitionStyle,
                         fadeDuration: selectedFadeDuration,
@@ -3399,6 +3482,28 @@ private func plannedMagazineExportSlotCount(
 private func adaptiveMagazineExportSlotCount(
     plannedCount: Int,
     photos: [MagazineExportPhoto],
+    remainingPhotos: Int,
+    previousSlotCount: Int? = nil
+) -> Int {
+    let rawCount = rawAdaptiveMagazineExportSlotCount(
+        plannedCount: plannedCount,
+        photos: photos,
+        remainingPhotos: remainingPhotos
+    )
+
+    // Mirrors the anti-repeat nudge in adaptiveMagazineSlotCount (preview
+    // side) so exported video never disagrees with what was previewed.
+    guard let previousSlotCount, rawCount == previousSlotCount, remainingPhotos > rawCount else {
+        return rawCount
+    }
+
+    let alternative = rawCount >= 6 ? 5 : rawCount + 1
+    return min(alternative, remainingPhotos)
+}
+
+private func rawAdaptiveMagazineExportSlotCount(
+    plannedCount: Int,
+    photos: [MagazineExportPhoto],
     remainingPhotos: Int
 ) -> Int {
     guard plannedCount > 0 else {
@@ -3592,6 +3697,7 @@ private func buildMagazineExportPages(
     var pages: [MagazineExportPage] = []
     var pageIndex = 0
     var consumed = 0
+    var previousSlotCount: Int? = nil
 
     while consumed < photos.count {
         let remaining =
@@ -3618,7 +3724,9 @@ private func buildMagazineExportPages(
                 photos:
                     availablePhotos,
                 remainingPhotos:
-                    remaining
+                    remaining,
+                previousSlotCount:
+                    previousSlotCount
             )
         )
 
@@ -3646,6 +3754,7 @@ private func buildMagazineExportPages(
 
         consumed = endIndex
         pageIndex += 1
+        previousSlotCount = slotCount
     }
 
     return pages
@@ -6820,15 +6929,34 @@ private func origamiSwiftUIExportTargetSlots(
     return targets
 }
 
+// Wraps makeSDRExportCGImage's HDR-gain-map-suppressed, sRGB-normalized
+// decode back into an NSImage, for callers (like the Origami/Kirigami
+// SwiftUI export path) that need an NSImage rather than a raw CGImage.
+private func makeSDRExportNSImage(from url: URL) -> NSImage? {
+    guard let cgImage = makeSDRExportCGImage(from: url) else {
+        return nil
+    }
+
+    return NSImage(
+        cgImage: cgImage,
+        size: NSSize(width: cgImage.width, height: cgImage.height)
+    )
+}
+
 private func buildOrigamiSwiftUIExportPages(
     photoURLs: [URL],
     imagesBeforePageChange: Int,
     simultaneousSwapCount: Int,
     cropTransforms: [URL: MagazinePhotoCrop]
 ) -> (pages: [OrigamiSwiftUIExportPage], cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]) {
+    // Plain NSImage(contentsOf:) doesn't suppress Apple's HDR gain-map
+    // photos (very common in bright outdoor shots), so those specific
+    // photos could get interpreted inconsistently once baked into the SDR
+    // video frame while non-HDR photos looked fine — reusing the same
+    // normalized decode Magazine's export already uses fixes that.
     let loadedPhotoPairs: [(url: URL, image: NSImage)] =
         photoURLs.compactMap { url in
-            NSImage(contentsOf: url).map { (url: url, image: $0) }
+            makeSDRExportNSImage(from: url).map { (url: url, image: $0) }
         }
 
     var cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop] = [:]
@@ -7446,7 +7574,14 @@ private func makeOrigamiSwiftUIExportPixelBuffer(
                 pixelBuffer
             ),
         space:
-            CGColorSpaceCreateDeviceRGB(),
+            // Device RGB is uncalibrated — drawing a wide-gamut (Display P3)
+            // source frame into it lets CoreGraphics reinterpret those pixel
+            // values arbitrarily, which is why some photos came out darker
+            // than others depending on their embedded color profile, while
+            // the live SwiftUI preview (properly color-managed by AppKit)
+            // never showed the mismatch. sRGB is a real calibrated space, so
+            // the conversion from the source profile is well-defined.
+            magazineExportSRGBColorSpace,
         bitmapInfo:
             CGImageAlphaInfo
                 .premultipliedFirst
@@ -12948,8 +13083,8 @@ struct FullScreenPreviewSheet: View {
                 // switches — see the matching comment in CenterPreviewPanel.
                 AVPlayerViewRepresentable(player: previewVideoPlayer)
                     .frame(width: proxy.size.width, height: proxy.size.height)
-                    .opacity(previewRenderMode == .renderedVideo && previewVideoPlayer != nil ? 1 : 0)
-                    .allowsHitTesting(previewRenderMode == .renderedVideo && previewVideoPlayer != nil)
+                    .opacity(previewRenderMode.isRenderedVideo && previewVideoPlayer != nil ? 1 : 0)
+                    .allowsHitTesting(previewRenderMode.isRenderedVideo && previewVideoPlayer != nil)
                     .ignoresSafeArea()
 
                 fullscreenCloseButton
@@ -12958,7 +13093,7 @@ struct FullScreenPreviewSheet: View {
 
                 // In video mode, AVKit's own play/pause/scrub overlay
                 // (part of VideoPlayer above) replaces these custom controls.
-                if !(previewRenderMode == .renderedVideo && previewVideoPlayer != nil) {
+                if !(previewRenderMode.isRenderedVideo && previewVideoPlayer != nil) {
                     fullscreenBottomControls
                         .frame(width: max(420, proxy.size.width - 56))
                         .position(x: proxy.size.width / 2, y: proxy.size.height - 74)
@@ -12981,7 +13116,7 @@ struct FullScreenPreviewSheet: View {
 
     @ViewBuilder
     private func fittedPreviewContent(in size: CGSize) -> some View {
-        if previewRenderMode == .renderedVideo && previewVideoPlayer != nil {
+        if previewRenderMode.isRenderedVideo && previewVideoPlayer != nil {
             EmptyView()
         } else if let activePreviewImage {
             if usesMagazinePreview {
@@ -13243,12 +13378,22 @@ private struct HoverTooltipArrow: Shape {
 private struct HoverTooltipBubble: View {
     let label: String
     let textColor: Color
+    var arrowEdge: Edge = .bottom
 
     var body: some View {
         VStack(spacing: 0) {
+            if arrowEdge == .top {
+                HoverTooltipArrow()
+                    .fill(.regularMaterial)
+                    .frame(width: 11, height: 6)
+                    .rotationEffect(.degrees(180))
+                    .offset(y: 1)
+            }
+
             Text(label)
                 .font(.custom("Figtree", size: 11).weight(.medium))
                 .foregroundColor(textColor)
+                .multilineTextAlignment(.leading)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
@@ -13257,11 +13402,18 @@ private struct HoverTooltipBubble: View {
                         .stroke(Color.primary.opacity(0.1), lineWidth: 1)
                 )
 
-            HoverTooltipArrow()
-                .fill(.regularMaterial)
-                .frame(width: 11, height: 6)
-                .offset(y: -1)
+            if arrowEdge == .bottom {
+                HoverTooltipArrow()
+                    .fill(.regularMaterial)
+                    .frame(width: 11, height: 6)
+                    .offset(y: -1)
+            }
         }
+        // Unconditional fixedSize (both axes) so the bubble always hugs its
+        // content tightly instead of stretching to whatever width its parent
+        // happens to propose (e.g. the full window, via the root-level
+        // GeometryReader) — long copy uses explicit "\n" breaks below rather
+        // than automatic wrapping, so its width stays deterministic too.
         .fixedSize()
         .shadow(color: Color.black.opacity(0.22), radius: 8, y: 3)
         .allowsHitTesting(false)
@@ -14569,18 +14721,6 @@ struct OrigamiPreviewPage: View {
                 height: panelSize.height
             )
             .position(position)
-            .shadow(
-                color: Color.black.opacity(
-                    0.42
-                    * min(
-                        1,
-                        abs(angle) / 90
-                    )
-                ),
-                radius: 10,
-                x: 0,
-                y: 3
-            )
     }
 
     @ViewBuilder
@@ -14967,15 +15107,6 @@ struct OrigamiPreviewPage: View {
                                 }
                             )
                         }
-
-                        Color.black
-                            .opacity(
-                                (
-                                    1
-                                    - localProgress
-                                )
-                                * 0.30
-                            )
                     }
                     .frame(
                         width:
@@ -15002,44 +15133,6 @@ struct OrigamiPreviewPage: View {
                         y: offset.height
                     )
                     .opacity(opacity)
-                    .shadow(
-                        color:
-                            Color.black.opacity(
-                                (
-                                    1
-                                    - localProgress
-                                )
-                                * 0.48
-                            ),
-                        radius:
-                            12
-                            * CGFloat(
-                                1
-                                - localProgress
-                            ),
-                        x:
-                            normalizedAnimationVariant
-                                == 0
-                            ? (
-                                slot.isMultiple(
-                                    of: 2
-                                )
-                                ? -8
-                                : 8
-                            )
-                            : 0,
-                        y:
-                            normalizedAnimationVariant
-                                == 1
-                            ? (
-                                slot.isMultiple(
-                                    of: 2
-                                )
-                                ? -8
-                                : 8
-                            )
-                            : 5
-                    )
                     .zIndex(
                         Double(
                             pageImages.count
@@ -17902,39 +17995,62 @@ struct PreviewRenderModeButtons: View {
     let mode: PreviewRenderMode
     let onSelect: (PreviewRenderMode) -> Void
 
+    @State private var isFPS30Hovered = false
+    @State private var isFPS60Hovered = false
+    @State private var isVideoHovered = false
+    @State private var isVideo4KHovered = false
+    private let fps30TooltipID = UUID()
+    private let fps60TooltipID = UUID()
+    private let videoTooltipID = UUID()
+    private let video4KTooltipID = UUID()
+
     var body: some View {
         HStack(spacing: 6) {
             pill(
                 .liveFPS30,
                 label: "30",
-                help: "Live preview at 30fps. Lighter on older or weaker Macs, at the cost of slightly less fluid motion."
+                help: "Live preview at 30fps. Lighter on older or weaker\nMacs, at the cost of slightly less fluid motion.",
+                isHovered: $isFPS30Hovered,
+                tooltipID: fps30TooltipID
             )
 
             pill(
                 .liveFPS60,
                 label: "60",
-                help: "Live preview at 60fps (default). The smoothest motion, but can stutter on weaker hardware."
+                help: "Live preview at 60fps (default). The smoothest\nmotion, but can stutter on weaker hardware.",
+                isHovered: $isFPS60Hovered,
+                tooltipID: fps60TooltipID
             )
 
             pill(
                 .renderedVideo,
                 systemImage: "film",
-                help: "Prepares the slideshow as a real 1080p video once, then plays that back. Never stutters, even on weak hardware — takes a moment to prepare before it starts playing."
+                help: "Prepares the slideshow as a real 1080p video once,\nthen plays that back. Never stutters, even on weak\nhardware — takes a moment to prepare before it\nstarts playing.",
+                isHovered: $isVideoHovered,
+                tooltipID: videoTooltipID
+            )
+
+            pill(
+                .renderedVideo4K,
+                label: "4K",
+                help: "Prepares the slideshow as a real 4K video once,\nthen plays that back. Sharper detail than the\n1080p preview, but takes longer to prepare and\nuses more disk space.",
+                isHovered: $isVideo4KHovered,
+                tooltipID: video4KTooltipID
             )
         }
     }
 
     @ViewBuilder
-    private func pill(_ target: PreviewRenderMode, label: String, help: String) -> some View {
-        pillButton(target: target, help: help) {
+    private func pill(_ target: PreviewRenderMode, label: String, help: String, isHovered: Binding<Bool>, tooltipID: UUID) -> some View {
+        pillButton(target: target, help: help, isHovered: isHovered, tooltipID: tooltipID) {
             Text(label)
                 .font(.custom("Figtree", size: 11).weight(.bold))
         }
     }
 
     @ViewBuilder
-    private func pill(_ target: PreviewRenderMode, systemImage: String, help: String) -> some View {
-        pillButton(target: target, help: help) {
+    private func pill(_ target: PreviewRenderMode, systemImage: String, help: String, isHovered: Binding<Bool>, tooltipID: UUID) -> some View {
+        pillButton(target: target, help: help, isHovered: isHovered, tooltipID: tooltipID) {
             Image(systemName: systemImage)
                 .font(.system(size: 11, weight: .bold))
         }
@@ -17944,6 +18060,8 @@ struct PreviewRenderModeButtons: View {
     private func pillButton<Label: View>(
         target: PreviewRenderMode,
         help: String,
+        isHovered: Binding<Bool>,
+        tooltipID: UUID,
         @ViewBuilder label: () -> Label
     ) -> some View {
         let isActive = mode == target
@@ -17962,7 +18080,12 @@ struct PreviewRenderModeButtons: View {
             RoundedRectangle(cornerRadius: 999)
                 .stroke(AppColors.ink.opacity(isActive ? 0 : 0.35), lineWidth: 1.2)
         )
-        .help(help)
+        .onHover { hovering in
+            isHovered.wrappedValue = hovering
+        }
+        .anchorPreference(key: PreviewTooltipPreferenceKey.self, value: .bounds) { anchor in
+            isHovered.wrappedValue ? [PreviewTooltipAnchor(id: tooltipID, label: help, anchor: anchor, placement: .below)] : []
+        }
     }
 }
 
@@ -18051,10 +18174,10 @@ struct CenterPreviewPanel: View {
                     // metadata crash the first time the video became ready.
                     AVPlayerViewRepresentable(player: previewVideoPlayer)
                         .clipShape(RoundedRectangle(cornerRadius: 34))
-                        .opacity(previewRenderMode == .renderedVideo && previewVideoPlayer != nil ? 1 : 0)
-                        .allowsHitTesting(previewRenderMode == .renderedVideo && previewVideoPlayer != nil)
+                        .opacity(previewRenderMode.isRenderedVideo && previewVideoPlayer != nil ? 1 : 0)
+                        .allowsHitTesting(previewRenderMode.isRenderedVideo && previewVideoPlayer != nil)
 
-                    if previewRenderMode == .renderedVideo {
+                    if previewRenderMode.isRenderedVideo {
                         if previewVideoPlayer != nil {
                             EmptyView()
                         } else if isPreparingPreviewVideo {
@@ -18062,7 +18185,7 @@ struct CenterPreviewPanel: View {
                                 ProgressView(value: previewVideoPrepareProgress)
                                     .frame(width: 180)
 
-                                Text("Preparing 1080p preview video… \(Int(previewVideoPrepareProgress * 100))%")
+                                Text("Preparing \(previewRenderMode.videoResolutionName) preview video… \(Int(previewVideoPrepareProgress * 100))%")
                                     .font(.custom("Figtree", size: 12).weight(.medium))
                                     .foregroundColor(.white.opacity(0.75))
                             }
@@ -18088,7 +18211,7 @@ struct CenterPreviewPanel: View {
                                     .font(.custom("Figtree", size: 13).weight(.semibold))
                                     .foregroundColor(AppColors.ink)
 
-                                Text("Add photos to prepare a 1080p preview video.")
+                                Text("Add photos to prepare a \(previewRenderMode.videoResolutionName) preview video.")
                                     .font(.custom("Figtree", size: 14).weight(.medium))
                                     .foregroundColor(AppColors.muted)
                             }
@@ -18232,7 +18355,7 @@ struct CenterPreviewPanel: View {
                                 .controlSize(.large)
                                 .scaleEffect(0.9)
 
-                            Text("Preparing photo previews…")
+                            Text("Preparing photo previews… \(preparedPhotoCount) / \(photoCount)")
                                 .font(.custom("Figtree", size: 13).weight(.semibold))
                                 .foregroundColor(.white)
 
@@ -18277,7 +18400,7 @@ struct CenterPreviewPanel: View {
                 }
 
                 HStack(spacing: 10) {
-                    if previewRenderMode != .renderedVideo {
+                    if !previewRenderMode.isRenderedVideo {
                         previewIconButton(
                             systemName: isPreviewPlaying ? "pause.fill" : "play.fill",
                             label: isPreviewPlaying ? "Stop Preview" : "Play Preview",
@@ -18301,7 +18424,7 @@ struct CenterPreviewPanel: View {
                     )
 
                     Text(
-                        previewRenderMode == .renderedVideo
+                        previewRenderMode.isRenderedVideo
                             ? "Video mode uses the play/pause/scrub controls built into the player above."
                             : "Full Screen shows the true, exported look of your slideshow."
                     )
@@ -18312,7 +18435,7 @@ struct CenterPreviewPanel: View {
 
                     Spacer(minLength: 8)
 
-                    if previewRenderMode != .renderedVideo {
+                    if !previewRenderMode.isRenderedVideo {
                         Text(timeCounterText)
                             .font(.custom("Figtree", size: 12).weight(.regular))
                             .foregroundColor(AppColors.muted)
@@ -18328,16 +18451,6 @@ struct CenterPreviewPanel: View {
                     .stroke(AppColors.border, lineWidth: 4)
             )
             .clipShape(RoundedRectangle(cornerRadius: 34))
-            .overlayPreferenceValue(PreviewTooltipPreferenceKey.self) { items in
-                GeometryReader { proxy in
-                    ForEach(items) { item in
-                        let rect = proxy[item.anchor]
-                        HoverTooltipBubble(label: item.label, textColor: AppColors.ink)
-                            .position(x: rect.midX, y: rect.minY - 26)
-                    }
-                }
-            }
-            .zIndex(50)
 
             HStack(spacing: 10) {
                 Button(action: onAddPhotos) {
@@ -18493,12 +18606,18 @@ struct CenterPreviewPanel: View {
 /// (e.g. the preview photo card above the button row). Anchor preferences
 /// sidestep that: each button reports its frame only while hovered, and the
 /// tooltip is actually drawn once, in a single overlay attached higher up
-/// (see `CenterPreviewPanel`'s `.overlayPreferenceValue`), which is
-/// guaranteed to paint above everything below it.
+/// (see `ContentView`'s root-level `.overlayPreferenceValue`), which is
+/// guaranteed to paint above everything else in the window.
+private enum PreviewTooltipPlacement {
+    case above
+    case below
+}
+
 private struct PreviewTooltipAnchor: Identifiable {
     let id: UUID
     let label: String
     let anchor: Anchor<CGRect>
+    var placement: PreviewTooltipPlacement = .above
 }
 
 private struct PreviewTooltipPreferenceKey: PreferenceKey {

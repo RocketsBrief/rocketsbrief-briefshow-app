@@ -12,6 +12,10 @@
 		<data>
 		OSQurAZvyhsjyI+S2gKdZ7Wj5Ho=
 		</data>
+		<key>Resources/Figtree-VariableFont_wght.ttf</key>
+		<data>
+		Nx3fM1gihCEbzdZkRwWRRBcgmI0=
+		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
@@ -27,6 +31,13 @@
 			<key>hash2</key>
 			<data>
 			hUQ0nY8WcG0Eb3j0rX7Fz5hnPit/KaXnGaGLdhvxFG8=
+			</data>
+		</dict>
+		<key>Resources/Figtree-VariableFont_wght.ttf</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			GFEVCzVkXas6Tvk1o0mi0fU3MiHA1baZPRRSEHZsVN4=
 			</data>
 		</dict>
 	</dict>

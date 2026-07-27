@@ -432,6 +432,8 @@ struct ContentView: View {
     @State private var magazinePageIndex: Int = 0
     @State private var origamiPageIndex: Int = 0
     @State private var photoCropTransforms: [URL: MagazinePhotoCrop] = [:]
+    @State private var manualMagazineLayoutOverrides: [Int: Int] = [:]
+    @State private var manualOrigamiLayoutOverrides: [Int: Int] = [:]
     @State private var isCropEditorPresented: Bool = false
 
     // The Origami page remains fixed while individual
@@ -564,6 +566,8 @@ struct ContentView: View {
                         photoCropByImageIdentity: photoCropByImageIdentity,
                         magazinePageSlotCount: currentPreviewPageSlotCount,
                         origamiAnimationSeed: origamiPageIndex,
+                        manualMagazineLayoutOverrides: manualMagazineLayoutOverrides,
+                        manualOrigamiLayoutOverrides: manualOrigamiLayoutOverrides,
                         isPreviewPlaying: isPreviewPlaying,
                         imaginationPlaybackRestartToken:
                             imaginationPlaybackRestartToken,
@@ -689,6 +693,8 @@ struct ContentView: View {
                     photoCropByImageIdentity: photoCropByImageIdentity,
                     magazinePageSlotCount: currentPreviewPageSlotCount,
                     origamiAnimationSeed: origamiPageIndex,
+                    manualMagazineLayoutOverrides: manualMagazineLayoutOverrides,
+                    manualOrigamiLayoutOverrides: manualOrigamiLayoutOverrides,
                     isPreviewPlaying: isPreviewPlaying,
                     imaginationPlaybackRestartToken:
                         imaginationPlaybackRestartToken,
@@ -725,6 +731,8 @@ struct ContentView: View {
                         ? origamiReviewPagePlans
                         : [],
                     cropTransforms: $photoCropTransforms,
+                    manualMagazineLayoutOverrides: $manualMagazineLayoutOverrides,
+                    manualOrigamiLayoutOverrides: $manualOrigamiLayoutOverrides,
                     onClose: {
                         isCropEditorPresented = false
                     }
@@ -3008,6 +3016,8 @@ struct ContentView: View {
         let selectedMagazineImageFade = magazineImageFadeSeconds
         let selectedMagazineImageDelay = magazineImageDelaySeconds
         let selectedPhotoCropTransforms = photoCropTransforms
+        let selectedManualMagazineLayoutOverrides = manualMagazineLayoutOverrides
+        let selectedManualOrigamiLayoutOverrides = manualOrigamiLayoutOverrides
         let selectedOrigamiHoldSeconds = origamiInternalHoldSeconds
         let selectedOrigamiImagesBeforePageChange = origamiImagesBeforePageChange
         let selectedOrigamiSimultaneousSwapCount = origamiSimultaneousSwapCount
@@ -3039,6 +3049,7 @@ struct ContentView: View {
                         imageDelaySeconds: selectedMagazineImageDelay,
                         revealStyle: selectedTransitionStyle,
                         cropTransforms: selectedPhotoCropTransforms,
+                        manualLayoutOverrides: selectedManualMagazineLayoutOverrides,
                         fileType: .mp4,
                         progressHandler: reportProgress
                     )
@@ -3051,6 +3062,7 @@ struct ContentView: View {
                         imagesBeforePageChange: selectedOrigamiImagesBeforePageChange,
                         simultaneousSwapCount: selectedOrigamiSimultaneousSwapCount,
                         cropTransforms: selectedPhotoCropTransforms,
+                        manualLayoutOverrides: selectedManualOrigamiLayoutOverrides,
                         fileType: .mp4,
                         progressHandler: reportProgress
                     )
@@ -3303,6 +3315,10 @@ struct ContentView: View {
             magazineImageDelaySeconds
         let selectedPhotoCropTransforms =
             photoCropTransforms
+        let selectedManualMagazineLayoutOverrides =
+            manualMagazineLayoutOverrides
+        let selectedManualOrigamiLayoutOverrides =
+            manualOrigamiLayoutOverrides
         let selectedOrigamiHoldSeconds =
             origamiInternalHoldSeconds
 
@@ -3386,6 +3402,8 @@ struct ContentView: View {
                             selectedTransitionStyle,
                         cropTransforms:
                             selectedPhotoCropTransforms,
+                        manualLayoutOverrides:
+                            selectedManualMagazineLayoutOverrides,
                         fileType: exportFileType,
                         progressHandler:
                             reportRenderProgress
@@ -3403,6 +3421,8 @@ struct ContentView: View {
                             selectedOrigamiSimultaneousSwapCount,
                         cropTransforms:
                             selectedPhotoCropTransforms,
+                        manualLayoutOverrides:
+                            selectedManualOrigamiLayoutOverrides,
                         fileType: exportFileType,
                         progressHandler:
                             reportRenderProgress
@@ -3862,7 +3882,8 @@ private func makeSDRExportCGImage(
 
 
 private func buildMagazineExportPages(
-    photoURLs: [URL]
+    photoURLs: [URL],
+    manualLayoutOverrides: [Int: Int]
 ) -> [MagazineExportPage] {
     let photos =
         photoURLs.compactMap {
@@ -3936,16 +3957,36 @@ private func buildMagazineExportPages(
             break
         }
 
+        let pagePhotos =
+            Array(
+                photos[
+                    consumed..<endIndex
+                ]
+            )
+
+        let portraitCount =
+            pagePhotos.filter {
+                $0.shape == .portrait
+            }.count
+
+        let landscapeCount =
+            pagePhotos.filter {
+                $0.shape == .landscape
+            }.count
+
+        let resolved =
+            resolvedMagazineLayoutVariant(
+                photoCount: pagePhotos.count,
+                portraitCount: portraitCount,
+                landscapeCount: landscapeCount,
+                uniformTieBreakSeed: pageIndex,
+                manualOverride: manualLayoutOverrides[pageIndex]
+            )
+
         pages.append(
             MagazineExportPage(
-                photos:
-                    Array(
-                        photos[
-                            consumed..<endIndex
-                        ]
-                    ),
-                layoutVariant:
-                    pageIndex % 2
+                photos: pagePhotos,
+                layoutVariant: resolved
             )
         )
 
@@ -3958,103 +3999,79 @@ private func buildMagazineExportPages(
 }
 
 private func magazineExportSlotShapes(
-    for photos: [MagazineExportPhoto]
+    for photos: [MagazineExportPhoto],
+    resolvedVariant: Int
 ) -> [MagazineExportSlotShape] {
-    let portraitCount =
-        photos.filter {
-            $0.shape == .portrait
-        }.count
+    switch (photos.count, resolvedVariant) {
+    case (2, 0):
+        return [.wide, .tall]
+    case (2, _):
+        return [.flex, .flex]
 
-    let landscapeCount =
-        photos.filter {
-            $0.shape == .landscape
-        }.count
-
-    let mixed =
-        portraitCount > 0
-        && landscapeCount > 0
-
-    switch photos.count {
-    case 2:
-        return mixed
-            ? [.wide, .tall]
-            : [.flex, .flex]
-
-    case 3:
-        if portraitCount >= 2 {
-            return [
-                .tall,
-                .tall,
-                .flex,
-            ]
-        }
-
-        if mixed {
-            return [
-                .wide,
-                .wide,
-                .tall,
-            ]
-        }
-
+    case (3, 0):
+        return [
+            .tall,
+            .tall,
+            .flex,
+        ]
+    case (3, 1):
+        return [
+            .wide,
+            .wide,
+            .tall,
+        ]
+    case (3, _):
         return [
             .wide,
             .flex,
             .flex,
         ]
 
-    case 4:
-        if portraitCount >= 2 {
-            return [
-                .tall,
-                .tall,
-                .wide,
-                .wide,
-            ]
-        }
-
-        if mixed {
-            return [
-                .tall,
-                .wide,
-                .wide,
-                .wide,
-            ]
-        }
-
+    case (4, 0):
+        return [
+            .tall,
+            .tall,
+            .wide,
+            .wide,
+        ]
+    case (4, 1):
+        return [
+            .tall,
+            .wide,
+            .wide,
+            .wide,
+        ]
+    case (4, _):
         return Array(
             repeating: .wide,
             count: 4
         )
 
-    case 5:
-        if portraitCount >= 2 {
-            return [
-                .tall,
-                .tall,
-                .wide,
-                .wide,
-                .wide,
-            ]
-        }
-
-        if mixed {
-            return [
-                .tall,
-                .wide,
-                .wide,
-                .wide,
-                .wide,
-            ]
-        }
-
+    case (5, 0):
+        return [
+            .tall,
+            .tall,
+            .wide,
+            .wide,
+            .wide,
+        ]
+    case (5, 1):
+        return [
+            .tall,
+            .wide,
+            .wide,
+            .wide,
+            .wide,
+        ]
+    case (5, _):
         return Array(
             repeating: .wide,
             count: 5
         )
 
     default:
-        if portraitCount >= 3 {
+        switch resolvedVariant {
+        case 0:
             return [
                 .tall,
                 .tall,
@@ -4063,9 +4080,8 @@ private func magazineExportSlotShapes(
                 .wide,
                 .wide,
             ]
-        }
 
-        if portraitCount == 2 {
+        case 1:
             return [
                 .wide,
                 .wide,
@@ -4074,9 +4090,8 @@ private func magazineExportSlotShapes(
                 .wide,
                 .tall,
             ]
-        }
 
-        if portraitCount == 1 {
+        case 2:
             return [
                 .tall,
                 .wide,
@@ -4085,21 +4100,23 @@ private func magazineExportSlotShapes(
                 .wide,
                 .wide,
             ]
-        }
 
-        return Array(
-            repeating: .wide,
-            count:
-                max(
-                    1,
-                    photos.count
-                )
-        )
+        default:
+            return Array(
+                repeating: .wide,
+                count:
+                    max(
+                        1,
+                        photos.count
+                    )
+            )
+        }
     }
 }
 
 private func orderedMagazineExportPhotos(
-    _ photos: [MagazineExportPhoto]
+    _ photos: [MagazineExportPhoto],
+    resolvedVariant: Int
 ) -> [MagazineExportPhoto] {
     let portraitIndexes =
         photos.indices.filter {
@@ -4147,7 +4164,8 @@ private func orderedMagazineExportPhotos(
 
     for slotShape in
         magazineExportSlotShapes(
-            for: photos
+            for: photos,
+            resolvedVariant: resolvedVariant
         )
         .prefix(photos.count) {
 
@@ -4187,20 +4205,6 @@ private func magazineExportLayoutRects(
         return []
     }
 
-    let portraitCount =
-        photos.filter {
-            $0.shape == .portrait
-        }.count
-
-    let landscapeCount =
-        photos.filter {
-            $0.shape == .landscape
-        }.count
-
-    let mixed =
-        portraitCount > 0
-        && landscapeCount > 0
-
     let width =
         contentRect.width
 
@@ -4234,7 +4238,7 @@ private func magazineExportLayoutRects(
         ]
 
     case 2:
-        if mixed {
+        if page.layoutVariant == 0 {
             let leftWidth =
                 (
                     width - gap
@@ -4289,7 +4293,7 @@ private func magazineExportLayoutRects(
         ]
 
     case 3:
-        if portraitCount >= 2 {
+        if page.layoutVariant == 0 {
             let columnWidth =
                 (
                     width
@@ -4330,7 +4334,7 @@ private func magazineExportLayoutRects(
                 height - gap
             ) / 2
 
-        if mixed {
+        if page.layoutVariant == 1 {
             return [
                 topRect(
                     x: 0,
@@ -4392,7 +4396,7 @@ private func magazineExportLayoutRects(
         ]
 
     case 4:
-        if portraitCount >= 2 {
+        if page.layoutVariant == 0 {
             let rightWidth =
                 (
                     width
@@ -4457,7 +4461,7 @@ private func magazineExportLayoutRects(
             ]
         }
 
-        if mixed {
+        if page.layoutVariant == 1 {
             let leftWidth =
                 (
                     width - gap
@@ -4518,7 +4522,7 @@ private func magazineExportLayoutRects(
             ]
         }
 
-        if page.layoutVariant == 0 {
+        if page.layoutVariant == 2 {
             let leftWidth =
                 (
                     width - gap
@@ -4629,7 +4633,7 @@ private func magazineExportLayoutRects(
         ]
 
     case 5:
-        if portraitCount >= 2 {
+        if page.layoutVariant == 0 {
             let fixedWidth =
                 (
                     width
@@ -4707,7 +4711,7 @@ private func magazineExportLayoutRects(
             ]
         }
 
-        if mixed {
+        if page.layoutVariant == 1 {
             let leftWidth =
                 (
                     width - gap
@@ -4857,7 +4861,7 @@ private func magazineExportLayoutRects(
         ]
 
     default:
-        if portraitCount >= 3 {
+        if page.layoutVariant == 0 {
             let rightWidth =
                 (
                     width
@@ -4946,7 +4950,7 @@ private func magazineExportLayoutRects(
             ]
         }
 
-        if portraitCount == 2 {
+        if page.layoutVariant == 1 {
             let topHeight =
                 (
                     height - gap
@@ -5040,7 +5044,7 @@ private func magazineExportLayoutRects(
             ]
         }
 
-        if portraitCount == 1 {
+        if page.layoutVariant == 2 {
             let leftWidth =
                 (
                     width - gap
@@ -5138,7 +5142,7 @@ private func magazineExportLayoutRects(
             ]
         }
 
-        if page.layoutVariant == 0 {
+        if page.layoutVariant == 3 {
             let topHeight =
                 (
                     height - gap
@@ -5620,7 +5624,8 @@ private func makeMagazineExportPixelBuffer(
 
     let orderedPhotos =
         orderedMagazineExportPhotos(
-            page.photos
+            page.photos,
+            resolvedVariant: page.layoutVariant
         )
 
     let rects =
@@ -5698,6 +5703,7 @@ private func renderMagazineSlideshowVideo(
     imageDelaySeconds: Double,
     revealStyle: SlideshowTransitionStyle,
     cropTransforms: [URL: MagazinePhotoCrop],
+    manualLayoutOverrides: [Int: Int],
     fileType: AVFileType = .mp4,
     progressHandler: @escaping @Sendable (Double) -> Void
 ) throws {
@@ -5715,7 +5721,8 @@ private func renderMagazineSlideshowVideo(
 
     let pages =
         buildMagazineExportPages(
-            photoURLs: photoURLs
+            photoURLs: photoURLs,
+            manualLayoutOverrides: manualLayoutOverrides
         )
 
     guard !pages.isEmpty else {
@@ -6971,6 +6978,7 @@ private struct OrigamiSwiftUIExportPage {
     let finalReplacements:
         [Int: NSImage]
     let pageIndex: Int
+    let manualLayoutVariant: Int?
 }
 
 private enum OrigamiSwiftUIExportSegmentKind {
@@ -7144,7 +7152,8 @@ private func buildOrigamiSwiftUIExportPages(
     photoURLs: [URL],
     imagesBeforePageChange: Int,
     simultaneousSwapCount: Int,
-    cropTransforms: [URL: MagazinePhotoCrop]
+    cropTransforms: [URL: MagazinePhotoCrop],
+    manualLayoutOverrides: [Int: Int]
 ) -> (pages: [OrigamiSwiftUIExportPage], cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]) {
     // Plain NSImage(contentsOf:) doesn't suppress Apple's HDR gain-map
     // photos (very common in bright outdoor shots), so those specific
@@ -7369,7 +7378,9 @@ private func buildOrigamiSwiftUIExportPages(
                 finalReplacements:
                     currentReplacements,
                 pageIndex:
-                    pageIndex
+                    pageIndex,
+                manualLayoutVariant:
+                    manualLayoutOverrides[pageIndex]
             )
         )
 
@@ -7553,7 +7564,9 @@ private struct OrigamiSwiftUIExportFrameView:
                 animationVariant:
                     page.pageIndex,
                 cropByImageIdentity:
-                    cropByImageIdentity
+                    cropByImageIdentity,
+                manualLayoutVariant:
+                    page.manualLayoutVariant
             )
 
             if let previousPage {
@@ -7570,7 +7583,10 @@ private struct OrigamiSwiftUIExportFrameView:
                     progress:
                         wholePageFoldProgress,
                     cropByImageIdentity:
-                        cropByImageIdentity
+                        cropByImageIdentity,
+                    manualLayoutVariant:
+                        previousPage
+                            .manualLayoutVariant
                 )
                 .allowsHitTesting(false)
                 .zIndex(100)
@@ -8460,6 +8476,7 @@ private func renderOrigamiSlideshowVideo(
     imagesBeforePageChange: Int,
     simultaneousSwapCount: Int,
     cropTransforms: [URL: MagazinePhotoCrop],
+    manualLayoutOverrides: [Int: Int],
     fileType: AVFileType = .mp4,
     progressHandler:
         @escaping @Sendable (Double) -> Void
@@ -8481,7 +8498,9 @@ private func renderOrigamiSlideshowVideo(
             simultaneousSwapCount:
                 simultaneousSwapCount,
             cropTransforms:
-                cropTransforms
+                cropTransforms,
+            manualLayoutOverrides:
+                manualLayoutOverrides
         )
 
     guard !pages.isEmpty else {
@@ -12394,6 +12413,8 @@ struct MagazineCropEditorSheet: View {
     let pageRanges: [Range<Int>]
     let origamiPagePlans: [OrigamiPagePlan]
     @Binding var cropTransforms: [URL: MagazinePhotoCrop]
+    @Binding var manualMagazineLayoutOverrides: [Int: Int]
+    @Binding var manualOrigamiLayoutOverrides: [Int: Int]
     let onClose: () -> Void
 
     // For a photo that's a Kirigami swap-in replacement, the aspect ratio of
@@ -12550,6 +12571,26 @@ struct MagazineCropEditorSheet: View {
         return pageRanges[currentPageIndex]
     }
 
+    private var currentPageLayoutVariantCount: Int {
+        guard let range = currentPageRange else { return 1 }
+
+        let plan = origamiPagePlans.indices.contains(currentPageIndex)
+            ? origamiPagePlans[currentPageIndex]
+            : nil
+
+        let rawCount = visualTheme == .origami
+            ? (plan?.baseRange.count ?? range.count)
+            : range.count
+
+        let count = min(rawCount, 6)
+
+        if count <= 1 { return 1 }
+
+        return visualTheme == .origami
+            ? origamiLayoutVariantCount(photoCount: count)
+            : magazineLayoutVariantCount(photoCount: count)
+    }
+
     private func openPhoto(at index: Int) {
         selectedIndex = index
         isViewingSinglePhoto = true
@@ -12658,6 +12699,7 @@ struct MagazineCropEditorSheet: View {
                 }
                 .buttonStyle(HeaderLinkButtonStyle())
                 .disabled(currentPageIndex <= 0)
+                .keyboardShortcut(.leftArrow, modifiers: [])
 
                 Spacer()
 
@@ -12676,8 +12718,34 @@ struct MagazineCropEditorSheet: View {
                 }
                 .buttonStyle(HeaderLinkButtonStyle())
                 .disabled(currentPageIndex >= pageRanges.count - 1)
+                .keyboardShortcut(.rightArrow, modifiers: [])
             }
             .frame(width: 560)
+
+            if currentPageLayoutVariantCount > 1 {
+                HStack {
+                    Spacer()
+
+                    Button {
+                        if visualTheme == .origami {
+                            let current = manualOrigamiLayoutOverrides[currentPageIndex] ?? 0
+                            manualOrigamiLayoutOverrides[currentPageIndex] = (current + 1) % currentPageLayoutVariantCount
+                        } else {
+                            let current = manualMagazineLayoutOverrides[currentPageIndex] ?? 0
+                            manualMagazineLayoutOverrides[currentPageIndex] = (current + 1) % currentPageLayoutVariantCount
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "square.grid.2x2.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Change Page Layout")
+                                .font(.custom("Figtree", size: 11.5).weight(.medium))
+                        }
+                    }
+                    .buttonStyle(HeaderLinkButtonStyle())
+                }
+                .frame(width: 560)
+            }
 
             if let range = currentPageRange {
                 Group {
@@ -12711,6 +12779,7 @@ struct MagazineCropEditorSheet: View {
                             transitionProgress: 1,
                             animationVariant: currentPageIndex,
                             cropByImageIdentity: cropByImageIdentity,
+                            manualLayoutVariant: manualOrigamiLayoutOverrides[currentPageIndex],
                             onCropChange: { image, newCrop in
                                 guard let url = url(for: image) else {
                                     return
@@ -12731,6 +12800,7 @@ struct MagazineCropEditorSheet: View {
                             revealStyle: .fade,
                             layoutSeed: currentPageIndex,
                             cropByImageIdentity: cropByImageIdentity,
+                            manualLayoutVariant: manualMagazineLayoutOverrides[currentPageIndex],
                             onCropChange: { image, newCrop in
                                 guard let url = url(for: image) else {
                                     return
@@ -13289,6 +13359,8 @@ struct FullScreenPreviewSheet: View {
     let photoCropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
     let magazinePageSlotCount: Int
     let origamiAnimationSeed: Int
+    var manualMagazineLayoutOverrides: [Int: Int] = [:]
+    var manualOrigamiLayoutOverrides: [Int: Int] = [:]
     let isPreviewPlaying: Bool
     let imaginationPlaybackRestartToken: Int
     let imaginationIntroOutroOpacity: Double
@@ -13381,7 +13453,8 @@ struct FullScreenPreviewSheet: View {
                         imageDelaySeconds: magazineImageDelaySeconds,
                         revealStyle: transitionStyle,
                         layoutSeed: magazineLayoutSeed,
-                        cropByImageIdentity: photoCropByImageIdentity
+                        cropByImageIdentity: photoCropByImageIdentity,
+                        manualLayoutVariant: manualMagazineLayoutOverrides[magazineLayoutSeed]
                     )
 
                     Color.black
@@ -13406,7 +13479,8 @@ struct FullScreenPreviewSheet: View {
                         showsPhotoName: false,
                         transitionProgress: transitionProgress,
                         animationVariant: origamiAnimationSeed,
-                        cropByImageIdentity: photoCropByImageIdentity
+                        cropByImageIdentity: photoCropByImageIdentity,
+                        manualLayoutVariant: manualOrigamiLayoutOverrides[origamiAnimationSeed]
                     )
 
                     if !previousOrigamiPageImages.isEmpty {
@@ -13418,7 +13492,8 @@ struct FullScreenPreviewSheet: View {
                                 previousOrigamiPageAnimationVariant,
                             progress:
                                 origamiWholePageFoldProgress,
-                            cropByImageIdentity: photoCropByImageIdentity
+                            cropByImageIdentity: photoCropByImageIdentity,
+                            manualLayoutVariant: manualOrigamiLayoutOverrides[previousOrigamiPageAnimationVariant]
                         )
                         .allowsHitTesting(false)
                         .zIndex(100)
@@ -13713,6 +13788,61 @@ struct FittedFullscreenImage: View {
     }
 }
 
+private func resolvedMagazineLayoutVariant(
+    photoCount: Int,
+    portraitCount: Int,
+    landscapeCount: Int,
+    uniformTieBreakSeed: Int,
+    manualOverride: Int?
+) -> Int {
+    let mixed = portraitCount > 0 && landscapeCount > 0
+    let uniformTieBreak = ((uniformTieBreakSeed % 2) + 2) % 2
+
+    let defaultVariant: Int
+    let totalVariants: Int
+
+    switch photoCount {
+    case 2:
+        totalVariants = 2
+        defaultVariant = mixed ? 0 : 1
+
+    case 3:
+        totalVariants = 3
+        defaultVariant = portraitCount >= 2 ? 0 : (mixed ? 1 : 2)
+
+    case 4:
+        totalVariants = 4
+        defaultVariant = portraitCount >= 2 ? 0 : (mixed ? 1 : (uniformTieBreak == 0 ? 2 : 3))
+
+    case 5:
+        totalVariants = 3
+        defaultVariant = portraitCount >= 2 ? 0 : (mixed ? 1 : 2)
+
+    default:
+        totalVariants = 5
+        defaultVariant = portraitCount >= 3
+            ? 0
+            : (portraitCount == 2 ? 1 : (portraitCount == 1 ? 2 : (uniformTieBreak == 0 ? 3 : 4)))
+    }
+
+    guard let manualOverride else {
+        return defaultVariant
+    }
+
+    let normalized = manualOverride % totalVariants
+    return normalized >= 0 ? normalized : normalized + totalVariants
+}
+
+private func magazineLayoutVariantCount(photoCount: Int) -> Int {
+    switch photoCount {
+    case 2: return 2
+    case 3: return 3
+    case 4: return 4
+    case 5: return 3
+    default: return 5
+    }
+}
+
 struct MagazinePreviewPage: View {
     let images: [NSImage]
     let theme: SlideshowVisualTheme
@@ -13724,6 +13854,7 @@ struct MagazinePreviewPage: View {
     let revealStyle: SlideshowTransitionStyle
     let layoutSeed: Int
     let cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
+    var manualLayoutVariant: Int? = nil
     // Only wired up by the Kousei crop editor's page preview — every other
     // caller leaves this nil and tiles render exactly as they did before.
     var onCropChange: ((NSImage, MagazinePhotoCrop) -> Void)? = nil
@@ -13748,8 +13879,14 @@ struct MagazinePreviewPage: View {
         pageImages.count
     }
 
-    private var layoutVariant: Int {
-        layoutSeed % 2
+    private var resolvedVariant: Int {
+        resolvedMagazineLayoutVariant(
+            photoCount: pagePhotoCount,
+            portraitCount: portraitIndexes.count,
+            landscapeCount: landscapeIndexes.count,
+            uniformTieBreakSeed: layoutSeed,
+            manualOverride: manualLayoutVariant
+        )
     }
 
     private var portraitIndexes: [Int] {
@@ -13769,57 +13906,44 @@ struct MagazinePreviewPage: View {
     }
 
     private var slotShapesForCurrentLayout: [MagazineSlotShape] {
-        switch pagePhotoCount {
-        case 2:
-            return hasMixedLandscapeAndPortrait ? [.wide, .tall] : [.flex, .flex]
+        switch (pagePhotoCount, resolvedVariant) {
+        case (2, 0):
+            return [.wide, .tall]
+        case (2, _):
+            return [.flex, .flex]
 
-        case 3:
-            if portraitIndexes.count >= 2 {
-                return [.tall, .tall, .flex]
-            }
-
-            if hasMixedLandscapeAndPortrait {
-                return [.wide, .wide, .tall]
-            }
-
+        case (3, 0):
+            return [.tall, .tall, .flex]
+        case (3, 1):
+            return [.wide, .wide, .tall]
+        case (3, _):
             return [.wide, .flex, .flex]
 
-        case 4:
-            if portraitIndexes.count >= 2 {
-                return [.tall, .tall, .wide, .wide]
-            }
-
-            if hasMixedLandscapeAndPortrait {
-                return [.tall, .wide, .wide, .wide]
-            }
-
+        case (4, 0):
+            return [.tall, .tall, .wide, .wide]
+        case (4, 1):
+            return [.tall, .wide, .wide, .wide]
+        case (4, _):
             return [.wide, .wide, .wide, .wide]
 
-        case 5:
-            if portraitIndexes.count >= 2 {
-                return [.tall, .tall, .wide, .wide, .wide]
-            }
-
-            if hasMixedLandscapeAndPortrait {
-                return [.tall, .wide, .wide, .wide, .wide]
-            }
-
+        case (5, 0):
+            return [.tall, .tall, .wide, .wide, .wide]
+        case (5, 1):
+            return [.tall, .wide, .wide, .wide, .wide]
+        case (5, _):
             return [.wide, .wide, .wide, .wide, .wide]
 
         default:
-            if portraitIndexes.count >= 3 {
+            switch resolvedVariant {
+            case 0:
                 return [.tall, .tall, .tall, .wide, .wide, .wide]
-            }
-
-            if portraitIndexes.count == 2 {
+            case 1:
                 return [.wide, .wide, .wide, .tall, .wide, .tall]
-            }
-
-            if portraitIndexes.count == 1 {
+            case 2:
                 return [.tall, .wide, .wide, .wide, .wide, .wide]
+            default:
+                return [.wide, .wide, .wide, .wide, .wide, .wide]
             }
-
-            return [.wide, .wide, .wide, .wide, .wide, .wide]
         }
     }
 
@@ -13917,7 +14041,7 @@ struct MagazinePreviewPage: View {
 
     @ViewBuilder
     private func twoImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        if hasMixedLandscapeAndPortrait {
+        if resolvedVariant == 0 {
             HStack(spacing: gap) {
                 tile(slot: 0, revealOrder: 0)
                     .frame(width: (width - gap) * 0.64)
@@ -13934,13 +14058,13 @@ struct MagazinePreviewPage: View {
 
     @ViewBuilder
     private func threeImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        if portraitIndexes.count >= 2 {
+        if resolvedVariant == 0 {
             HStack(spacing: gap) {
                 tile(slot: 0, revealOrder: 0)
                 tile(slot: 1, revealOrder: 1)
                 tile(slot: 2, revealOrder: 2)
             }
-        } else if hasMixedLandscapeAndPortrait {
+        } else if resolvedVariant == 1 {
             HStack(spacing: gap) {
                 VStack(spacing: gap) {
                     tile(slot: 0, revealOrder: 0)
@@ -13965,7 +14089,7 @@ struct MagazinePreviewPage: View {
 
     @ViewBuilder
     private func fourImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        if portraitIndexes.count >= 2 {
+        if resolvedVariant == 0 {
             HStack(spacing: gap) {
                 tile(slot: 0, revealOrder: 0)
                 tile(slot: 1, revealOrder: 1)
@@ -13976,7 +14100,7 @@ struct MagazinePreviewPage: View {
                 }
                 .frame(width: (width - gap * 2) * 0.44)
             }
-        } else if hasMixedLandscapeAndPortrait {
+        } else if resolvedVariant == 1 {
             HStack(spacing: gap) {
                 tile(slot: 0, revealOrder: 0)
                     .frame(width: (width - gap) * 0.34)
@@ -13987,7 +14111,7 @@ struct MagazinePreviewPage: View {
                     tile(slot: 3, revealOrder: 3)
                 }
             }
-        } else if layoutVariant == 0 {
+        } else if resolvedVariant == 2 {
             HStack(spacing: gap) {
                 tile(slot: 0, revealOrder: 0)
                     .frame(width: (width - gap) * 0.62)
@@ -14015,7 +14139,7 @@ struct MagazinePreviewPage: View {
 
     @ViewBuilder
     private func fiveImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        if portraitIndexes.count >= 2 {
+        if resolvedVariant == 0 {
             HStack(spacing: gap) {
                 tile(slot: 0, revealOrder: 0)
                     .frame(width: (width - gap * 2) * 0.26)
@@ -14032,7 +14156,7 @@ struct MagazinePreviewPage: View {
                     }
                 }
             }
-        } else if hasMixedLandscapeAndPortrait {
+        } else if resolvedVariant == 1 {
             HStack(spacing: gap) {
                 tile(slot: 0, revealOrder: 0)
                     .frame(width: (width - gap) * 0.34)
@@ -14068,7 +14192,7 @@ struct MagazinePreviewPage: View {
 
     @ViewBuilder
     private func sixImageMagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        if portraitIndexes.count >= 3 {
+        if resolvedVariant == 0 {
             HStack(spacing: gap) {
                 tile(slot: 0, revealOrder: 0)
                 tile(slot: 1, revealOrder: 1)
@@ -14081,7 +14205,7 @@ struct MagazinePreviewPage: View {
                 }
                 .frame(width: (width - gap * 3) * 0.34)
             }
-        } else if portraitIndexes.count == 2 {
+        } else if resolvedVariant == 1 {
             VStack(spacing: gap) {
                 HStack(spacing: gap) {
                     tile(slot: 0, revealOrder: 0)
@@ -14100,7 +14224,7 @@ struct MagazinePreviewPage: View {
                         .frame(width: (width - gap * 2) * 0.25)
                 }
             }
-        } else if portraitIndexes.count == 1 {
+        } else if resolvedVariant == 2 {
             HStack(spacing: gap) {
                 tile(slot: 0, revealOrder: 0)
                     .frame(width: (width - gap) * 0.28)
@@ -14118,7 +14242,7 @@ struct MagazinePreviewPage: View {
                     }
                 }
             }
-        } else if layoutVariant == 0 {
+        } else if resolvedVariant == 3 {
             VStack(spacing: gap) {
                 HStack(spacing: gap) {
                     tile(slot: 0, revealOrder: 0)
@@ -14433,6 +14557,70 @@ private struct OrigamiCropImage: View {
     }
 }
 
+private func resolvedOrigamiLayoutVariant(
+    photoCount: Int,
+    portraitCount: Int,
+    landscapeCount: Int,
+    wideCount: Int,
+    manualOverride: Int?
+) -> Int {
+    let defaultVariant: Int
+    let totalVariants: Int
+
+    switch photoCount {
+    case 2:
+        totalVariants = 4
+        if portraitCount == 2 {
+            defaultVariant = 0
+        } else if wideCount == 2 {
+            defaultVariant = 1
+        } else if landscapeCount == 2 {
+            defaultVariant = 2
+        } else {
+            defaultVariant = 3
+        }
+
+    case 3:
+        totalVariants = 3
+        if portraitCount == 3 {
+            defaultVariant = 0
+        } else if landscapeCount == 3 {
+            defaultVariant = 1
+        } else {
+            defaultVariant = 2
+        }
+
+    case 4:
+        totalVariants = 2
+        defaultVariant = portraitCount >= 2 ? 0 : 1
+
+    case 5:
+        totalVariants = 2
+        defaultVariant = portraitCount >= 1 ? 0 : 1
+
+    default:
+        totalVariants = 3
+        defaultVariant = portraitCount >= 2 ? 0 : (portraitCount == 1 ? 1 : 2)
+    }
+
+    guard let manualOverride else {
+        return defaultVariant
+    }
+
+    let normalized = manualOverride % totalVariants
+    return normalized >= 0 ? normalized : normalized + totalVariants
+}
+
+private func origamiLayoutVariantCount(photoCount: Int) -> Int {
+    switch photoCount {
+    case 2: return 4
+    case 3: return 3
+    case 4: return 2
+    case 5: return 2
+    default: return 3
+    }
+}
+
 struct OrigamiPreviewPage: View {
     let images: [NSImage]
     let slotReplacementImages: [Int: NSImage]
@@ -14444,6 +14632,7 @@ struct OrigamiPreviewPage: View {
     let transitionProgress: Double
     let animationVariant: Int
     let cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
+    var manualLayoutVariant: Int? = nil
     // Only wired up by the Kirigami crop editor's page preview — every other
     // caller leaves this nil and tiles render exactly as they did before.
     var onCropChange: ((NSImage, MagazinePhotoCrop) -> Void)? = nil
@@ -14542,35 +14731,43 @@ struct OrigamiPreviewPage: View {
             return .one
 
         case 2:
-            if portraitCount == 2 {
-                return .twoPortrait
-            }
-
             // Only stack into tall, ultra-wide slots when both
             // photos are actually wide/panoramic. Moderate
             // landscape shots (4:3, 3:2, and similar) belong
             // side by side, or a stacked layout would crop off
             // most of their width.
-            if wideCount == 2 {
+            switch resolvedOrigamiLayoutVariant(
+                photoCount: 2,
+                portraitCount: portraitCount,
+                landscapeCount: landscapeCount,
+                wideCount: wideCount,
+                manualOverride: manualLayoutVariant
+            ) {
+            case 0:
+                return .twoPortrait
+            case 1:
                 return .twoLandscape
-            }
-
-            if landscapeCount == 2 {
+            case 2:
                 return .twoLandscapeModerate
+            default:
+                return .twoMixed
             }
-
-            return .twoMixed
 
         case 3:
-            if portraitCount == 3 {
+            switch resolvedOrigamiLayoutVariant(
+                photoCount: 3,
+                portraitCount: portraitCount,
+                landscapeCount: landscapeCount,
+                wideCount: wideCount,
+                manualOverride: manualLayoutVariant
+            ) {
+            case 0:
                 return .threePortrait
-            }
-
-            if landscapeCount == 3 {
+            case 1:
                 return .threeLandscape
+            default:
+                return .threeMixed
             }
-
-            return .threeMixed
 
         case 4:
             return .four
@@ -15555,7 +15752,13 @@ struct OrigamiPreviewPage: View {
         let canvasAspect =
             size.width / max(1, size.height)
 
-        if portraitCount >= 2 {
+        if resolvedOrigamiLayoutVariant(
+            photoCount: 4,
+            portraitCount: portraitCount,
+            landscapeCount: landscapeCount,
+            wideCount: wideCount,
+            manualOverride: manualLayoutVariant
+        ) == 0 {
             let ordered = bestImageOrder(
                 for: [
                     canvasAspect * 0.24,
@@ -15607,7 +15810,13 @@ struct OrigamiPreviewPage: View {
         let canvasAspect =
             size.width / max(1, size.height)
 
-        if portraitCount >= 1 {
+        if resolvedOrigamiLayoutVariant(
+            photoCount: 5,
+            portraitCount: portraitCount,
+            landscapeCount: landscapeCount,
+            wideCount: wideCount,
+            manualOverride: manualLayoutVariant
+        ) == 0 {
             // One tall portrait slot + four balanced slots.
             // This avoids stacking three horizontal images into
             // extremely shallow strips.
@@ -15673,7 +15882,15 @@ struct OrigamiPreviewPage: View {
         let canvasAspect =
             size.width / max(1, size.height)
 
-        if portraitCount >= 2 {
+        let sixResolvedVariant = resolvedOrigamiLayoutVariant(
+            photoCount: 6,
+            portraitCount: portraitCount,
+            landscapeCount: landscapeCount,
+            wideCount: wideCount,
+            manualOverride: manualLayoutVariant
+        )
+
+        if sixResolvedVariant == 0 {
             let ordered = bestImageOrder(
                 for: [
                     canvasAspect * 0.22,
@@ -15705,7 +15922,7 @@ struct OrigamiPreviewPage: View {
                 tile(ordered[5])
                     .frame(width: size.width * 0.22)
             }
-        } else if portraitCount == 1 {
+        } else if sixResolvedVariant == 1 {
             let ordered = bestImageOrder(
                 for: [
                     canvasAspect * 0.26,
@@ -15838,6 +16055,7 @@ struct OrigamiWholePageHalfFoldOverlay: View {
     let animationVariant: Int
     let progress: Double
     let cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
+    var manualLayoutVariant: Int? = nil
 
     private var safeProgress: Double {
         min(
@@ -15876,7 +16094,9 @@ struct OrigamiWholePageHalfFoldOverlay: View {
                 animationVariant:
                     animationVariant,
                 cropByImageIdentity:
-                    cropByImageIdentity
+                    cropByImageIdentity,
+                manualLayoutVariant:
+                    manualLayoutVariant
             )
             .frame(
                 width: width,
@@ -18372,6 +18592,8 @@ struct CenterPreviewPanel: View {
     let photoCropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]
     let magazinePageSlotCount: Int
     let origamiAnimationSeed: Int
+    var manualMagazineLayoutOverrides: [Int: Int] = [:]
+    var manualOrigamiLayoutOverrides: [Int: Int] = [:]
     let isPreviewPlaying: Bool
     let imaginationPlaybackRestartToken: Int
     let imaginationIntroOutroOpacity: Double
@@ -18479,7 +18701,8 @@ struct CenterPreviewPanel: View {
                                     imageDelaySeconds: magazineImageDelaySeconds,
                                     revealStyle: transitionStyle,
                                     layoutSeed: magazineLayoutSeed,
-                                    cropByImageIdentity: photoCropByImageIdentity
+                                    cropByImageIdentity: photoCropByImageIdentity,
+                                    manualLayoutVariant: manualMagazineLayoutOverrides[magazineLayoutSeed]
                                 )
 
                                 Color.black
@@ -18507,7 +18730,8 @@ struct CenterPreviewPanel: View {
                                     showsPhotoName: true,
                                     transitionProgress: transitionProgress,
                                     animationVariant: origamiAnimationSeed,
-                                    cropByImageIdentity: photoCropByImageIdentity
+                                    cropByImageIdentity: photoCropByImageIdentity,
+                                    manualLayoutVariant: manualOrigamiLayoutOverrides[origamiAnimationSeed]
                                 )
 
                                 if !previousOrigamiPageImages.isEmpty {
@@ -18519,7 +18743,8 @@ struct CenterPreviewPanel: View {
                                             previousOrigamiPageAnimationVariant,
                                         progress:
                                             origamiWholePageFoldProgress,
-                                        cropByImageIdentity: photoCropByImageIdentity
+                                        cropByImageIdentity: photoCropByImageIdentity,
+                                        manualLayoutVariant: manualOrigamiLayoutOverrides[previousOrigamiPageAnimationVariant]
                                     )
                                     .allowsHitTesting(false)
                                     .zIndex(100)

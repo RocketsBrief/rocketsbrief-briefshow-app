@@ -44,11 +44,9 @@ enum SlideshowVisualTheme: String {
     case singleFade = "Single Fade"
     case singleBlink = "Single Blink"
     case magazine = "Kousei"
-    case magazine43 = "Kousei 4:3"
     case magazineFamily = "Magazine Family"
     case magazineCouples = "Magazine Couples"
     case origami = "Kirigami"
-    case origami43 = "Kirigami 4:3"
     case imagination = "Kanata"
 }
 
@@ -221,12 +219,12 @@ private func origamiPlanOrientationClass(_ image: NSImage) -> Int {
     return 0
 }
 
-private func origamiPlanSlotCount(pageIndex: Int, remainingPhotos: Int, isStrict43: Bool = false) -> Int {
+private func origamiPlanSlotCount(pageIndex: Int, remainingPhotos: Int) -> Int {
     guard remainingPhotos > 0 else {
         return 0
     }
 
-    let cycle = isStrict43 ? [6, 7, 6, 7, 8] : [3, 5, 6, 2, 4]
+    let cycle = [3, 5, 6, 2, 4]
     let safePageIndex = max(0, pageIndex)
 
     var plannedCount = min(
@@ -238,7 +236,7 @@ private func origamiPlanSlotCount(pageIndex: Int, remainingPhotos: Int, isStrict
         plannedCount -= 1
     }
 
-    return max(1, min(isStrict43 ? 12 : 6, plannedCount))
+    return max(1, min(6, plannedCount))
 }
 
 private func origamiPlanReplacementCount(
@@ -312,8 +310,7 @@ private func origamiPlanReplacementTargetSlots(
 
 private func buildOrigamiPagePlans(
     previewImages: [NSImage],
-    imagesBeforePageChange: Int,
-    isStrict43: Bool = false
+    imagesBeforePageChange: Int
 ) -> [OrigamiPagePlan] {
     var plans: [OrigamiPagePlan] = []
     var consumed = 0
@@ -325,8 +322,7 @@ private func buildOrigamiPagePlans(
 
         let baseSlotCount = origamiPlanSlotCount(
             pageIndex: pageIndex,
-            remainingPhotos: remaining,
-            isStrict43: isStrict43
+            remainingPhotos: remaining
         )
 
         let baseEnd = min(total, consumed + baseSlotCount)
@@ -727,11 +723,11 @@ struct ContentView: View {
                     previewImages: previewImages,
                     visualTheme: visualTheme,
                     pageRanges:
-                        usesOrigamiTheme
+                        visualTheme == .origami
                         ? origamiReviewPagePlans.map { $0.consumedRange }
                         : magazineReviewPageRanges,
                     origamiPagePlans:
-                        usesOrigamiTheme
+                        visualTheme == .origami
                         ? origamiReviewPagePlans
                         : [],
                     cropTransforms: $photoCropTransforms,
@@ -893,11 +889,11 @@ struct ContentView: View {
     }
 
     private var usesMagazineTheme: Bool {
-        visualTheme == .magazine || visualTheme == .magazine43 || visualTheme == .magazineFamily || visualTheme == .magazineCouples
+        visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
     }
 
     private var usesOrigamiTheme: Bool {
-        visualTheme == .origami || visualTheme == .origami43
+        visualTheme == .origami
     }
 
     private var usesPagedTheme: Bool {
@@ -935,7 +931,6 @@ struct ContentView: View {
         var pageIndex = 0
         var previousSlotCount: Int? = nil
         let total = previewImages.count
-        let maxSlotCount = visualTheme == .magazine43 ? 12 : 6
 
         while consumed < total {
             let remaining = total - consumed
@@ -943,7 +938,7 @@ struct ContentView: View {
             let count = max(
                 1,
                 min(
-                    maxSlotCount,
+                    6,
                     adaptiveMagazineSlotCount(
                         pageIndex: pageIndex,
                         startIndex: consumed,
@@ -976,8 +971,7 @@ struct ContentView: View {
     private var origamiReviewPagePlans: [OrigamiPagePlan] {
         buildOrigamiPagePlans(
             previewImages: previewImages,
-            imagesBeforePageChange: origamiImagesBeforePageChange,
-            isStrict43: visualTheme == .origami43
+            imagesBeforePageChange: origamiImagesBeforePageChange
         )
     }
 
@@ -1017,28 +1011,6 @@ struct ContentView: View {
 
         let safeSeed = abs(magazinePhotoSeed)
 
-        // The strict 4:3 grid tiles a lot more cleanly with more photos on
-        // the page (small counts like 2-4 just can't cover a 16:9 page
-        // without a visible margin, no matter the split), so it gets its
-        // own, larger cycle instead of Kousei's 2-6 range.
-        if visualTheme == .magazine43 {
-            // 6 and 7 tile a 16:9 page almost perfectly with exact 4:3
-            // cells (6 as a 4-over-2 split is an exact fit); 8 is included
-            // for occasional variety even though it fits slightly looser.
-            let strict43Cycles = [
-                [6, 7, 6, 7, 8],
-                [7, 6, 8, 6, 7],
-                [6, 8, 7, 6, 7],
-                [7, 7, 6, 8, 6],
-                [8, 6, 7, 7, 6]
-            ]
-
-            let cycle = strict43Cycles[safeSeed % strict43Cycles.count]
-            let plannedCount = cycle[pageIndex % cycle.count]
-
-            return min(plannedCount, remainingPhotos)
-        }
-
         if pageIndex <= 0 {
             let firstPageChoices = [2, 3, 4]
             let firstPageCount = firstPageChoices[safeSeed % firstPageChoices.count]
@@ -1074,10 +1046,6 @@ struct ContentView: View {
             remainingPhotos: remainingPhotos
         )
 
-        guard visualTheme != .magazine43 else {
-            return rawCount
-        }
-
         // Two consecutive Kousei pages with the same photo count read as
         // repetitive (e.g. two back-to-back 2-photo spreads), so nudge this
         // page to the next size in line instead when that happens.
@@ -1091,13 +1059,6 @@ struct ContentView: View {
 
     private func rawAdaptiveMagazineSlotCount(pageIndex: Int, startIndex: Int, remainingPhotos: Int) -> Int {
         let plannedCount = plannedMagazineSlotCount(pageIndex: pageIndex, remainingPhotos: remainingPhotos)
-
-        // These guards steer photos away from the classic wide/tall/flex
-        // collage's awkward shape pairings — irrelevant for the strict 4:3
-        // grid, which handles any orientation mix by construction.
-        guard visualTheme != .magazine43 else {
-            return plannedCount
-        }
 
         guard plannedCount > 0, !previewImages.isEmpty else {
             return plannedCount
@@ -1174,21 +1135,6 @@ struct ContentView: View {
     ) -> Int {
         guard remainingPhotos > 0 else {
             return 0
-        }
-
-        // The strict 4:3 grid tiles a lot more cleanly with more photos on
-        // the page, so it gets its own, larger cycle instead of Kirigami's
-        // 2-6 range.
-        if visualTheme == .origami43 {
-            let cycle = [6, 7, 6, 7, 8]
-            let safePageIndex = max(0, pageIndex)
-            var plannedCount = min(cycle[safePageIndex % cycle.count], remainingPhotos)
-
-            if remainingPhotos - plannedCount == 1, plannedCount > 2 {
-                plannedCount -= 1
-            }
-
-            return max(1, min(12, plannedCount))
         }
 
         // Origami page cycle:
@@ -3091,7 +3037,6 @@ struct ContentView: View {
                 let videoOnlyURL = musicURLs.isEmpty ? cacheURL : temporaryVideoURL(for: cacheURL)
 
                 if selectedVisualTheme == .magazine
-                    || selectedVisualTheme == .magazine43
                     || selectedVisualTheme == .magazineFamily
                     || selectedVisualTheme == .magazineCouples {
 
@@ -3105,11 +3050,10 @@ struct ContentView: View {
                         revealStyle: selectedTransitionStyle,
                         cropTransforms: selectedPhotoCropTransforms,
                         manualLayoutOverrides: selectedManualMagazineLayoutOverrides,
-                        isStrict43: selectedVisualTheme == .magazine43,
                         fileType: .mp4,
                         progressHandler: reportProgress
                     )
-                } else if selectedVisualTheme == .origami || selectedVisualTheme == .origami43 {
+                } else if selectedVisualTheme == .origami {
                     try renderOrigamiSlideshowVideo(
                         photoURLs: photoURLs,
                         outputURL: videoOnlyURL,
@@ -3119,7 +3063,6 @@ struct ContentView: View {
                         simultaneousSwapCount: selectedOrigamiSimultaneousSwapCount,
                         cropTransforms: selectedPhotoCropTransforms,
                         manualLayoutOverrides: selectedManualOrigamiLayoutOverrides,
-                        theme: selectedVisualTheme,
                         fileType: .mp4,
                         progressHandler: reportProgress
                     )
@@ -3443,7 +3386,6 @@ struct ContentView: View {
                 let videoOnlyURL = musicURLs.isEmpty ? outputURL : temporaryVideoURL(for: outputURL)
 
                 if selectedVisualTheme == .magazine
-                    || selectedVisualTheme == .magazine43
                     || selectedVisualTheme == .magazineFamily
                     || selectedVisualTheme == .magazineCouples {
 
@@ -3462,12 +3404,11 @@ struct ContentView: View {
                             selectedPhotoCropTransforms,
                         manualLayoutOverrides:
                             selectedManualMagazineLayoutOverrides,
-                        isStrict43: selectedVisualTheme == .magazine43,
                         fileType: exportFileType,
                         progressHandler:
                             reportRenderProgress
                     )
-                } else if selectedVisualTheme == .origami || selectedVisualTheme == .origami43 {
+                } else if selectedVisualTheme == .origami {
                     try renderOrigamiSlideshowVideo(
                         photoURLs: photoURLs,
                         outputURL: videoOnlyURL,
@@ -3482,7 +3423,6 @@ struct ContentView: View {
                             selectedPhotoCropTransforms,
                         manualLayoutOverrides:
                             selectedManualOrigamiLayoutOverrides,
-                        theme: selectedVisualTheme,
                         fileType: exportFileType,
                         progressHandler:
                             reportRenderProgress
@@ -3714,26 +3654,10 @@ private func magazineExportPhotoSeed(
 private func plannedMagazineExportSlotCount(
     pageIndex: Int,
     remainingPhotos: Int,
-    seed: Int,
-    isStrict43: Bool = false
+    seed: Int
 ) -> Int {
     guard remainingPhotos > 0 else {
         return 0
-    }
-
-    if isStrict43 {
-        let strict43Cycles = [
-            [6, 7, 6, 7, 8],
-            [7, 6, 8, 6, 7],
-            [6, 8, 7, 6, 7],
-            [7, 7, 6, 8, 6],
-            [8, 6, 7, 7, 6]
-        ]
-
-        let cycle = strict43Cycles[seed % strict43Cycles.count]
-        let plannedCount = cycle[pageIndex % cycle.count]
-
-        return min(plannedCount, remainingPhotos)
     }
 
     if pageIndex <= 0 {
@@ -3776,19 +3700,13 @@ private func adaptiveMagazineExportSlotCount(
     plannedCount: Int,
     photos: [MagazineExportPhoto],
     remainingPhotos: Int,
-    previousSlotCount: Int? = nil,
-    isStrict43: Bool = false
+    previousSlotCount: Int? = nil
 ) -> Int {
     let rawCount = rawAdaptiveMagazineExportSlotCount(
         plannedCount: plannedCount,
         photos: photos,
-        remainingPhotos: remainingPhotos,
-        isStrict43: isStrict43
+        remainingPhotos: remainingPhotos
     )
-
-    guard !isStrict43 else {
-        return rawCount
-    }
 
     // Mirrors the anti-repeat nudge in adaptiveMagazineSlotCount (preview
     // side) so exported video never disagrees with what was previewed.
@@ -3803,15 +3721,10 @@ private func adaptiveMagazineExportSlotCount(
 private func rawAdaptiveMagazineExportSlotCount(
     plannedCount: Int,
     photos: [MagazineExportPhoto],
-    remainingPhotos: Int,
-    isStrict43: Bool = false
+    remainingPhotos: Int
 ) -> Int {
     guard plannedCount > 0 else {
         return 0
-    }
-
-    guard !isStrict43 else {
-        return plannedCount
     }
 
     let candidatePhotos =
@@ -3970,8 +3883,7 @@ private func makeSDRExportCGImage(
 
 private func buildMagazineExportPages(
     photoURLs: [URL],
-    manualLayoutOverrides: [Int: Int],
-    isStrict43: Bool = false
+    manualLayoutOverrides: [Int: Int]
 ) -> [MagazineExportPage] {
     let photos =
         photoURLs.compactMap {
@@ -4014,8 +3926,7 @@ private func buildMagazineExportPages(
                 pageIndex: pageIndex,
                 remainingPhotos:
                     remaining,
-                seed: seed,
-                isStrict43: isStrict43
+                seed: seed
             )
 
         let availablePhotos =
@@ -4033,8 +3944,7 @@ private func buildMagazineExportPages(
                 remainingPhotos:
                     remaining,
                 previousSlotCount:
-                    previousSlotCount,
-                isStrict43: isStrict43
+                    previousSlotCount
             )
         )
 
@@ -5593,7 +5503,6 @@ private func makeMagazineExportPixelBuffer(
     imageDelaySeconds: Double,
     revealStyle: SlideshowTransitionStyle,
     cropTransforms: [URL: MagazinePhotoCrop],
-    isStrict43: Bool = false,
     renderSize: CGSize,
     pixelBufferPool: CVPixelBufferPool?
 ) -> CVPixelBuffer? {
@@ -5713,42 +5622,19 @@ private func makeMagazineExportPixelBuffer(
             dy: gap
         )
 
-    let orderedPhotos: [MagazineExportPhoto]
-    let rects: [CGRect]
-
-    if isStrict43 {
-        orderedPhotos = page.photos
-
-        let strict43Rects = strict43GridLayout(
-            isLandscape: page.photos.map { $0.aspectRatio >= 1 },
-            pageWidth: contentRect.width,
-            pageHeight: contentRect.height,
-            gap: gap
+    let orderedPhotos =
+        orderedMagazineExportPhotos(
+            page.photos,
+            resolvedVariant: page.layoutVariant
         )
 
-        rects = strict43Rects.map { rect in
-            CGRect(
-                x: contentRect.minX + rect.minX,
-                y: contentRect.maxY - rect.minY - rect.height,
-                width: rect.width,
-                height: rect.height
-            )
-        }
-    } else {
-        orderedPhotos =
-            orderedMagazineExportPhotos(
-                page.photos,
-                resolvedVariant: page.layoutVariant
-            )
-
-        rects =
-            magazineExportLayoutRects(
-                page: page,
-                contentRect:
-                    contentRect,
-                gap: gap
-            )
-    }
+    let rects =
+        magazineExportLayoutRects(
+            page: page,
+            contentRect:
+                contentRect,
+            gap: gap
+        )
 
     let fadeSeconds = max(
         0.05,
@@ -5759,14 +5645,6 @@ private func makeMagazineExportPixelBuffer(
         0,
         imageDelaySeconds
     )
-
-    // The strict-4:3 grid is scaled to cover the page (rather than fit
-    // inside it), so it can slightly overflow contentRect on one axis —
-    // clip so that overflow doesn't paint past the page edges.
-    if isStrict43 {
-        context.saveGState()
-        context.clip(to: contentRect)
-    }
 
     for index in
         0..<min(
@@ -5813,10 +5691,6 @@ private func makeMagazineExportPixelBuffer(
         )
     }
 
-    if isStrict43 {
-        context.restoreGState()
-    }
-
     return pixelBuffer
 }
 
@@ -5830,7 +5704,6 @@ private func renderMagazineSlideshowVideo(
     revealStyle: SlideshowTransitionStyle,
     cropTransforms: [URL: MagazinePhotoCrop],
     manualLayoutOverrides: [Int: Int],
-    isStrict43: Bool = false,
     fileType: AVFileType = .mp4,
     progressHandler: @escaping @Sendable (Double) -> Void
 ) throws {
@@ -5849,8 +5722,7 @@ private func renderMagazineSlideshowVideo(
     let pages =
         buildMagazineExportPages(
             photoURLs: photoURLs,
-            manualLayoutOverrides: manualLayoutOverrides,
-            isStrict43: isStrict43
+            manualLayoutOverrides: manualLayoutOverrides
         )
 
     guard !pages.isEmpty else {
@@ -6103,8 +5975,6 @@ private func renderMagazineSlideshowVideo(
                         revealStyle,
                     cropTransforms:
                         cropTransforms,
-                    isStrict43:
-                        isStrict43,
                     renderSize:
                         renderSize,
                     pixelBufferPool:
@@ -7103,7 +6973,6 @@ private struct OrigamiSwiftUIExportSwapBatch {
 
 private struct OrigamiSwiftUIExportPage {
     let baseImages: [NSImage]
-    var theme: SlideshowVisualTheme = .origami
     let swapBatches:
         [OrigamiSwiftUIExportSwapBatch]
     let finalReplacements:
@@ -7284,8 +7153,7 @@ private func buildOrigamiSwiftUIExportPages(
     imagesBeforePageChange: Int,
     simultaneousSwapCount: Int,
     cropTransforms: [URL: MagazinePhotoCrop],
-    manualLayoutOverrides: [Int: Int],
-    theme: SlideshowVisualTheme = .origami
+    manualLayoutOverrides: [Int: Int]
 ) -> (pages: [OrigamiSwiftUIExportPage], cropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop]) {
     // Plain NSImage(contentsOf:) doesn't suppress Apple's HDR gain-map
     // photos (very common in bright outdoor shots), so those specific
@@ -7311,9 +7179,7 @@ private func buildOrigamiSwiftUIExportPages(
         return ([], cropByImageIdentity)
     }
 
-    let isStrict43 = theme == .origami43
-    let cycle = isStrict43 ? [6, 7, 6, 7, 8] : [3, 5, 6, 2, 4]
-    let maxSlotCount = isStrict43 ? 12 : 6
+    let cycle = [3, 5, 6, 2, 4]
 
     let requestedReplacementCount =
         max(
@@ -7359,7 +7225,7 @@ private func buildOrigamiSwiftUIExportPages(
         baseSlotCount = max(
             1,
             min(
-                maxSlotCount,
+                6,
                 baseSlotCount
             )
         )
@@ -7507,7 +7373,6 @@ private func buildOrigamiSwiftUIExportPages(
             OrigamiSwiftUIExportPage(
                 baseImages:
                     baseImages,
-                theme: theme,
                 swapBatches:
                     swapBatches,
                 finalReplacements:
@@ -7684,7 +7549,6 @@ private struct OrigamiSwiftUIExportFrameView:
             OrigamiPreviewPage(
                 images:
                     page.baseImages,
-                theme: page.theme,
                 slotReplacementImages:
                     replacements,
                 activeSwapImages:
@@ -7710,7 +7574,6 @@ private struct OrigamiSwiftUIExportFrameView:
                     images:
                         previousPage
                             .baseImages,
-                    theme: previousPage.theme,
                     slotReplacementImages:
                         previousPage
                             .finalReplacements,
@@ -8614,7 +8477,6 @@ private func renderOrigamiSlideshowVideo(
     simultaneousSwapCount: Int,
     cropTransforms: [URL: MagazinePhotoCrop],
     manualLayoutOverrides: [Int: Int],
-    theme: SlideshowVisualTheme = .origami,
     fileType: AVFileType = .mp4,
     progressHandler:
         @escaping @Sendable (Double) -> Void
@@ -8638,8 +8500,7 @@ private func renderOrigamiSlideshowVideo(
             cropTransforms:
                 cropTransforms,
             manualLayoutOverrides:
-                manualLayoutOverrides,
-            theme: theme
+                manualLayoutOverrides
         )
 
     guard !pages.isEmpty else {
@@ -12240,7 +12101,7 @@ struct LeftImportPanel: View {
                 }
 
                 if timingMode == .customSpeed
-                    && !usesOrigamiSettings {
+                    && visualTheme != .origami {
 
                     CompactStepperRow(
                         label:
@@ -12287,7 +12148,7 @@ struct LeftImportPanel: View {
                     )
                 }
 
-                if usesOrigamiSettings {
+                if visualTheme == .origami {
                     VStack(
                         alignment: .leading,
                         spacing: 6
@@ -12430,11 +12291,7 @@ struct LeftImportPanel: View {
     }
 
     private var usesMagazineSettings: Bool {
-        visualTheme == .magazine || visualTheme == .magazine43 || visualTheme == .magazineFamily || visualTheme == .magazineCouples
-    }
-
-    private var usesOrigamiSettings: Bool {
-        visualTheme == .origami || visualTheme == .origami43
+        visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
     }
 
     private var cropPhotosButton: some View {
@@ -12508,23 +12365,19 @@ struct LeftImportPanel: View {
             return "Single Blink keeps one photo per slide with fast clean cuts."
         case .magazine:
             return "Kousei will create editorial pages with one, three, or more photos per page."
-        case .magazine43:
-            return "Kousei 4:3 uses the same editorial pages, with every photo cropped to a clean 4:3 or 3:4 grid cell."
         case .magazineFamily:
             return "Magazine Family will use warmer layouts for group and family photos."
         case .magazineCouples:
             return "Magazine Couples will use romantic layouts for portraits, weddings, and trips."
         case .origami:
             return "Kirigami will use geometric panel-style pages inspired by folded paper movement."
-        case .origami43:
-            return "Kirigami 4:3 uses the same folded panel movement, with every photo cropped to a clean 4:3 or 3:4 grid cell."
         case .imagination:
             return "Kanata brings photos to life as 3D cards emerging from deep space."
         }
     }
 
     private var timingModeHelperText: String {
-        if usesOrigamiSettings {
+        if visualTheme == .origami {
             return "Image Change Delay controls the pause before the image fold. Images Before Page controls how many images change together before the complete page folds."
         }
 
@@ -12628,16 +12481,6 @@ struct MagazineCropEditorSheet: View {
             return 1
         }
 
-        if visualTheme == .magazine43 || visualTheme == .origami43 {
-            let size = previewImages[index].size
-
-            guard size.width > 0, size.height > 0 else {
-                return 4.0 / 3.0
-            }
-
-            return size.width >= size.height ? 4.0 / 3.0 : 3.0 / 4.0
-        }
-
         if visualTheme == .origami,
            let anchorRatio = origamiAnchorAspectRatioByIndex[index] {
             return representativeAspectRatio(for: photoAspectClass(for: anchorRatio))
@@ -12729,12 +12572,6 @@ struct MagazineCropEditorSheet: View {
     }
 
     private var currentPageLayoutVariantCount: Int {
-        // Strict 4:3 grids are deterministic from photo count/orientation —
-        // there's no alternate variant to cycle through.
-        guard visualTheme != .magazine43, visualTheme != .origami43 else {
-            return 1
-        }
-
         guard let range = currentPageRange else { return 1 }
 
         let plan = origamiPagePlans.indices.contains(currentPageIndex)
@@ -12912,7 +12749,7 @@ struct MagazineCropEditorSheet: View {
 
             if let range = currentPageRange {
                 Group {
-                    if visualTheme == .origami || visualTheme == .origami43 {
+                    if visualTheme == .origami {
                         let plan = origamiPagePlans.indices.contains(currentPageIndex)
                             ? origamiPagePlans[currentPageIndex]
                             : nil
@@ -12933,7 +12770,6 @@ struct MagazineCropEditorSheet: View {
 
                         OrigamiPreviewPage(
                             images: baseImages,
-                            theme: visualTheme,
                             slotReplacementImages: slotReplacementImages,
                             activeSwapImages: [:],
                             activeSwapStyles: [:],
@@ -13306,40 +13142,12 @@ struct ThemePickerPopover: View {
                 }
 
                 ThemePickerOption(
-                    title: "Kousei 4:3",
-                    subtitle: "Same editorial pages, every photo cropped to a clean 4:3 or 3:4 grid.",
-                    isSelected: selectedTheme == .magazine43,
-                    isLocked: false
-                ) {
-                    selectedTheme = .magazine43
-                    transitionStyle = .fade
-                    timingMode = .customSpeed
-                    secondsPerPhoto = 4
-                    magazineImageFadeSeconds = 0.3
-                    magazineImageDelaySeconds = 0.3
-                    musicFadeInSeconds = 4
-                    musicFadeOutSeconds = 4
-                    shouldLoopPreview = false
-                    isPresented = false
-                }
-
-                ThemePickerOption(
                     title: "Kirigami",
                     subtitle: "Geometric folded-panel movement and page layouts.",
                     isSelected: selectedTheme == .origami,
                     isLocked: false
                 ) {
                     selectedTheme = .origami
-                    isPresented = false
-                }
-
-                ThemePickerOption(
-                    title: "Kirigami 4:3",
-                    subtitle: "Same folded-panel movement, every photo cropped to a clean 4:3 or 3:4 grid.",
-                    isSelected: selectedTheme == .origami43,
-                    isLocked: false
-                ) {
-                    selectedTheme = .origami43
                     isPresented = false
                 }
 
@@ -13568,7 +13376,7 @@ struct FullScreenPreviewSheet: View {
     @State private var scrubProgress: Double = 0
 
     private var usesMagazinePreview: Bool {
-        visualTheme == .magazine || visualTheme == .magazine43 || visualTheme == .magazineFamily || visualTheme == .magazineCouples
+        visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
     }
 
     private var themedPreviewImages: [NSImage] {
@@ -13659,11 +13467,10 @@ struct FullScreenPreviewSheet: View {
                 .frame(width: size.width, height: size.height)
                 .background(Color.black)
                 .drawingGroup()
-            } else if visualTheme == .origami || visualTheme == .origami43 {
+            } else if visualTheme == .origami {
                 ZStack {
                     OrigamiPreviewPage(
                         images: themedPreviewImages,
-                        theme: visualTheme,
                         slotReplacementImages: origamiSlotReplacementImages,
                         activeSwapImages: origamiActiveSwapImages,
                         activeSwapStyles: origamiActiveSwapStyles,
@@ -13679,7 +13486,6 @@ struct FullScreenPreviewSheet: View {
                     if !previousOrigamiPageImages.isEmpty {
                         OrigamiWholePageHalfFoldOverlay(
                             images: previousOrigamiPageImages,
-                            theme: visualTheme,
                             slotReplacementImages:
                                 previousOrigamiPageReplacements,
                             animationVariant:
@@ -14037,303 +13843,6 @@ private func magazineLayoutVariantCount(photoCount: Int) -> Int {
     }
 }
 
-// Shared strict-4:3/3:4 grid geometry for the "Kousei 4:3"/"Kirigami 4:3"
-// themes. Used by both the live SwiftUI preview (MagazinePreviewPage,
-// OrigamiPreviewPage) and the Kousei CGContext export path so the exported
-// video can't drift from what was previewed.
-//
-// Every cell is exactly 4:3 or 3:4 by construction (width = height * ratio),
-// never cropped further — that's the one non-negotiable requirement. Each
-// ROW gets its OWN height, sized so that row's cells exactly span the full
-// page width on their own — that's what guarantees zero left/right margin
-// on every single row, not just on the widest one (a shared row height,
-// tried earlier, left any row with fewer/narrower cells short of the page
-// edge). Rows are then stacked; if they don't stack to exactly the page
-// height, the row split is re-picked to get as close as possible, and only
-// as a last resort is the whole block scaled down uniformly (preserving
-// every cell's ratio) to fit, which shows as one clean margin around the
-// entire grid rather than a gap on one particular row.
-private func strict43RowCompositions(photoCount: Int) -> [[Int]] {
-    guard photoCount > 0 else { return [] }
-
-    var candidates: [[Int]] = []
-    let maxCellsPerRow = 6
-    let maxRows = min(photoCount, 4)
-
-    // A single row spanning every photo reads as "everything squeezed into
-    // one thin strip" once there are more than a handful of photos — never
-    // worth it once a real 2+ row grid is possible.
-    let minRows = photoCount > 3 ? 2 : 1
-
-    func extend(remaining: Int, rowsLeft: Int, current: [Int]) {
-        if rowsLeft == 0 {
-            if remaining == 0 {
-                candidates.append(current)
-            }
-            return
-        }
-
-        let maxThisRow = min(maxCellsPerRow, remaining - (rowsLeft - 1))
-        let minThisRow = max(1, remaining - (rowsLeft - 1) * maxCellsPerRow)
-
-        guard minThisRow <= maxThisRow else { return }
-
-        for count in minThisRow...maxThisRow {
-            extend(remaining: remaining - count, rowsLeft: rowsLeft - 1, current: current + [count])
-        }
-    }
-
-    for rows in minRows...maxRows {
-        extend(remaining: photoCount, rowsLeft: rows, current: [])
-    }
-
-    return candidates
-}
-
-// Natural (un-fit-to-page) height of each row when that row is built to
-// exactly span `pageWidth` at its cells' exact 4:3/3:4 ratios.
-private func strict43NaturalRowHeights(
-    rowCounts: [Int],
-    isLandscape: [Bool],
-    pageWidth: CGFloat,
-    gap: CGFloat
-) -> [CGFloat] {
-    var cursor = 0
-
-    return rowCounts.map { rowCount in
-        let ratios: [CGFloat] = (cursor..<(cursor + rowCount)).map { isLandscape[$0] ? 4.0 / 3.0 : 3.0 / 4.0 }
-        cursor += rowCount
-
-        let ratioSum = ratios.reduce(0, +)
-        let usableWidth = max(1, pageWidth - gap * CGFloat(max(0, rowCount - 1)))
-
-        return usableWidth / max(0.01, ratioSum)
-    }
-}
-
-// Tries every reasonable row split (including uneven ones, e.g. 4-over-2)
-// and keeps whichever, once every row is built to exactly span the full
-// page width, stacks up closest to the page height WITHOUT exceeding it —
-// that's the split that needs the smallest (or zero) top/bottom margin and
-// never needs a shrink-to-fit pass. If every split overshoots the page
-// height, the one that overshoots least is used instead (it'll get a
-// gentle uniform shrink in strict43GridLayout).
-private func strict43BestRowCounts(
-    isLandscape: [Bool],
-    pageWidth: CGFloat,
-    pageHeight: CGFloat,
-    gap: CGFloat
-) -> [Int] {
-    let count = isLandscape.count
-
-    guard count > 0, pageWidth > 0, pageHeight > 0 else { return [] }
-
-    var bestSplit = [count]
-    var bestScore = CGFloat.greatestFiniteMagnitude
-
-    for counts in strict43RowCompositions(photoCount: count) {
-        let rowHeights = strict43NaturalRowHeights(
-            rowCounts: counts,
-            isLandscape: isLandscape,
-            pageWidth: pageWidth,
-            gap: gap
-        )
-
-        let totalHeight = rowHeights.reduce(0, +) + gap * CGFloat(max(0, counts.count - 1))
-        let margin = pageHeight - totalHeight
-
-        // Among non-overshooting splits (margin >= 0), the SMALLEST margin
-        // wins (0 = a perfect, edge-to-edge fit). An overshooting split
-        // (margin < 0, would need cropping to fit) is only used if nothing
-        // else fits at all, and even then the smallest overshoot wins.
-        let score = margin >= 0 ? margin : (abs(margin) + pageHeight)
-
-        if score < bestScore {
-            bestScore = score
-            bestSplit = counts
-        }
-    }
-
-    return bestSplit
-}
-
-// The plain row-stack layout: every cell exactly 4:3/3:4, every row spans
-// the full page width on its own. Returns the achieved rects plus how much
-// top/bottom margin (or, once shrunk to fit, all-around margin) is left —
-// the margin is what strict43GridLayout compares against the "hero cell"
-// layout below to decide which actually fills the page better.
-private func strict43PlainGridRects(
-    isLandscape: [Bool],
-    pageWidth: CGFloat,
-    pageHeight: CGFloat,
-    gap: CGFloat
-) -> (rects: [CGRect], margin: CGFloat)? {
-    guard !isLandscape.isEmpty, pageWidth > 0, pageHeight > 0 else {
-        return nil
-    }
-
-    let rowCounts = strict43BestRowCounts(
-        isLandscape: isLandscape,
-        pageWidth: pageWidth,
-        pageHeight: pageHeight,
-        gap: gap
-    )
-
-    guard !rowCounts.isEmpty else { return nil }
-
-    var rowsOfRatios: [[CGFloat]] = []
-    var cursor = 0
-
-    for rowCount in rowCounts {
-        let ratios: [CGFloat] = (cursor..<(cursor + rowCount)).map { isLandscape[$0] ? 4.0 / 3.0 : 3.0 / 4.0 }
-        rowsOfRatios.append(ratios)
-        cursor += rowCount
-    }
-
-    let naturalRowHeights = strict43NaturalRowHeights(
-        rowCounts: rowCounts,
-        isLandscape: isLandscape,
-        pageWidth: pageWidth,
-        gap: gap
-    )
-
-    let naturalTotalHeight = naturalRowHeights.reduce(0, +) + gap * CGFloat(max(0, rowCounts.count - 1))
-
-    guard naturalTotalHeight > 0 else { return nil }
-
-    // Every row already spans pageWidth exactly at scale 1 (by
-    // construction), so only ever scale DOWN, uniformly, if the stacked
-    // rows are taller than the page — never up, and never per-row.
-    let scale = min(1, pageHeight / naturalTotalHeight)
-    let scaledGap = gap * scale
-    let scaledRowHeights = naturalRowHeights.map { $0 * scale }
-    let scaledTotalHeight = scaledRowHeights.reduce(0, +) + scaledGap * CGFloat(max(0, rowCounts.count - 1))
-
-    var rects: [CGRect] = []
-    var y = (pageHeight - scaledTotalHeight) / 2
-
-    for (rowIndex, ratios) in rowsOfRatios.enumerated() {
-        let rowHeight = scaledRowHeights[rowIndex]
-        let widths = ratios.map { $0 * rowHeight }
-        let rowWidth = widths.reduce(0, +) + scaledGap * CGFloat(max(0, ratios.count - 1))
-        var x = (pageWidth - rowWidth) / 2
-
-        for width in widths {
-            rects.append(CGRect(x: x, y: y, width: width, height: rowHeight))
-            x += width + scaledGap
-        }
-
-        y += rowHeight + scaledGap
-    }
-
-    return (rects, abs(pageHeight - scaledTotalHeight))
-}
-
-// One PORTRAIT photo becomes a full-page-height "hero" column on the left,
-// still exactly 3:4, and everything else packs into the remaining width as
-// its own row-stack — for photo counts/orientation mixes where the plain
-// row-stack always leaves a gap sized roughly like "one more photo," this
-// is what actually closes it, by letting that one photo be a different
-// size instead of leaving the space blank.
-//
-// Only a portrait photo is eligible: a LANDSCAPE photo stretched to the
-// full page height turns into an extremely wide column (a 4:3 photo at
-// full 900pt height is already 1200pt wide — most of a 1600pt-wide page),
-// which crushes everything else into a sliver instead of helping. A 3:4
-// portrait at the same height is only 675pt wide, which is what actually
-// leaves a usable width for the rest of the grid. A cap on top of that
-// keeps the hero from ever dominating the page even for tall/narrow pages.
-private func strict43LSplitRects(
-    isLandscape: [Bool],
-    pageWidth: CGFloat,
-    pageHeight: CGFloat,
-    gap: CGFloat
-) -> (rects: [CGRect], margin: CGFloat)? {
-    let count = isLandscape.count
-
-    guard count >= 4, pageWidth > 0, pageHeight > 0 else { return nil }
-
-    let portraitIndexes = (0..<count).filter { !isLandscape[$0] }
-
-    guard !portraitIndexes.isEmpty else { return nil }
-
-    var best: (rects: [CGRect], margin: CGFloat)?
-    let maxHeroWidth = pageWidth * 0.45
-
-    for heroIndex in Set([portraitIndexes.first!, portraitIndexes.last!]) {
-        let heroWidth = pageHeight * (3.0 / 4.0)
-
-        guard heroWidth > 0, heroWidth <= maxHeroWidth, heroWidth < pageWidth - gap * 2 else { continue }
-
-        let remainingWidth = pageWidth - heroWidth - gap
-        var remainingIsLandscape = isLandscape
-        remainingIsLandscape.remove(at: heroIndex)
-
-        guard let (subRects, margin) = strict43PlainGridRects(
-            isLandscape: remainingIsLandscape,
-            pageWidth: remainingWidth,
-            pageHeight: pageHeight,
-            gap: gap
-        ) else {
-            continue
-        }
-
-        let heroRect = CGRect(x: 0, y: 0, width: heroWidth, height: pageHeight)
-
-        var fullRects = [CGRect](repeating: .zero, count: count)
-        fullRects[heroIndex] = heroRect
-
-        var subIndex = 0
-        for originalIndex in 0..<count where originalIndex != heroIndex {
-            var rect = subRects[subIndex]
-            rect.origin.x += heroWidth + gap
-            fullRects[originalIndex] = rect
-            subIndex += 1
-        }
-
-        if best == nil || margin < best!.margin {
-            best = (fullRects, margin)
-        }
-    }
-
-    return best
-}
-
-private func strict43GridLayout(
-    isLandscape: [Bool],
-    pageWidth: CGFloat,
-    pageHeight: CGFloat,
-    gap: CGFloat
-) -> [CGRect] {
-    let plain = strict43PlainGridRects(
-        isLandscape: isLandscape,
-        pageWidth: pageWidth,
-        pageHeight: pageHeight,
-        gap: gap
-    )
-
-    let lSplit = strict43LSplitRects(
-        isLandscape: isLandscape,
-        pageWidth: pageWidth,
-        pageHeight: pageHeight,
-        gap: gap
-    )
-
-    switch (plain, lSplit) {
-    case let (.some(plain), .some(lSplit)):
-        // A small tolerance so the plain grid (simpler, more familiar look)
-        // wins ties instead of the hero layout flip-flopping in for a
-        // barely-measurable improvement.
-        return lSplit.margin + 1 < plain.margin ? lSplit.rects : plain.rects
-    case let (.some(plain), nil):
-        return plain.rects
-    case let (nil, .some(lSplit)):
-        return lSplit.rects
-    case (nil, nil):
-        return []
-    }
-}
-
 struct MagazinePreviewPage: View {
     let images: [NSImage]
     let theme: SlideshowVisualTheme
@@ -14363,7 +13872,7 @@ struct MagazinePreviewPage: View {
     }
 
     private var pageImages: [NSImage] {
-        Array(images.prefix(theme == .magazine43 ? 12 : 6))
+        Array(images.prefix(6))
     }
 
     private var pagePhotoCount: Int {
@@ -14506,62 +14015,28 @@ struct MagazinePreviewPage: View {
 
     @ViewBuilder
     private func magazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        if theme == .magazine43 {
-            strict43MagazineTemplate(width: width, height: height, gap: gap)
-        } else {
-            switch pagePhotoCount {
-            case 0:
-                Color.white
+        switch pagePhotoCount {
+        case 0:
+            Color.white
 
-            case 1:
-                tile(slot: 0, revealOrder: 0)
+        case 1:
+            tile(slot: 0, revealOrder: 0)
 
-            case 2:
-                twoImageMagazineTemplate(width: width, height: height, gap: gap)
+        case 2:
+            twoImageMagazineTemplate(width: width, height: height, gap: gap)
 
-            case 3:
-                threeImageMagazineTemplate(width: width, height: height, gap: gap)
+        case 3:
+            threeImageMagazineTemplate(width: width, height: height, gap: gap)
 
-            case 4:
-                fourImageMagazineTemplate(width: width, height: height, gap: gap)
+        case 4:
+            fourImageMagazineTemplate(width: width, height: height, gap: gap)
 
-            case 5:
-                fiveImageMagazineTemplate(width: width, height: height, gap: gap)
+        case 5:
+            fiveImageMagazineTemplate(width: width, height: height, gap: gap)
 
-            default:
-                sixImageMagazineTemplate(width: width, height: height, gap: gap)
-            }
+        default:
+            sixImageMagazineTemplate(width: width, height: height, gap: gap)
         }
-    }
-
-    @ViewBuilder
-    private func strict43MagazineTemplate(width: CGFloat, height: CGFloat, gap: CGFloat) -> some View {
-        let isLandscape = pageImages.map { $0.size.width >= $0.size.height }
-        let rects = strict43GridLayout(
-            isLandscape: isLandscape,
-            pageWidth: width,
-            pageHeight: height,
-            gap: gap
-        )
-
-        ZStack(alignment: .topLeading) {
-            ForEach(Array(pageImages.prefix(rects.count).enumerated()), id: \.offset) { index, image in
-                let rect = rects[index]
-
-                MagazineImageTile(
-                    image: image,
-                    appearAmount: appearAmount(forRevealOrder: index),
-                    crop: cropByImageIdentity[ObjectIdentifier(image)] ?? .default,
-                    onCropChange: onCropChange.map { callback in
-                        { newCrop in callback(image, newCrop) }
-                    }
-                )
-                .frame(width: rect.width, height: rect.height)
-                .position(x: rect.midX, y: rect.midY)
-            }
-        }
-        .frame(width: width, height: height)
-        .clipped()
     }
 
     @ViewBuilder
@@ -15148,7 +14623,6 @@ private func origamiLayoutVariantCount(photoCount: Int) -> Int {
 
 struct OrigamiPreviewPage: View {
     let images: [NSImage]
-    var theme: SlideshowVisualTheme = .origami
     let slotReplacementImages: [Int: NSImage]
     let activeSwapImages: [Int: NSImage]
     let activeSwapStyles: [Int: Int]
@@ -15191,7 +14665,7 @@ struct OrigamiPreviewPage: View {
     }
 
     private var pageImages: [NSImage] {
-        Array(images.prefix(theme == .origami43 ? 12 : 6))
+        Array(images.prefix(6))
     }
 
     private func aspectRatio(of image: NSImage) -> CGFloat {
@@ -16120,55 +15594,28 @@ struct OrigamiPreviewPage: View {
 
     @ViewBuilder
     private func collage(in size: CGSize) -> some View {
-        if theme == .origami43 {
-            strict43Collage(in: size)
-        } else {
-            switch pageImages.count {
-            case 0:
-                Color.black
+        switch pageImages.count {
+        case 0:
+            Color.black
 
-            case 1:
-                tile(pageImages[0])
+        case 1:
+            tile(pageImages[0])
 
-            case 2:
-                twoImageTemplate(in: size)
+        case 2:
+            twoImageTemplate(in: size)
 
-            case 3:
-                threeImageTemplate(in: size)
+        case 3:
+            threeImageTemplate(in: size)
 
-            case 4:
-                fourImageTemplate(in: size)
+        case 4:
+            fourImageTemplate(in: size)
 
-            case 5:
-                fiveImageTemplate(in: size)
+        case 5:
+            fiveImageTemplate(in: size)
 
-            default:
-                sixImageTemplate(in: size)
-            }
+        default:
+            sixImageTemplate(in: size)
         }
-    }
-
-    @ViewBuilder
-    private func strict43Collage(in size: CGSize) -> some View {
-        let isLandscape = pageImages.map { $0.size.width >= $0.size.height }
-        let rects = strict43GridLayout(
-            isLandscape: isLandscape,
-            pageWidth: size.width,
-            pageHeight: size.height,
-            gap: 0
-        )
-
-        ZStack(alignment: .topLeading) {
-            ForEach(Array(pageImages.prefix(rects.count).enumerated()), id: \.offset) { index, image in
-                let rect = rects[index]
-
-                tile(image)
-                    .frame(width: rect.width, height: rect.height)
-                    .position(x: rect.midX, y: rect.midY)
-            }
-        }
-        .frame(width: size.width, height: size.height)
-        .clipped()
     }
 
     @ViewBuilder
@@ -16604,7 +16051,6 @@ struct OrigamiPreviewPage: View {
 
 struct OrigamiWholePageHalfFoldOverlay: View {
     let images: [NSImage]
-    var theme: SlideshowVisualTheme = .origami
     let slotReplacementImages: [Int: NSImage]
     let animationVariant: Int
     let progress: Double
@@ -16637,7 +16083,6 @@ struct OrigamiWholePageHalfFoldOverlay: View {
         AnyView(
             OrigamiPreviewPage(
                 images: images,
-                theme: theme,
                 slotReplacementImages:
                     slotReplacementImages,
                 activeSwapImages: [:],
@@ -19169,7 +18614,7 @@ struct CenterPreviewPanel: View {
     @State private var isPhotosCardHovered = false
 
     private var usesMagazinePreview: Bool {
-        visualTheme == .magazine || visualTheme == .magazine43 || visualTheme == .magazineFamily || visualTheme == .magazineCouples
+        visualTheme == .magazine || visualTheme == .magazineFamily || visualTheme == .magazineCouples
     }
 
     private var themedPreviewImages: [NSImage] {
@@ -19273,11 +18718,10 @@ struct CenterPreviewPanel: View {
                                 )
                             )
                             .drawingGroup()
-                        } else if visualTheme == .origami || visualTheme == .origami43 {
+                        } else if visualTheme == .origami {
                             ZStack {
                                 OrigamiPreviewPage(
                                     images: themedPreviewImages,
-                                    theme: visualTheme,
                                     slotReplacementImages: origamiSlotReplacementImages,
                                     activeSwapImages: origamiActiveSwapImages,
                                     activeSwapStyles: origamiActiveSwapStyles,
@@ -19293,7 +18737,6 @@ struct CenterPreviewPanel: View {
                                 if !previousOrigamiPageImages.isEmpty {
                                     OrigamiWholePageHalfFoldOverlay(
                                         images: previousOrigamiPageImages,
-                                        theme: visualTheme,
                                         slotReplacementImages:
                                             previousOrigamiPageReplacements,
                                         animationVariant:

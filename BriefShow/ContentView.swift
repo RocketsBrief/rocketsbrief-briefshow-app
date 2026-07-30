@@ -376,6 +376,15 @@ private func buildOrigamiPagePlans(
 }
 
 struct ContentView: View {
+    // Photos handed off from the Welcome screen's BriefShow square, if
+    // that's how this window was reached — imported automatically on
+    // first appear, same as picking them by hand.
+    let initialPhotoURLs: [URL]
+
+    init(initialPhotoURLs: [URL] = []) {
+        self.initialPhotoURLs = initialPhotoURLs
+    }
+
     @ObservedObject private var themeManager = ThemeManager.shared
     @ObservedObject private var accountManager = AccountManager.shared
     @ObservedObject private var remoteStatus = AppRemoteStatus.shared
@@ -517,7 +526,7 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 10) {
-                HeaderView(isProfileModalPresented: $isProfileModalPresented)
+                HeaderView(isProfileModalPresented: $isProfileModalPresented, onOpenShowScreen: { ShowGridWindowController.shared.open(initialPhotoURLs: selectedPhotoURLs) })
 
                 HStack(alignment: .top, spacing: 14) {
                     LeftImportPanel(
@@ -776,6 +785,18 @@ struct ContentView: View {
             maxWidth: .infinity,
             alignment: .top
         )
+        // Our custom themes only recolor our own SwiftUI views — native
+        // AppKit controls (like the Stepper below) still render using
+        // whatever system light/dark appearance macOS reports, which is
+        // why the Stepper's chevrons stayed near-black (a light-appearance
+        // control) on our custom Dark theme's near-black background. This
+        // tells SwiftUI which appearance to hand those native controls.
+        .preferredColorScheme(themeManager.current == .dark ? .dark : .light)
+        .onAppear {
+            if selectedPhotoURLs.isEmpty, !initialPhotoURLs.isEmpty {
+                importPhotoURLs(initialPhotoURLs)
+            }
+        }
         .onChange(of: selectedPhotoURLs) { newValue in
             updateMagazinePhotoSeed(for: newValue)
         }
@@ -11685,7 +11706,7 @@ private func makePreviewImage(from url: URL) -> NSImage? {
     return previewImage
 }
 
-private func loadDroppedFileURLs(
+func loadDroppedFileURLs(
     from providers: [NSItemProvider],
     completion: @escaping ([URL]) -> Void
 ) -> Bool {
@@ -11734,11 +11755,7 @@ struct HeaderView: View {
     @ObservedObject private var accountManager = AccountManager.shared
     @ObservedObject private var remoteStatus = AppRemoteStatus.shared
     @Binding var isProfileModalPresented: Bool
-    @State private var isRocketsBriefHovered = false
-    @State private var isSupportHovered = false
-    @State private var isFundMissionHovered = false
-    @State private var isDisclaimerHovered = false
-    @State private var isDisclaimerNoticePresented = false
+    let onOpenShowScreen: () -> Void
 
     var body: some View {
         HStack {
@@ -11746,19 +11763,20 @@ struct HeaderView: View {
                 HStack(spacing: 14) {
                     HStack(spacing: 0) {
                         Text("Brief")
-                            .font(.custom("Unbounded", size: 28).weight(.black))
+                            .font(.custom("Unbounded", size: 20).weight(.black))
                             .foregroundColor(AppColors.ink)
-                            .tracking(-2.4)
+                            .tracking(-1.7)
 
                         Text("Show")
-                            .font(.custom("Unbounded", size: 28).weight(.black))
+                            .font(.custom("Unbounded", size: 20).weight(.black))
                             .foregroundColor(AppColors.inkSecondary)
-                            .tracking(-2.4)
+                            .tracking(-1.7)
                     }
 
                     HStack(spacing: 8) {
                         ThemeToggleButton(theme: .white, selected: $themeManager.current)
                         ThemeToggleButton(theme: .buttery, selected: $themeManager.current)
+                        ThemeToggleButton(theme: .dark, selected: $themeManager.current)
                     }
                 }
 
@@ -11772,125 +11790,30 @@ struct HeaderView: View {
             VStack(alignment: .trailing, spacing: 6) {
                 HStack(spacing: 12) {
                     Button {
-                        if let url = URL(string: "https://www.rocketsbrief.com") {
-                            NSWorkspace.shared.open(url)
-                        }
+                        onOpenShowScreen()
                     } label: {
                         HStack(spacing: 6) {
-                            Image("RocketsBriefButtonLogo")
-                                .renderingMode(.template)
+                            Image(systemName: "square.grid.3x3.fill")
                                 .resizable()
                                 .scaledToFit()
-                                .frame(width: 15, height: 15)
+                                .frame(width: 13, height: 13)
 
-                            Text("RocketsBrief")
+                            Text("ShowGrid")
                         }
                         .frame(height: 15)
                     }
                     .buttonStyle(HeaderLinkButtonStyle())
-                .overlay(alignment: .topTrailing) {
-                    if isRocketsBriefHovered {
-                        RocketsBriefHoverCard()
-                            .offset(x: -6, y: 48)
-                            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
-                            .zIndex(300)
-                    }
-                }
-                .onHover { hovering in
-                    withAnimation(.linear(duration: 0.12)) {
-                        isRocketsBriefHovered = hovering
-                    }
-                }
 
-                Button {
-                    if let url = URL(string: "https://www.rocketsbrief.com/support") {
-                        NSWorkspace.shared.open(url)
+                    if remoteStatus.isLocked, let session = accountManager.session {
+                        Button {
+                            isProfileModalPresented = true
+                        } label: {
+                            ProfileBadge(session: session)
+                        }
+                        .buttonStyle(.plain)
                     }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "bubble.left.and.bubble.right.fill")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 15, height: 15)
-
-                        Text("Support")
-                    }
-                    .frame(height: 15)
-                }
-                .buttonStyle(HeaderLinkButtonStyle())
-                .overlay(alignment: .topTrailing) {
-                    if isSupportHovered {
-                        SupportHoverCard()
-                            .offset(x: -6, y: 48)
-                            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
-                            .zIndex(300)
-                    }
-                }
-                .onHover { hovering in
-                    withAnimation(.linear(duration: 0.12)) {
-                        isSupportHovered = hovering
-                    }
-                }
-
-                Button {
-                    if let url = URL(string: "https://www.paypal.com/ncp/payment/GUZARDB67QEDU#checkoutModal") {
-                        NSWorkspace.shared.open(url)
-                    }
-                } label: {
-                    Text("Fund Mission")
-                        .frame(width: 86, height: 15)
-                        .fixedSize(horizontal: false, vertical: false)
-                }
-                .buttonStyle(HeaderLinkButtonStyle())
-                .overlay(alignment: .topTrailing) {
-                    if isFundMissionHovered {
-                        FundMissionHoverCard()
-                            .offset(x: -6, y: 48)
-                            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
-                            .zIndex(300)
-                    }
-                }
-                .onHover { hovering in
-                    withAnimation(.linear(duration: 0.12)) {
-                        isFundMissionHovered = hovering
-                    }
-                }
-
-                Button {
-                    isDisclaimerNoticePresented = true
-                } label: {
-                    Text("Disclaimer")
-                        .frame(width: 86, height: 15)
-                        .fixedSize(horizontal: false, vertical: false)
-                }
-                .buttonStyle(HeaderLinkButtonStyle())
-                .overlay(alignment: .topTrailing) {
-                    if isDisclaimerHovered {
-                        DisclaimerHoverCard()
-                            .offset(x: -6, y: 48)
-                            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
-                            .zIndex(300)
-                    }
-                }
-                .onHover { hovering in
-                    withAnimation(.linear(duration: 0.12)) {
-                        isDisclaimerHovered = hovering
-                    }
-                }
-
-                if remoteStatus.isLocked, let session = accountManager.session {
-                    Button {
-                        isProfileModalPresented = true
-                    } label: {
-                        ProfileBadge(session: session)
-                    }
-                    .buttonStyle(.plain)
-                }
                 }
             }
-        }
-        .sheet(isPresented: $isDisclaimerNoticePresented) {
-            DisclaimerNoticeModal()
         }
         .zIndex(300)
     }
@@ -11994,7 +11917,7 @@ struct DisclaimerHoverCard: View {
                 .font(.custom("Figtree", size: 14).weight(.medium))
                 .foregroundColor(AppColors.ink)
 
-            Text("Read the usage notice for BriefShow and RocketsBrief products, including user responsibility, voluntary support terms, limitations, and prohibited use.")
+            Text("Read the usage notice for BriefShow, ShowGrid, and RocketsBrief products, including user responsibility, voluntary support terms, limitations, and prohibited use.")
                 .font(.custom("Figtree", size: 11).weight(.regular))
                 .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -12023,19 +11946,19 @@ struct DisclaimerNoticeModal: View {
     private let noticeSections: [(String, String)] = [
         (
             "Free creative tool",
-            "BriefShow is provided as a free creative tool by RocketsBrief. It is offered “as is” and “as available,” without guarantees that it will always be error-free, uninterrupted, or suitable for every specific purpose."
+            "BriefShow and ShowGrid are provided as free creative tools by RocketsBrief. They are offered “as is” and “as available,” without guarantees that they will always be error-free, uninterrupted, or suitable for every specific purpose."
         ),
         (
             "User responsibility",
-            "You are responsible for the images, music, files, prompts, content, exports, and any other materials you upload, create, process, publish, share, or use through BriefShow or any RocketsBrief product."
+            "You are responsible for the images, music, files, prompts, content, exports, and any other materials you upload, create, process, publish, share, or use through BriefShow, ShowGrid, or any RocketsBrief product."
         ),
         (
             "Prohibited use",
-            "You may not use BriefShow, RocketsBrief, or any related tool to create, promote, distribute, or support unlawful, harmful, fraudulent, abusive, infringing, or prohibited activity. This includes scams, phishing, malware, spam, impersonation, copyright infringement, illegal products or services, or any activity that violates applicable laws, third-party rights, platform rules, or payment processor policies."
+            "You may not use BriefShow, ShowGrid, RocketsBrief, or any related tool to create, promote, distribute, or support unlawful, harmful, fraudulent, abusive, infringing, or prohibited activity. This includes scams, phishing, malware, spam, impersonation, copyright infringement, illegal products or services, or any activity that violates applicable laws, third-party rights, platform rules, or payment processor policies."
         ),
         (
             "Review before use",
-            "Any output created with BriefShow should be reviewed by you before publishing, selling, sharing, or relying on it. RocketsBrief does not guarantee legal compliance, business results, earnings, conversions, or that any output will meet a specific requirement."
+            "Any output or exported photos created with BriefShow or ShowGrid should be reviewed by you before publishing, selling, sharing, or relying on it. RocketsBrief does not guarantee legal compliance, business results, earnings, conversions, or that any output will meet a specific requirement."
         ),
         (
             "Fund Mission support",
@@ -12046,20 +11969,20 @@ struct DisclaimerNoticeModal: View {
             "RocketsBrief may refuse, limit, suspend, or remove access to any product or service if it believes a user is violating these terms, applicable law, third-party rights, payment processor rules, or creating risk for RocketsBrief, other users, or the public."
         ),
         (
-            "Future changes to BriefShow",
-            "RocketsBrief may change, add, remove, lock, or discontinue any feature, theme, or part of BriefShow at any time, without notice. This includes requiring a free account sign-up to continue using BriefShow, and introducing paid features, subscriptions, or pricing for BriefShow in the future. By continuing to use BriefShow, you agree that these changes may happen at any time."
+            "Future changes to BriefShow and ShowGrid",
+            "RocketsBrief may change, add, remove, lock, or discontinue any feature, theme, or part of BriefShow or ShowGrid at any time, without notice. This includes requiring a free account sign-up to continue using either one, and introducing paid features, subscriptions, or pricing for BriefShow or ShowGrid in the future. By continuing to use either one, you agree that these changes may happen at any time."
         ),
         (
             "Copyright and ownership",
-            "BriefShow is created by and is the property of the RocketsBrief Team. You are welcome to share or recommend BriefShow to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow, in whole or in part."
+            "BriefShow and ShowGrid are created by and are the property of the RocketsBrief Team. You are welcome to share or recommend them to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow or ShowGrid, in whole or in part."
         ),
         (
             "Account data and email use",
-            "If BriefShow ever requires a free account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
+            "If BriefShow or ShowGrid ever requires a free account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
         ),
         (
             "Usage analytics",
-            "BriefShow shares only two basic metrics with RocketsBrief: how many videos have been exported, and how many separate machines run BriefShow. To protect your privacy, the app generates a strictly randomized installation ID that has no connection to your hardware, device serial numbers, or network configuration. Neither count includes your files, photos, music, exported videos, or any personal information — and this metric is completely separate from, and in addition to, the email address you provide only if you create an account."
+            "BriefShow and ShowGrid share only basic metrics with RocketsBrief: how many videos have been exported from BriefShow, and how many separate machines run BriefShow or ShowGrid. To protect your privacy, the app generates a strictly randomized installation ID that has no connection to your hardware, device serial numbers, or network configuration. This does not include your files, photos, music, exported videos, or any personal information — and it is completely separate from, and in addition to, the email address you provide only if you create an account."
         )
     ]
 
@@ -12071,7 +11994,7 @@ struct DisclaimerNoticeModal: View {
                         .font(.custom("Figtree", size: 24).weight(.semibold))
                         .foregroundColor(AppColors.ink)
 
-                    Text("For BriefShow and RocketsBrief products")
+                    Text("For BriefShow, ShowGrid, and RocketsBrief products")
                         .font(.custom("Figtree", size: 12.5).weight(.regular))
                         .foregroundColor(AppColors.muted)
                 }
@@ -12107,7 +12030,7 @@ struct DisclaimerNoticeModal: View {
                         }
                     }
 
-                    Text("By using BriefShow, you agree to this entire Disclaimer & Usage Notice, including that you are responsible for your own use of the tool and any content or output you create with it.")
+                    Text("By using BriefShow or ShowGrid, you agree to this entire Disclaimer & Usage Notice, including that you are responsible for your own use of the tool and any content or output you create with it.")
                         .font(.custom("Figtree", size: 12).weight(.semibold))
                         .foregroundColor(AppColors.hoverInk)
                         .lineSpacing(3)
@@ -19784,13 +19707,31 @@ struct PhotoImportInfoRow: View {
     let title: String
     let isHovered: Bool
 
+    // A white overlay this opaque was tuned to read as a subtle lighter
+    // card on top of the white/buttery backgrounds — on the dark theme's
+    // near-black background, the same opacity reads as a jarring bright
+    // gray box instead, so it needs much lower opacity there.
+    private var isDarkTheme: Bool {
+        themeManager.current == .dark
+    }
+
+    private var iconBackground: Color {
+        Color.white.opacity(isDarkTheme ? 0.10 : 0.48)
+    }
+
+    private var rowBackground: Color {
+        isDarkTheme
+            ? Color.white.opacity(isHovered ? 0.09 : 0.05)
+            : Color.white.opacity(isHovered ? 0.42 : 0.28)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 10, weight: isHovered ? .semibold : .semibold))
                 .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink.opacity(0.8))
                 .frame(width: 18, height: 18)
-                .background(Color.white.opacity(0.48))
+                .background(iconBackground)
                 .clipShape(Circle())
                 .scaleEffect(isHovered ? 1.08 : 1)
 
@@ -19805,7 +19746,7 @@ struct PhotoImportInfoRow: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 34)
-        .background(isHovered ? Color.white.opacity(0.42) : Color.white.opacity(0.28))
+        .background(rowBackground)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .stroke(isHovered ? AppColors.hoverInk.opacity(0.8) : AppColors.border.opacity(0.8), lineWidth: isHovered ? 1.6 : 1)
@@ -19824,6 +19765,22 @@ struct MusicTrackRow: View {
 
     @State private var isHovered = false
 
+    // See the matching comment in PhotoImportInfoRow — the same white
+    // overlay opacity reads far too bright against the dark theme.
+    private var isDarkTheme: Bool {
+        themeManager.current == .dark
+    }
+
+    private var iconBackground: Color {
+        Color.white.opacity(isDarkTheme ? 0.10 : 0.48)
+    }
+
+    private var rowBackground: Color {
+        isDarkTheme
+            ? Color.white.opacity(isHovered ? 0.09 : 0.05)
+            : Color.white.opacity(isHovered ? 0.42 : 0.28)
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
@@ -19831,7 +19788,7 @@ struct MusicTrackRow: View {
                     .font(.system(size: 10, weight: isHovered ? .semibold : .semibold))
                     .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink.opacity(0.8))
                     .frame(width: 18, height: 18)
-                    .background(Color.white.opacity(0.48))
+                    .background(iconBackground)
                     .clipShape(Circle())
                     .scaleEffect(isHovered ? 1.08 : 1)
 
@@ -19855,7 +19812,7 @@ struct MusicTrackRow: View {
             }
             .padding(.horizontal, 8)
             .frame(height: 34)
-            .background(isHovered ? Color.white.opacity(0.42) : Color.white.opacity(0.28))
+            .background(rowBackground)
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(isHovered ? AppColors.hoverInk.opacity(0.8) : AppColors.border.opacity(0.8), lineWidth: isHovered ? 1.6 : 1)
@@ -20655,6 +20612,902 @@ struct HoverButtonLabel: View {
         isHovered
             ? AppColors.hoverInk
             : AppColors.border
+    }
+}
+
+// A left-to-right, wrapping row layout (unlike LazyVGrid, which forces
+// every cell to the same width) — used by the Show screen's thumbnail
+// grid so each photo keeps its own natural aspect ratio at a shared
+// height: landscape photos read wider, portrait photos read narrower,
+// with nothing cropped.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 16
+    var lineSpacing: CGFloat = 26
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+
+            if x + size.width > maxWidth, x > 0 {
+                totalHeight += rowHeight + lineSpacing
+                totalWidth = max(totalWidth, x - spacing)
+                x = 0
+                rowHeight = 0
+            }
+
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+
+        totalHeight += rowHeight
+        totalWidth = max(totalWidth, x - spacing)
+
+        return CGSize(width: maxWidth.isFinite ? maxWidth : totalWidth, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x: CGFloat = bounds.minX
+        var y: CGFloat = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+
+            if x + size.width > bounds.maxX, x > bounds.minX {
+                x = bounds.minX
+                y += rowHeight + lineSpacing
+                rowHeight = 0
+            }
+
+            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
+// MARK: - ShowGrid (standalone photo review/culling screen)
+
+// Owns the ShowGrid window's lifecycle as a singleton so both the header's
+// "ShowGrid" button (from inside ContentView) and the Welcome screen's
+// ShowGrid square (before ContentView even exists) can open/refocus the
+// exact same window instead of each keeping their own separate
+// NSWindowController and potentially opening duplicates.
+final class ShowGridWindowController {
+    static let shared = ShowGridWindowController()
+
+    private var windowController: NSWindowController?
+
+    private init() {}
+
+    // Opens (or refocuses) the ShowGrid screen in its own standalone,
+    // user-resizable/maximizable window instead of as an in-window
+    // overlay — an in-window overlay would inherit ContentView's own
+    // root layout, which is `.fixedSize(vertical: true)` and locked to
+    // its ideal content height, cutting off anything meant to fill the
+    // physical screen.
+    func open(initialPhotoURLs: [URL] = []) {
+        if let controller = windowController {
+            controller.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "ShowGrid"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 700, height: 480)
+        window.center()
+
+        let controller = NSWindowController(window: window)
+        windowController = controller
+
+        window.contentView = NSHostingView(
+            rootView: PhotoShowSheet(initialPhotoURLs: initialPhotoURLs, onClose: { [weak self] in
+                self?.close()
+            })
+        )
+
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func close() {
+        windowController?.close()
+        windowController = nil
+    }
+}
+
+// Owns the BriefShow editor window's lifecycle the same way
+// ShowGridWindowController owns ShowGrid's — needed because ShowGrid's
+// "BriefShow" header button must be able to open (or refocus) the main
+// editor even when it isn't currently open (e.g. the Welcome window
+// already closed after the user chose ShowGrid instead).
+final class BriefShowWindowController {
+    static let shared = BriefShowWindowController()
+
+    private var windowController: NSWindowController?
+
+    private init() {}
+
+    // initialPhotoURLs is only used the first time this opens a fresh
+    // window — if a BriefShow window is already open, this just refocuses
+    // it rather than overwriting whatever session is already in progress
+    // there.
+    func open(initialPhotoURLs: [URL] = []) {
+        if let controller = windowController {
+            controller.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 560),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "BriefShow"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isReleasedWhenClosed = false
+        window.center()
+
+        let controller = NSWindowController(window: window)
+        windowController = controller
+
+        window.contentView = NSHostingView(rootView: ContentView(initialPhotoURLs: initialPhotoURLs))
+
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+// Opened from the "ShowGrid" header button, independent of the Kousei/Kirigami
+// slideshow-creation flow: browse an entire photo batch on one page, mark
+// favorites, and inspect one or up to five selected photos at a larger
+// size — similar in spirit to Adobe Bridge's review workflow.
+struct PhotoShowSheet: View {
+    let onClose: () -> Void
+    let initialPhotoURLs: [URL]
+
+    init(initialPhotoURLs: [URL] = [], onClose: @escaping () -> Void) {
+        self.initialPhotoURLs = initialPhotoURLs
+        self.onClose = onClose
+    }
+
+    @State private var photoURLs: [URL] = []
+    @State private var gridThumbnails: [URL: NSImage] = [:]
+    @State private var loupeImages: [URL: NSImage] = [:]
+    @State private var likedURLs: Set<URL> = []
+    @State private var selectedURLs: Set<URL> = []
+    @State private var thumbnailSize: CGFloat = 180
+    @State private var loupeURLs: [URL]?
+    @State private var isLoadingPhotos: Bool = false
+    @State private var loadedThumbnailCount: Int = 0
+    @State private var keyMonitor: Any?
+    @State private var isDropTargeted: Bool = false
+    @State private var isDisclaimerNoticePresented = false
+
+    // ShowGrid follows the same White/Buttery/Dark theme as the main
+    // BriefShow window (chosen from the Welcome screen's theme circles)
+    // instead of always being dark — needs its own observation of
+    // ThemeManager so this window re-renders when the theme changes.
+    @ObservedObject private var themeManager = ThemeManager.shared
+
+    private let maxSelectionCount = 5
+    private let minThumbnailSize: CGFloat = 90
+    private let maxThumbnailSize: CGFloat = 320
+
+    // The selected-photo border and the liked circle glow best against the
+    // Dark theme's near-black background in the original warm yellow —
+    // White/Buttery use the generic theme hover accent instead, which
+    // reads more clearly against their lighter backgrounds.
+    private var accentColor: Color {
+        themeManager.current == .dark ? Color.yellow : AppColors.hoverInk
+    }
+
+    var body: some View {
+        ZStack {
+            AppColors.background
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                header
+
+                if photoURLs.isEmpty {
+                    emptyState
+                } else {
+                    thumbnailGrid
+                }
+            }
+
+            if let loupeURLs, !loupeURLs.isEmpty {
+                loupeOverlay(for: loupeURLs)
+            }
+
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 0)
+                    .strokeBorder(AppColors.hoverInk.opacity(0.85), lineWidth: 4)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .preferredColorScheme(themeManager.current == .dark ? .dark : .light)
+        .sheet(isPresented: $isDisclaimerNoticePresented) {
+            DisclaimerNoticeModal()
+        }
+        .onAppear {
+            installKeyMonitor()
+
+            if photoURLs.isEmpty, !initialPhotoURLs.isEmpty {
+                importShowPhotos(initialPhotoURLs)
+            }
+        }
+        .onDisappear { removeKeyMonitor() }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            loadDroppedFileURLs(from: providers) { urls in
+                let droppedPhotoURLs = urls.filter { url in
+                    UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+                }
+
+                guard !droppedPhotoURLs.isEmpty else {
+                    return
+                }
+
+                importShowPhotos(droppedPhotoURLs)
+            }
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 14) {
+                    // Same two-tone wordmark treatment as "Brief"+"Show" in
+                    // the main header: first word bright, second word
+                    // muted, with the theme circles right next to it —
+                    // same placement as the main BriefShow header.
+                    HStack(spacing: 0) {
+                        Text("Show")
+                            .font(.custom("Unbounded", size: 20).weight(.black))
+                            .tracking(-1.7)
+                            .foregroundColor(AppColors.ink)
+
+                        Text("Grid")
+                            .font(.custom("Unbounded", size: 20).weight(.black))
+                            .tracking(-1.7)
+                            .foregroundColor(AppColors.inkSecondary)
+                    }
+
+                    HStack(spacing: 8) {
+                        ThemeToggleButton(theme: .white, selected: $themeManager.current)
+                        ThemeToggleButton(theme: .buttery, selected: $themeManager.current)
+                        ThemeToggleButton(theme: .dark, selected: $themeManager.current)
+                    }
+                }
+
+                if !photoURLs.isEmpty {
+                    Text("\(photoURLs.count) photos · \(likedURLs.count) liked")
+                        .font(.custom("Figtree", size: 12).weight(.medium))
+                        .foregroundColor(AppColors.muted)
+                }
+            }
+
+            Spacer()
+
+            Button {
+                BriefShowWindowController.shared.open(initialPhotoURLs: photoURLs)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "film")
+                    Text("BriefShow")
+                }
+            }
+            .buttonStyle(ShowHeaderButtonStyle())
+            .padding(.trailing, 14)
+
+            if !photoURLs.isEmpty {
+                headerZoomControl
+                    .padding(.trailing, 10)
+
+                Button {
+                    exportLabeledPhotos()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Export Labeled")
+                    }
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .opacity(likedURLs.isEmpty ? 0.4 : 1)
+                .disabled(likedURLs.isEmpty)
+                .padding(.trailing, 10)
+
+                Button {
+                    openPhotoPickerForShow()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus")
+                        Text("Add Photos")
+                    }
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .padding(.trailing, 10)
+            }
+
+            Button {
+                isDisclaimerNoticePresented = true
+            } label: {
+                Text("Disclaimer")
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .foregroundColor(AppColors.muted)
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 14)
+
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(AppColors.ink)
+                    .frame(width: 34, height: 34)
+                    .background(AppColors.panel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 999)
+                            .stroke(AppColors.border, lineWidth: 1.5)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 999))
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.escape, modifiers: [])
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
+    }
+
+    // MARK: Empty state
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Spacer()
+
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 40))
+                .foregroundColor(AppColors.muted.opacity(0.7))
+
+            Text("Import photos to review and mark your favorites.")
+                .font(.custom("Figtree", size: 14).weight(.medium))
+                .foregroundColor(AppColors.muted)
+
+            Button {
+                openPhotoPickerForShow()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus")
+                    Text("Import Photos")
+                }
+            }
+            .buttonStyle(ShowHeaderButtonStyle())
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: Grid
+
+    private var thumbnailGrid: some View {
+        ScrollView {
+            FlowLayout(spacing: 16, lineSpacing: 26) {
+                ForEach(photoURLs, id: \.self) { url in
+                    thumbnailCell(for: url)
+                }
+            }
+            .padding(24)
+            .padding(.bottom, 70)
+        }
+    }
+
+    // Every thumbnail shares the same HEIGHT (driven by the zoom slider);
+    // width follows the photo's own aspect ratio instead of being force-
+    // cropped to a square, so landscape photos read wider and portrait
+    // photos read narrower, side by side in the same flowing row.
+    private func thumbnailCell(for url: URL) -> some View {
+        let isSelected = selectedURLs.contains(url)
+        let image = gridThumbnails[url]
+        let aspectRatio = image.map { max(0.2, $0.size.width / max(1, $0.size.height)) } ?? (4.0 / 3.0)
+        let cellWidth = thumbnailSize * aspectRatio
+
+        return VStack(spacing: 10) {
+            ZStack {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: cellWidth, height: thumbnailSize)
+                } else {
+                    Rectangle()
+                        .fill(AppColors.panel)
+                        .frame(width: cellWidth, height: thumbnailSize)
+                        .overlay(ProgressView().controlSize(.small))
+                }
+            }
+            .frame(width: cellWidth, height: thumbnailSize)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? accentColor : AppColors.border.opacity(0.6), lineWidth: isSelected ? 3 : 1)
+            )
+            .shadow(color: isSelected ? accentColor.opacity(0.35) : .clear, radius: isSelected ? 10 : 0)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                handleSelectTap(url)
+            }
+            .animation(.easeOut(duration: 0.12), value: isSelected)
+
+            likeToggle(for: url)
+        }
+    }
+
+    // A filled, glowing circle marks a liked photo; an empty outline
+    // circle marks an unliked one. Independent of selection (the border
+    // drawn around the thumbnail itself above) — both follow the current
+    // theme's accent color rather than being fixed yellow.
+    private func likeToggle(for url: URL) -> some View {
+        let isLiked = likedURLs.contains(url)
+
+        return Circle()
+            .fill(isLiked ? accentColor : Color.clear)
+            .overlay(
+                Circle()
+                    .stroke(accentColor.opacity(isLiked ? 0 : 0.55), lineWidth: 1.5)
+            )
+            .frame(width: 15, height: 15)
+            .shadow(color: isLiked ? accentColor.opacity(0.95) : .clear, radius: isLiked ? 3 : 0)
+            .shadow(color: isLiked ? accentColor.opacity(0.55) : .clear, radius: isLiked ? 7 : 0)
+            .contentShape(Circle().inset(by: -8))
+            .onTapGesture {
+                toggleLike(url)
+            }
+            .animation(.easeOut(duration: 0.15), value: isLiked)
+    }
+
+    // MARK: Zoom control
+
+    // Lives in the header itself (top-right, before Export Labeled/Add
+    // Photos) rather than pinned to the bottom of the screen — the bottom
+    // edge of this window can end up past the visible screen area, making
+    // a bottom-pinned control unreachable.
+    private var headerZoomControl: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "photo")
+                .font(.system(size: 10))
+                .foregroundColor(AppColors.muted)
+
+            Slider(value: $thumbnailSize, in: minThumbnailSize...maxThumbnailSize)
+                .frame(width: 110)
+
+            Image(systemName: "photo.fill")
+                .font(.system(size: 15))
+                .foregroundColor(AppColors.muted)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 999)
+                .fill(AppColors.panel)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 999)
+                .stroke(AppColors.border, lineWidth: 1)
+        )
+    }
+
+    // MARK: Loupe (enlarged multi-select preview)
+
+    private func loupeOverlay(for urls: [URL]) -> some View {
+        ZStack {
+            Color.black.opacity(0.98)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    closeLoupe()
+                }
+
+            loupeGrid(for: urls)
+                .padding(50)
+
+            VStack {
+                HStack {
+                    Spacer()
+
+                    Button {
+                        closeLoupe()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 34, height: 34)
+                            .background(Color.white.opacity(0.12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 999)
+                                    .stroke(Color.white.opacity(0.4), lineWidth: 1.5)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 999))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(24)
+                }
+
+                Spacer()
+            }
+        }
+        .transition(.opacity)
+        .zIndex(1)
+    }
+
+    // Arranges 1-5 selected photos as a proper contact-sheet layout instead
+    // of squeezing them into a single row: 1-2 photos stay in one row, 3+
+    // split into two rows with the smaller half on top (3 → 1 over 2,
+    // 4 → 2 over 2, 5 → 2 over 3), each photo scaled to fit its own cell
+    // at its natural aspect ratio.
+    private func loupeGrid(for urls: [URL]) -> some View {
+        GeometryReader { proxy in
+            let rows = loupeRows(for: urls)
+            let rowSpacing: CGFloat = 18
+            let rowHeight = (proxy.size.height - rowSpacing * CGFloat(max(0, rows.count - 1)))
+                / CGFloat(max(1, rows.count))
+
+            VStack(spacing: rowSpacing) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, rowURLs in
+                    HStack(spacing: 18) {
+                        ForEach(rowURLs, id: \.self) { url in
+                            loupeImageView(for: url)
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .frame(height: rowHeight)
+                }
+            }
+        }
+    }
+
+    private func loupeRows(for urls: [URL]) -> [[URL]] {
+        guard urls.count > 2 else {
+            return [urls]
+        }
+
+        let topCount = urls.count / 2
+        return [Array(urls.prefix(topCount)), Array(urls.suffix(urls.count - topCount))]
+    }
+
+    // Clicking an enlarged photo here toggles its liked label directly,
+    // same as clicking its circle back in the grid — a yellow border plus
+    // a filled corner badge confirms the state at this larger size.
+    private func loupeImageView(for url: URL) -> some View {
+        let isLiked = likedURLs.contains(url)
+
+        return ZStack {
+            if let image = loupeImages[url] ?? gridThumbnails[url] {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                ProgressView()
+                    .tint(.white)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(isLiked ? accentColor : Color.clear, lineWidth: 4)
+        )
+        .shadow(color: isLiked ? accentColor.opacity(0.5) : .clear, radius: isLiked ? 14 : 0)
+        .overlay(alignment: .topLeading) {
+            if isLiked {
+                Circle()
+                    .fill(accentColor)
+                    .frame(width: 22, height: 22)
+                    .shadow(color: accentColor.opacity(0.9), radius: 5)
+                    .padding(12)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            toggleLike(url)
+        }
+        .animation(.easeOut(duration: 0.15), value: isLiked)
+    }
+
+    private func closeLoupe() {
+        withAnimation(.easeOut(duration: 0.15)) {
+            loupeURLs = nil
+        }
+    }
+
+    // MARK: Selection / like state
+
+    // A plain click selects only that photo; Cmd-click toggles it in/out of
+    // a multi-selection capped at 5, matching the Adobe Bridge convention
+    // the client asked for.
+    //
+    // Reads the modifier flags off NSApp.currentEvent (the actual click
+    // that triggered this) rather than the live NSEvent.modifierFlags
+    // snapshot — the latter reflects whatever the hardware state happens
+    // to be at the instant this line runs, which can still read Cmd as
+    // held for a moment right after releasing it from a previous Cmd-click,
+    // making a plain click on an already-selected photo silently fall into
+    // the Cmd-click (toggle-out) branch instead of replacing the selection.
+    private func handleSelectTap(_ url: URL) {
+        let isCommandDown = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
+
+        if isCommandDown {
+            if selectedURLs.contains(url) {
+                selectedURLs.remove(url)
+            } else if selectedURLs.count < maxSelectionCount {
+                selectedURLs.insert(url)
+            }
+        } else {
+            selectedURLs = [url]
+        }
+    }
+
+    private func toggleLike(_ url: URL) {
+        if likedURLs.contains(url) {
+            likedURLs.remove(url)
+        } else {
+            likedURLs.insert(url)
+        }
+    }
+
+    // MARK: Keyboard (Space opens/closes the loupe, Escape closes it)
+
+    // No existing keyboard-monitor pattern elsewhere in the app (every
+    // other shortcut is a SwiftUI `.keyboardShortcut` on a specific
+    // button), so this is a fresh local NSEvent monitor, installed only
+    // while this screen is on screen and removed on disappear.
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else {
+            return
+        }
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let spaceKeyCode: UInt16 = 49
+            let escapeKeyCode: UInt16 = 53
+
+            // "x" toggles the liked label on every currently selected
+            // photo (same per-photo toggle as clicking its circle) —
+            // checked by character rather than key code so it still works
+            // under non-US keyboard layouts.
+            if loupeURLs == nil,
+               !selectedURLs.isEmpty,
+               event.charactersIgnoringModifiers?.lowercased() == "x" {
+                for url in selectedURLs {
+                    toggleLike(url)
+                }
+                return nil
+            }
+
+            guard event.keyCode == spaceKeyCode || event.keyCode == escapeKeyCode else {
+                return event
+            }
+
+            if loupeURLs != nil {
+                closeLoupe()
+                return nil
+            }
+
+            guard event.keyCode == spaceKeyCode, !selectedURLs.isEmpty else {
+                return event
+            }
+
+            openLoupe(for: photoURLs.filter { selectedURLs.contains($0) })
+            return nil
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+
+    private func openLoupe(for urls: [URL]) {
+        loupeURLs = urls
+        loadLoupeImages(for: urls)
+    }
+
+    private func loadLoupeImages(for urls: [URL]) {
+        for url in urls where loupeImages[url] == nil {
+            DispatchQueue.global(qos: .userInitiated).async {
+                // makePreviewImage uses NSImage lockFocus/unlockFocus, which
+                // is main-thread-only AppKit drawing — calling it off-thread
+                // (as this used to) is undefined behavior and was causing a
+                // brief app hang when several selected photos loaded at
+                // once. makeShowGridThumbnail is ImageIO-based and safe to
+                // call concurrently from a background queue.
+                let image = makeShowGridThumbnail(from: url, maxPixelSize: 2000)
+
+                DispatchQueue.main.async {
+                    if let image {
+                        loupeImages[url] = image
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Export labeled photos
+
+    // Copies every liked (yellow-labeled) photo's original file to a
+    // client-chosen folder. Purely a file export — it has no effect on the
+    // liked/selected state here or on the Kousei/Kirigami slideshow flow.
+    private func exportLabeledPhotos() {
+        guard !likedURLs.isEmpty else {
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Export"
+        panel.message = "Choose a folder to export the labeled photos to."
+
+        guard panel.runModal() == .OK, let destinationFolder = panel.url else {
+            return
+        }
+
+        let urlsToExport = photoURLs.filter { likedURLs.contains($0) }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fileManager = FileManager.default
+
+            for sourceURL in urlsToExport {
+                var destinationURL = destinationFolder.appendingPathComponent(sourceURL.lastPathComponent)
+                let baseName = sourceURL.deletingPathExtension().lastPathComponent
+                let fileExtension = sourceURL.pathExtension
+                var duplicateSuffix = 1
+
+                while fileManager.fileExists(atPath: destinationURL.path) {
+                    let candidateName = fileExtension.isEmpty
+                        ? "\(baseName) \(duplicateSuffix)"
+                        : "\(baseName) \(duplicateSuffix).\(fileExtension)"
+                    destinationURL = destinationFolder.appendingPathComponent(candidateName)
+                    duplicateSuffix += 1
+                }
+
+                try? fileManager.copyItem(at: sourceURL, to: destinationURL)
+            }
+        }
+    }
+
+    // MARK: Photo import + thumbnail loading
+
+    private func openPhotoPickerForShow() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.resolvesAliases = true
+
+        guard panel.runModal() == .OK else {
+            return
+        }
+
+        importShowPhotos(panel.urls)
+    }
+
+    // Shared by the file picker and drag-and-drop.
+    private func importShowPhotos(_ urls: [URL]) {
+        let sortedURLs = urls
+            .filter { url in
+                UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+            }
+            .sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
+
+        guard !sortedURLs.isEmpty else {
+            return
+        }
+
+        photoURLs = sortedURLs
+        loadGridThumbnails(for: sortedURLs)
+    }
+
+    private func loadGridThumbnails(for urls: [URL]) {
+        isLoadingPhotos = true
+        loadedThumbnailCount = 0
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            for url in urls {
+                let thumbnail = makeShowGridThumbnail(from: url)
+
+                DispatchQueue.main.async {
+                    if let thumbnail {
+                        gridThumbnails[url] = thumbnail
+                    }
+
+                    loadedThumbnailCount += 1
+
+                    if loadedThumbnailCount >= urls.count {
+                        isLoadingPhotos = false
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A small, fast thumbnail (unlike makePreviewImage's up-to-1400pt preview
+// image) for a grid that may hold 50-200+ photos at once.
+private func makeShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> NSImage? {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+        return nil
+    }
+
+    let options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceShouldCacheImmediately: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+    ]
+
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+        return nil
+    }
+
+    return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+}
+
+struct ShowHeaderButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        ShowHeaderButtonLabel(configuration: configuration)
+    }
+}
+
+private struct ShowHeaderButtonLabel: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+    let configuration: ButtonStyle.Configuration
+    @State private var isHovered = false
+
+    var body: some View {
+        configuration.label
+            .font(.custom("Figtree", size: 12).weight(.semibold))
+            .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink)
+            .scaleEffect(configuration.isPressed ? 0.98 : (isHovered ? 1.02 : 1))
+            .animation(.linear(duration: 0.1), value: isHovered)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(AppColors.panel)
+            .overlay(
+                RoundedRectangle(cornerRadius: 999)
+                    .stroke(isHovered ? AppColors.hoverInk : AppColors.border, lineWidth: 1.4)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 999))
+            .onHover { hovering in
+                isHovered = hovering
+            }
     }
 }
 

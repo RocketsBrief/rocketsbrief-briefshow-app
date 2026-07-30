@@ -226,7 +226,7 @@ private func origamiPlanSlotCount(pageIndex: Int, remainingPhotos: Int, isStrict
         return 0
     }
 
-    let cycle = isStrict43 ? [6, 7, 6, 7, 8] : [3, 5, 6, 2, 4]
+    let cycle = isStrict43 ? [2, 3, 2, 3, 4] : [3, 5, 6, 2, 4]
     let safePageIndex = max(0, pageIndex)
 
     var plannedCount = min(
@@ -238,7 +238,7 @@ private func origamiPlanSlotCount(pageIndex: Int, remainingPhotos: Int, isStrict
         plannedCount -= 1
     }
 
-    return max(1, min(isStrict43 ? 12 : 6, plannedCount))
+    return max(1, min(isStrict43 ? 4 : 6, plannedCount))
 }
 
 private func origamiPlanReplacementCount(
@@ -935,7 +935,7 @@ struct ContentView: View {
         var pageIndex = 0
         var previousSlotCount: Int? = nil
         let total = previewImages.count
-        let maxSlotCount = visualTheme == .magazine43 ? 12 : 6
+        let maxSlotCount = visualTheme == .magazine43 ? 4 : 6
 
         while consumed < total {
             let remaining = total - consumed
@@ -1017,20 +1017,17 @@ struct ContentView: View {
 
         let safeSeed = abs(magazinePhotoSeed)
 
-        // The strict 4:3 grid tiles a lot more cleanly with more photos on
-        // the page (small counts like 2-4 just can't cover a 16:9 page
-        // without a visible margin, no matter the split), so it gets its
-        // own, larger cycle instead of Kousei's 2-6 range.
+        // The strict 4:3 grid caps out at 4 photos per page (never less
+        // than 1) so no page ever sits on a big, mostly-empty stretch of
+        // the 16:9 canvas — it gets its own, smaller cycle instead of
+        // Kousei's 2-6 range.
         if visualTheme == .magazine43 {
-            // 6 and 7 tile a 16:9 page almost perfectly with exact 4:3
-            // cells (6 as a 4-over-2 split is an exact fit); 8 is included
-            // for occasional variety even though it fits slightly looser.
             let strict43Cycles = [
-                [6, 7, 6, 7, 8],
-                [7, 6, 8, 6, 7],
-                [6, 8, 7, 6, 7],
-                [7, 7, 6, 8, 6],
-                [8, 6, 7, 7, 6]
+                [2, 3, 2, 3, 4],
+                [3, 2, 4, 2, 3],
+                [2, 4, 3, 2, 3],
+                [3, 3, 2, 4, 2],
+                [4, 2, 3, 3, 2]
             ]
 
             let cycle = strict43Cycles[safeSeed % strict43Cycles.count]
@@ -1176,11 +1173,11 @@ struct ContentView: View {
             return 0
         }
 
-        // The strict 4:3 grid tiles a lot more cleanly with more photos on
-        // the page, so it gets its own, larger cycle instead of Kirigami's
+        // The strict 4:3 grid caps out at 4 photos per page (never less
+        // than 1), so it gets its own, smaller cycle instead of Kirigami's
         // 2-6 range.
         if visualTheme == .origami43 {
-            let cycle = [6, 7, 6, 7, 8]
+            let cycle = [2, 3, 2, 3, 4]
             let safePageIndex = max(0, pageIndex)
             var plannedCount = min(cycle[safePageIndex % cycle.count], remainingPhotos)
 
@@ -1188,7 +1185,7 @@ struct ContentView: View {
                 plannedCount -= 1
             }
 
-            return max(1, min(12, plannedCount))
+            return max(1, min(4, plannedCount))
         }
 
         // Origami page cycle:
@@ -3723,11 +3720,11 @@ private func plannedMagazineExportSlotCount(
 
     if isStrict43 {
         let strict43Cycles = [
-            [6, 7, 6, 7, 8],
-            [7, 6, 8, 6, 7],
-            [6, 8, 7, 6, 7],
-            [7, 7, 6, 8, 6],
-            [8, 6, 7, 7, 6]
+            [2, 3, 2, 3, 4],
+            [3, 2, 4, 2, 3],
+            [2, 4, 3, 2, 3],
+            [3, 3, 2, 4, 2],
+            [4, 2, 3, 3, 2]
         ]
 
         let cycle = strict43Cycles[seed % strict43Cycles.count]
@@ -5566,7 +5563,7 @@ private func drawMagazineExportImage(
     )
 
     context.setFillColor(
-        NSColor.white.cgColor
+        NSColor.black.cgColor
     )
 
     context.fill(rect)
@@ -5694,7 +5691,7 @@ private func makeMagazineExportPixelBuffer(
     )
 
     context.setFillColor(
-        NSColor.white.cgColor
+        NSColor.black.cgColor
     )
 
     context.fill(pageRect)
@@ -7312,8 +7309,8 @@ private func buildOrigamiSwiftUIExportPages(
     }
 
     let isStrict43 = theme == .origami43
-    let cycle = isStrict43 ? [6, 7, 6, 7, 8] : [3, 5, 6, 2, 4]
-    let maxSlotCount = isStrict43 ? 12 : 6
+    let cycle = isStrict43 ? [2, 3, 2, 3, 4] : [3, 5, 6, 2, 4]
+    let maxSlotCount = isStrict43 ? 4 : 6
 
     let requestedReplacementCount =
         max(
@@ -14053,6 +14050,7 @@ private func magazineLayoutVariantCount(photoCount: Int) -> Int {
 // as a last resort is the whole block scaled down uniformly (preserving
 // every cell's ratio) to fit, which shows as one clean margin around the
 // entire grid rather than a gap on one particular row.
+
 private func strict43RowCompositions(photoCount: Int) -> [[Int]] {
     guard photoCount > 0 else { return [] }
 
@@ -14127,6 +14125,22 @@ private func strict43BestRowCounts(
     let count = isLandscape.count
 
     guard count > 0, pageWidth > 0, pageHeight > 0 else { return [] }
+
+    // Three horizontal photos read as three thin strips squeezed into one
+    // row — always break them into one photo centered on top with the
+    // other two side by side below it instead. Any other 3-photo mix
+    // (portrait involved) keeps using whichever split scores best below.
+    if count == 3, isLandscape[0], isLandscape[1], isLandscape[2] {
+        return [1, 2]
+    }
+
+    // Four vertical photos in a 2-over-2 grid are each so narrow that the
+    // grid needs a big shrink-to-fit against a 16:9 page, leaving thick
+    // black bars on both sides — a single row of four fits the width
+    // better and only ever costs a smaller top/bottom margin instead.
+    if count == 4, !isLandscape[0], !isLandscape[1], !isLandscape[2], !isLandscape[3] {
+        return [4]
+    }
 
     var bestSplit = [count]
     var bestScore = CGFloat.greatestFiniteMagnitude
@@ -14299,12 +14313,74 @@ private func strict43LSplitRects(
     return best
 }
 
+// Three landscape photos, one centered on top and two side by side below
+// it, all three the SAME size — unlike the generic row-stack (which forces
+// every row to span the full page width on its own, making the lone top
+// cell twice as tall as each bottom cell). Sizing all three cells to match
+// the bottom pair keeps them visually equal; the top cell is then just
+// centered above the gap between the bottom two, even though that leaves
+// empty space on either side of it rather than spanning the full width.
+private func strict43ThreeLandscapeRects(
+    pageWidth: CGFloat,
+    pageHeight: CGFloat,
+    gap: CGFloat
+) -> (rects: [CGRect], margin: CGFloat)? {
+    guard pageWidth > 0, pageHeight > 0 else { return nil }
+
+    let cellWidth = (pageWidth - gap) / 2
+    guard cellWidth > 0 else { return nil }
+
+    let cellHeight = cellWidth * (3.0 / 4.0)
+    let naturalTotalHeight = cellHeight * 2 + gap
+    guard naturalTotalHeight > 0 else { return nil }
+
+    // Only ever shrink to fit, never grow, and center whatever margin is
+    // left — same convention as the row-stack layout below.
+    let scale = min(1, pageHeight / naturalTotalHeight)
+    let scaledCellWidth = cellWidth * scale
+    let scaledCellHeight = cellHeight * scale
+    let scaledGap = gap * scale
+    let scaledTotalHeight = scaledCellHeight * 2 + scaledGap
+    let bottomRowWidth = scaledCellWidth * 2 + scaledGap
+
+    let y = (pageHeight - scaledTotalHeight) / 2
+    let bottomX = (pageWidth - bottomRowWidth) / 2
+
+    let topRect = CGRect(
+        x: (pageWidth - scaledCellWidth) / 2,
+        y: y,
+        width: scaledCellWidth,
+        height: scaledCellHeight
+    )
+
+    let bottomLeftRect = CGRect(
+        x: bottomX,
+        y: y + scaledCellHeight + scaledGap,
+        width: scaledCellWidth,
+        height: scaledCellHeight
+    )
+
+    let bottomRightRect = CGRect(
+        x: bottomX + scaledCellWidth + scaledGap,
+        y: y + scaledCellHeight + scaledGap,
+        width: scaledCellWidth,
+        height: scaledCellHeight
+    )
+
+    return ([topRect, bottomLeftRect, bottomRightRect], pageHeight - scaledTotalHeight)
+}
+
 private func strict43GridLayout(
     isLandscape: [Bool],
     pageWidth: CGFloat,
     pageHeight: CGFloat,
     gap: CGFloat
 ) -> [CGRect] {
+    if isLandscape.count == 3, isLandscape[0], isLandscape[1], isLandscape[2],
+       let three = strict43ThreeLandscapeRects(pageWidth: pageWidth, pageHeight: pageHeight, gap: gap) {
+        return three.rects
+    }
+
     let plain = strict43PlainGridRects(
         isLandscape: isLandscape,
         pageWidth: pageWidth,
@@ -14363,7 +14439,7 @@ struct MagazinePreviewPage: View {
     }
 
     private var pageImages: [NSImage] {
-        Array(images.prefix(theme == .magazine43 ? 12 : 6))
+        Array(images.prefix(theme == .magazine43 ? 4 : 6))
     }
 
     private var pagePhotoCount: Int {
@@ -14498,7 +14574,7 @@ struct MagazinePreviewPage: View {
                 )
                 .padding(pagePadding)
                 .frame(width: pageWidth, height: pageHeight)
-                .background(Color.white)
+                .background(Color.black)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
@@ -14511,7 +14587,7 @@ struct MagazinePreviewPage: View {
         } else {
             switch pagePhotoCount {
             case 0:
-                Color.white
+                Color.black
 
             case 1:
                 tile(slot: 0, revealOrder: 0)
@@ -14816,7 +14892,7 @@ struct MagazinePreviewPage: View {
                 }
             )
         } else {
-            Color.white
+            Color.black
         }
     }
 
@@ -14908,7 +14984,7 @@ struct MagazineImageTile: View {
             )
 
             ZStack {
-                Color.white
+                Color.black
 
                 Image(nsImage: image)
                     .resizable()
@@ -15191,7 +15267,7 @@ struct OrigamiPreviewPage: View {
     }
 
     private var pageImages: [NSImage] {
-        Array(images.prefix(theme == .origami43 ? 12 : 6))
+        Array(images.prefix(theme == .origami43 ? 4 : 6))
     }
 
     private func aspectRatio(of image: NSImage) -> CGFloat {

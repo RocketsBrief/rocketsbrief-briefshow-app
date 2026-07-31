@@ -821,7 +821,7 @@ struct ContentView: View {
         }
         .task {
             await remoteStatus.refresh()
-            await ExportCounter.flush()
+            await ExportCounter.flushAll()
             await DeviceCheckIn.checkIn()
         }
     }
@@ -3700,6 +3700,11 @@ private struct MagazineExportPhoto {
 private struct MagazineExportPage {
     let photos: [MagazineExportPhoto]
     let layoutVariant: Int
+    // Only meaningful for isStrict43 pages — layoutVariant above is resolved
+    // via the non-strict magazine variant scheme (different shape/count of
+    // choices), so a strict-4:3 page needs its own raw manual-override value
+    // to feed into strict43GridLayout's own row-arrangement candidates.
+    var strict43ManualVariant: Int?
 }
 
 private func magazineExportPhotoSeed(
@@ -4094,7 +4099,8 @@ private func buildMagazineExportPages(
         pages.append(
             MagazineExportPage(
                 photos: pagePhotos,
-                layoutVariant: resolved
+                layoutVariant: resolved,
+                strict43ManualVariant: manualLayoutOverrides[pageIndex]
             )
         )
 
@@ -5741,7 +5747,8 @@ private func makeMagazineExportPixelBuffer(
             isLandscape: page.photos.map { $0.aspectRatio >= 1 },
             pageWidth: contentRect.width,
             pageHeight: contentRect.height,
-            gap: gap
+            gap: gap,
+            manualVariant: page.strict43ManualVariant
         )
 
         rects = strict43Rects.map { rect in
@@ -11759,30 +11766,24 @@ struct HeaderView: View {
 
     var body: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 14) {
-                    HStack(spacing: 0) {
-                        Text("Brief")
-                            .font(.custom("Unbounded", size: 20).weight(.black))
-                            .foregroundColor(AppColors.ink)
-                            .tracking(-1.7)
+            HStack(spacing: 14) {
+                HStack(spacing: 0) {
+                    Text("Brief")
+                        .font(.custom("Unbounded", size: 20).weight(.black))
+                        .foregroundColor(AppColors.ink)
+                        .tracking(-1.7)
 
-                        Text("Show")
-                            .font(.custom("Unbounded", size: 20).weight(.black))
-                            .foregroundColor(AppColors.inkSecondary)
-                            .tracking(-1.7)
-                    }
-
-                    HStack(spacing: 8) {
-                        ThemeToggleButton(theme: .white, selected: $themeManager.current)
-                        ThemeToggleButton(theme: .buttery, selected: $themeManager.current)
-                        ThemeToggleButton(theme: .dark, selected: $themeManager.current)
-                    }
+                    Text("Show")
+                        .font(.custom("Unbounded", size: 20).weight(.black))
+                        .foregroundColor(AppColors.inkSecondary)
+                        .tracking(-1.7)
                 }
 
-                Text("Create high-resolution photo slideshows with music.")
-                    .font(.custom("Figtree", size: 13).weight(.medium))
-                    .foregroundColor(AppColors.muted)
+                HStack(spacing: 8) {
+                    ThemeToggleButton(theme: .white, selected: $themeManager.current)
+                    ThemeToggleButton(theme: .buttery, selected: $themeManager.current)
+                    ThemeToggleButton(theme: .dark, selected: $themeManager.current)
+                }
             }
 
             Spacer()
@@ -11929,6 +11930,72 @@ struct DisclaimerHoverCard: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .frame(width: 315, alignment: .leading)
+        .background(AppColors.background)
+        .overlay(
+            RoundedRectangle(cornerRadius: 26)
+                .stroke(AppColors.border, lineWidth: 3)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 26))
+        .shadow(color: Color.black.opacity(0.13), radius: 18, x: 0, y: 10)
+    }
+}
+
+struct ShowGridShortcutsHoverCard: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+
+    private struct ShortcutRow: Identifiable {
+        let id = UUID()
+        let key: String
+        let description: String
+    }
+
+    private let rows: [ShortcutRow] = [
+        ShortcutRow(key: "X", description: "Label the selected photo(s)"),
+        ShortcutRow(key: "1..5", description: "Set that many stars on the selected photo(s)"),
+        ShortcutRow(key: "Space", description: "Preview the selected photo(s) — up to 5 at once"),
+        ShortcutRow(key: "C", description: "Exit the preview"),
+        ShortcutRow(key: "V", description: "Clear every label and star rating"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Keyboard shortcuts")
+                .font(.custom("Figtree", size: 14).weight(.medium))
+                .foregroundColor(AppColors.ink)
+
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(rows) { row in
+                    HStack(spacing: 10) {
+                        Text(row.key)
+                            .font(.custom("Figtree", size: 11).weight(.bold))
+                            .foregroundColor(AppColors.ink)
+                            .frame(minWidth: 36)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(AppColors.panel)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(AppColors.border, lineWidth: 1)
+                            )
+
+                        Text(row.description)
+                            .font(.custom("Figtree", size: 11).weight(.regular))
+                            .foregroundColor(AppColors.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            Text("Select one or more photos first, then press a key.")
+                .font(.custom("Figtree", size: 10.5).weight(.semibold))
+                .foregroundColor(AppColors.hoverInk)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: 300, alignment: .leading)
         .background(AppColors.background)
         .overlay(
             RoundedRectangle(cornerRadius: 26)
@@ -12649,9 +12716,15 @@ struct MagazineCropEditorSheet: View {
     }
 
     private var currentPageLayoutVariantCount: Int {
-        // Strict 4:3 grids are deterministic from photo count/orientation —
-        // there's no alternate variant to cycle through.
-        guard visualTheme != .magazine43, visualTheme != .origami43 else {
+        if visualTheme == .magazine43 {
+            guard let range = currentPageRange else { return 1 }
+
+            return strict43LayoutVariantCount(photoCount: min(range.count, 4))
+        }
+
+        // Kirigami 4:3's strict grid isn't wired up to manual overrides —
+        // stays deterministic from photo count/orientation for now.
+        guard visualTheme != .origami43 else {
             return 1
         }
 
@@ -13957,6 +14030,19 @@ private func magazineLayoutVariantCount(photoCount: Int) -> Int {
     }
 }
 
+// Enlarging a strict-4:3 grid beyond its safe "shrink (or stay) to fit"
+// scale was tried a few different ways (a flat factor, then a per-split
+// cap on how much of an edge cell's width it could lose) — every version
+// that actually reached a noticeably bigger size did so by clipping into
+// whichever edge cell was narrowest, and for a mixed row (e.g. one portrait
+// cell next to wider landscape cells) that reads as that photo being cut
+// off, not just "zoomed in." Since every cell must both stay exactly
+// 4:3/3:4 AND remain fully visible (no cell's content clipped by the
+// canvas edge), a single row that already spans the full page width at
+// scale 1 has no further room to grow — that natural size (whatever margin
+// it leaves top/bottom) is already the largest that satisfies both
+// requirements at once.
+
 // Shared strict-4:3/3:4 grid geometry for the "Kousei 4:3"/"Kirigami 4:3"
 // themes. Used by both the live SwiftUI preview (MagazinePreviewPage,
 // OrigamiPreviewPage) and the Kousei CGContext export path so the exported
@@ -14011,6 +14097,32 @@ private func strict43RowCompositions(photoCount: Int) -> [[Int]] {
     return candidates
 }
 
+// The row-count arrangements a client can manually pick between via
+// "Change Page Layout" (and the same list the automatic default is chosen
+// from, in strict43BestRowCounts below) — a small, curated list rather than
+// every mathematically valid strict43RowCompositions split. For 1-3 photos
+// there's exactly one client-specified arrangement (see the matching rules
+// in strict43BestRowCounts), so there's nothing to choose between — the
+// button simply doesn't show for those pages. For 4, only these three:
+// "1+3" (a mixed set of orientations), and "2+2" (used for either 4
+// portraits or 4 landscapes stacked two-over-two) — every 3-row split
+// (e.g. 1+1+2) was tried and read as too tall/stacked against a 16:9 page.
+private func strict43ManualLayoutCandidates(photoCount: Int) -> [[Int]] {
+    switch photoCount {
+    case 1:
+        return [[1]]
+    case 2:
+        return [[2]]
+    case 3:
+        return [[3]]
+    case 4:
+        return [[1, 3], [2, 2], [3, 1]]
+    default:
+        return strict43RowCompositions(photoCount: photoCount)
+            .filter { counts in counts.contains { $0 > 1 } }
+    }
+}
+
 // Natural (un-fit-to-page) height of each row when that row is built to
 // exactly span `pageWidth` at its cells' exact 4:3/3:4 ratios.
 private func strict43NaturalRowHeights(
@@ -14049,12 +14161,22 @@ private func strict43BestRowCounts(
 
     guard count > 0, pageWidth > 0, pageHeight > 0 else { return [] }
 
+    // Two photos, any orientation mix, always read as one side-by-side row
+    // — client-specified rule, not scored against alternatives.
+    if count == 2 {
+        return [2]
+    }
+
     // Three horizontal photos read as three thin strips squeezed into one
     // row — always break them into one photo centered on top with the
-    // other two side by side below it instead. Any other 3-photo mix
-    // (portrait involved) keeps using whichever split scores best below.
-    if count == 3, isLandscape[0], isLandscape[1], isLandscape[2] {
-        return [1, 2]
+    // other two side by side below it instead (handled one level up, in
+    // strict43GridLayout, via strict43ThreeLandscapeRects — this redundant
+    // copy is only a fallback for the rare case that call returns nil). Any
+    // other 3-photo mix (all portrait, or portrait+landscape) always reads
+    // as one row instead — client-specified rule, not scored against
+    // row-stack alternatives like every photo in its own row.
+    if count == 3 {
+        return isLandscape[0] && isLandscape[1] && isLandscape[2] ? [1, 2] : [3]
     }
 
     // Four vertical photos in a 2-over-2 grid are each so narrow that the
@@ -14068,7 +14190,7 @@ private func strict43BestRowCounts(
     var bestSplit = [count]
     var bestScore = CGFloat.greatestFiniteMagnitude
 
-    for counts in strict43RowCompositions(photoCount: count) {
+    for counts in strict43ManualLayoutCandidates(photoCount: count) {
         let rowHeights = strict43NaturalRowHeights(
             rowCounts: counts,
             isLandscape: isLandscape,
@@ -14103,18 +14225,34 @@ private func strict43PlainGridRects(
     isLandscape: [Bool],
     pageWidth: CGFloat,
     pageHeight: CGFloat,
-    gap: CGFloat
+    gap: CGFloat,
+    manualVariant: Int? = nil
 ) -> (rects: [CGRect], margin: CGFloat)? {
     guard !isLandscape.isEmpty, pageWidth > 0, pageHeight > 0 else {
         return nil
     }
 
-    let rowCounts = strict43BestRowCounts(
-        isLandscape: isLandscape,
-        pageWidth: pageWidth,
-        pageHeight: pageHeight,
-        gap: gap
-    )
+    let rowCounts: [Int]
+
+    if let manualVariant {
+        // Manual mode: pick a specific row-count arrangement out of the
+        // curated candidate list (same one strict43LayoutVariantCount
+        // reports the size of) instead of auto-scoring for the naturally
+        // best-fitting one.
+        let candidates = strict43ManualLayoutCandidates(photoCount: isLandscape.count)
+
+        guard !candidates.isEmpty else { return nil }
+
+        let index = ((manualVariant % candidates.count) + candidates.count) % candidates.count
+        rowCounts = candidates[index]
+    } else {
+        rowCounts = strict43BestRowCounts(
+            isLandscape: isLandscape,
+            pageWidth: pageWidth,
+            pageHeight: pageHeight,
+            gap: gap
+        )
+    }
 
     guard !rowCounts.isEmpty else { return nil }
 
@@ -14140,7 +14278,9 @@ private func strict43PlainGridRects(
 
     // Every row already spans pageWidth exactly at scale 1 (by
     // construction), so only ever scale DOWN, uniformly, if the stacked
-    // rows are taller than the page — never up, and never per-row.
+    // rows are taller than the page — never up (see the comment above this
+    // function for why: there's no room left to grow without clipping a
+    // whole cell's content, once a row already spans the full page width).
     let scale = min(1, pageHeight / naturalTotalHeight)
     let scaledGap = gap * scale
     let scaledRowHeights = naturalRowHeights.map { $0 * scale }
@@ -14258,7 +14398,7 @@ private func strict43ThreeLandscapeRects(
     guard naturalTotalHeight > 0 else { return nil }
 
     // Only ever shrink to fit, never grow, and center whatever margin is
-    // left — same convention as the row-stack layout below.
+    // left — same convention as the row-stack layout above.
     let scale = min(1, pageHeight / naturalTotalHeight)
     let scaledCellWidth = cellWidth * scale
     let scaledCellHeight = cellHeight * scale
@@ -14293,12 +14433,28 @@ private func strict43ThreeLandscapeRects(
     return ([topRect, bottomLeftRect, bottomRightRect], pageHeight - scaledTotalHeight)
 }
 
+// A client-chosen manualVariant picks a specific row-count arrangement
+// directly (see strict43PlainGridRects), skipping the auto-scoring — that
+// includes skipping the 3-all-landscape special case and the hero L-split
+// comparison below, both of which exist only to pick the naturally
+// best-fitting AUTOMATIC layout, not to be cycled through themselves.
 private func strict43GridLayout(
     isLandscape: [Bool],
     pageWidth: CGFloat,
     pageHeight: CGFloat,
-    gap: CGFloat
+    gap: CGFloat,
+    manualVariant: Int? = nil
 ) -> [CGRect] {
+    if let manualVariant {
+        return strict43PlainGridRects(
+            isLandscape: isLandscape,
+            pageWidth: pageWidth,
+            pageHeight: pageHeight,
+            gap: gap,
+            manualVariant: manualVariant
+        )?.rects ?? []
+    }
+
     if isLandscape.count == 3, isLandscape[0], isLandscape[1], isLandscape[2],
        let three = strict43ThreeLandscapeRects(pageWidth: pageWidth, pageHeight: pageHeight, gap: gap) {
         return three.rects
@@ -14331,6 +14487,14 @@ private func strict43GridLayout(
     case (nil, nil):
         return []
     }
+}
+
+// Total number of manually-selectable row arrangements for a given photo
+// count — same candidate list strict43PlainGridRects picks from when a
+// manualVariant is supplied. Always at least 1 (a single photo, or any
+// count with no valid composition, has nothing to cycle through).
+private func strict43LayoutVariantCount(photoCount: Int) -> Int {
+    max(1, strict43ManualLayoutCandidates(photoCount: photoCount).count)
 }
 
 struct MagazinePreviewPage: View {
@@ -14540,7 +14704,8 @@ struct MagazinePreviewPage: View {
             isLandscape: isLandscape,
             pageWidth: width,
             pageHeight: height,
-            gap: gap
+            gap: gap,
+            manualVariant: manualLayoutVariant
         )
 
         ZStack(alignment: .topLeading) {
@@ -20793,6 +20958,7 @@ struct PhotoShowSheet: View {
     @State private var gridThumbnails: [URL: NSImage] = [:]
     @State private var loupeImages: [URL: NSImage] = [:]
     @State private var likedURLs: Set<URL> = []
+    @State private var ratings: [URL: Int] = [:]
     @State private var selectedURLs: Set<URL> = []
     @State private var thumbnailSize: CGFloat = 180
     @State private var loupeURLs: [URL]?
@@ -20800,7 +20966,8 @@ struct PhotoShowSheet: View {
     @State private var loadedThumbnailCount: Int = 0
     @State private var keyMonitor: Any?
     @State private var isDropTargeted: Bool = false
-    @State private var isDisclaimerNoticePresented = false
+    @State private var isClearAllConfirmationPresented = false
+    @State private var isShortcutsHovered = false
 
     // ShowGrid follows the same White/Buttery/Dark theme as the main
     // BriefShow window (chosen from the Welcome screen's theme circles)
@@ -20809,15 +20976,18 @@ struct PhotoShowSheet: View {
     @ObservedObject private var themeManager = ThemeManager.shared
 
     private let maxSelectionCount = 5
+    private let maxRatingStars = 5
     private let minThumbnailSize: CGFloat = 90
     private let maxThumbnailSize: CGFloat = 320
 
-    // The selected-photo border and the liked circle glow best against the
-    // Dark theme's near-black background in the original warm yellow —
-    // White/Buttery use the generic theme hover accent instead, which
-    // reads more clearly against their lighter backgrounds.
+    // Dark theme uses a soft, light yellow (rather than a saturated gold)
+    // against its near-black background; White/Buttery use a mid-gray
+    // instead of the generic theme hover accent's near-black tone, which
+    // read too heavy against the stars/circle here.
     private var accentColor: Color {
-        themeManager.current == .dark ? Color.yellow : AppColors.hoverInk
+        themeManager.current == .dark
+            ? Color(red: 1.0, green: 0.94, blue: 0.62)
+            : Color(red: 0.56, green: 0.56, blue: 0.58)
     }
 
     var body: some View {
@@ -20845,14 +21015,34 @@ struct PhotoShowSheet: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
+
+            // Rendered here at the top level (rather than as a local overlay
+            // on the title text itself) so it always draws above the
+            // thumbnail grid — a local overlay nested inside the header
+            // gets painted UNDER the grid, since the grid is declared after
+            // the header in the same VStack and both are siblings there.
+            if isShortcutsHovered {
+                VStack {
+                    HStack {
+                        ShowGridShortcutsHoverCard()
+                            .padding(.leading, 24)
+                            .padding(.top, 46)
+
+                        Spacer()
+                    }
+
+                    Spacer()
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading)))
+                .allowsHitTesting(false)
+                .zIndex(400)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .preferredColorScheme(themeManager.current == .dark ? .dark : .light)
-        .sheet(isPresented: $isDisclaimerNoticePresented) {
-            DisclaimerNoticeModal()
-        }
         .onAppear {
             installKeyMonitor()
+            Task { await ExportCounter.flushAll() }
 
             if photoURLs.isEmpty, !initialPhotoURLs.isEmpty {
                 importShowPhotos(initialPhotoURLs)
@@ -20894,6 +21084,11 @@ struct PhotoShowSheet: View {
                             .font(.custom("Unbounded", size: 20).weight(.black))
                             .tracking(-1.7)
                             .foregroundColor(AppColors.inkSecondary)
+                    }
+                    .onHover { hovering in
+                        withAnimation(.linear(duration: 0.12)) {
+                            isShortcutsHovered = hovering
+                        }
                     }
 
                     HStack(spacing: 8) {
@@ -20941,6 +21136,19 @@ struct PhotoShowSheet: View {
                 .padding(.trailing, 10)
 
                 Button {
+                    exportStarredPhotos()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "star.fill")
+                        Text("Export Starred")
+                    }
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .opacity(hasStarredPhotos ? 1 : 0.4)
+                .disabled(!hasStarredPhotos)
+                .padding(.trailing, 10)
+
+                Button {
                     openPhotoPickerForShow()
                 } label: {
                     HStack(spacing: 6) {
@@ -20950,37 +21158,41 @@ struct PhotoShowSheet: View {
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
                 .padding(.trailing, 10)
-            }
 
-            Button {
-                isDisclaimerNoticePresented = true
-            } label: {
-                Text("Disclaimer")
-                    .font(.custom("Figtree", size: 11).weight(.medium))
-                    .foregroundColor(AppColors.muted)
+                Button {
+                    isClearAllConfirmationPresented = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "xmark.circle")
+                        Text("Clear All")
+                    }
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .opacity(hasLabelsOrRatings ? 1 : 0.4)
+                .disabled(!hasLabelsOrRatings)
+                .confirmationDialog(
+                    "Clear every label and star rating?",
+                    isPresented: $isClearAllConfirmationPresented,
+                    titleVisibility: .visible
+                ) {
+                    Button("Clear All", role: .destructive) {
+                        clearAllLabelsAndRatings()
+                    }
+                } message: {
+                    Text("This removes the liked label and star rating from every photo. It doesn't touch the photo files themselves.")
+                }
             }
-            .buttonStyle(.plain)
-            .padding(.trailing, 14)
-
-            Button {
-                onClose()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(AppColors.ink)
-                    .frame(width: 34, height: 34)
-                    .background(AppColors.panel)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 999)
-                            .stroke(AppColors.border, lineWidth: 1.5)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 999))
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.escape, modifiers: [])
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
+    }
+
+    private var hasStarredPhotos: Bool {
+        ratings.values.contains { $0 > 0 }
+    }
+
+    private var hasLabelsOrRatings: Bool {
+        !likedURLs.isEmpty || hasStarredPhotos
     }
 
     // MARK: Empty state
@@ -21063,14 +21275,45 @@ struct PhotoShowSheet: View {
             }
             .animation(.easeOut(duration: 0.12), value: isSelected)
 
-            likeToggle(for: url)
+            HStack(spacing: 0) {
+                starRating(for: url)
+
+                Spacer(minLength: 8)
+
+                likeToggle(for: url)
+                    .padding(.trailing, 12)
+            }
+            .frame(width: cellWidth)
         }
+    }
+
+    // Up to 5 stars a client can click to rate a photo, independent of the
+    // liked/labeled circle. Clicking the star that already matches the
+    // current rating clears it back to 0, the standard star-rating toggle.
+    private func starRating(for url: URL) -> some View {
+        let rating = ratings[url] ?? 0
+
+        return HStack(spacing: 3) {
+            ForEach(1...maxRatingStars, id: \.self) { index in
+                let isFilled = index <= rating
+
+                Image(systemName: isFilled ? "star.fill" : "star")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(isFilled ? accentColor : accentColor.opacity(0.55))
+                    .shadow(color: isFilled ? accentColor.opacity(0.9) : .clear, radius: isFilled ? 3 : 0)
+                    .contentShape(Rectangle().inset(by: -4))
+                    .onTapGesture {
+                        setRating(index, for: url)
+                    }
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: rating)
     }
 
     // A filled, glowing circle marks a liked photo; an empty outline
     // circle marks an unliked one. Independent of selection (the border
     // drawn around the thumbnail itself above) — both follow the current
-    // theme's accent color rather than being fixed yellow.
+    // theme's accent color (light yellow in Dark, gray in White/Buttery).
     private func likeToggle(for url: URL) -> some View {
         let isLiked = likedURLs.contains(url)
 
@@ -21276,6 +21519,15 @@ struct PhotoShowSheet: View {
         }
     }
 
+    private func setRating(_ rating: Int, for url: URL) {
+        ratings[url] = (ratings[url] == rating) ? 0 : rating
+    }
+
+    private func clearAllLabelsAndRatings() {
+        likedURLs.removeAll()
+        ratings.removeAll()
+    }
+
     // MARK: Keyboard (Space opens/closes the loupe, Escape closes it)
 
     // No existing keyboard-monitor pattern elsewhere in the app (every
@@ -21290,18 +21542,47 @@ struct PhotoShowSheet: View {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let spaceKeyCode: UInt16 = 49
             let escapeKeyCode: UInt16 = 53
+            let character = event.charactersIgnoringModifiers?.lowercased()
 
-            // "x" toggles the liked label on every currently selected
-            // photo (same per-photo toggle as clicking its circle) —
-            // checked by character rather than key code so it still works
-            // under non-US keyboard layouts.
-            if loupeURLs == nil,
-               !selectedURLs.isEmpty,
-               event.charactersIgnoringModifiers?.lowercased() == "x" {
-                for url in selectedURLs {
-                    toggleLike(url)
-                }
+            // "c" closes the loupe, same as Space/Escape — checked first
+            // since it applies only while the loupe is open.
+            if loupeURLs != nil, character == "c" {
+                closeLoupe()
                 return nil
+            }
+
+            // The rest of the shortcuts (label toggle, star ratings, clear
+            // all) only apply back in the grid, not while previewing.
+            if loupeURLs == nil {
+                // "x" toggles the liked label on every currently selected
+                // photo (same per-photo toggle as clicking its circle) —
+                // checked by character rather than key code so it still
+                // works under non-US keyboard layouts.
+                if !selectedURLs.isEmpty, character == "x" {
+                    for url in selectedURLs {
+                        toggleLike(url)
+                    }
+                    return nil
+                }
+
+                // "1"-"5" sets that many stars on every selected photo.
+                if !selectedURLs.isEmpty,
+                   let character,
+                   let rating = Int(character),
+                   (1...maxRatingStars).contains(rating) {
+                    for url in selectedURLs {
+                        setRating(rating, for: url)
+                    }
+                    return nil
+                }
+
+                // "v" clears every label and star rating, same as the
+                // "Clear All" header button — still asks for confirmation
+                // since it's a bulk, all-photos action.
+                if character == "v", hasLabelsOrRatings {
+                    isClearAllConfirmationPresented = true
+                    return nil
+                }
             }
 
             guard event.keyCode == spaceKeyCode || event.keyCode == escapeKeyCode else {
@@ -21354,13 +21635,32 @@ struct PhotoShowSheet: View {
         }
     }
 
-    // MARK: Export labeled photos
+    // MARK: Export labeled / starred photos
 
     // Copies every liked (yellow-labeled) photo's original file to a
     // client-chosen folder. Purely a file export — it has no effect on the
     // liked/selected state here or on the Kousei/Kirigami slideshow flow.
     private func exportLabeledPhotos() {
-        guard !likedURLs.isEmpty else {
+        exportPhotos(
+            matching: likedURLs,
+            message: "Choose a folder to export the labeled photos to.",
+            countingAs: .labeled
+        )
+    }
+
+    // Same file-copy export as "Export Labeled", but for every photo that
+    // has at least 1 star, independent of the liked/labeled circle.
+    private func exportStarredPhotos() {
+        let starredURLs = Set(photoURLs.filter { (ratings[$0] ?? 0) > 0 })
+        exportPhotos(
+            matching: starredURLs,
+            message: "Choose a folder to export the starred photos to.",
+            countingAs: .starred
+        )
+    }
+
+    private func exportPhotos(matching urlsToMatch: Set<URL>, message: String, countingAs kind: ExportCounter.Kind) {
+        guard !urlsToMatch.isEmpty else {
             return
         }
 
@@ -21370,13 +21670,13 @@ struct PhotoShowSheet: View {
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Export"
-        panel.message = "Choose a folder to export the labeled photos to."
+        panel.message = message
 
         guard panel.runModal() == .OK, let destinationFolder = panel.url else {
             return
         }
 
-        let urlsToExport = photoURLs.filter { likedURLs.contains($0) }
+        let urlsToExport = photoURLs.filter { urlsToMatch.contains($0) }
 
         DispatchQueue.global(qos: .userInitiated).async {
             let fileManager = FileManager.default
@@ -21396,6 +21696,10 @@ struct PhotoShowSheet: View {
                 }
 
                 try? fileManager.copyItem(at: sourceURL, to: destinationURL)
+            }
+
+            DispatchQueue.main.async {
+                ExportCounter.recordExport(kind: kind)
             }
         }
     }

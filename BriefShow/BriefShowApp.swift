@@ -318,6 +318,7 @@ private struct ChooserCard: View {
     let onDropURLs: ([URL]) -> Void
 
     @State private var isTitleHovered = false
+    @State private var isAddPhotosHovered = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -371,7 +372,12 @@ private struct ChooserCard: View {
                         style: StrokeStyle(lineWidth: isTargeted ? 3 : 2, dash: [9, 6])
                     )
             )
+            .scaleEffect(isAddPhotosHovered ? 1.03 : 1)
+            .animation(.easeOut(duration: 0.16), value: isAddPhotosHovered)
             .animation(.easeOut(duration: 0.12), value: isTargeted)
+            .onHover { hovering in
+                isAddPhotosHovered = hovering
+            }
 
             Spacer(minLength: 16)
         }

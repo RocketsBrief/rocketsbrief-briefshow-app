@@ -406,28 +406,72 @@ final class AppRemoteStatus: ObservableObject {
     }
 }
 
-/// Counts successful video exports and reports them to RocketsBrief.
+/// Counts successful exports (BriefShow videos, and ShowGrid's "Export
+/// Labeled"/"Export Starred" file copies) and reports them to RocketsBrief.
 /// Every export increments a locally persisted count first (so nothing is
 /// lost if the Mac is offline or the app quits), then tries to send it.
 /// A failed send just leaves the count pending for the next attempt - on
 /// next launch, or after the next export - so an offline Mac keeps
 /// collecting silently and reports everything in one batch once it's back
 /// online.
+///
+/// Each kind keeps its own pending count and posts its own row (tagged with
+/// `kind`) to the SAME `briefshow_export_events` table video exports
+/// already used — older app builds that still POST `{"count": N}` with no
+/// `kind` field rely on that column defaulting to 'video' in Supabase, so
+/// their existing counts keep landing in the same bucket unchanged.
 enum ExportCounter {
-    private static let defaultsKey = "briefshow.pendingExportCount"
-
-    private static var pendingCount: Int {
-        get { UserDefaults.standard.integer(forKey: defaultsKey) }
-        set { UserDefaults.standard.set(newValue, forKey: defaultsKey) }
+    enum Kind: String {
+        case video
+        case labeled
+        case starred
     }
 
-    static func recordExport() {
-        pendingCount += 1
-        Task { await flush() }
+    // Pre-multi-kind builds stored the (video-only) pending count under
+    // this single shared key. A Mac that was offline with a nonzero count
+    // sitting there when it updates to a multi-kind build needs that count
+    // carried over to the new per-kind key below — otherwise it's silently
+    // abandoned and that Mac's pending video-export count never gets sent.
+    private static let legacyVideoDefaultsKey = "briefshow.pendingExportCount"
+
+    private static func defaultsKey(for kind: Kind) -> String {
+        "briefshow.pendingExportCount.\(kind.rawValue)"
     }
 
-    static func flush() async {
-        let countToSend = pendingCount
+    private static func migrateLegacyPendingCountIfNeeded() {
+        let legacyCount = UserDefaults.standard.integer(forKey: legacyVideoDefaultsKey)
+
+        guard legacyCount > 0 else { return }
+
+        let videoKey = defaultsKey(for: .video)
+        let currentVideoCount = UserDefaults.standard.integer(forKey: videoKey)
+
+        UserDefaults.standard.set(currentVideoCount + legacyCount, forKey: videoKey)
+        UserDefaults.standard.removeObject(forKey: legacyVideoDefaultsKey)
+    }
+
+    private static func pendingCount(for kind: Kind) -> Int {
+        migrateLegacyPendingCountIfNeeded()
+        return UserDefaults.standard.integer(forKey: defaultsKey(for: kind))
+    }
+
+    private static func setPendingCount(_ value: Int, for kind: Kind) {
+        UserDefaults.standard.set(value, forKey: defaultsKey(for: kind))
+    }
+
+    static func recordExport(kind: Kind = .video) {
+        setPendingCount(pendingCount(for: kind) + 1, for: kind)
+        Task { await flush(kind: kind) }
+    }
+
+    static func flushAll() async {
+        for kind in [Kind.video, .labeled, .starred] {
+            await flush(kind: kind)
+        }
+    }
+
+    static func flush(kind: Kind = .video) async {
+        let countToSend = pendingCount(for: kind)
         guard countToSend > 0,
               let url = URL(string: "\(RocketsBriefConfig.supabaseURL)/rest/v1/briefshow_export_events")
         else {
@@ -438,7 +482,7 @@ enum ExportCounter {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(RocketsBriefConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["count": countToSend])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["count": countToSend, "kind": kind.rawValue])
 
         guard let (_, response) = try? await URLSession.shared.data(for: request),
               let httpResponse = response as? HTTPURLResponse,
@@ -447,7 +491,7 @@ enum ExportCounter {
             return
         }
 
-        pendingCount = max(0, pendingCount - countToSend)
+        setPendingCount(max(0, pendingCount(for: kind) - countToSend), for: kind)
     }
 }
 

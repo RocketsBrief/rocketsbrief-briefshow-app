@@ -16,6 +16,10 @@
 		<data>
 		Nx3fM1gihCEbzdZkRwWRRBcgmI0=
 		</data>
+		<key>Resources/Unbounded-VariableFont_wght.ttf</key>
+		<data>
+		ZVvfXSJhCpIPJfNdzhqj5BSagTY=
+		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
@@ -38,6 +42,13 @@
 			<key>hash2</key>
 			<data>
 			GFEVCzVkXas6Tvk1o0mi0fU3MiHA1baZPRRSEHZsVN4=
+			</data>
+		</dict>
+		<key>Resources/Unbounded-VariableFont_wght.ttf</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			MjtRG+OAyNR07wMGhrca7d5QH42c1G2lWLfEBFQ3LD8=
 			</data>
 		</dict>
 	</dict>

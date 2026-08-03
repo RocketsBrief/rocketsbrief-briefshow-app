@@ -85,7 +85,7 @@ enum AppColors {
         case .buttery:
             return Color(red: 0.315, green: 0.340, blue: 0.390)
         case .dark:
-            return Color(red: 0.95, green: 0.95, blue: 0.96)
+            return Color(red: 0.72, green: 0.72, blue: 0.74)
         }
     }
 
@@ -109,6 +109,17 @@ enum AppColors {
         case .dark:
             return Color(red: 0.58, green: 0.58, blue: 0.61)
         }
+    }
+
+    // Just for the "Brief"/"Show" two-tone wordmarks — the bright half needs
+    // to stay clearly brighter than the muted half it's paired with (and
+    // than ink's now-dimmer general-text tone) to keep that two-tone
+    // contrast readable, without dimming every other use of ink along with
+    // the rest of the app's body text.
+    static var wordmarkBright: Color {
+        current == .dark
+            ? Color(red: 1.000, green: 1.000, blue: 1.000)
+            : ink
     }
 
     static var hoverInk: Color {

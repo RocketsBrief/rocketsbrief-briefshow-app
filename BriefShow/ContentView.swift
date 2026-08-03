@@ -956,7 +956,9 @@ struct ContentView: View {
         var pageIndex = 0
         var previousSlotCount: Int? = nil
         let total = previewImages.count
-        let maxSlotCount = visualTheme == .magazine43 ? 4 : 6
+        // Both themes can now reach 6 (magazine43's all-landscape 4->6 bump
+        // in rawAdaptiveMagazineSlotCount needs the extra headroom here).
+        let maxSlotCount = 6
 
         while consumed < total {
             let remaining = total - consumed
@@ -1038,17 +1040,24 @@ struct ContentView: View {
 
         let safeSeed = abs(magazinePhotoSeed)
 
-        // The strict 4:3 grid caps out at 4 photos per page (never less
-        // than 1) so no page ever sits on a big, mostly-empty stretch of
-        // the 16:9 canvas — it gets its own, smaller cycle instead of
-        // Kousei's 2-6 range.
+        // Each cycle is a rotation of 2/3/4/6 repeated twice, so all four
+        // page sizes get an equal, straightforward 1-in-4 chance every
+        // time — no orientation- or position-based logic decides which
+        // sizes show up, so every size is a real, equally-likely option
+        // throughout the whole slideshow, not just near the end. The
+        // rotation puts the first "4" (and "6") at a different early
+        // position per cycle, so even short slideshows are likely to reach
+        // one of each.
         if visualTheme == .magazine43 {
             let strict43Cycles = [
-                [2, 3, 2, 3, 4],
-                [3, 2, 4, 2, 3],
-                [2, 4, 3, 2, 3],
-                [3, 3, 2, 4, 2],
-                [4, 2, 3, 3, 2]
+                [2, 3, 4, 6, 2, 3, 4, 6],
+                [3, 4, 6, 2, 3, 4, 6, 2],
+                [4, 6, 2, 3, 4, 6, 2, 3],
+                [6, 2, 3, 4, 6, 2, 3, 4],
+                [2, 4, 6, 3, 2, 4, 6, 3],
+                [4, 6, 3, 2, 4, 6, 3, 2],
+                [6, 3, 2, 4, 6, 3, 2, 4],
+                [3, 2, 4, 6, 3, 2, 4, 6]
             ]
 
             let cycle = strict43Cycles[safeSeed % strict43Cycles.count]
@@ -1114,7 +1123,27 @@ struct ContentView: View {
         // collage's awkward shape pairings — irrelevant for the strict 4:3
         // grid, which handles any orientation mix by construction.
         guard visualTheme != .magazine43 else {
-            return plannedCount
+            // plannedMagazineSlotCount's cycle gives 2/3/4/6 an equal
+            // chance, but a 4-photo grid (2x2 of 4:3 cells) only reads
+            // right when all 4 are landscape — client-requested: a
+            // portrait in the mix needs the extra room a 6-photo grid
+            // gives instead, even though that means 4 no longer lands in
+            // strictly equal proportion.
+            guard plannedCount == 4, remainingPhotos >= 6 else {
+                return plannedCount
+            }
+
+            let endIndexFour = min(previewImages.count, startIndex + 4)
+            guard startIndex >= 0, endIndexFour - startIndex == 4 else {
+                return plannedCount
+            }
+
+            // Match strict43MagazineTemplate's own isLandscape boolean
+            // exactly (width >= height) — that's what actually decides each
+            // cell's 4:3-vs-3:4 shape at render time.
+            let allLandscape = previewImages[startIndex..<endIndexFour].allSatisfy { $0.size.width >= $0.size.height }
+
+            return allLandscape ? plannedCount : 6
         }
 
         guard plannedCount > 0, !previewImages.isEmpty else {
@@ -3745,12 +3774,17 @@ private func plannedMagazineExportSlotCount(
     }
 
     if isStrict43 {
+        // Mirrors plannedMagazineSlotCount's preview-side cycle — see its
+        // comment. 2/3/4/6 each get an equal, straightforward 1-in-4 chance.
         let strict43Cycles = [
-            [2, 3, 2, 3, 4],
-            [3, 2, 4, 2, 3],
-            [2, 4, 3, 2, 3],
-            [3, 3, 2, 4, 2],
-            [4, 2, 3, 3, 2]
+            [2, 3, 4, 6, 2, 3, 4, 6],
+            [3, 4, 6, 2, 3, 4, 6, 2],
+            [4, 6, 2, 3, 4, 6, 2, 3],
+            [6, 2, 3, 4, 6, 2, 3, 4],
+            [2, 4, 6, 3, 2, 4, 6, 3],
+            [4, 6, 3, 2, 4, 6, 3, 2],
+            [6, 3, 2, 4, 6, 3, 2, 4],
+            [3, 2, 4, 6, 3, 2, 4, 6]
         ]
 
         let cycle = strict43Cycles[seed % strict43Cycles.count]
@@ -3834,7 +3868,23 @@ private func rawAdaptiveMagazineExportSlotCount(
     }
 
     guard !isStrict43 else {
-        return plannedCount
+        // Mirrors rawAdaptiveMagazineSlotCount's preview-side check — see
+        // its comment. A 4-photo grid only stays 4 when all 4 are
+        // landscape; otherwise it needs the extra room a 6-photo grid gives.
+        guard plannedCount == 4, remainingPhotos >= 6 else {
+            return plannedCount
+        }
+
+        let candidateFourPhotos = Array(photos.prefix(4))
+        guard candidateFourPhotos.count == 4 else {
+            return plannedCount
+        }
+
+        // Match the strict43 export grid's own isLandscape boolean exactly
+        // (aspectRatio >= 1, i.e. width >= height) — see line 5786.
+        let allLandscape = candidateFourPhotos.allSatisfy { $0.aspectRatio >= 1 }
+
+        return allLandscape ? plannedCount : 6
     }
 
     let candidatePhotos =
@@ -11770,7 +11820,7 @@ struct HeaderView: View {
                 HStack(spacing: 0) {
                     Text("Brief")
                         .font(.custom("Unbounded", size: 20).weight(.black))
-                        .foregroundColor(AppColors.ink)
+                        .foregroundColor(AppColors.wordmarkBright)
                         .tracking(-1.7)
 
                     Text("Show")
@@ -14526,7 +14576,9 @@ struct MagazinePreviewPage: View {
     }
 
     private var pageImages: [NSImage] {
-        Array(images.prefix(theme == .magazine43 ? 4 : 6))
+        // Both themes can now reach 6 (magazine43's all-landscape 4->6 bump
+        // needs the extra headroom here to actually show the extra photos).
+        Array(images.prefix(6))
     }
 
     private var pagePhotoCount: Int {
@@ -21078,7 +21130,7 @@ struct PhotoShowSheet: View {
                         Text("Show")
                             .font(.custom("Unbounded", size: 20).weight(.black))
                             .tracking(-1.7)
-                            .foregroundColor(AppColors.ink)
+                            .foregroundColor(AppColors.wordmarkBright)
 
                         Text("Grid")
                             .font(.custom("Unbounded", size: 20).weight(.black))

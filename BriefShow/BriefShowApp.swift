@@ -324,7 +324,7 @@ private struct ChooserCard: View {
         VStack(spacing: 24) {
             HStack(spacing: 0) {
                 Text(titlePrimary)
-                    .foregroundColor(AppColors.ink)
+                    .foregroundColor(AppColors.wordmarkBright)
 
                 Text(titleSecondary)
                     .foregroundColor(AppColors.inkSecondary)

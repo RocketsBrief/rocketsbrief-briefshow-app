@@ -526,7 +526,17 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 10) {
-                HeaderView(isProfileModalPresented: $isProfileModalPresented, onOpenShowScreen: { ShowGridWindowController.shared.open(initialPhotoURLs: selectedPhotoURLs) })
+                HeaderView(isProfileModalPresented: $isProfileModalPresented, onOpenShowScreen: {
+                    // Closes this Slideshow editor window entirely and
+                    // returns to the original Browse window (registered
+                    // via WindowAccessor) instead of opening a second,
+                    // duplicate one — going through the singleton's own
+                    // close() also clears its stored window reference, so
+                    // a later "Slideshow" click correctly opens a fresh
+                    // editor instead of trying to refocus this closed one.
+                    ShowGridWindowController.shared.open(initialPhotoURLs: selectedPhotoURLs)
+                    BriefShowWindowController.shared.close()
+                })
 
                 HStack(alignment: .top, spacing: 14) {
                     LeftImportPanel(
@@ -11808,7 +11818,6 @@ func loadDroppedFileURLs(
 }
 
 struct HeaderView: View {
-    @ObservedObject private var themeManager = ThemeManager.shared
     @ObservedObject private var accountManager = AccountManager.shared
     @ObservedObject private var remoteStatus = AppRemoteStatus.shared
     @Binding var isProfileModalPresented: Bool
@@ -11816,26 +11825,10 @@ struct HeaderView: View {
 
     var body: some View {
         HStack {
-            HStack(spacing: 14) {
-                HStack(spacing: 0) {
-                    Text("Brief")
-                        .font(.custom("Unbounded", size: 20).weight(.black))
-                        .foregroundColor(AppColors.wordmarkBright)
-                        .tracking(-1.7)
-
-                    Text("Show")
-                        .font(.custom("Unbounded", size: 20).weight(.black))
-                        .foregroundColor(AppColors.inkSecondary)
-                        .tracking(-1.7)
-                }
-
-                HStack(spacing: 8) {
-                    ThemeToggleButton(theme: .white, selected: $themeManager.current)
-                    ThemeToggleButton(theme: .buttery, selected: $themeManager.current)
-                    ThemeToggleButton(theme: .dark, selected: $themeManager.current)
-                }
-            }
-
+            // No wordmark or theme circles here — "BriefShow" branding and
+            // theme switching now live on the folder-tree/grid screen this
+            // editor is reached from (via "Browse" below); the editor
+            // itself just inherits whichever theme is already active.
             Spacer()
 
             VStack(alignment: .trailing, spacing: 6) {
@@ -11849,7 +11842,7 @@ struct HeaderView: View {
                                 .scaledToFit()
                                 .frame(width: 13, height: 13)
 
-                            Text("ShowGrid")
+                            Text("Browse")
                         }
                         .frame(height: 15)
                     }
@@ -20743,17 +20736,11 @@ struct HeaderLinkButtonLabel: View {
             .fontWeight(isHovered ? .semibold : nil)
             .foregroundColor(textColor)
             .lineLimit(1)
-            .scaleEffect(configuration.isPressed ? 0.985 : (isHovered ? 1.025 : 1))
+            .scaleEffect(configuration.isPressed ? 0.985 : (isHovered ? 1.1 : 1))
             .animation(.linear(duration: 0.10), value: isHovered)
             .animation(.linear(duration: 0.08), value: configuration.isPressed)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
-            .background(AppColors.panel)
-            .overlay(
-                RoundedRectangle(cornerRadius: 999)
-                    .stroke(borderColor, lineWidth: isHovered ? 1.8 : 1.4)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 999))
             .onHover { hovering in
                 isHovered = hovering
             }
@@ -20763,12 +20750,6 @@ struct HeaderLinkButtonLabel: View {
         isHovered
             ? AppColors.hoverInk
             : AppColors.ink
-    }
-
-    private var borderColor: Color {
-        isHovered
-            ? AppColors.hoverInk
-            : AppColors.ink.opacity(0.7)
     }
 }
 
@@ -20922,7 +20903,7 @@ final class ShowGridWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "ShowGrid"
+        window.title = "BriefShow"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
@@ -20946,6 +20927,41 @@ final class ShowGridWindowController {
         windowController?.close()
         windowController = nil
     }
+
+    // Lets the very first BriefShow/ShowGrid window — the one WindowGroup
+    // itself creates at launch, which this controller never created and
+    // so never knew about — register as "the" tracked window. Without
+    // this, clicking "Browse" from the Slideshow editor had no existing
+    // controller to find, so it always spawned a brand new second ShowGrid
+    // window instead of returning to the original one.
+    func registerIfNeeded(_ window: NSWindow) {
+        guard windowController == nil else {
+            return
+        }
+
+        windowController = NSWindowController(window: window)
+    }
+}
+
+// Reads the NSWindow hosting a SwiftUI view — used only to hand that
+// window to ShowGridWindowController so it can track a window it didn't
+// create itself (see registerIfNeeded above).
+private struct WindowAccessor: NSViewRepresentable {
+    let onResolve: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+
+        DispatchQueue.main.async {
+            if let window = view.window {
+                onResolve(window)
+            }
+        }
+
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 // Owns the BriefShow editor window's lifecycle the same way
@@ -20991,6 +21007,11 @@ final class BriefShowWindowController {
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    func close() {
+        windowController?.close()
+        windowController = nil
+    }
 }
 
 // Opened from the "ShowGrid" header button, independent of the Kousei/Kirigami
@@ -21021,6 +21042,23 @@ struct PhotoShowSheet: View {
     @State private var isClearAllConfirmationPresented = false
     @State private var isShortcutsHovered = false
 
+    // Left-hand folder tree, rooted at the client's Desktop — this is
+    // ShowGrid's now-primary way of loading photos (picking a folder loads
+    // whatever's inside it automatically), alongside the older manual
+    // "Add Photos" picker and drag-and-drop.
+    @State private var rootFolderNode: FolderNode?
+    @State private var selectedFolderURL: URL?
+
+    // Same footer links (RocketsBrief / Support / Fund Mission /
+    // Disclaimer) that used to live on the now-retired Welcome screen —
+    // kept reachable from the bottom of ShowGrid since it's the app's
+    // first screen now.
+    @State private var isRocketsBriefHovered = false
+    @State private var isSupportHovered = false
+    @State private var isFundMissionHovered = false
+    @State private var isDisclaimerHovered = false
+    @State private var isDisclaimerNoticePresented = false
+
     // ShowGrid follows the same White/Buttery/Dark theme as the main
     // BriefShow window (chosen from the Welcome screen's theme circles)
     // instead of always being dark — needs its own observation of
@@ -21047,13 +21085,24 @@ struct PhotoShowSheet: View {
             AppColors.background
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                header
+            HStack(spacing: 0) {
+                if let rootFolderNode {
+                    FolderTreeSidebar(rootNode: rootFolderNode, selectedURL: $selectedFolderURL)
+                        .frame(width: 260)
 
-                if photoURLs.isEmpty {
-                    emptyState
-                } else {
-                    thumbnailGrid
+                    Divider()
+                }
+
+                VStack(spacing: 0) {
+                    header
+
+                    if photoURLs.isEmpty {
+                        emptyState
+                    } else {
+                        thumbnailGrid
+                    }
+
+                    showGridFooter
                 }
             }
 
@@ -21076,8 +21125,13 @@ struct PhotoShowSheet: View {
             if isShortcutsHovered {
                 VStack {
                     HStack {
+                        // Leading padding accounts for the folder-tree
+                        // sidebar's width (260) plus its divider, so this
+                        // lands under the "BriefShow" wordmark in the main
+                        // content area instead of covering the tree next
+                        // to it, on the window's actual left edge.
                         ShowGridShortcutsHoverCard()
-                            .padding(.leading, 24)
+                            .padding(.leading, 284)
                             .padding(.top, 46)
 
                         Spacer()
@@ -21092,6 +21146,9 @@ struct PhotoShowSheet: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .preferredColorScheme(themeManager.current == .dark ? .dark : .light)
+        .sheet(isPresented: $isDisclaimerNoticePresented) {
+            DisclaimerNoticeModal()
+        }
         .onAppear {
             installKeyMonitor()
             Task { await ExportCounter.flushAll() }
@@ -21099,10 +21156,31 @@ struct PhotoShowSheet: View {
             if photoURLs.isEmpty, !initialPhotoURLs.isEmpty {
                 importShowPhotos(initialPhotoURLs)
             }
+
+            if rootFolderNode == nil, let homeURL = RootFolderAccess.resolve() {
+                rootFolderNode = FolderNode(url: homeURL)
+            }
         }
+        .background(
+            WindowAccessor { window in
+                ShowGridWindowController.shared.registerIfNeeded(window)
+            }
+        )
         .onDisappear { removeKeyMonitor() }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             loadDroppedFileURLs(from: providers) { urls in
+                // Dragging a single whole folder in opens it exactly like
+                // clicking it in the tree would — sets it as the current
+                // selection and lets the onChange below load its images,
+                // rather than being silently ignored the way a bare
+                // folder URL would be by the image-file filter below.
+                if urls.count == 1,
+                   let droppedFolderURL = urls.first,
+                   (try? droppedFolderURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                    selectedFolderURL = droppedFolderURL
+                    return
+                }
+
                 let droppedPhotoURLs = urls.filter { url in
                     UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
                 }
@@ -21114,40 +21192,43 @@ struct PhotoShowSheet: View {
                 importShowPhotos(droppedPhotoURLs)
             }
         }
+        .onChange(of: selectedFolderURL) { newValue in
+            guard let newValue else { return }
+            loadImages(inFolder: newValue)
+        }
     }
 
     // MARK: Header
 
     private var header: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 14) {
-                    // Same two-tone wordmark treatment as "Brief"+"Show" in
-                    // the main header: first word bright, second word
-                    // muted, with the theme circles right next to it —
-                    // same placement as the main BriefShow header.
-                    HStack(spacing: 0) {
-                        Text("Show")
-                            .font(.custom("Unbounded", size: 20).weight(.black))
-                            .tracking(-1.7)
-                            .foregroundColor(AppColors.wordmarkBright)
+            VStack(alignment: .leading, spacing: 8) {
+                // Wordmark on its own row (rather than side-by-side with the
+                // theme circles) so it always has the full header width to
+                // itself and never gets squeezed into wrapping ("Show"
+                // breaking onto its own line) now that the header shares
+                // this row with the folder tree next to it.
+                HStack(spacing: 0) {
+                    Text("Brief")
+                        .font(.custom("Unbounded", size: 20).weight(.black))
+                        .tracking(-1.7)
+                        .foregroundColor(AppColors.wordmarkBright)
 
-                        Text("Grid")
-                            .font(.custom("Unbounded", size: 20).weight(.black))
-                            .tracking(-1.7)
-                            .foregroundColor(AppColors.inkSecondary)
+                    Text("Show")
+                        .font(.custom("Unbounded", size: 20).weight(.black))
+                        .tracking(-1.7)
+                        .foregroundColor(AppColors.inkSecondary)
+                }
+                .onHover { hovering in
+                    withAnimation(.linear(duration: 0.12)) {
+                        isShortcutsHovered = hovering
                     }
-                    .onHover { hovering in
-                        withAnimation(.linear(duration: 0.12)) {
-                            isShortcutsHovered = hovering
-                        }
-                    }
+                }
 
-                    HStack(spacing: 8) {
-                        ThemeToggleButton(theme: .white, selected: $themeManager.current)
-                        ThemeToggleButton(theme: .buttery, selected: $themeManager.current)
-                        ThemeToggleButton(theme: .dark, selected: $themeManager.current)
-                    }
+                HStack(spacing: 8) {
+                    ThemeToggleButton(theme: .white, selected: $themeManager.current)
+                    ThemeToggleButton(theme: .buttery, selected: $themeManager.current)
+                    ThemeToggleButton(theme: .dark, selected: $themeManager.current)
                 }
 
                 if !photoURLs.isEmpty {
@@ -21164,7 +21245,7 @@ struct PhotoShowSheet: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "film")
-                    Text("BriefShow")
+                    Text("Slideshow")
                 }
             }
             .buttonStyle(ShowHeaderButtonStyle())
@@ -21247,6 +21328,148 @@ struct PhotoShowSheet: View {
         !likedURLs.isEmpty || hasStarredPhotos
     }
 
+    private var currentYear: Int {
+        Calendar.current.component(.year, from: Date())
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "5.0"
+    }
+
+    // MARK: Footer
+
+    // The RocketsBrief / Support / Fund Mission / Disclaimer links (with
+    // their hover info cards) used to only live on the Welcome screen —
+    // now that ShowGrid is the app's first screen, they're kept reachable
+    // here instead of being lost. Hover cards open UPWARD (negative y
+    // offset) since this bar sits at the bottom of the window, unlike the
+    // Welcome screen's version of this row which opened them downward.
+    private var showGridFooter: some View {
+        HStack(spacing: 16) {
+            Text("© \(String(currentYear)) RocketsBrief")
+                .font(.custom("Figtree", size: 11).weight(.medium))
+                .tracking(0.4)
+                .foregroundColor(AppColors.muted.opacity(0.55))
+
+            Text("v\(appVersion)")
+                .font(.custom("Figtree", size: 11).weight(.medium))
+                .tracking(0.4)
+                .foregroundColor(AppColors.muted.opacity(0.4))
+
+            Spacer()
+
+            Button {
+                if let url = URL(string: "https://www.rocketsbrief.com") {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image("RocketsBriefButtonLogo")
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 13, height: 13)
+
+                    Text("RocketsBrief")
+                }
+                .frame(height: 13)
+            }
+            .buttonStyle(HeaderLinkButtonStyle())
+            .overlay(alignment: .bottomTrailing) {
+                if isRocketsBriefHovered {
+                    RocketsBriefHoverCard()
+                        .offset(x: 0, y: -44)
+                        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottomTrailing)))
+                        .zIndex(300)
+                }
+            }
+            .onHover { hovering in
+                withAnimation(.linear(duration: 0.12)) {
+                    isRocketsBriefHovered = hovering
+                }
+            }
+
+            Button {
+                if let url = URL(string: "https://www.rocketsbrief.com/support") {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 13, height: 13)
+
+                    Text("Support")
+                }
+                .frame(height: 13)
+            }
+            .buttonStyle(HeaderLinkButtonStyle())
+            .overlay(alignment: .bottomTrailing) {
+                if isSupportHovered {
+                    SupportHoverCard()
+                        .offset(x: 0, y: -44)
+                        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottomTrailing)))
+                        .zIndex(300)
+                }
+            }
+            .onHover { hovering in
+                withAnimation(.linear(duration: 0.12)) {
+                    isSupportHovered = hovering
+                }
+            }
+
+            Button {
+                if let url = URL(string: "https://www.paypal.com/ncp/payment/GUZARDB67QEDU#checkoutModal") {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                Text("Fund Mission")
+                    .frame(height: 13)
+            }
+            .buttonStyle(HeaderLinkButtonStyle())
+            .overlay(alignment: .bottomTrailing) {
+                if isFundMissionHovered {
+                    FundMissionHoverCard()
+                        .offset(x: 0, y: -44)
+                        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottomTrailing)))
+                        .zIndex(300)
+                }
+            }
+            .onHover { hovering in
+                withAnimation(.linear(duration: 0.12)) {
+                    isFundMissionHovered = hovering
+                }
+            }
+
+            Button {
+                isDisclaimerNoticePresented = true
+            } label: {
+                Text("Disclaimer")
+                    .frame(height: 13)
+            }
+            .buttonStyle(HeaderLinkButtonStyle())
+            .overlay(alignment: .bottomTrailing) {
+                if isDisclaimerHovered {
+                    DisclaimerHoverCard()
+                        .offset(x: 0, y: -44)
+                        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottomTrailing)))
+                        .zIndex(300)
+                }
+            }
+            .onHover { hovering in
+                withAnimation(.linear(duration: 0.12)) {
+                    isDisclaimerHovered = hovering
+                }
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(AppColors.background)
+        .overlay(Divider(), alignment: .top)
+        .zIndex(300)
+    }
+
     // MARK: Empty state
 
     private var emptyState: some View {
@@ -21257,9 +21480,14 @@ struct PhotoShowSheet: View {
                 .font(.system(size: 40))
                 .foregroundColor(AppColors.muted.opacity(0.7))
 
-            Text("Import photos to review and mark your favorites.")
+            Text(
+                rootFolderNode == nil
+                    ? "Import photos to review and mark your favorites."
+                    : "Pick a folder on the left, or import photos to review and mark your favorites."
+            )
                 .font(.custom("Figtree", size: 14).weight(.medium))
                 .foregroundColor(AppColors.muted)
+                .multilineTextAlignment(.center)
 
             Button {
                 openPhotoPickerForShow()
@@ -21406,14 +21634,6 @@ struct PhotoShowSheet: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 999)
-                .fill(AppColors.panel)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 999)
-                .stroke(AppColors.border, lineWidth: 1)
-        )
     }
 
     // MARK: Loupe (enlarged multi-select preview)
@@ -21773,6 +21993,31 @@ struct PhotoShowSheet: View {
         importShowPhotos(panel.urls)
     }
 
+    // Called when the client clicks a folder in the left-hand tree — loads
+    // whatever images sit directly inside it, the same way the manual file
+    // picker and drag-and-drop already do. Explicitly clears the grid
+    // (rather than leaving the previous folder's photos up) when the
+    // chosen folder has no images, so the grid always reflects whichever
+    // folder is currently selected.
+    private func loadImages(inFolder folderURL: URL) {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: folderURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        let imageURLs = contents.filter { url in
+            UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+        }
+
+        guard !imageURLs.isEmpty else {
+            photoURLs = []
+            return
+        }
+
+        importShowPhotos(imageURLs)
+    }
+
     // Shared by the file picker and drag-and-drop.
     private func importShowPhotos(_ urls: [URL]) {
         let sortedURLs = urls
@@ -21815,6 +22060,329 @@ struct PhotoShowSheet: View {
     }
 }
 
+// MARK: - Desktop folder access (sandboxed security-scoped bookmark)
+
+// BriefShow is sandboxed with only `user-selected.read-write` access
+// (BriefShow.entitlements), so it can't browse the Mac's filesystem the
+// way Finder does — it can only read a folder the client has explicitly
+// granted through an NSOpenPanel. Granting the client's home folder
+// covers every everyday location underneath it (Desktop, Documents,
+// Downloads, Pictures, ...) in one go, the same set Finder's sidebar
+// starts from, without needing a separate grant per folder. This
+// resolves (or, the first time only, requests) that access and remembers
+// it via a security-scoped bookmark, so every later launch skips the
+// prompt and the folder tree just opens straight up.
+enum RootFolderAccess {
+    private static let bookmarkDefaultsKey = "com.rocketsbrief.briefshow.rootFolderBookmark"
+
+    static func resolve() -> URL? {
+        if let url = resolveFromStoredBookmark() {
+            return url
+        }
+
+        return requestAccessAndStoreBookmark()
+    }
+
+    private static func resolveFromStoredBookmark() -> URL? {
+        guard let bookmarkData = UserDefaults.standard.data(forKey: bookmarkDefaultsKey) else {
+            return nil
+        }
+
+        var isStale = false
+        guard let url = try? URL(
+            resolvingBookmarkData: bookmarkData,
+            options: [.withSecurityScope],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        ) else {
+            return nil
+        }
+
+        guard url.startAccessingSecurityScopedResource() else {
+            return nil
+        }
+
+        if isStale {
+            storeBookmark(for: url)
+        }
+
+        return url
+    }
+
+    private static func requestAccessAndStoreBookmark() -> URL? {
+        let homeURL = FileManager.default.homeDirectoryForCurrentUser
+
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = homeURL
+        panel.prompt = "Grant Access"
+        panel.message = "Let BriefShow browse your folders (Desktop, Documents, Pictures, ...) so you can review photos straight from them."
+
+        guard panel.runModal() == .OK, let grantedURL = panel.url else {
+            return nil
+        }
+
+        guard grantedURL.startAccessingSecurityScopedResource() else {
+            return nil
+        }
+
+        storeBookmark(for: grantedURL)
+        return grantedURL
+    }
+
+    private static func storeBookmark(for url: URL) {
+        guard let bookmarkData = try? url.bookmarkData(
+            options: [.withSecurityScope],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        ) else {
+            return
+        }
+
+        UserDefaults.standard.set(bookmarkData, forKey: bookmarkDefaultsKey)
+    }
+}
+
+// MARK: - Folder tree sidebar (Finder-style, home-folder-rooted)
+
+// One node in the folder tree. A class (rather than a struct) so each
+// node's `children` can be computed lazily and cached on first access —
+// expanding a row scans just that one folder instead of the whole Desktop
+// subtree being walked upfront when the sidebar first appears.
+final class FolderNode: Identifiable {
+    let url: URL
+    var id: URL { url }
+
+    private var cachedChildren: [FolderNode]??
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    var name: String {
+        url.lastPathComponent
+    }
+
+    var children: [FolderNode]? {
+        if let cachedChildren {
+            return cachedChildren
+        }
+
+        let loaded = FolderNode.loadSubfolders(of: url)
+        cachedChildren = loaded
+        return loaded
+    }
+
+    private static func loadSubfolders(of url: URL) -> [FolderNode]? {
+        let contents = try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        let subfolders = (contents ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+
+        guard !subfolders.isEmpty else {
+            return nil
+        }
+
+        return subfolders.map { FolderNode(url: $0) }
+    }
+}
+
+// Left-hand Finder-style folder browser, rooted at the client's home
+// folder (so it covers Desktop, Documents, Downloads, Pictures, etc. the
+// same way Finder's own sidebar does). Clicking a folder here is
+// BriefShow's primary way of loading photos now — it loads whatever
+// images sit directly inside that folder into the grid, with no separate
+// "Import" step, similar in spirit to Adobe Bridge's folder panel.
+//
+// The "currently open" row pinned above the scrolling tree always names
+// whichever folder is loaded on the right — including when that folder
+// was opened by dragging it onto the grid rather than by clicking it
+// here, where it may not even be visible in the (possibly collapsed)
+// tree below.
+private struct FolderTreeSidebar: View {
+    let rootNode: FolderNode
+    @Binding var selectedURL: URL?
+
+    // Which folders' disclosure triangles are currently open. Unlike
+    // OutlineGroup (which manages expansion internally with no outside
+    // access), tracking this ourselves lets us expand the tree down to
+    // whatever folder is currently open — including when it was opened by
+    // dragging a folder onto the grid rather than by clicking through the
+    // tree — the same "reveal in sidebar" behavior Adobe Bridge/Finder
+    // give you.
+    @State private var expandedURLs: Set<URL> = []
+
+    // Same defensive pattern every other themed view in this file uses
+    // (PhotoShowSheet, HeaderView, the hover cards, ...) — without its own
+    // subscription here, this sidebar could keep showing whichever theme
+    // was active when it first appeared instead of updating live when the
+    // client picks a different one from the header circles.
+    @ObservedObject private var themeManager = ThemeManager.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(rootNode.name.uppercased())
+                .font(.custom("Figtree", size: 11).weight(.bold))
+                .tracking(1.1)
+                .foregroundColor(AppColors.muted.opacity(0.7))
+                .padding(.horizontal, 18)
+                .padding(.top, 20)
+                .padding(.bottom, 10)
+
+            if let selectedURL {
+                currentlyOpenRow(for: selectedURL)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    row(for: rootNode)
+
+                    ForEach(rootNode.children ?? [], id: \.id) { node in
+                        folderDisclosure(for: node)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 20)
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(AppColors.background)
+        .onAppear { expandPathToSelection() }
+        .onChange(of: selectedURL) { _ in expandPathToSelection() }
+    }
+
+    // A folder with subfolders renders as an expandable disclosure group
+    // (its own row as the label, subfolders as its content); a leaf folder
+    // just renders its row directly, with no triangle. Type-erased to
+    // AnyView (rather than `some View`) because this function calls
+    // itself recursively — an opaque return type can't refer to itself.
+    private func folderDisclosure(for node: FolderNode) -> AnyView {
+        if let children = node.children {
+            return AnyView(
+                DisclosureGroup(isExpanded: expandedBinding(for: node.url)) {
+                    ForEach(children, id: \.id) { child in
+                        folderDisclosure(for: child)
+                    }
+                } label: {
+                    row(for: node)
+                }
+            )
+        } else {
+            return AnyView(row(for: node))
+        }
+    }
+
+    private func expandedBinding(for url: URL) -> Binding<Bool> {
+        Binding(
+            get: { expandedURLs.contains(url) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedURLs.insert(url)
+                } else {
+                    expandedURLs.remove(url)
+                }
+            }
+        )
+    }
+
+    // Walks every ancestor folder between the root and the currently open
+    // folder (exclusive of the folder itself) and marks each one expanded,
+    // so the open folder's own row is actually visible in the tree instead
+    // of hidden inside a collapsed parent.
+    private func expandPathToSelection() {
+        guard let selectedURL else {
+            return
+        }
+
+        let standardizedRoot = rootNode.url.standardizedFileURL
+        let standardizedTarget = selectedURL.standardizedFileURL
+
+        guard standardizedTarget.path.hasPrefix(standardizedRoot.path + "/") else {
+            return
+        }
+
+        let relativeComponents = standardizedTarget.pathComponents.dropFirst(standardizedRoot.pathComponents.count)
+
+        var ancestorURL = standardizedRoot
+        for component in relativeComponents.dropLast() {
+            ancestorURL.appendPathComponent(component)
+            expandedURLs.insert(ancestorURL)
+        }
+    }
+
+    // Pinned indicator naming the folder currently loaded into the grid,
+    // so the client always has an unambiguous answer to "what am I
+    // looking at" — the tree below it can be scrolled/collapsed away from
+    // that folder's row without losing that context.
+    private func currentlyOpenRow(for url: URL) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder.badge.checkmark")
+                .font(.system(size: 12))
+                .foregroundColor(AppColors.hoverInk)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("OPEN")
+                    .font(.custom("Figtree", size: 9).weight(.bold))
+                    .tracking(0.8)
+                    .foregroundColor(AppColors.muted.opacity(0.6))
+
+                Text(url.lastPathComponent)
+                    .font(.custom("Figtree", size: 13).weight(.semibold))
+                    .foregroundColor(AppColors.ink)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(AppColors.panel)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(AppColors.hoverInk.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private func row(for node: FolderNode) -> some View {
+        let isSelected = selectedURL == node.url
+
+        return HStack(spacing: 8) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 12))
+                .foregroundColor(isSelected ? AppColors.hoverInk : AppColors.muted.opacity(0.8))
+
+            Text(node.name)
+                .font(.custom("Figtree", size: 13).weight(isSelected ? .semibold : .regular))
+                .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected ? AppColors.panel : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedURL = node.url
+        }
+    }
+}
+
 // A small, fast thumbnail (unlike makePreviewImage's up-to-1400pt preview
 // image) for a grid that may hold 50-200+ photos at once.
 private func makeShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> NSImage? {
@@ -21851,16 +22419,10 @@ private struct ShowHeaderButtonLabel: View {
         configuration.label
             .font(.custom("Figtree", size: 12).weight(.semibold))
             .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink)
-            .scaleEffect(configuration.isPressed ? 0.98 : (isHovered ? 1.02 : 1))
+            .scaleEffect(configuration.isPressed ? 0.98 : (isHovered ? 1.1 : 1))
             .animation(.linear(duration: 0.1), value: isHovered)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .background(AppColors.panel)
-            .overlay(
-                RoundedRectangle(cornerRadius: 999)
-                    .stroke(isHovered ? AppColors.hoverInk : AppColors.border, lineWidth: 1.4)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 999))
             .onHover { hovering in
                 isHovered = hovering
             }

@@ -168,18 +168,18 @@ struct ThemeToggleButton: View {
         } label: {
             Circle()
                 .fill(swatchColor)
-                .frame(width: 26, height: 26)
+                .frame(width: 17, height: 17)
                 .overlay(
                     Circle()
-                        .stroke(AppColors.ink.opacity(0.35), lineWidth: 1.5)
+                        .stroke(AppColors.ink.opacity(0.35), lineWidth: 1.2)
                 )
                 .overlay(
                     Circle()
                         .stroke(
                             isActive ? AppColors.hoverInk.opacity(0.85) : Color.clear,
-                            lineWidth: 1.8
+                            lineWidth: 1.5
                         )
-                        .padding(-3)
+                        .padding(-2.5)
                 )
                 .scaleEffect(isHovered ? 1.12 : (isActive ? 1.05 : 1.0))
                 .shadow(color: Color.black.opacity(isHovered ? 0.28 : 0.18), radius: isHovered ? 4 : 2, y: 1.5)

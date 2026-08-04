@@ -21157,9 +21157,7 @@ struct PhotoShowSheet: View {
                 importShowPhotos(initialPhotoURLs)
             }
 
-            if rootFolderNode == nil, let homeURL = RootFolderAccess.resolve() {
-                rootFolderNode = FolderNode(url: homeURL)
-            }
+            requestRootFolderAccessIfNeeded()
         }
         .background(
             WindowAccessor { window in
@@ -21499,9 +21497,51 @@ struct PhotoShowSheet: View {
             }
             .buttonStyle(ShowHeaderButtonStyle())
 
+            // Manual fallback for the automatic grant attempt in .onAppear
+            // (see requestRootFolderAccessIfNeeded): that one fires the
+            // moment the window appears, and on some Macs the modal
+            // NSOpenPanel it presents can silently fail to show if the
+            // window hasn't finished becoming key yet — no error, no log,
+            // the client just never sees a prompt and the sidebar never
+            // shows up. A button click is always on an already-key window,
+            // so it can't hit that race — this reliably (re)triggers the
+            // same grant flow on demand instead of leaving a client with
+            // no folder tree and no way to ask for one again short of us
+            // walking them through Terminal commands.
+            if rootFolderNode == nil {
+                Button {
+                    requestRootFolderAccessIfNeeded()
+                } label: {
+                    Text("Grant Folder Access")
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // Requests the home-folder grant that powers the left folder tree
+    // (see RootFolderAccess above). Deferred one runloop tick and
+    // preceded by an explicit app/window activation: NSOpenPanel.runModal()
+    // is an app-modal panel, and calling it synchronously from `.onAppear`
+    // — i.e. mid-layout, before this window has actually become key — can
+    // make it silently fail to appear on some Macs instead of showing.
+    // There's no error or log in that case; RootFolderAccess.resolve()
+    // just returns nil, indistinguishable from the client having clicked
+    // Cancel. Activating first and giving SwiftUI a tick to finish
+    // installing the window closes that race.
+    private func requestRootFolderAccessIfNeeded() {
+        guard rootFolderNode == nil else { return }
+
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+
+            if let homeURL = RootFolderAccess.resolve() {
+                rootFolderNode = FolderNode(url: homeURL)
+            }
+        }
     }
 
     // MARK: Grid

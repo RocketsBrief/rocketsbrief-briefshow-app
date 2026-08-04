@@ -21065,6 +21065,19 @@ struct PhotoShowSheet: View {
     // ThemeManager so this window re-renders when the theme changes.
     @ObservedObject private var themeManager = ThemeManager.shared
 
+    // ShowGrid became the app's first (and, for most clients, only)
+    // window when it replaced the old Welcome chooser — but the
+    // update-required / account-lock overlays were left behind on
+    // ContentView, the old first window that's now just the secondary
+    // "BriefShow" editor most clients never open. That silently broke
+    // remote update checks and the remote kill-switch for anyone who
+    // never clicks through to the editor: bumping "Latest Version" in
+    // the admin panel had nothing left to check it against. Observing
+    // the same AppRemoteStatus/AccountManager singletons here and
+    // showing the same overlays restores that for ShowGrid itself.
+    @ObservedObject private var remoteStatus = AppRemoteStatus.shared
+    @ObservedObject private var accountManager = AccountManager.shared
+
     private let maxSelectionCount = 5
     private let maxRatingStars = 5
     private let minThumbnailSize: CGFloat = 90
@@ -21143,6 +21156,27 @@ struct PhotoShowSheet: View {
                 .allowsHitTesting(false)
                 .zIndex(400)
             }
+
+            // Same remote-config gate ContentView (the editor window) has
+            // had all along — mirrored here since ShowGrid, not the
+            // editor, is the window most clients actually see. See the
+            // remoteStatus/accountManager doc comment above for why this
+            // was missing.
+            if remoteStatus.isUpdateAvailable {
+                UpdateRequiredOverlay(
+                    latestVersion: remoteStatus.config?.latestVersion ?? remoteStatus.currentVersion,
+                    downloadURL: remoteStatus.config?.downloadUrl,
+                    releaseNotes: remoteStatus.config?.releaseNotes
+                )
+                .ignoresSafeArea()
+                .zIndex(20000)
+                .transition(.opacity)
+            } else if remoteStatus.isLocked && !accountManager.isSignedIn {
+                LockedAccessOverlay(lockMessage: remoteStatus.config?.lockMessage)
+                    .ignoresSafeArea()
+                    .zIndex(19000)
+                    .transition(.opacity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .preferredColorScheme(themeManager.current == .dark ? .dark : .light)
@@ -21152,6 +21186,7 @@ struct PhotoShowSheet: View {
         .onAppear {
             installKeyMonitor()
             Task { await ExportCounter.flushAll() }
+            Task { await remoteStatus.refresh() }
 
             if photoURLs.isEmpty, !initialPhotoURLs.isEmpty {
                 importShowPhotos(initialPhotoURLs)

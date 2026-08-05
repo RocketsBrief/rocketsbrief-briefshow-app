@@ -21035,12 +21035,43 @@ struct PhotoShowSheet: View {
     @State private var selectedURLs: Set<URL> = []
     @State private var thumbnailSize: CGFloat = 180
     @State private var loupeURLs: [URL]?
+
+    // Set (never read back) whenever Left/Right-arrow navigation lands on a
+    // new photo, so the grid can scroll that thumbnail into view even when
+    // it's off-screen — see the ScrollViewReader in `thumbnailGrid`.
+    @State private var scrollToPhotoURL: URL?
     @State private var isLoadingPhotos: Bool = false
     @State private var loadedThumbnailCount: Int = 0
     @State private var keyMonitor: Any?
     @State private var isDropTargeted: Bool = false
     @State private var isClearAllConfirmationPresented = false
     @State private var isShortcutsHovered = false
+
+    // Brief "N Stars" confirmation shown over the loupe when a rating is
+    // set with the 1-5 keys while previewing — the loupe has no visible
+    // star row to click (unlike the grid), so without this a client
+    // rating a photo there had no sign anything happened at all.
+    @State private var ratingToastText: String?
+    @State private var ratingToastDismissWorkItem: DispatchWorkItem?
+
+    // Right-click "Add to Bin" on a photo (in the grid) or a folder (in the
+    // sidebar) — held here until the confirmation dialog is answered, since
+    // moving something to the Trash isn't easily undone from inside
+    // BriefShow itself.
+    @State private var pendingTrashPhotoURLs: [URL]?
+    @State private var pendingTrashFolderNode: FolderNode?
+    @State private var isTrashPhotoConfirmationPresented = false
+    @State private var isTrashFolderConfirmationPresented = false
+
+    // "Paste" always reads its actual content straight from
+    // NSPasteboard.general (see pasteboardFileURLs) — that's what makes
+    // pasting photos Copied in Finder, not just ones Cut/Copied inside
+    // BriefShow itself, work. These two just remember whether BriefShow's
+    // own last Cut/Copy is still the thing sitting on that pasteboard, so
+    // Paste can tell a real "move it" Cut apart from a plain Finder Copy
+    // (where nothing should ever be deleted) — see isPasteboardOurCut.
+    @State private var clipboardURLs: [URL] = []
+    @State private var clipboardIsCut = false
 
     // Left-hand folder tree, rooted at the client's Desktop — this is
     // ShowGrid's now-primary way of loading photos (picking a folder loads
@@ -21100,7 +21131,19 @@ struct PhotoShowSheet: View {
 
             HStack(spacing: 0) {
                 if let rootFolderNode {
-                    FolderTreeSidebar(rootNode: rootFolderNode, selectedURL: $selectedFolderURL)
+                    FolderTreeSidebar(
+                        rootNode: rootFolderNode,
+                        selectedURL: $selectedFolderURL,
+                        isPasteAvailable: !pasteboardFileURLs().isEmpty,
+                        onSetClipboard: { urls, isCut in
+                            clipboardURLs = urls
+                            clipboardIsCut = isCut
+                        },
+                        onPasteIntoFolder: { node in
+                            pasteClipboard(into: node.url)
+                        },
+                        onTrashFolder: requestTrashFolder
+                    )
                         .frame(width: 260)
 
                     Divider()
@@ -21121,6 +21164,19 @@ struct PhotoShowSheet: View {
 
             if let loupeURLs, !loupeURLs.isEmpty {
                 loupeOverlay(for: loupeURLs)
+            }
+
+            // Photo import/folder loading runs on a background queue and
+            // never blocks the UI, but with nothing on screen to say so, a
+            // few hundred thumbnails decoding felt indistinguishable from
+            // BriefShow having hung. This badge is the only visible sign
+            // that it's working — non-interactive, so it never blocks
+            // clicks on whatever's already loaded underneath it.
+            if isLoadingPhotos {
+                loadingIndicator
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+                    .zIndex(250)
             }
 
             if isDropTargeted {
@@ -21182,6 +21238,40 @@ struct PhotoShowSheet: View {
         .preferredColorScheme(themeManager.current == .dark ? .dark : .light)
         .sheet(isPresented: $isDisclaimerNoticePresented) {
             DisclaimerNoticeModal()
+        }
+        .confirmationDialog(
+            pendingTrashPhotoURLs?.count == 1 ? "Move this photo to the Trash?" : "Move \(pendingTrashPhotoURLs?.count ?? 0) photos to the Trash?",
+            isPresented: $isTrashPhotoConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Move to Trash", role: .destructive) {
+                if let pendingTrashPhotoURLs {
+                    trashPhotos(pendingTrashPhotoURLs)
+                }
+                pendingTrashPhotoURLs = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingTrashPhotoURLs = nil
+            }
+        } message: {
+            Text("This moves the original photo file(s) to the Trash. You can restore them from there.")
+        }
+        .confirmationDialog(
+            "Move \"\(pendingTrashFolderNode?.name ?? "")\" to the Trash?",
+            isPresented: $isTrashFolderConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Move to Trash", role: .destructive) {
+                if let pendingTrashFolderNode {
+                    trashFolder(pendingTrashFolderNode)
+                }
+                pendingTrashFolderNode = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingTrashFolderNode = nil
+            }
+        } message: {
+            Text("This moves the whole folder, with everything inside it, to the Trash. You can restore it from there.")
         }
         .onAppear {
             installKeyMonitor()
@@ -21503,6 +21593,43 @@ struct PhotoShowSheet: View {
         .zIndex(300)
     }
 
+    // MARK: Loading indicator
+
+    // Small pinned HUD, bottom-trailing, so it never covers the header
+    // buttons or the folder tree — just confirms photos are actively being
+    // loaded, with a running count once photoURLs is known.
+    private var loadingIndicator: some View {
+        VStack {
+            Spacer()
+
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+
+                Text(
+                    photoURLs.isEmpty
+                        ? "Loading images…"
+                        : "Loading images… \(loadedThumbnailCount)/\(photoURLs.count)"
+                )
+                .font(.custom("Figtree", size: 12.5).weight(.medium))
+                .foregroundColor(AppColors.ink)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(AppColors.background)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.25), radius: 14, y: 4)
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
     // MARK: Empty state
 
     private var emptyState: some View {
@@ -21555,6 +21682,10 @@ struct PhotoShowSheet: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .contextMenu {
+            gridBackgroundContextMenuItems
+        }
     }
 
     // Requests the home-folder grant that powers the left folder tree
@@ -21582,14 +21713,40 @@ struct PhotoShowSheet: View {
     // MARK: Grid
 
     private var thumbnailGrid: some View {
-        ScrollView {
-            FlowLayout(spacing: 16, lineSpacing: 26) {
-                ForEach(photoURLs, id: \.self) { url in
-                    thumbnailCell(for: url)
+        ScrollViewReader { proxy in
+            ScrollView {
+                FlowLayout(spacing: 16, lineSpacing: 26) {
+                    ForEach(photoURLs, id: \.self) { url in
+                        thumbnailCell(for: url)
+                            .id(url)
+                    }
+                }
+                .padding(24)
+                .padding(.bottom, 70)
+                // Stretched to the full scroll width (rather than just
+                // hugging the flowed thumbnails), so there's no dead strip
+                // down the right edge that the ScrollView won't scroll on.
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            // On the ScrollView itself, not a background layer behind it —
+            // a ScrollView claims hit-testing for its ENTIRE frame (that's
+            // how it can start a scroll-drag from anywhere in it, not just
+            // over its content), so a separate "Paste" layer underneath it
+            // never actually received right-clicks; every click inside the
+            // grid's bounds stopped at the ScrollView first. A thumbnail's
+            // own .contextMenu, being on a more specific child view, still
+            // wins over this one when the click lands on a photo.
+            .contextMenu {
+                gridBackgroundContextMenuItems
+            }
+            // Keeps arrow-key navigation's new selection on screen even
+            // when it lands outside the currently scrolled area.
+            .onChange(of: scrollToPhotoURL) { newValue in
+                guard let newValue else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(newValue, anchor: .center)
                 }
             }
-            .padding(24)
-            .padding(.bottom, 70)
         }
     }
 
@@ -21628,6 +21785,9 @@ struct PhotoShowSheet: View {
             .onTapGesture {
                 handleSelectTap(url)
             }
+            .contextMenu {
+                photoContextMenuItems(for: url)
+            }
             .animation(.easeOut(duration: 0.12), value: isSelected)
 
             HStack(spacing: 0) {
@@ -21640,6 +21800,54 @@ struct PhotoShowSheet: View {
             }
             .frame(width: cellWidth)
         }
+    }
+
+    // Right-click menu on a grid thumbnail. Acts on the whole current
+    // selection when the client right-clicks a photo that's already part
+    // of a multi-selection (matching the Cmd-click multi-select above it),
+    // or just the one photo under the pointer otherwise.
+    @ViewBuilder
+    private func photoContextMenuItems(for url: URL) -> some View {
+        let targets = (selectedURLs.contains(url) && selectedURLs.count > 1)
+            ? photoURLs.filter { selectedURLs.contains($0) }
+            : [url]
+
+        Button("Copy") {
+            writeURLsToPasteboard(targets)
+            clipboardURLs = targets
+            clipboardIsCut = false
+        }
+
+        // Also sets BriefShow's own in-app clipboard (see clipboardURLs)
+        // so "Paste" on a folder in the sidebar actually moves these files
+        // there. The NSPasteboard write alongside it is only good for
+        // Copy-style behavior once it leaves BriefShow — pasting into
+        // Finder will always copy, never move, since a genuine cross-app
+        // "cut" isn't something a third-party app can trigger through
+        // public API; that bookkeeping is private to Finder's own
+        // window-to-window moves.
+        Button("Cut") {
+            writeURLsToPasteboard(targets)
+            clipboardURLs = targets
+            clipboardIsCut = true
+        }
+
+        Divider()
+
+        Button("Add to Bin", role: .destructive) {
+            pendingTrashPhotoURLs = targets
+            isTrashPhotoConfirmationPresented = true
+        }
+    }
+
+    // Right-click on empty grid space (rather than on a specific
+    // thumbnail) — the only useful action there is Paste.
+    @ViewBuilder
+    private var gridBackgroundContextMenuItems: some View {
+        Button("Paste") {
+            pasteIntoGrid()
+        }
+        .disabled(pasteboardFileURLs().isEmpty)
     }
 
     // Up to 5 stars a client can click to rate a photo, independent of the
@@ -21748,6 +21956,31 @@ struct PhotoShowSheet: View {
 
                 Spacer()
             }
+
+            // "N Stars" confirmation for the 1-5 rating keys — see
+            // showRatingToast. Non-interactive and pinned near the bottom
+            // so it never sits on top of the photo itself.
+            if let ratingToastText {
+                VStack {
+                    Spacer()
+
+                    Text(ratingToastText)
+                        .font(.custom("Figtree", size: 14).weight(.semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(
+                            Capsule().fill(Color.white.opacity(0.16))
+                        )
+                        .overlay(
+                            Capsule().stroke(Color.white.opacity(0.4), lineWidth: 1.5)
+                        )
+                        .padding(.bottom, 40)
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
+                .zIndex(2)
+            }
         }
         .transition(.opacity)
         .zIndex(1)
@@ -21829,6 +22062,11 @@ struct PhotoShowSheet: View {
         withAnimation(.easeOut(duration: 0.15)) {
             loupeURLs = nil
         }
+
+        // So a stale "N Stars" doesn't flash back up if the loupe is
+        // reopened before its own fade-out timer would've cleared it.
+        ratingToastDismissWorkItem?.cancel()
+        ratingToastText = nil
     }
 
     // MARK: Selection / like state
@@ -21864,15 +22102,244 @@ struct PhotoShowSheet: View {
         } else {
             likedURLs.insert(url)
         }
+        persistLabel(for: url)
     }
 
     private func setRating(_ rating: Int, for url: URL) {
         ratings[url] = (ratings[url] == rating) ? 0 : rating
+        persistLabel(for: url)
+    }
+
+    // Shows "N Stars" over the loupe for a beat, then fades it back out —
+    // takes the ACTUAL resulting rating (not just the key that was
+    // pressed) since setRating toggles a rating off back to 0 when the
+    // same key is pressed again, and the toast should say what happened,
+    // not just repeat the keypress.
+    private func showRatingToast(resultingIn appliedRating: Int) {
+        let text = appliedRating == 0
+            ? "Rating Cleared"
+            : (appliedRating == 1 ? "1 Star" : "\(appliedRating) Stars")
+
+        ratingToastDismissWorkItem?.cancel()
+
+        withAnimation(.easeOut(duration: 0.12)) {
+            ratingToastText = text
+        }
+
+        let dismissWorkItem = DispatchWorkItem {
+            withAnimation(.easeOut(duration: 0.25)) {
+                ratingToastText = nil
+            }
+        }
+        ratingToastDismissWorkItem = dismissWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: dismissWorkItem)
     }
 
     private func clearAllLabelsAndRatings() {
+        for url in photoURLs {
+            PhotoLabelStore.clear(for: url)
+        }
         likedURLs.removeAll()
         ratings.removeAll()
+    }
+
+    // Writes this one photo's current liked/rating state to the persisted
+    // store (see PhotoLabelStore) right after a toggle, so a label survives
+    // quitting BriefShow, and also shows up again on a copy of the same
+    // file exported to a different folder.
+    private func persistLabel(for url: URL) {
+        PhotoLabelStore.setLiked(likedURLs.contains(url), for: url)
+        PhotoLabelStore.setRating(ratings[url] ?? 0, for: url)
+    }
+
+    // MARK: Trash (right-click "Add to Bin")
+
+    // Moves every URL to the macOS Trash (recoverable from there, same as
+    // Finder's "Move to Trash") and drops it from every bit of in-memory
+    // state that references it, so it disappears from the grid immediately
+    // instead of leaving a broken thumbnail behind.
+    private func trashPhotos(_ urls: [URL]) {
+        let fileManager = FileManager.default
+
+        for url in urls {
+            try? fileManager.trashItem(at: url, resultingItemURL: nil)
+            PhotoLabelStore.clear(for: url)
+        }
+
+        let trashedSet = Set(urls)
+        photoURLs.removeAll { trashedSet.contains($0) }
+        selectedURLs.subtract(trashedSet)
+
+        for url in urls {
+            gridThumbnails.removeValue(forKey: url)
+            loupeImages.removeValue(forKey: url)
+            likedURLs.remove(url)
+            ratings.removeValue(forKey: url)
+        }
+    }
+
+    // Called from FolderTreeSidebar's "Add to Bin" — routed back through a
+    // confirmation dialog here (rather than trashing immediately) since a
+    // folder can hold a lot more than a single accidental click should be
+    // able to remove.
+    private func requestTrashFolder(_ node: FolderNode) {
+        pendingTrashFolderNode = node
+        isTrashFolderConfirmationPresented = true
+    }
+
+    private func trashFolder(_ node: FolderNode) {
+        try? FileManager.default.trashItem(at: node.url, resultingItemURL: nil)
+
+        // The trashed folder can't be browsed anymore, so if it was the one
+        // open in the grid, clear the grid rather than leave it showing
+        // photos that no longer exist at that path.
+        if selectedFolderURL == node.url {
+            selectedFolderURL = nil
+            photoURLs = []
+            likedURLs = []
+            ratings = [:]
+        }
+
+        refreshFolderTree()
+    }
+
+    // MARK: Paste (right-click "Paste" on a sidebar folder or empty grid space)
+
+    // What Paste actually reads — every file URL currently sitting on the
+    // system pasteboard, not just what BriefShow's own Copy/Cut put there.
+    // That's the whole fix for Paste "not working": three photos Cmd-C'd
+    // in Finder land here exactly the same as three photos Copied inside
+    // BriefShow, because both write to the same NSPasteboard.general.
+    private func pasteboardFileURLs() -> [URL] {
+        let urls = (NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]) ?? []
+        return urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    // True only when the pasteboard still holds exactly what BriefShow's
+    // own last Cut put there — i.e. it's safe to actually move these files
+    // rather than copy them. Without this check, cutting inside BriefShow
+    // and then separately Copying something in Finder (without ever
+    // pasting the cut) could otherwise leave a stale "this was a cut" flag
+    // that deletes files the client only ever meant to copy.
+    private var isPasteboardOurCut: Bool {
+        clipboardIsCut && Set(pasteboardFileURLs()) == Set(clipboardURLs)
+    }
+
+    // Right-click Paste on empty grid space. When a folder from the
+    // sidebar is open, this is a real folder on disk — paste writes the
+    // file(s) into it, same as pasteClipboard(into:) below. Without one
+    // (photos brought in loose, via Add Photos or drag-and-drop, with
+    // nothing in the sidebar even shown), there's no folder to write into
+    // on disk, so this just adds the pasted photos to the review set
+    // directly, the same way Add Photos/drag-and-drop already do.
+    private func pasteIntoGrid() {
+        let urls = pasteboardFileURLs()
+        guard !urls.isEmpty else {
+            return
+        }
+
+        if let selectedFolderURL {
+            pasteClipboard(into: selectedFolderURL)
+            return
+        }
+
+        let imageURLs = urls.filter { url in
+            UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+        }
+        guard !imageURLs.isEmpty else {
+            return
+        }
+
+        importShowPhotos(imageURLs)
+    }
+
+    // Copies (or, for a Cut still sitting on the pasteboard, actually
+    // moves) whatever Paste found into destinationFolder. Because both
+    // ends of a BriefShow-to-BriefShow paste are inside BriefShow, Cut can
+    // do a real move here — unlike pasting into Finder via the system
+    // pasteboard (see writeURLsToPasteboard), where there's no way to tell
+    // Finder "this one should move, not copy."
+    private func pasteClipboard(into destinationFolder: URL) {
+        let sourceURLs = pasteboardFileURLs()
+        guard !sourceURLs.isEmpty else {
+            return
+        }
+
+        let isMove = isPasteboardOurCut
+        let fileManager = FileManager.default
+
+        var movedAwayURLs: [URL] = []
+        var movedAwaySelectedFolder = false
+
+        for sourceURL in sourceURLs {
+            // Pasting a cut item back into the folder it's already in is a
+            // no-op — skip it rather than let moveItem fail trying to move
+            // something onto itself.
+            if isMove, sourceURL.deletingLastPathComponent().standardizedFileURL == destinationFolder.standardizedFileURL {
+                continue
+            }
+
+            var destinationURL = destinationFolder.appendingPathComponent(sourceURL.lastPathComponent)
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                let baseName = sourceURL.deletingPathExtension().lastPathComponent
+                let fileExtension = sourceURL.pathExtension
+                var duplicateSuffix = 1
+                while fileManager.fileExists(atPath: destinationURL.path) {
+                    let candidateName = fileExtension.isEmpty
+                        ? "\(baseName) \(duplicateSuffix)"
+                        : "\(baseName) \(duplicateSuffix).\(fileExtension)"
+                    destinationURL = destinationFolder.appendingPathComponent(candidateName)
+                    duplicateSuffix += 1
+                }
+            }
+
+            if isMove {
+                guard (try? fileManager.moveItem(at: sourceURL, to: destinationURL)) != nil else {
+                    continue
+                }
+                movedAwayURLs.append(sourceURL)
+                if sourceURL == selectedFolderURL {
+                    movedAwaySelectedFolder = true
+                }
+            } else {
+                try? fileManager.copyItem(at: sourceURL, to: destinationURL)
+            }
+        }
+
+        // A cut clipboard is consumed by its first paste, same as Finder —
+        // pasting again would just fail since the originals are gone. A
+        // copied clipboard stays put so it can be pasted into several
+        // folders in a row.
+        if isMove {
+            clipboardURLs = []
+            clipboardIsCut = false
+        }
+
+        if !movedAwayURLs.isEmpty {
+            let movedSet = Set(movedAwayURLs)
+            photoURLs.removeAll { movedSet.contains($0) }
+            selectedURLs.subtract(movedSet)
+            for url in movedAwayURLs {
+                gridThumbnails.removeValue(forKey: url)
+                loupeImages.removeValue(forKey: url)
+            }
+        }
+
+        refreshFolderTree()
+
+        if movedAwaySelectedFolder {
+            // The folder that was open in the grid just moved out from
+            // under it — nothing left at that path to show.
+            selectedFolderURL = nil
+            photoURLs = []
+            likedURLs = []
+            ratings = [:]
+        } else if selectedFolderURL == destinationFolder {
+            // Client is currently looking at the folder just pasted into —
+            // reload it so the new item(s) show up immediately instead of
+            // only appearing the next time this folder is clicked.
+            loadImages(inFolder: destinationFolder)
+        }
     }
 
     // MARK: Keyboard (Space opens/closes the loupe, Escape closes it)
@@ -21890,35 +22357,147 @@ struct PhotoShowSheet: View {
             let spaceKeyCode: UInt16 = 49
             let escapeKeyCode: UInt16 = 53
             let character = event.charactersIgnoringModifiers?.lowercased()
+            let isCommandDown = event.modifierFlags.contains(.command)
+
+            // Cmd-C/Cmd-X/Cmd-V — the standard Copy/Cut/Paste shortcuts,
+            // matching the right-click "Copy"/"Cut"/"Paste" menu items
+            // exactly (same writeURLsToPasteboard/clipboardURLs/
+            // pasteIntoGrid calls those use). Handled before every
+            // Cmd-less shortcut below that happens to share the same
+            // letter ("x" toggles a like, "v" clears all) — without the
+            // isCommandDown check here, charactersIgnoringModifiers gives
+            // back that same lowercase letter for the Cmd-held version too,
+            // so Cmd-X was silently toggling a like instead of cutting, and
+            // Cmd-V was silently popping the Clear-All confirmation instead
+            // of pasting.
+            if isCommandDown, let character {
+                // In the loupe, Copy/Cut act on whatever's being previewed;
+                // back in the grid, on the current selection; with nothing
+                // selected there, on the folder currently open — the same
+                // "selection, else the open folder" fallback the grid's
+                // own right-click Paste-target logic uses.
+                let copyCutTargets: [URL]? = {
+                    if let loupeURLs, !loupeURLs.isEmpty {
+                        return loupeURLs
+                    }
+                    if !selectedURLs.isEmpty {
+                        return photoURLs.filter { selectedURLs.contains($0) }
+                    }
+                    if let selectedFolderURL {
+                        return [selectedFolderURL]
+                    }
+                    return nil
+                }()
+
+                if character == "c", let copyCutTargets {
+                    writeURLsToPasteboard(copyCutTargets)
+                    clipboardURLs = copyCutTargets
+                    clipboardIsCut = false
+                    return nil
+                }
+
+                if character == "x", let copyCutTargets {
+                    writeURLsToPasteboard(copyCutTargets)
+                    clipboardURLs = copyCutTargets
+                    clipboardIsCut = true
+                    return nil
+                }
+
+                if character == "v" {
+                    pasteIntoGrid()
+                    return nil
+                }
+            }
 
             // "c" closes the loupe, same as Space/Escape — checked first
             // since it applies only while the loupe is open.
-            if loupeURLs != nil, character == "c" {
+            if !isCommandDown, loupeURLs != nil, character == "c" {
                 closeLoupe()
                 return nil
             }
 
-            // The rest of the shortcuts (label toggle, star ratings, clear
-            // all) only apply back in the grid, not while previewing.
+            let leftArrowKeyCode: UInt16 = 123
+            let rightArrowKeyCode: UInt16 = 124
+            let downArrowKeyCode: UInt16 = 125
+            let upArrowKeyCode: UInt16 = 126
+            let previousKeyCodes: Set<UInt16> = [leftArrowKeyCode, upArrowKeyCode]
+            let nextKeyCodes: Set<UInt16> = [rightArrowKeyCode, downArrowKeyCode]
+
+            // All four arrows step to the previous/next photo in the
+            // current order (Left/Up back, Right/Down forward) — in the
+            // loupe while it's showing a single photo, or back in the grid
+            // while at most one photo is selected. The grid isn't a fixed
+            // row/column layout (thumbnails flow at their own aspect
+            // ratio), so Up/Down can't map to "the photo above/below" the
+            // way they would in Finder's icon view — they instead move
+            // through the photos the same one-at-a-time way Left/Right do.
+            // Previously the only way to move to another photo was
+            // clicking it with the mouse.
+            if previousKeyCodes.contains(event.keyCode) || nextKeyCodes.contains(event.keyCode), !photoURLs.isEmpty {
+                let direction = nextKeyCodes.contains(event.keyCode) ? 1 : -1
+
+                if let loupeURLs, loupeURLs.count == 1 {
+                    if let currentIndex = photoURLs.firstIndex(of: loupeURLs[0]) {
+                        let newIndex = min(max(currentIndex + direction, 0), photoURLs.count - 1)
+                        let newURL = photoURLs[newIndex]
+                        selectedURLs = [newURL]
+                        openLoupe(for: [newURL])
+                    }
+                    return nil
+                }
+
+                if loupeURLs == nil, selectedURLs.count <= 1 {
+                    let currentIndex = selectedURLs.first.flatMap { photoURLs.firstIndex(of: $0) }
+                    let newIndex: Int
+                    if let currentIndex {
+                        newIndex = min(max(currentIndex + direction, 0), photoURLs.count - 1)
+                    } else {
+                        newIndex = direction > 0 ? 0 : photoURLs.count - 1
+                    }
+                    let newURL = photoURLs[newIndex]
+                    selectedURLs = [newURL]
+                    scrollToPhotoURL = newURL
+                    return nil
+                }
+            }
+
+            // "1"-"5" sets that many stars — on every photo currently open
+            // in the loupe if it's showing one, otherwise on the grid
+            // selection. Unlike the label/clear-all shortcuts below, this
+            // one is NOT restricted to loupeURLs == nil: reviewing a photo
+            // enlarged is exactly when a client wants to rate it, and
+            // there's no star row to click at all inside the loupe itself.
+            let ratingTargets: [URL] = {
+                if let loupeURLs, !loupeURLs.isEmpty {
+                    return loupeURLs
+                }
+                return photoURLs.filter { selectedURLs.contains($0) }
+            }()
+
+            if !isCommandDown,
+               !ratingTargets.isEmpty,
+               let character,
+               let rating = Int(character),
+               (1...maxRatingStars).contains(rating) {
+                for url in ratingTargets {
+                    setRating(rating, for: url)
+                }
+                if loupeURLs != nil, let firstTarget = ratingTargets.first {
+                    showRatingToast(resultingIn: ratings[firstTarget] ?? 0)
+                }
+                return nil
+            }
+
+            // The rest of the shortcuts (label toggle, clear all) only
+            // apply back in the grid, not while previewing.
             if loupeURLs == nil {
                 // "x" toggles the liked label on every currently selected
                 // photo (same per-photo toggle as clicking its circle) —
                 // checked by character rather than key code so it still
                 // works under non-US keyboard layouts.
-                if !selectedURLs.isEmpty, character == "x" {
+                if !isCommandDown, !selectedURLs.isEmpty, character == "x" {
                     for url in selectedURLs {
                         toggleLike(url)
-                    }
-                    return nil
-                }
-
-                // "1"-"5" sets that many stars on every selected photo.
-                if !selectedURLs.isEmpty,
-                   let character,
-                   let rating = Int(character),
-                   (1...maxRatingStars).contains(rating) {
-                    for url in selectedURLs {
-                        setRating(rating, for: url)
                     }
                     return nil
                 }
@@ -21926,7 +22505,7 @@ struct PhotoShowSheet: View {
                 // "v" clears every label and star rating, same as the
                 // "Clear All" header button — still asks for confirmation
                 // since it's a bulk, all-photos action.
-                if character == "v", hasLabelsOrRatings {
+                if !isCommandDown, character == "v", hasLabelsOrRatings {
                     isClearAllConfirmationPresented = true
                     return nil
                 }
@@ -22047,8 +22626,31 @@ struct PhotoShowSheet: View {
 
             DispatchQueue.main.async {
                 ExportCounter.recordExport(kind: kind)
+
+                // The client may have just typed a brand new folder name
+                // into the export panel (it allows creating one), and the
+                // left-hand tree caches each folder's subfolder listing the
+                // first time it's expanded — without this, a newly created
+                // destination folder stayed invisible in the sidebar until
+                // BriefShow was relaunched, even though the export itself
+                // succeeded.
+                refreshFolderTree()
             }
         }
+    }
+
+    // Forces the left-hand folder tree to rescan from disk by swapping in a
+    // fresh root FolderNode — cheap, since FolderNode only scans a folder's
+    // contents lazily, the first time something actually asks for its
+    // children. `expandedURLs`/`selectedFolderURL` in FolderTreeSidebar are
+    // keyed by URL rather than by node identity, so the tree's current
+    // scroll/expansion state survives the swap.
+    private func refreshFolderTree() {
+        guard let currentRootURL = rootFolderNode?.url else {
+            return
+        }
+
+        rootFolderNode = FolderNode(url: currentRootURL)
     }
 
     // MARK: Photo import + thumbnail loading
@@ -22074,26 +22676,41 @@ struct PhotoShowSheet: View {
     // (rather than leaving the previous folder's photos up) when the
     // chosen folder has no images, so the grid always reflects whichever
     // folder is currently selected.
+    //
+    // The directory scan runs on a background queue rather than inline —
+    // on a folder with a few thousand files, `contentsOfDirectory` plus the
+    // per-file UTType check was slow enough to run right on the main
+    // thread that BriefShow appeared to hang the instant a folder was
+    // clicked, with nothing on screen to say it was actually working.
     private func loadImages(inFolder folderURL: URL) {
-        let contents = (try? FileManager.default.contentsOfDirectory(
-            at: folderURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
+        isLoadingPhotos = true
 
-        let imageURLs = contents.filter { url in
-            UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let contents = (try? FileManager.default.contentsOfDirectory(
+                at: folderURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+            let imageURLs = contents.filter { url in
+                UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+            }
+
+            DispatchQueue.main.async {
+                guard !imageURLs.isEmpty else {
+                    photoURLs = []
+                    likedURLs = []
+                    ratings = [:]
+                    isLoadingPhotos = false
+                    return
+                }
+
+                importShowPhotos(imageURLs)
+            }
         }
-
-        guard !imageURLs.isEmpty else {
-            photoURLs = []
-            return
-        }
-
-        importShowPhotos(imageURLs)
     }
 
-    // Shared by the file picker and drag-and-drop.
+    // Shared by the file picker, drag-and-drop, and folder selection.
     private func importShowPhotos(_ urls: [URL]) {
         let sortedURLs = urls
             .filter { url in
@@ -22108,7 +22725,34 @@ struct PhotoShowSheet: View {
         }
 
         photoURLs = sortedURLs
+        applyPersistedLabels(for: sortedURLs)
         loadGridThumbnails(for: sortedURLs)
+    }
+
+    // Restores each photo's liked/starred state from PhotoLabelStore —
+    // this is what makes labels survive quitting and relaunching BriefShow,
+    // and what makes an exported copy of an already-labeled photo (in a
+    // brand new folder, under a different path) show up labeled too.
+    // Replaces likedURLs/ratings outright (rather than merging) so they
+    // only ever describe the batch of photos actually on screen, matching
+    // the "N liked" header count and the Export/Clear All buttons.
+    private func applyPersistedLabels(for urls: [URL]) {
+        var newLikedURLs: Set<URL> = []
+        var newRatings: [URL: Int] = [:]
+
+        for url in urls {
+            if PhotoLabelStore.isLiked(url) {
+                newLikedURLs.insert(url)
+            }
+
+            let rating = PhotoLabelStore.rating(for: url)
+            if rating > 0 {
+                newRatings[url] = rating
+            }
+        }
+
+        likedURLs = newLikedURLs
+        ratings = newRatings
     }
 
     private func loadGridThumbnails(for urls: [URL]) {
@@ -22116,15 +22760,34 @@ struct PhotoShowSheet: View {
         loadedThumbnailCount = 0
 
         DispatchQueue.global(qos: .userInitiated).async {
-            for url in urls {
-                let thumbnail = makeShowGridThumbnail(from: url)
+            // Thumbnails are decoded here and only flushed to the @State
+            // dictionary every few images (rather than after every single
+            // one). With a couple hundred photos, updating @State per image
+            // meant hundreds of back-to-back re-renders of the whole grid —
+            // that churn, not the decoding itself, was most of what read as
+            // BriefShow "freezing" while photos loaded.
+            let flushInterval = 10
+            var pendingBatch: [URL: NSImage] = [:]
+
+            for (index, url) in urls.enumerated() {
+                if let thumbnail = makeShowGridThumbnail(from: url) {
+                    pendingBatch[url] = thumbnail
+                }
+
+                let processedCount = index + 1
+                guard pendingBatch.count >= flushInterval || processedCount == urls.count else {
+                    continue
+                }
+
+                let flushedBatch = pendingBatch
+                pendingBatch = [:]
 
                 DispatchQueue.main.async {
-                    if let thumbnail {
-                        gridThumbnails[url] = thumbnail
+                    for (batchURL, thumbnail) in flushedBatch {
+                        gridThumbnails[batchURL] = thumbnail
                     }
 
-                    loadedThumbnailCount += 1
+                    loadedThumbnailCount = processedCount
 
                     if loadedThumbnailCount >= urls.count {
                         isLoadingPhotos = false
@@ -22133,6 +22796,25 @@ struct PhotoShowSheet: View {
             }
         }
     }
+}
+
+// Backs the "Copy" and "Cut" items on both the grid's photo right-click
+// menu and the sidebar's folder right-click menu — puts real file
+// references on the system pasteboard so the client can Cmd+V them into
+// Finder (or anywhere else that accepts files), the same as Finder's own
+// Copy. Cut writes identically: a genuine cross-app "Cut" (the source
+// vanishing only once it's pasted somewhere else) isn't something a
+// third-party app can trigger through public API, so nothing here deletes
+// anything — "Add to Bin" is the only action in either menu that touches
+// disk.
+private func writeURLsToPasteboard(_ urls: [URL]) {
+    guard !urls.isEmpty else {
+        return
+    }
+
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.writeObjects(urls as [NSURL])
 }
 
 // MARK: - Desktop folder access (sandboxed security-scoped bookmark)
@@ -22220,6 +22902,184 @@ enum RootFolderAccess {
     }
 }
 
+// MARK: - Persisted photo labels (liked + star rating)
+
+// Keeps every liked-label and star-rating decision so it survives quitting
+// and relaunching BriefShow, and so it's still there when the client later
+// opens a folder they exported labeled photos into (a copy of an
+// already-labeled photo, at a new path).
+//
+// Keyed by filename + file size rather than the file's URL/path — the
+// path is exactly what changes when a photo gets copied to an export
+// folder, while the name and byte size stay identical for a straight file
+// copy. Two different photos landing on the same name+size is possible in
+// principle but very unlikely in practice, and far less likely than a
+// client being annoyed that a labeled photo "forgot" its label the moment
+// it was exported.
+enum PhotoLabelStore {
+    private static let likedDefaultsKey = "com.rocketsbrief.briefshow.likedPhotoKeys"
+    private static let ratingsDefaultsKey = "com.rocketsbrief.briefshow.photoRatingKeys"
+
+    private static func key(for url: URL) -> String {
+        let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? -1
+        return "\(url.lastPathComponent)|\(fileSize)"
+    }
+
+    static func isLiked(_ url: URL) -> Bool {
+        likedKeys.contains(key(for: url))
+    }
+
+    static func setLiked(_ isLiked: Bool, for url: URL) {
+        var keys = likedKeys
+        if isLiked {
+            keys.insert(key(for: url))
+        } else {
+            keys.remove(key(for: url))
+        }
+        likedKeys = keys
+    }
+
+    static func rating(for url: URL) -> Int {
+        ratingsByKey[key(for: url)] ?? 0
+    }
+
+    static func setRating(_ rating: Int, for url: URL) {
+        var byKey = ratingsByKey
+        if rating > 0 {
+            byKey[key(for: url)] = rating
+        } else {
+            byKey.removeValue(forKey: key(for: url))
+        }
+        ratingsByKey = byKey
+    }
+
+    // Drops both the liked flag and the star rating for one photo — used
+    // by "Clear All".
+    static func clear(for url: URL) {
+        setLiked(false, for: url)
+        setRating(0, for: url)
+    }
+
+    private static var likedKeys: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: likedDefaultsKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: likedDefaultsKey) }
+    }
+
+    private static var ratingsByKey: [String: Int] {
+        get { (UserDefaults.standard.dictionary(forKey: ratingsDefaultsKey) as? [String: Int]) ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: ratingsDefaultsKey) }
+    }
+}
+
+// MARK: - Folder color labels (right-click a folder in the sidebar)
+
+// The four Finder-style colored tags a folder in the sidebar can be given,
+// purely a BriefShow-side label (a colored dot next to the folder's name in
+// the tree) — it doesn't touch the folder on disk or its Finder tags.
+enum FolderColorLabel: String, CaseIterable {
+    case none, blue, yellow, green, red
+
+    // Display order matches how the client asked for them: blue, yellow,
+    // green, red.
+    static let selectable: [FolderColorLabel] = [.blue, .yellow, .green, .red]
+
+    var displayName: String {
+        switch self {
+        case .none: return "None"
+        case .blue: return "Blue"
+        case .yellow: return "Yellow"
+        case .green: return "Green"
+        case .red: return "Red"
+        }
+    }
+
+    var color: Color? {
+        switch self {
+        case .none: return nil
+        case .blue: return Color(red: 0.42, green: 0.62, blue: 0.95)
+        case .yellow: return Color(red: 0.96, green: 0.78, blue: 0.28)
+        case .green: return Color(red: 0.40, green: 0.78, blue: 0.48)
+        case .red: return Color(red: 0.94, green: 0.38, blue: 0.38)
+        }
+    }
+
+    // A small solid-color dot, rendered as a real NSImage rather than an
+    // SF Symbol, for use as a context-menu item's icon. AppKit renders SF
+    // Symbols (and any image it treats as a "template") in a single flat
+    // color — usually the menu's own ink color — regardless of any SwiftUI
+    // .foregroundColor applied beforehand, which is why every dot in the
+    // Color Label menu was showing up the same gray. Explicitly marking
+    // this image non-template is what makes AppKit draw it in its actual
+    // color instead.
+    static func dotImage(for color: Color?, diameter: CGFloat = 12) -> NSImage {
+        let size = NSSize(width: diameter, height: diameter)
+        let image = NSImage(size: size)
+
+        image.lockFocus()
+        NSColor(color ?? .gray).setFill()
+        NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
+        image.unlockFocus()
+
+        image.isTemplate = false
+        return image
+    }
+}
+
+// Persists which color (if any) each folder is tagged with, keyed by its
+// absolute path — the same trade-off RootFolderAccess's bookmark makes:
+// simple and correct for a folder that stays put, but a color won't follow
+// a folder that's later renamed or moved (including via BriefShow's own
+// Cut/Paste) the way PhotoLabelStore's name+size key lets a liked photo's
+// label follow it through an export.
+enum FolderColorStore {
+    private static let defaultsKey = "com.rocketsbrief.briefshow.folderColorLabels"
+
+    static func color(for url: URL) -> FolderColorLabel {
+        let stored = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String]) ?? [:]
+        guard let raw = stored[url.standardizedFileURL.path], let label = FolderColorLabel(rawValue: raw) else {
+            return .none
+        }
+        return label
+    }
+
+    static func setColor(_ label: FolderColorLabel, for url: URL) {
+        var stored = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String]) ?? [:]
+        let key = url.standardizedFileURL.path
+
+        if label == .none {
+            stored.removeValue(forKey: key)
+        } else {
+            stored[key] = label.rawValue
+        }
+
+        UserDefaults.standard.set(stored, forKey: defaultsKey)
+    }
+
+    // Loaded once by FolderTreeSidebar on appear into its own @State, so
+    // the tree can react to color changes the same way it reacts to
+    // selection/expansion — UserDefaults itself isn't observable. Keyed by
+    // the same standardized path STRING used to read/write above (rather
+    // than reconstructing a URL from it) — round-tripping a path through
+    // `URL(fileURLWithPath:)` and comparing the result to a `FolderNode`'s
+    // own URL with `==` is exactly the kind of thing that can silently
+    // mismatch (trailing slash, symlink resolution, ...) and make a color
+    // that was genuinely saved look like it never was, once the app
+    // restarts and rebuilds the tree from scratch.
+    static func loadAll() -> [String: FolderColorLabel] {
+        let stored = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String]) ?? [:]
+        var result: [String: FolderColorLabel] = [:]
+
+        for (path, raw) in stored {
+            guard let label = FolderColorLabel(rawValue: raw), label != .none else {
+                continue
+            }
+            result[path] = label
+        }
+
+        return result
+    }
+}
+
 // MARK: - Folder tree sidebar (Finder-style, home-folder-rooted)
 
 // One node in the folder tree. A class (rather than a struct) so each
@@ -22284,6 +23144,10 @@ final class FolderNode: Identifiable {
 private struct FolderTreeSidebar: View {
     let rootNode: FolderNode
     @Binding var selectedURL: URL?
+    let isPasteAvailable: Bool
+    let onSetClipboard: (_ urls: [URL], _ isCut: Bool) -> Void
+    let onPasteIntoFolder: (FolderNode) -> Void
+    let onTrashFolder: (FolderNode) -> Void
 
     // Which folders' disclosure triangles are currently open. Unlike
     // OutlineGroup (which manages expansion internally with no outside
@@ -22293,6 +23157,20 @@ private struct FolderTreeSidebar: View {
     // tree — the same "reveal in sidebar" behavior Adobe Bridge/Finder
     // give you.
     @State private var expandedURLs: Set<URL> = []
+
+    // Which row the pointer is currently over, so its name can scale up —
+    // a single shared var (rather than per-row @State, which `row(for:)`
+    // can't hold since it's a plain function, not its own View struct)
+    // works fine here since only one row is ever hovered at a time.
+    @State private var hoveredURL: URL?
+
+    // Which color (if any) each folder is tagged with, keyed by the
+    // folder's standardized path (see the doc comment on
+    // FolderColorStore.loadAll for why a path string rather than a URL).
+    // Loaded once into local @State (rather than read fresh from
+    // UserDefaults on every row render) so setting a color actually
+    // triggers a redraw; UserDefaults itself isn't observable.
+    @State private var folderColors: [String: FolderColorLabel] = FolderColorStore.loadAll()
 
     // Same defensive pattern every other themed view in this file uses
     // (PhotoShowSheet, HeaderView, the hover cards, ...) — without its own
@@ -22319,10 +23197,10 @@ private struct FolderTreeSidebar: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    row(for: rootNode)
+                    row(for: rootNode, depth: 0)
 
                     ForEach(rootNode.children ?? [], id: \.id) { node in
-                        folderDisclosure(for: node)
+                        folderDisclosure(for: node, depth: 0)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -22340,19 +23218,26 @@ private struct FolderTreeSidebar: View {
     // just renders its row directly, with no triangle. Type-erased to
     // AnyView (rather than `some View`) because this function calls
     // itself recursively — an opaque return type can't refer to itself.
-    private func folderDisclosure(for node: FolderNode) -> AnyView {
+    //
+    // `depth` counts how many folders deep this node sits below the
+    // top-level list (Applications, Desktop, Documents, ...) — passed down
+    // one deeper on every recursive call so row(for:depth:) can indent
+    // each level. Without it, a expanded folder's children rendered at
+    // the exact same indentation as its siblings, with nothing to show
+    // which folders were actually inside which — see row(for:depth:).
+    private func folderDisclosure(for node: FolderNode, depth: Int) -> AnyView {
         if let children = node.children {
             return AnyView(
                 DisclosureGroup(isExpanded: expandedBinding(for: node.url)) {
                     ForEach(children, id: \.id) { child in
-                        folderDisclosure(for: child)
+                        folderDisclosure(for: child, depth: depth + 1)
                     }
                 } label: {
-                    row(for: node)
+                    row(for: node, depth: depth)
                 }
             )
         } else {
-            return AnyView(row(for: node))
+            return AnyView(row(for: node, depth: depth))
         }
     }
 
@@ -22430,10 +23315,29 @@ private struct FolderTreeSidebar: View {
         )
     }
 
-    private func row(for node: FolderNode) -> some View {
+    // `depth` is how many folders deep this row sits below the top-level
+    // list — 0 for Applications/Desktop/Documents/... themselves, 1 for
+    // what's directly inside one of them, and so on. Indenting the
+    // icon+name by depth (rather than leaving every level flush against
+    // the same left edge, which is what made an expanded folder's
+    // contents unreadable against its own siblings) is what actually
+    // shows the nesting.
+    private func row(for node: FolderNode, depth: Int) -> some View {
         let isSelected = selectedURL == node.url
+        let isHovered = hoveredURL == node.url
+        let colorLabel = folderColors[node.url.standardizedFileURL.path] ?? .none
 
         return HStack(spacing: 8) {
+            // An inline spacer (rather than extra .padding(.leading) on the
+            // whole row) so only the icon/name/dot shift right — the
+            // selection/hover background below stays full-width, the same
+            // way Finder's and Xcode's own sidebars keep their highlight
+            // pill from getting visibly narrower the deeper something is
+            // nested.
+            if depth > 0 {
+                Color.clear.frame(width: CGFloat(depth) * 14)
+            }
+
             Image(systemName: "folder.fill")
                 .font(.system(size: 12))
                 .foregroundColor(isSelected ? AppColors.hoverInk : AppColors.muted.opacity(0.8))
@@ -22442,8 +23346,18 @@ private struct FolderTreeSidebar: View {
                 .font(.custom("Figtree", size: 13).weight(isSelected ? .semibold : .regular))
                 .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
                 .lineLimit(1)
+                // Left edge anchored so it grows rightward into the row's
+                // empty space instead of pushing into the folder icon.
+                .scaleEffect(isHovered ? 1.1 : 1, anchor: .leading)
+                .animation(.easeOut(duration: 0.12), value: isHovered)
 
             Spacer(minLength: 0)
+
+            if let color = colorLabel.color {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -22452,8 +23366,109 @@ private struct FolderTreeSidebar: View {
                 .fill(isSelected ? AppColors.panel : Color.clear)
         )
         .contentShape(Rectangle())
+        .onHover { hovering in
+            // Guards against a stale clear: if the pointer has already
+            // moved straight onto the next row by the time this row's
+            // "false" event arrives, that later event shouldn't erase the
+            // new row's "true".
+            if hovering {
+                hoveredURL = node.url
+            } else if hoveredURL == node.url {
+                hoveredURL = nil
+            }
+        }
         .onTapGesture {
             selectedURL = node.url
+
+            // A single click on the folder's row now opens/closes it the
+            // same way clicking its disclosure triangle does — previously
+            // the triangle was the only hit target that expanded a folder,
+            // so clicking the name only selected it without revealing its
+            // subfolders.
+            if node.children != nil {
+                if expandedURLs.contains(node.url) {
+                    expandedURLs.remove(node.url)
+                } else {
+                    expandedURLs.insert(node.url)
+                }
+            }
+        }
+        .contextMenu {
+            folderContextMenuItems(for: node, isRoot: node.url == rootNode.url)
+        }
+    }
+
+    private func setFolderColor(_ label: FolderColorLabel, for node: FolderNode) {
+        folderColors[node.url.standardizedFileURL.path] = (label == .none) ? nil : label
+        FolderColorStore.setColor(label, for: node.url)
+    }
+
+    // The root row is the client's whole granted home folder (see
+    // RootFolderAccess) — Copy/Cut, Color Label, and "Add to Bin" are left
+    // off it entirely (Copy/Cut/coloring it are pointless, and "Add to
+    // Bin" on it would trash the client's entire home directory), leaving
+    // just Paste.
+    @ViewBuilder
+    private func folderContextMenuItems(for node: FolderNode, isRoot: Bool) -> some View {
+        if !isRoot {
+            Button("Copy") {
+                writeURLsToPasteboard([node.url])
+                onSetClipboard([node.url], false)
+            }
+
+            // Also sets BriefShow's own in-app clipboard so "Paste"
+            // elsewhere in the tree actually moves this folder there — see
+            // the doc comment on pasteClipboard in PhotoShowSheet. The
+            // NSPasteboard write alongside it only ever copies once it
+            // leaves BriefShow (e.g. pasted into Finder), since a genuine
+            // cross-app "Cut" isn't triggerable from a third-party app.
+            Button("Cut") {
+                writeURLsToPasteboard([node.url])
+                onSetClipboard([node.url], true)
+            }
+
+            Menu("Color Label") {
+                ForEach(FolderColorLabel.selectable, id: \.self) { label in
+                    Button {
+                        setFolderColor(label, for: node)
+                    } label: {
+                        Label {
+                            Text(label.displayName)
+                        } icon: {
+                            // A plain SF Symbol here (Image(systemName:)
+                            // + .foregroundColor) renders as a monochrome
+                            // template icon once AppKit turns this into a
+                            // real NSMenuItem — .foregroundColor is simply
+                            // dropped, which is why every dot came out the
+                            // same gray. An explicitly non-template NSImage
+                            // is the one thing AppKit actually draws in its
+                            // real color inside a menu.
+                            Image(nsImage: FolderColorLabel.dotImage(for: label.color))
+                        }
+                    }
+                }
+
+                if folderColors[node.url.standardizedFileURL.path] != nil {
+                    Divider()
+
+                    Button("No Color") {
+                        setFolderColor(.none, for: node)
+                    }
+                }
+            }
+        }
+
+        Button("Paste") {
+            onPasteIntoFolder(node)
+        }
+        .disabled(!isPasteAvailable)
+
+        if !isRoot {
+            Divider()
+
+            Button("Add to Bin", role: .destructive) {
+                onTrashFolder(node)
+            }
         }
     }
 }

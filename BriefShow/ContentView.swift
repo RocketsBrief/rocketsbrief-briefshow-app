@@ -21033,6 +21033,13 @@ struct PhotoShowSheet: View {
     @State private var likedURLs: Set<URL> = []
     @State private var ratings: [URL: Int] = [:]
     @State private var selectedURLs: Set<URL> = []
+
+    // Order photos were added to `selectedURLs`, oldest first — a Set has
+    // no order of its own, and finding "the first 5 selected" (for the
+    // Space-preview cap and the yellow-vs-white border below) needs one.
+    // Always kept in sync with `selectedURLs` through replaceSelection/
+    // toggleSelection/removeFromSelection rather than mutated directly.
+    @State private var selectionOrder: [URL] = []
     @State private var thumbnailSize: CGFloat = 180
     @State private var loupeURLs: [URL]?
 
@@ -21109,7 +21116,12 @@ struct PhotoShowSheet: View {
     @ObservedObject private var remoteStatus = AppRemoteStatus.shared
     @ObservedObject private var accountManager = AccountManager.shared
 
-    private let maxSelectionCount = 5
+    // Selection itself is no longer capped — a client can select as many
+    // photos as they want. This instead caps how many of them the Space
+    // loupe actually previews (loupeGrid/loupeRows are laid out for at
+    // most 5 photos) and how many get the yellow "will preview" border
+    // below; see previewSelectedURLs.
+    private let maxPreviewCount = 5
     private let maxRatingStars = 5
     private let minThumbnailSize: CGFloat = 90
     private let maxThumbnailSize: CGFloat = 320
@@ -21122,6 +21134,15 @@ struct PhotoShowSheet: View {
         themeManager.current == .dark
             ? Color(red: 1.0, green: 0.94, blue: 0.62)
             : Color(red: 0.56, green: 0.56, blue: 0.58)
+    }
+
+    // First 5 selected photos, in selection order — the ones the Space
+    // loupe will actually show and the ones the grid marks with a yellow
+    // border. Anything selected beyond that (the 6th, 7th, ...) still
+    // counts as selected everywhere else (ratings, like, copy/cut), just
+    // not here.
+    private var previewSelectedURLs: Set<URL> {
+        Set(selectionOrder.prefix(maxPreviewCount))
     }
 
     var body: some View {
@@ -21141,6 +21162,9 @@ struct PhotoShowSheet: View {
                         },
                         onPasteIntoFolder: { node in
                             pasteClipboard(into: node.url)
+                        },
+                        onNewFolder: { node in
+                            createNewFolder(in: node.url)
                         },
                         onTrashFolder: requestTrashFolder
                     )
@@ -21372,6 +21396,27 @@ struct PhotoShowSheet: View {
                 }
             }
             .buttonStyle(ShowHeaderButtonStyle())
+            .padding(.trailing, 10)
+
+            // Opens Develop — a standalone, non-destructive photo editor in
+            // its own window (see DevelopWindowController). Entirely
+            // separate from this grid and from the slideshow pipeline
+            // above: editing a photo here never touches the file on disk
+            // and never changes what the slideshow renders.
+            Button {
+                DevelopWindowController.shared.open(
+                    photoURLs: photoURLs,
+                    initialSelection: selectedURLs.first ?? photoURLs.first
+                )
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "slider.horizontal.3")
+                    Text("Develop")
+                }
+            }
+            .buttonStyle(ShowHeaderButtonStyle())
+            .opacity(photoURLs.isEmpty ? 0.4 : 1)
+            .disabled(photoURLs.isEmpty)
             .padding(.trailing, 14)
 
             if !photoURLs.isEmpty {
@@ -21756,6 +21801,12 @@ struct PhotoShowSheet: View {
     // photos read narrower, side by side in the same flowing row.
     private func thumbnailCell(for url: URL) -> some View {
         let isSelected = selectedURLs.contains(url)
+        // Only the first 5 selected (the ones the Space loupe will
+        // actually preview) get the yellow border; the 6th+ still show as
+        // selected, just with a plain white border instead, so it's clear
+        // they won't be part of the preview.
+        let isPreviewSelected = previewSelectedURLs.contains(url)
+        let selectionBorderColor: Color = isPreviewSelected ? accentColor : .white
         let image = gridThumbnails[url]
         let aspectRatio = image.map { max(0.2, $0.size.width / max(1, $0.size.height)) } ?? (4.0 / 3.0)
         let cellWidth = thumbnailSize * aspectRatio
@@ -21778,9 +21829,9 @@ struct PhotoShowSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(isSelected ? accentColor : AppColors.border.opacity(0.6), lineWidth: isSelected ? 3 : 1)
+                    .stroke(isSelected ? selectionBorderColor : AppColors.border.opacity(0.6), lineWidth: isSelected ? 3 : 1)
             )
-            .shadow(color: isSelected ? accentColor.opacity(0.35) : .clear, radius: isSelected ? 10 : 0)
+            .shadow(color: isSelected ? selectionBorderColor.opacity(0.35) : .clear, radius: isSelected ? 10 : 0)
             .contentShape(Rectangle())
             .onTapGesture {
                 handleSelectTap(url)
@@ -21844,10 +21895,23 @@ struct PhotoShowSheet: View {
     // thumbnail) — the only useful action there is Paste.
     @ViewBuilder
     private var gridBackgroundContextMenuItems: some View {
-        Button("Paste") {
-            pasteIntoGrid()
+        Group {
+            // Only offered when a real folder is open — photos brought in
+            // loose (Add Photos / drag-and-drop, nothing selected in the
+            // sidebar) have no folder on disk to create this inside.
+            if let selectedFolderURL {
+                Button("New Folder") {
+                    createNewFolder(in: selectedFolderURL)
+                }
+
+                Divider()
+            }
+
+            Button("Paste") {
+                pasteIntoGrid()
+            }
+            .disabled(pasteboardFileURLs().isEmpty)
         }
-        .disabled(pasteboardFileURLs().isEmpty)
     }
 
     // Up to 5 stars a client can click to rate a photo, independent of the
@@ -22072,8 +22136,11 @@ struct PhotoShowSheet: View {
     // MARK: Selection / like state
 
     // A plain click selects only that photo; Cmd-click toggles it in/out of
-    // a multi-selection capped at 5, matching the Adobe Bridge convention
-    // the client asked for.
+    // the multi-selection, matching the Adobe Bridge convention the client
+    // asked for. The selection itself has no size limit — only the first 5
+    // selected actually preview when Space is pressed (see
+    // previewSelectedURLs), so selecting a 6th+ photo still works, it just
+    // shows a white border instead of yellow in the grid.
     //
     // Reads the modifier flags off NSApp.currentEvent (the actual click
     // that triggered this) rather than the live NSEvent.modifierFlags
@@ -22086,14 +22153,33 @@ struct PhotoShowSheet: View {
         let isCommandDown = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
 
         if isCommandDown {
-            if selectedURLs.contains(url) {
-                selectedURLs.remove(url)
-            } else if selectedURLs.count < maxSelectionCount {
-                selectedURLs.insert(url)
-            }
+            toggleSelection(url)
         } else {
-            selectedURLs = [url]
+            replaceSelection(with: [url])
         }
+    }
+
+    // The only three ways `selectedURLs` ever changes — routed through
+    // here so `selectionOrder` (which tracks the first-5-selected for the
+    // Space preview / yellow border) never drifts out of sync with it.
+    private func replaceSelection(with urls: [URL]) {
+        selectedURLs = Set(urls)
+        selectionOrder = urls
+    }
+
+    private func toggleSelection(_ url: URL) {
+        if selectedURLs.contains(url) {
+            selectedURLs.remove(url)
+            selectionOrder.removeAll { $0 == url }
+        } else {
+            selectedURLs.insert(url)
+            selectionOrder.append(url)
+        }
+    }
+
+    private func removeFromSelection(_ urls: Set<URL>) {
+        selectedURLs.subtract(urls)
+        selectionOrder.removeAll { urls.contains($0) }
     }
 
     private func toggleLike(_ url: URL) {
@@ -22168,7 +22254,7 @@ struct PhotoShowSheet: View {
 
         let trashedSet = Set(urls)
         photoURLs.removeAll { trashedSet.contains($0) }
-        selectedURLs.subtract(trashedSet)
+        removeFromSelection(trashedSet)
 
         for url in urls {
             gridThumbnails.removeValue(forKey: url)
@@ -22201,6 +22287,34 @@ struct PhotoShowSheet: View {
         }
 
         refreshFolderTree()
+    }
+
+    // MARK: New Folder (right-click "New Folder" on a sidebar folder,
+    // including the root row, or on empty grid space)
+
+    // Names it "New Folder", falling back to "New Folder 2", "New Folder
+    // 3", ... on a collision — the same numbered-suffix handling
+    // pasteClipboard uses for a same-named file. Immediately selects the
+    // new folder (which also expands the sidebar tree down to it — see
+    // expandPathToSelection) and opens it in the grid, so it shows up
+    // right where the client right-clicked, the same instant feedback
+    // Finder gives.
+    private func createNewFolder(in parentFolder: URL) {
+        let fileManager = FileManager.default
+        var candidateURL = parentFolder.appendingPathComponent("New Folder")
+        var suffix = 2
+        while fileManager.fileExists(atPath: candidateURL.path) {
+            candidateURL = parentFolder.appendingPathComponent("New Folder \(suffix)")
+            suffix += 1
+        }
+
+        guard (try? fileManager.createDirectory(at: candidateURL, withIntermediateDirectories: false)) != nil else {
+            return
+        }
+
+        refreshFolderTree()
+        selectedFolderURL = candidateURL
+        loadImages(inFolder: candidateURL)
     }
 
     // MARK: Paste (right-click "Paste" on a sidebar folder or empty grid space)
@@ -22318,7 +22432,7 @@ struct PhotoShowSheet: View {
         if !movedAwayURLs.isEmpty {
             let movedSet = Set(movedAwayURLs)
             photoURLs.removeAll { movedSet.contains($0) }
-            selectedURLs.subtract(movedSet)
+            removeFromSelection(movedSet)
             for url in movedAwayURLs {
                 gridThumbnails.removeValue(forKey: url)
                 loupeImages.removeValue(forKey: url)
@@ -22440,7 +22554,7 @@ struct PhotoShowSheet: View {
                     if let currentIndex = photoURLs.firstIndex(of: loupeURLs[0]) {
                         let newIndex = min(max(currentIndex + direction, 0), photoURLs.count - 1)
                         let newURL = photoURLs[newIndex]
-                        selectedURLs = [newURL]
+                        replaceSelection(with: [newURL])
                         openLoupe(for: [newURL])
                     }
                     return nil
@@ -22455,7 +22569,7 @@ struct PhotoShowSheet: View {
                         newIndex = direction > 0 ? 0 : photoURLs.count - 1
                     }
                     let newURL = photoURLs[newIndex]
-                    selectedURLs = [newURL]
+                    replaceSelection(with: [newURL])
                     scrollToPhotoURL = newURL
                     return nil
                 }
@@ -22524,7 +22638,10 @@ struct PhotoShowSheet: View {
                 return event
             }
 
-            openLoupe(for: photoURLs.filter { selectedURLs.contains($0) })
+            // Only the first 5 selected — anything past that was never
+            // meant to preview (loupeGrid/loupeRows lay out at most 5) and
+            // shows a white, not yellow, border in the grid to match.
+            openLoupe(for: photoURLs.filter { previewSelectedURLs.contains($0) })
             return nil
         }
     }
@@ -23147,6 +23264,7 @@ private struct FolderTreeSidebar: View {
     let isPasteAvailable: Bool
     let onSetClipboard: (_ urls: [URL], _ isCut: Bool) -> Void
     let onPasteIntoFolder: (FolderNode) -> Void
+    let onNewFolder: (FolderNode) -> Void
     let onTrashFolder: (FolderNode) -> Void
 
     // Which folders' disclosure triangles are currently open. Unlike
@@ -23407,9 +23525,15 @@ private struct FolderTreeSidebar: View {
     // RootFolderAccess) — Copy/Cut, Color Label, and "Add to Bin" are left
     // off it entirely (Copy/Cut/coloring it are pointless, and "Add to
     // Bin" on it would trash the client's entire home directory), leaving
-    // just Paste.
+    // just New Folder and Paste.
     @ViewBuilder
     private func folderContextMenuItems(for node: FolderNode, isRoot: Bool) -> some View {
+        Button("New Folder") {
+            onNewFolder(node)
+        }
+
+        Divider()
+
         if !isRoot {
             Button("Copy") {
                 writeURLsToPasteboard([node.url])
@@ -23475,7 +23599,9 @@ private struct FolderTreeSidebar: View {
 
 // A small, fast thumbnail (unlike makePreviewImage's up-to-1400pt preview
 // image) for a grid that may hold 50-200+ photos at once.
-private func makeShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> NSImage? {
+// Not `private` — Develop.swift's filmstrip reuses this same fast
+// thumbnail generator rather than duplicating it.
+func makeShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> NSImage? {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
         return nil
     }

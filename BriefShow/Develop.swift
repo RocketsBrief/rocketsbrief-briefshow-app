@@ -29,6 +29,8 @@ struct PhotoEditSettings: Codable, Equatable {
     var contrast: Double = 0        // -1...1
     var highlights: Double = 0      // -1 (recover blown highlights) ...1
     var shadows: Double = 0         // -1 (darken) ...1 (lift)
+    var whites: Double = 0          // -1 (dull white point) ...1 (brighter/clips more)
+    var blacks: Double = 0          // -1 (crush black point) ...1 (lift/brighter)
     var saturation: Double = 0      // -1...1
     var vibrance: Double = 0        // -1...1
     var temperature: Double = 0     // -1 (cooler) ...1 (warmer)
@@ -39,8 +41,40 @@ struct PhotoEditSettings: Codable, Equatable {
     var straightenDegrees: Double = 0   // -45...45, fine rotation
     var crop: EditCropRect?             // nil = uncropped
 
+    init() {}
+
+    // Written by hand (instead of relying on synthesized Decodable) so that
+    // settings saved by an older build — before `whites`/`blacks` existed —
+    // still decode instead of throwing and silently wiping out a user's
+    // saved edit (see PhotoEditStore.allSettings, which drops anything that
+    // fails to decode).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        exposure = try c.decodeIfPresent(Double.self, forKey: .exposure) ?? 0
+        contrast = try c.decodeIfPresent(Double.self, forKey: .contrast) ?? 0
+        highlights = try c.decodeIfPresent(Double.self, forKey: .highlights) ?? 0
+        shadows = try c.decodeIfPresent(Double.self, forKey: .shadows) ?? 0
+        whites = try c.decodeIfPresent(Double.self, forKey: .whites) ?? 0
+        blacks = try c.decodeIfPresent(Double.self, forKey: .blacks) ?? 0
+        saturation = try c.decodeIfPresent(Double.self, forKey: .saturation) ?? 0
+        vibrance = try c.decodeIfPresent(Double.self, forKey: .vibrance) ?? 0
+        temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? 0
+        tint = try c.decodeIfPresent(Double.self, forKey: .tint) ?? 0
+        sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? 0
+        vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
+        rotationQuarterTurns = try c.decodeIfPresent(Int.self, forKey: .rotationQuarterTurns) ?? 0
+        straightenDegrees = try c.decodeIfPresent(Double.self, forKey: .straightenDegrees) ?? 0
+        crop = try c.decodeIfPresent(EditCropRect.self, forKey: .crop)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance
+        case temperature, tint, sharpness, vignette, rotationQuarterTurns, straightenDegrees, crop
+    }
+
     var isNeutral: Bool {
         exposure == 0 && contrast == 0 && highlights == 0 && shadows == 0
+            && whites == 0 && blacks == 0
             && saturation == 0 && vibrance == 0 && temperature == 0 && tint == 0
             && sharpness == 0 && vignette == 0 && rotationQuarterTurns == 0
             && straightenDegrees == 0 && crop == nil
@@ -120,6 +154,62 @@ enum PhotoEditRenderer {
         rawExtensions.contains(url.pathExtension.lowercased())
     }
 
+    // The largest axis-aligned rectangle (centered, as a fraction of the
+    // post-rotation bounding box — i.e. directly usable as an EditCropRect)
+    // that fits entirely inside a `w`×`h` rectangle once it's rotated by
+    // `angleDegrees` around its own center. Used to auto-fit the crop right
+    // after Straighten so the transparent "empty corner" triangles a plain
+    // rotation leaves never show by default.
+    //
+    // Closed-form solution to "largest inscribed axis-aligned rectangle in
+    // a rotated rectangle": with a = w/2, b = h/2 and θ = |angle|, the
+    // inscribed rectangle's corner (p, q) touches either just the a-edge,
+    // just the b-edge, or both at once, depending on how θ compares with
+    // the rectangle's aspect ratio (verified numerically against a
+    // brute-force point-containment/tightness check across landscape,
+    // portrait, square, and extreme aspect ratios before wiring this in).
+    static func autoStraightenCrop(imageWidth w: Double, imageHeight h: Double, angleDegrees: Double) -> EditCropRect {
+        let theta = abs(angleDegrees) * .pi / 180
+        guard theta > 0, w > 0, h > 0 else {
+            return .full
+        }
+
+        let sinT = sin(theta), cosT = cos(theta)
+        let a = w / 2, b = h / 2
+        let sin2T = sin(2 * theta)
+
+        let p: Double
+        let q: Double
+        if sin2T > 0, a <= b * sin2T {
+            // Only the a (width) edge binds.
+            p = a / (2 * cosT)
+            q = a / (2 * sinT)
+        } else if sin2T > 0, b <= a * sin2T {
+            // Only the b (height) edge binds.
+            p = b / (2 * sinT)
+            q = b / (2 * cosT)
+        } else {
+            // Both edges bind at once (shallow angle / near-square image).
+            let cos2T = cos(2 * theta)
+            guard cos2T > 0 else {
+                return .full
+            }
+            p = (a * cosT - b * sinT) / cos2T
+            q = (b * cosT - a * sinT) / cos2T
+        }
+
+        guard p > 0, q > 0 else {
+            return .full
+        }
+
+        let boundingW = w * cosT + h * sinT
+        let boundingH = w * sinT + h * cosT
+        let cropW = min(1, (2 * p) / boundingW)
+        let cropH = min(1, (2 * q) / boundingH)
+
+        return EditCropRect(x: (1 - cropW) / 2, y: (1 - cropH) / 2, width: cropW, height: cropH)
+    }
+
     // The full-resolution decode, with no edits applied yet — loaded once
     // per photo by DevelopView and reused both for the downsampled live
     // preview and the full-resolution export.
@@ -172,12 +262,28 @@ enum PhotoEditRenderer {
             output = filter.outputImage ?? output
         }
 
-        if settings.highlights != 0 || settings.shadows != 0 {
-            let filter = CIFilter.highlightShadowAdjust()
+        if settings.blacks != 0 || settings.shadows != 0 || settings.highlights != 0 || settings.whites != 0 {
+            // Blacks/Shadows/Highlights/Whites all bend one CIToneCurve
+            // instead of stacking separate filters. point2 (x = 0.5, the
+            // midtone) is left fixed as the pivot, so every slider rotates
+            // or bends the curve around a constant middle gray rather than
+            // shifting overall brightness. point0/point4 (the endpoints)
+            // are deliberately allowed past 0...1 — that's what lets Whites/
+            // Blacks push tones into clipping instead of just flattening
+            // toward it, which a curve clamped to 0...1 at the ends can't
+            // do. Highlights keeps the "positive = recover/darken" sign it
+            // had under the old CIHighlightShadowAdjust-based version (so a
+            // photo edited before this change still reads the same
+            // direction); Shadows/Whites/Blacks use the more familiar
+            // Lightroom convention where positive means brighter.
+            let strength = 0.3
+            let filter = CIFilter.toneCurve()
             filter.inputImage = output
-            filter.radius = 0
-            filter.highlightAmount = Float(1 - settings.highlights)
-            filter.shadowAmount = Float(settings.shadows)
+            filter.point0 = CGPoint(x: 0, y: settings.blacks * strength)
+            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 + settings.shadows * strength, 0), 1))
+            filter.point2 = CGPoint(x: 0.5, y: 0.5)
+            filter.point3 = CGPoint(x: 0.75, y: min(max(0.75 - settings.highlights * strength, 0), 1))
+            filter.point4 = CGPoint(x: 1, y: 1 + settings.whites * strength)
             output = filter.outputImage ?? output
         }
 
@@ -227,6 +333,61 @@ enum PhotoEditRenderer {
         }
 
         return output
+    }
+
+    // A single-channel (luminance) histogram of the already-rendered image,
+    // as `bucketCount` bars normalized so the tallest bar is 1.0 — read by
+    // the adjustment panel's histogram strip. Desaturating first (rather
+    // than reading, say, just the green channel) keeps it representative of
+    // overall tonal distribution the way a photo editor's histogram usually
+    // reads, not one color channel's alone.
+    static func luminanceHistogram(of image: CIImage, bucketCount: Int = 48) -> [CGFloat] {
+        // CIColorMatrix computes each OUTPUT channel as a dot product of
+        // (r, g, b, a) with the corresponding vector — so to get R=G=B=
+        // luminance out, r/g/bVector all need to be the *same* Rec. 709
+        // luma weights (not each channel's own weight in isolation, which
+        // would compute outputRed = 0.2126*(r+g+b) instead of luminance).
+        let lumaWeights = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
+        let grayFilter = CIFilter.colorMatrix()
+        grayFilter.inputImage = image
+        grayFilter.rVector = lumaWeights
+        grayFilter.gVector = lumaWeights
+        grayFilter.bVector = lumaWeights
+        grayFilter.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        guard let gray = grayFilter.outputImage else {
+            return []
+        }
+
+        let histogramFilter = CIFilter.areaHistogram()
+        histogramFilter.inputImage = gray
+        histogramFilter.extent = gray.extent
+        histogramFilter.count = bucketCount
+        histogramFilter.scale = 1
+        guard let histogramImage = histogramFilter.outputImage else {
+            return []
+        }
+
+        // Render straight to a float buffer (not through a CGImage) — an
+        // 8-bit intermediate would clip any bucket whose pixel count
+        // exceeds 255, which a several-hundred-thousand-pixel preview
+        // hits immediately.
+        var pixels = [Float](repeating: 0, count: bucketCount * 4)
+        briefEditsCIContext.render(
+            histogramImage,
+            toBitmap: &pixels,
+            rowBytes: bucketCount * 4 * MemoryLayout<Float>.size,
+            bounds: CGRect(x: 0, y: 0, width: bucketCount, height: 1),
+            format: .RGBAf,
+            colorSpace: nil
+        )
+
+        // R/G/B all carry the same value post-desaturation, so any one
+        // channel (here R) is the luminance bucket count.
+        var bins = (0..<bucketCount).map { CGFloat(pixels[$0 * 4]) }
+        if let peak = bins.max(), peak > 0 {
+            bins = bins.map { $0 / peak }
+        }
+        return bins
     }
 }
 
@@ -314,12 +475,19 @@ struct DevelopView: View {
     @State private var fullBaseImage: CIImage?
     @State private var previewBaseImage: CIImage?
     @State private var displayedImage: NSImage?
+    @State private var histogramBins: [CGFloat] = []
     @State private var filmstripThumbnails: [URL: NSImage] = [:]
     @State private var isLoadingPreview = false
     @State private var showOriginal = false
     @State private var isCropping = false
     @State private var pendingCrop: EditCropRect = .full
     @State private var dragStartCrop: EditCropRect?
+    // True while `settings.crop` was last set by auto-fitting after a
+    // Straighten drag (rather than by the user's own crop tool) — lets
+    // further straighten drags keep re-fitting it, without ever clobbering
+    // a crop the user deliberately made with the crop tool. See
+    // applyAutoFitCropIfNeeded / straightenBinding / commitCrop.
+    @State private var cropIsAutoFitted = false
     @State private var exportStatusText: String?
     @State private var renderWorkItem: DispatchWorkItem?
 
@@ -331,6 +499,8 @@ struct DevelopView: View {
             ? Color(red: 1.0, green: 0.94, blue: 0.62)
             : Color(red: 0.56, green: 0.56, blue: 0.58)
     }
+
+    private let histogramHeight: CGFloat = 56
 
     var body: some View {
         HStack(spacing: 0) {
@@ -666,6 +836,10 @@ struct DevelopView: View {
     private var adjustmentPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                histogramView
+
+                Divider()
+
                 cropRotateSection
 
                 Divider()
@@ -689,6 +863,34 @@ struct DevelopView: View {
         }
         .frame(width: 300)
         .background(AppColors.panel)
+    }
+
+    // A plain luminance histogram — one bar per bucket, tallest bucket
+    // normalized to full height — recomputed each render alongside the
+    // preview image itself (see renderNow). Reads whatever is actually on
+    // screen right now, including a held Before/After original and an
+    // in-progress (not yet committed) crop.
+    private var histogramView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionTitle("Histogram")
+
+            HStack(alignment: .bottom, spacing: 1.5) {
+                if histogramBins.isEmpty {
+                    Spacer(minLength: 0)
+                } else {
+                    ForEach(histogramBins.indices, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(AppColors.muted.opacity(0.85))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: max(1.5, histogramBins[index] * histogramHeight))
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: histogramHeight, alignment: .bottom)
+            .padding(8)
+            .background(AppColors.panelAlt.opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
     }
 
     private func sectionTitle(_ text: String) -> some View {
@@ -727,7 +929,7 @@ struct DevelopView: View {
                 Spacer()
             }
 
-            editSlider("Straighten", value: $settings.straightenDegrees, range: -45...45) {
+            editSlider("Straighten", value: straightenBinding, range: -45...45) {
                 String(format: "%+.1f°", $0)
             }
 
@@ -756,6 +958,8 @@ struct DevelopView: View {
             editSlider("Contrast", value: $settings.contrast, range: -1...1)
             editSlider("Highlights", value: $settings.highlights, range: -1...1)
             editSlider("Shadows", value: $settings.shadows, range: -1...1)
+            editSlider("Whites", value: $settings.whites, range: -1...1)
+            editSlider("Blacks", value: $settings.blacks, range: -1...1)
         }
     }
 
@@ -805,6 +1009,7 @@ struct DevelopView: View {
         Button("Reset All") {
             settings = PhotoEditSettings()
             pendingCrop = .full
+            cropIsAutoFitted = false
         }
         .buttonStyle(ShowHeaderButtonStyle())
         .opacity(settings.isNeutral ? 0.4 : 1)
@@ -838,6 +1043,11 @@ struct DevelopView: View {
         showOriginal = false
         settings = PhotoEditStore.settings(for: url)
         pendingCrop = settings.crop ?? .full
+        // Whatever crop (if any) came back with the saved settings is
+        // treated as the user's own — this photo's Straighten shouldn't
+        // start silently overwriting it just because it happens to be
+        // non-nil. A fresh photo with no saved crop keeps auto-fitting.
+        cropIsAutoFitted = false
         loadImages(for: url)
     }
 
@@ -857,8 +1067,62 @@ struct DevelopView: View {
 
     private func commitCrop() {
         settings.crop = (pendingCrop == .full) ? nil : pendingCrop
+        // The user just went through the crop tool themselves — even if
+        // they landed back on the auto-fitted rect, further Straighten
+        // drags shouldn't override their choice anymore.
+        cropIsAutoFitted = false
         isCropping = false
         scheduleRender()
+    }
+
+    // Binding used only by the Straighten slider — routes every drag
+    // through applyAutoFitCropIfNeeded, rather than a blanket
+    // `.onChange(of: settings.straightenDegrees)`, so the auto-fit only
+    // ever runs for an actual straighten drag. A generic onChange would
+    // also fire when selectPhoto assigns a whole new `settings` for a
+    // different photo, at a point where `previewBaseImage` is still the
+    // *previous* photo's — which would compute the crop against the wrong
+    // image dimensions.
+    private var straightenBinding: Binding<Double> {
+        Binding(
+            get: { settings.straightenDegrees },
+            set: { newValue in
+                settings.straightenDegrees = newValue
+                applyAutoFitCropIfNeeded()
+            }
+        )
+    }
+
+    // Keeps the crop tight against the rotated image's own edges after a
+    // Straighten drag, so the transparent corners a plain rotation leaves
+    // never show by default — see PhotoEditRenderer.autoStraightenCrop.
+    // No-op once the user has taken the crop tool into their own hands
+    // (see cropIsAutoFitted).
+    private func applyAutoFitCropIfNeeded() {
+        guard settings.crop == nil || cropIsAutoFitted else {
+            return
+        }
+        guard let base = previewBaseImage else {
+            return
+        }
+
+        var width = base.extent.width
+        var height = base.extent.height
+        if settings.rotationQuarterTurns % 2 != 0 {
+            swap(&width, &height)
+        }
+
+        let autoCrop = PhotoEditRenderer.autoStraightenCrop(
+            imageWidth: Double(width),
+            imageHeight: Double(height),
+            angleDegrees: settings.straightenDegrees
+        )
+        settings.crop = (autoCrop == .full) ? nil : autoCrop
+        cropIsAutoFitted = true
+
+        if isCropping {
+            pendingCrop = settings.crop ?? .full
+        }
     }
 
     private func loadImages(for url: URL) {
@@ -866,6 +1130,7 @@ struct DevelopView: View {
         fullBaseImage = nil
         previewBaseImage = nil
         displayedImage = nil
+        histogramBins = []
 
         DispatchQueue.global(qos: .userInitiated).async {
             guard let base = PhotoEditRenderer.loadBaseImage(from: url) else {
@@ -926,12 +1191,14 @@ struct DevelopView: View {
                 return
             }
             let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            let bins = PhotoEditRenderer.luminanceHistogram(of: rendered)
 
             DispatchQueue.main.async {
                 guard selectedURL == photoAtRenderTime else {
                     return
                 }
                 displayedImage = image
+                histogramBins = bins
             }
         }
     }

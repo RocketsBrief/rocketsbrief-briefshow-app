@@ -21833,6 +21833,15 @@ struct PhotoShowSheet: View {
             )
             .shadow(color: isSelected ? selectionBorderColor.opacity(0.35) : .clear, radius: isSelected ? 10 : 0)
             .contentShape(Rectangle())
+            // Double-tap gesture attached BEFORE the single-tap one below —
+            // that ordering is what lets SwiftUI tell the two apart (a
+            // single click waits briefly to see if a second one follows
+            // before firing handleSelectTap). Opens straight into Develop
+            // on this exact photo, same window/call DevelopWindowController
+            // already uses for the header's own "Develop" button.
+            .onTapGesture(count: 2) {
+                DevelopWindowController.shared.open(photoURLs: photoURLs, initialSelection: url)
+            }
             .onTapGesture {
                 handleSelectTap(url)
             }

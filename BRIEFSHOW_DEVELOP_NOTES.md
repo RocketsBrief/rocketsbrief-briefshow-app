@@ -104,6 +104,33 @@ rotate/ne-persistovan clipboard kroz restart), ili nešto novo što korisnik
 zatraži. Jedna sitna neistražena nijansa kod auto-fit crop-a (stavka 4) —
 verovatno nebitna, dokumentovana za svaki slučaj.
 
+**Dopuna (11/12. avgust, kasno veče/posle ponoći) — gde smo STVARNO stali
+sad**: posle gornjeg su urađene još četiri stavke, poslednja (18) je bio
+pravi produkcioni incident:
+- **15**: klik-ne-radi-odmah popravljen (`acceptsFirstMouse`), **ozbiljan
+  freeze bug otkriven i popravljen** (Cmd+V bez `isARepeat` u Develop-u),
+  paste sad "u mestu", layer resize ratio-locked (Shift = free).
+- **16**: mask/selection/layer overlay pozicija popravljena kad postoji
+  crop (koristio pogrešan pre/post-crop frame); tanje linije.
+- **17**: Backspace/Delete briše selekciju, Undo/Redo (Cmd+Z/⇧Z), `[`/`]`
+  menja veličinu aktivnog alata.
+- **18**: korisnik prijavio da Cmd+X/Cmd+C u Selection alatu ne rade —
+  ispostavilo se DVA bag-a: (a) presrogo modifier-flag poređenje u
+  Develop-u, (b) **ShowGrid-ov SASVIM ODVOJEN Cmd+X/C/V monitor
+  (`ContentView.swift`) nikad nije proveravao da li je njegov prozor
+  fokusiran** — reagovao je i dok je Develop bio otvoren, i pošto ništa
+  nije bilo selektovano u pozadinskom gridu, "cut ceo folder" + "paste"
+  je REKURZIVNO kopiralo ceo `~/Desktop` u sebe, DVA PUTA, `kill -9` morao
+  oba puta uživo dok se istraživalo. Oba bag-a popravljena, **korisnik je
+  potvrdio da Cmd+X/Cmd+C sad rade** preko prave tastature. Duplirani
+  `Desktop 1`/`Desktop 2` folderi obrisani (Trash). Pun opis, dokaz uživo
+  (CPU/`sample` profil), i mehanizam bug-a — ispod pod stavkom 18.
+
+**Trenutno stanje**: nema poznatih otvorenih bagova. Build čist, app
+zdrava (0% CPU idle posle restarta). Sledeći koraci su ili iz "Poznata
+ograničenja" ispod (nizak prioritet, niko nije tražio), ili nešto novo što
+korisnik zatraži.
+
 **Napomena o Terminal/Desktop permisiji**: tokom testiranja ove sesije,
 `ls`/`cat`/itd. na `~/Desktop` iz Bash-a je počeo da vraća "Operation not
 permitted" usred sesije (radilo je ranije u istoj sesiji) — izgleda kao da
@@ -1456,23 +1483,24 @@ slideshow/export koji BriefShow već pravi.
     app posle restarta zdrava (`ps aux`: 0% CPU, `S` idle, potvrđeno preko
     3 uzastopna merenja).
 
-    **Šta NIJE urađeno u ovoj sesiji, treba sledeći put**:
-    - Korisnik NIJE stigao da ponovo proba Cmd+X/Cmd+C u Selection alatu sa
-      OBA fix-a primenjena (sesija je stala na "app se srušila, proveri" pre
-      nego što je test ponovljen) — prioritet #1 za sledeću sesiju:
-      potvrditi da Selection Cut/Copy sad rade preko prave tastature (ne
-      samo preko Cut/Copy DUGMADI u panelu, koja su ceo ovaj put radila
-      ispravno).
+    **✅ POTVRĐENO od korisnika** (ista sesija, posle oba fix-a): Cmd+X/
+    Cmd+C u Selection alatu sad rade preko prave tastature. Ovo je bio
+    prioritet #1 za sledeću sesiju — više nije otvoreno.
+
+    **Počišćeno**:
     - `~/Desktop/Desktop 1` i `~/Desktop/Desktop 2` (rekurzivne kopije celog
-      Desktop-a, uključujući ugnježdenu kopiju-u-kopiji kod "Desktop 2")
-      **NISU obrisane** — namerno ostavljene da korisnik odluči/potvrdi
-      brisanje. `du -sh` prijavljuje 567G/462G, ali to je APFS `clonefileat`
-      copy-on-write iluzija (`df -h /` pokazuje isti slobodan prostor pre i
-      posle, ~66GiB) — nije prava kriza po prostor, ali su folderi
-      neuredni i sadrže duplirane kopije SVIH projekata sa Desktop-a
-      (uključujući ovaj git repo).
-    - `~/Desktop/Gemini_Generated_Image_72ezha72ezha72ez 1.png` — manji
-      duplikat od PRVOG (pre-(b)-fix) testa, isto ostavljen neobrisan.
+      Desktop-a koje je bug napravio) — **obrisane u Trash** (ne trajno,
+      korisnik može vratiti ako nešto fali). `du -sh` je prijavljivao
+      567G/462G, ali to je bila APFS `clonefileat` copy-on-write iluzija
+      (`df -h /` je pokazivao isti slobodan prostor pre i posle, ~66GiB) —
+      nikad nije bila prava kriza po prostor, samo neuredni folderi.
+    - `~/Desktop/Gemini_Generated_Image_72ezha72ezha72ez 1.png` (manji
+      duplikat od PRVOG, pre-(b)-fix testa) — **ostavljen neobrisan**
+      (korisnik nije eksplicitno pitan za ovaj konkretan fajl kao za
+      Desktop 1/2 — sledeća sesija može pitati ili ga tiho ukloniti ako
+      korisnik potvrdi da mu ne treba).
+
+    **Šta bi moglo sledeće (nije bug, samo ideja, niko nije tražio)**:
     - Vredelo bi razmotriti dodatnu zaštitu u `pasteClipboard(into:)`
       samoj — trenutno nema guard-a protiv kopiranja foldera U SEBE/u
       podfolder-a-sebe kod COPY grane (postojeći "isto mesto" skip na liniji

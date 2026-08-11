@@ -22477,6 +22477,27 @@ struct PhotoShowSheet: View {
         }
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Scoped to only fire while THIS (ShowGrid/"BriefShow") window
+            // is key — local NSEvent monitors are app-wide, not per-window,
+            // so without this check these shortcuts also fired while the
+            // separate "Develop" window was frontmost (same reasoning as
+            // Develop.swift's own installEditingKeyMonitor, which already
+            // guards the other direction). That was a real, serious bug,
+            // not just a theoretical one: Develop has its OWN Cmd+C/X/V for
+            // its Selection tool's in-memory layer clipboard, but with no
+            // guard here, THIS monitor fired at the same time and — since
+            // nothing is ever selected in the (hidden, backgrounded)
+            // ShowGrid grid while Develop is open — its copyCutTargets
+            // fallback grabbed the ENTIRE currently open folder, and a
+            // follow-up Cmd+V recursively copied that whole folder via
+            // pasteClipboard(into:). Observed firsthand this session: the
+            // app hammered clonefileat/mkdir/chmod at 80%+ CPU for minutes
+            // and had to be force-quit — from a client just trying to
+            // cut/copy a Selection inside Develop, never touching ShowGrid
+            // at all.
+            guard NSApp.keyWindow?.title == "BriefShow" else {
+                return event
+            }
             let spaceKeyCode: UInt16 = 49
             let escapeKeyCode: UInt16 = 53
             let character = event.charactersIgnoringModifiers?.lowercased()
@@ -22493,7 +22514,20 @@ struct PhotoShowSheet: View {
             // so Cmd-X was silently toggling a like instead of cutting, and
             // Cmd-V was silently popping the Clear-All confirmation instead
             // of pasting.
-            if isCommandDown, let character {
+            //
+            // !event.isARepeat matters here specifically for "v": without
+            // it, holding Cmd+V for even a moment past the OS's key-repeat
+            // threshold fires pasteIntoGrid() on every repeated keyDown —
+            // and when nothing is selected, its copy/cut target falls back
+            // to the WHOLE currently open folder (see copyCutTargets
+            // below), so each repeat kicks off another full recursive
+            // folder copy. This is the exact same class of bug as
+            // Develop.swift's documented Cmd+V freeze (BRIEFSHOW_DEVELOP_
+            // NOTES.md #15) — same missing guard, different key monitor —
+            // observed firsthand this session (sustained 60-80% CPU
+            // hammering clonefileat/mkdir/chmod for minutes after a single
+            // Cmd+V, required force-quitting the app).
+            if isCommandDown, let character, !event.isARepeat {
                 // In the loupe, Copy/Cut act on whatever's being previewed;
                 // back in the grid, on the current selection; with nothing
                 // selected there, on the folder currently open — the same

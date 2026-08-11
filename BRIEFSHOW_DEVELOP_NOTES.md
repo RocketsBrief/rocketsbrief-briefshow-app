@@ -1,8 +1,10 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 11. avgust 2026 (kasno veče).
+Beleška za nastavak rada. Poslednja izmena: 11. avgust 2026 (kasno veče/posle ponoći).
 
-**⚠️ Za sledeću sesiju koja dodaje bilo kakav novi `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` monitor**: UVEK proveriti `event.isARepeat` i vratiti `event` (ne progutati) kad je true, OSIM ako je namerno drugačije. Stavka #15 ispod dokumentuje pravi incident (app zamrznut, `kill -9` morao) kad je ovo izostavljeno — držanje Cmd+V je gomilalo layere brže nego što je render mogao da ih obradi, svaki sledeći render sve sporiji, dok app nije potpuno prestala da odgovara.
+**⚠️ Za sledeću sesiju koja dodaje bilo kakav novi `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` monitor** — DVA obavezna pravila, oba naučena kroz prave incidente u produkciji:
+1. UVEK proveriti `event.isARepeat` i vratiti `event` (ne progutati) kad je true, OSIM ako je namerno drugačije. Stavka #15 ispod dokumentuje prvi incident (app zamrznut, `kill -9` morao) kad je ovo izostavljeno.
+2. UVEK ograničiti monitor na SVOJ prozor (`guard NSApp.keyWindow?.title == "<taj prozor>" else { return event }`, prva linija u handleru). Local NSEvent monitori su APP-WIDE, ne po-prozoru — bez ove provere, monitor registrovan u JEDNOM prozoru (npr. ShowGrid) i dalje prima i OBRAĐUJE tastere dok je NEKI DRUGI prozor (npr. Develop) fokusiran, često sa netačnim/praznim kontekstom (npr. "ništa nije selektovano, pa primeni na CEO folder"). Stavka #18 dokumentuje pravi incident (ceo Desktop folder rekurzivno kopiran u sebe, DVA puta, `kill -9` morao oba puta) kad je ovo izostavljeno na ShowGrid-ovom monitoru dok je Develop-ov (koji JESTE imao ovu proveru) bio ispravan primer.
 
 ## TL;DR — gde smo stali
 
@@ -1359,6 +1361,126 @@ slideshow/export koji BriefShow već pravi.
     logika je pregledana ručno (jednostavna, bez asinhronog rizika sličnog
     #15-om osim namerno-dozvoljenog repeat-a, koji je bezbedan iz gore
     navedenog razloga).
+18. ⚠️ **Cmd+X/Cmd+C u Selection alatu "ne radi" + ceo Desktop rekurzivno
+    kopiran u sebe (DVA PUTA), `kill -9` morao oba puta** — 11/12. avgusta
+    (posle ponoći), `xcodebuild` prolazi čisto na oba fix-a ispod. Korisnik
+    je prijavio da Cmd+X/Cmd+C u Develop-ovom Selection alatu ne rade;
+    istraga je otkrila DVA odvojena bag-a, drugi mnogo ozbiljniji od prvog.
+
+    **(a) Modifier-flag poređenje presrogo** (`Develop.swift`,
+    `installEditingKeyMonitor`) — `event.modifierFlags.intersection(.deviceIndependentFlagsMask)`
+    hvata i Caps Lock/numeric-pad/function/help bitove, a poređenje je bilo
+    STROGA jednakost (`flags == .command`). Bilo koji slučajan dodatan bit
+    (npr. fizički uključen Caps Lock, ili neki input source/tastatura koja
+    dometne "šum" bitove uz normalan Cmd+X) tiho razbija poređenje — ceo
+    blok (Cmd+C/X/V/Z) se preskoči BEZ ikakve povratne informacije
+    korisniku. Ispravka: maska suzena na `[.command, .shift, .control, .option]`
+    (samo modifier-i koji stvarno razlikuju jednu prečicu od druge), ne cela
+    `.deviceIndependentFlagsMask`.
+
+    Ovo POTVRĐENO uživo (Accessibility automatizacija, App raised/focused
+    preko `AXRaise` + klik pre svakog keystroke-a): klik na "Circle" u
+    Selection sekciji (pravo dugme) → aktivna selekcija se pojavljuje
+    (dashed krug + handle-i) → `]` (bez modifier-a) je ODMAH uvećao radius
+    (uspešno) → Cmd+X preko sintetičke tastature NIJE ništa uradio, tri puta
+    zaredom, čak ni sa eksplicitno podignutim/fokusiranim prozorom. Direktan
+    dokaz da je problem u prečici a ne u logici: klik DIREKTNO na "Copy"
+    dugme u panelu (ista `copySelection()` funkcija koju bi Cmd+C pozvao) je
+    RADIO SAVRŠENO (selekcija se copy-uje, panel se vraća na "No active
+    selection") — potvrđuje da je cut/copy logika sama po sebi zdrava.
+
+    **(b) ⚠️ MNOGO OZBILJNIJI — ShowGrid-ov Cmd+X/C/V monitor nije bio
+    ograničen na svoj prozor + nije imao `isARepeat` proveru** (`ContentView.swift`,
+    `PhotoShowSheet.installKeyMonitor()`). Ovaj monitor (za copy/cut/paste
+    FAJLOVA/foldera u ShowGrid gridu preko Finder-style right-click menija —
+    potpuno odvojena stvar od Develop-ovog Selection layer-clipboard-a) je
+    imao DVA propusta istovremeno:
+    - Nije proveravao `NSApp.keyWindow?.title` — za razliku od
+      Develop-ovog monitora (koji OD POČETKA ima `guard NSApp.keyWindow?.title == "Develop"`,
+      baš zbog ovog rizika, vidi komentar u kodu iz ranije sesije). Local
+      `NSEvent` monitori su APP-WIDE: oba monitora (ShowGrid-ov i
+      Develop-ov) primaju SVAKI keyDown dok je app aktivna, bez obzira koji
+      je prozor stvarno key — svaki monitor je odgovoran da SAM proveri da
+      li je NJEGOV prozor fokusiran. Develop-ov je to radio, ShowGrid-ov
+      nije nikad.
+    - Nije proveravao `event.isARepeat` na Cmd-delu (isti propust kao
+      stavka #15, ali ovde nikad nije ni bio ispravljen jer je ovo POTPUNO
+      odvojen monitor od Develop-ovog — ispravka #15 je pokrila samo
+      `Develop.swift`).
+
+    **Pravi mehanizam bug-a**: korisnik je bio u Develop-u, koristio
+    Selection alat (Circle/Square/Free — Cut/Copy/Deselect dugmad i Cmd+X/
+    C/V su namenjeni ISKLJUČIVO za Develop-ov in-memory `layerClipboard`).
+    Kad je pritisnuo Cmd+X, DVA monitora su primila isti event: Develop-ov
+    (ispravno, proverava `activeSelection`) I ShowGrid-ov (koji NIJE trebalo
+    da reaguje, pošto ShowGrid prozor nije bio fokusiran, ali je svejedno
+    reagovao pošto nije imao guard). ShowGrid-ov `copyCutTargets` fallback
+    kad ništa nije selektovano u gridu je **ceo trenutno otvoren folder**
+    (`[selectedFolderURL]`) — u ovom slučaju ceo `~/Desktop`. Cmd+X je tako
+    tiho markirao CEO Desktop folder kao "cut" na sistemskom pasteboard-u
+    (jeftino, samo pasteboard write). Sledeći Cmd+V (namenjen Develop-ovom
+    "Paste as Layer") je ISTO tako pogodio ShowGrid-ov `pasteIntoGrid()` →
+    `pasteClipboard(into: selectedFolderURL)`, koji je REKURZIVNO kopirao
+    (`FileManager.copyItem`, preko APFS `clonefileat` po fajlu, plus
+    `mkdir`/`chmod`/`chown`/xattr po stavci da očuva metapodatke) CEO
+    Desktop folder — SVE projekte, fotke, sve — nazad U SEBE, kao
+    `Desktop 1`. Pošto je "Desktop 1" sad DEO Desktop-a, sledeći pokušaj
+    (korisnik je probao ponovo posle prvog "ne radi") je napravio i
+    `Desktop 2` — koji je ugnježdeno sadržao i kopiju `Desktop 1` unutar
+    sebe (otud skoro identična ogromna prijavljena veličina).
+
+    **Otkriveno DOK je app bila živa i zaglavljena** (na eksplicitan zahtev
+    korisnika "proveri dok radi"): `ps aux` je pokazivao održanih 60-80% CPU
+    u trajanju od NEKOLIKO MINUTA (ne kratak skok), `System Events`/AppleScript
+    upiti su vraćali prazno/nepouzdano (isti obrazac "AppleEvent timed out"
+    kao #15, samo ovaj put tiho prazan rezultat umesto vidljive greške) —
+    app tehnički nije bila 100% mrtva (screenshot preko `screencapture -l<windowID>`
+    je i dalje radio, pošto to čita poslednji kompozitovan frame iz
+    WindowServer-a, ne zahteva da app odgovori), ali AX/AppleScript
+    interakcija nije mogla da joj priđe. `sample <pid> 3` (bez `sudo`,
+    root-only alternativa bi bio `spindump`) je uhvatio TAČAN stek uživo:
+    `PhotoShowSheet.pasteClipboard(into:)` ← `pasteIntoGrid()` ← closure u
+    `installKeyMonitor()`, sa `clonefileat`/`mkdir`/`lstat`/`getattrlistbulk`/
+    `fchmod`/`fchown`/xattr syscall-ovima dominirajući "top of stack"
+    histogram (>1000 od ~3200-4800 uzoraka u 2-3 sekunde, oba puta kad je
+    ponovljeno). `kill -9` morao OBA PUTA (prvi hang otkriven, ubijen,
+    kod popravljen ISKLJUČIVO za `Develop.swift` (a) deo, app restartovana,
+    korisnik probao ISTI Selection flow ponovo — DRUGI hang, jer (b) deo
+    tada još nije bio ni identifikovan ni popravljen).
+
+    **Ispravka**: `guard NSApp.keyWindow?.title == "BriefShow" else { return event }`
+    dodat kao PRVA linija u `installKeyMonitor()`-ovom handleru (identičan
+    obrazac kao Develop-ov, samo obrnuto ime prozora), PLUS `!event.isARepeat`
+    dodat u `if isCommandDown, let character { ... }` uslov (isti obrazac
+    kao `installEditingKeyMonitor` u `Develop.swift`). `xcodebuild` čist,
+    app posle restarta zdrava (`ps aux`: 0% CPU, `S` idle, potvrđeno preko
+    3 uzastopna merenja).
+
+    **Šta NIJE urađeno u ovoj sesiji, treba sledeći put**:
+    - Korisnik NIJE stigao da ponovo proba Cmd+X/Cmd+C u Selection alatu sa
+      OBA fix-a primenjena (sesija je stala na "app se srušila, proveri" pre
+      nego što je test ponovljen) — prioritet #1 za sledeću sesiju:
+      potvrditi da Selection Cut/Copy sad rade preko prave tastature (ne
+      samo preko Cut/Copy DUGMADI u panelu, koja su ceo ovaj put radila
+      ispravno).
+    - `~/Desktop/Desktop 1` i `~/Desktop/Desktop 2` (rekurzivne kopije celog
+      Desktop-a, uključujući ugnježdenu kopiju-u-kopiji kod "Desktop 2")
+      **NISU obrisane** — namerno ostavljene da korisnik odluči/potvrdi
+      brisanje. `du -sh` prijavljuje 567G/462G, ali to je APFS `clonefileat`
+      copy-on-write iluzija (`df -h /` pokazuje isti slobodan prostor pre i
+      posle, ~66GiB) — nije prava kriza po prostor, ali su folderi
+      neuredni i sadrže duplirane kopije SVIH projekata sa Desktop-a
+      (uključujući ovaj git repo).
+    - `~/Desktop/Gemini_Generated_Image_72ezha72ezha72ez 1.png` — manji
+      duplikat od PRVOG (pre-(b)-fix) testa, isto ostavljen neobrisan.
+    - Vredelo bi razmotriti dodatnu zaštitu u `pasteClipboard(into:)`
+      samoj — trenutno nema guard-a protiv kopiranja foldera U SEBE/u
+      podfolder-a-sebe kod COPY grane (postojeći "isto mesto" skip na liniji
+      ~22401 primenjuje se SAMO kad je `isMove`, ne i kod plain copy) — sad
+      kad je window-scoping ispravljen ovo je mnogo manji rizik (samo
+      namerno Cmd+C na ceo folder + Cmd+V u isti folder bi to i dalje
+      uradilo), ali je jeftina dodatna zaštita ako se ikad pokaže da
+      zatreba.
 
 ## Vezano
 

@@ -1804,7 +1804,20 @@ struct DevelopView: View {
             guard NSApp.keyWindow?.title == "Develop" else {
                 return event
             }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            // Masked down to JUST the modifiers these shortcuts actually
+            // care about (command/shift/control/option), not the full
+            // `.deviceIndependentFlagsMask` (which also includes capsLock/
+            // numericPad/help/function). Those extra bits can legitimately
+            // be set alongside a plain Cmd+X/Cmd+C/Cmd+V — e.g. Caps Lock
+            // physically on, or a numeric-pad-adjacent key involved in how
+            // some keyboards/input sources report the event — and every
+            // comparison below is exact equality (`flags == .command`), so
+            // ANY stray incidental bit silently broke the match and made
+            // the shortcut do nothing with zero feedback. Narrowing to only
+            // the modifiers that actually distinguish one shortcut from
+            // another (command alone vs command+shift) fixes that without
+            // losing the ability to tell them apart.
+            let flags = event.modifierFlags.intersection([.command, .shift, .control, .option])
             let key = event.charactersIgnoringModifiers?.lowercased()
 
             // Each case only fires when there's actually something for it

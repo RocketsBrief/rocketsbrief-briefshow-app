@@ -1,12 +1,43 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 11. avgust 2026 (rano jutro).
+Beleška za nastavak rada. Poslednja izmena: 11. avgust 2026 (kasno veče).
+
+**⚠️ Za sledeću sesiju koja dodaje bilo kakav novi `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` monitor**: UVEK proveriti `event.isARepeat` i vratiti `event` (ne progutati) kad je true, OSIM ako je namerno drugačije. Stavka #15 ispod dokumentuje pravi incident (app zamrznut, `kill -9` morao) kad je ovo izostavljeno — držanje Cmd+V je gomilalo layere brže nego što je render mogao da ih obradi, svaki sledeći render sve sporiji, dok app nije potpuno prestala da odgovara.
 
 ## TL;DR — gde smo stali
 
-**Sve dosad zatraženo je gotovo.** Ceo hronološki tok, u jednoj listi
-(pun opis/arhitektura svake stavke je u "Šta dalje" ispod, pod istim
-brojem):
+**Sve dosad zatraženo je gotovo.** Korisnik je tražio tri stvari u istoj
+sesiji: **10) Brush cursor preview** — gotovo. **11) Patch (clone/heal)
+tool sa Circle/Square/Free** — gotovo, matematika i GUI oboje potvrđeni.
+**12) "Pravi Photoshop-style image layeri"** — prvi pokušaj (Patch tool,
+#11) je bio **pogrešno protumačen zahtev**: korisnik nije tražio clone/
+heal, već pravi **selection/cut alat** (Circle/Square/Free) koji seče deo
+slike u layer koji se posle može copy/paste-ovati i na DRUGU fotku, sa
+Cut/Copy/Deselect akcijama — ispravljeno kao stavka **13** ispod (Patch je
+ostao, korisnik je eksplicitno rekao da zadržim oba). Stavka 13 je
+suštinski i prvi pravi test celog Layers sistema (pozicioniranje/resize/
+opacity/blend mode) — urađena i vizuelno potvrđena (uz jedan lažni alarm
+tokom testiranja, vidi #13-ovu napomenu o `screencapture -l` keširanju).
+
+**Dopuna iste večeri**: posle #13, korisnik je vratio četiri stvari — tri
+konkretne ispravke plus jedna UX izmena za Patch. Sve četiri urađene kao
+stavka **14**: (a) Patch sad podržava pravi clone-stamp gest — drži ⌥
+(Option) i klikni da postaviš IZVOR, pusti ⌥ i klikni da pomeriš
+ODREDIŠTE (i "patchuje" tamo), plus hover-prsten dok se ⌥ drži kao preview
+gde će izvor pasti; (b) Cmd+V sad radi za Paste as Layer (ranije samo
+dugme, korisnik ga nije lako pronalazio); (c) Cut-ova "rupa" je sad siva
+umesto crna; (d) feather na Square/Free selekciji/patch-u više NE širi
+masku van nacrtane granice (bio simetričan blur, sad klampovan da nikad ne
+pređe originalnu ivicu — isti "samo unutra" princip koji je Radial već
+imao). Matematika (b) je trivijalna (SwiftUI keyboardShortcut), (d) je
+provereno skriptom (van-granice piksel je UVEK 0 sada, bez obzira na
+feather). (a) NIJE moglo GUI-testirati (⌥+klik kombinacija — isto poznato
+ograničenje kao svaki gesture-based deo ove app-e), ali matematika je
+identična već-verifikovanim `movePatchCenter`/`movePatchSource`
+funkcijama, samo okinuta na klik umesto drag-a.
+
+Ceo hronološki tok, u jednoj listi (pun opis/arhitektura svake stavke je u
+"Šta dalje" ispod, pod istim brojem):
 
 1. Vizuelna provera Develop ekrana u pokrenutoj app-i (osnovni UI,
    non-destructive store kroz restart, export wiring).
@@ -40,12 +71,47 @@ brojem):
    matematika provereno skriptom (960 slučajeva); Export All Edited
    vizuelno potvrđeno end-to-end (pravi fajl, ispravna rotacija,
    needitovana fotka preskočena).
+10. **Brush cursor size preview** — hover ring pokazuje veličinu četkice
+    PRE slikanja. Sitna popravka, gotovo i vizuelno neproverljivo (hover
+    se ne može GUI-testirati, isto poznato ograničenje), ali nizak rizik.
+11. **Patch (clone/heal) tool — Circle/Square/Free** — nov, četvrti tip
+    lokalne maske. Matematika (offset sign, square/free mask geometrija,
+    pun end-to-end kompozit) provereno skriptama, I vizuelno potvrđeno u
+    pravoj app-i na sintetičkoj test fotki (sve tri varijante oblika,
+    efekat klonranja stvarno vidljiv na ekranu).
+13. **Selection tool (Cut/Copy/Deselect) + pravi Image Layers** — ono što
+    korisnik STVARNO tražio pod "patch tool" (#11 je ostao kao bonus,
+    korisnik je eksplicitno rekao da zadrži oba). Circle/Square/Free
+    selection alat koji seče/kopira deo slike u in-memory clipboard, Paste
+    kreira pravi, pomerivi/resize-ovani/opacity/blend-mode `ImageLayer` —
+    radi i preko fotki (kopiraj sa jedne, nalepi na drugu). Cut dodatno
+    ostavlja solid-boja "rupu" na izvoru (crna u prvoj verziji, sivo od
+    stavke #14), kao NOVI layer (ne poseban mehanizam). Matematika (offset/
+    Y-flip pozicioniranja, PNG round-trip, resize sa anchor-om, blend
+    modovi) provereno skriptama, I vizuelno potvrđeno end-to-end u pravoj
+    app-i preko eksportovanog fajla (vidi pun opis ispod za jedan lažni
+    alarm usput).
+14. **Četiri manje ispravke posle #13** (Patch ⌥-klik gest, Cmd+V paste,
+    siva umesto crna Cut-rupa, feather se više ne širi van granice) — vidi
+    pun opis ispod.
 
-Nema više otvorenih stavki — sledeće bi bilo sitno poliranje navedeno u
-"Poznata ograničenja" (brush mask caching, radial rotacija, RAW fajl za
-test), ili nešto novo što korisnik zatraži. Jedna sitna neistražena
-nijansa kod auto-fit crop-a (stavka 4) — verovatno nebitna, dokumentovana
-za svaki slučaj.
+Nema više otvorenih stavki iz ove sesije. Sledeće bi bilo sitno poliranje
+navedeno u "Poznata ograničenja" (brush mask caching, radial rotacija, RAW
+fajl za test, Patch-ov alpha-blend nije "content-aware" heal, Layer nema
+rotate/ne-persistovan clipboard kroz restart), ili nešto novo što korisnik
+zatraži. Jedna sitna neistražena nijansa kod auto-fit crop-a (stavka 4) —
+verovatno nebitna, dokumentovana za svaki slučaj.
+
+**Napomena o Terminal/Desktop permisiji**: tokom testiranja ove sesije,
+`ls`/`cat`/itd. na `~/Desktop` iz Bash-a je počeo da vraća "Operation not
+permitted" usred sesije (radilo je ranije u istoj sesiji) — izgleda kao da
+je macOS TCC (Privacy & Security → Files and Folders) pristup Desktop-u
+povučen usred rada, uzrok nepoznat (možda neki sistemski dijalog koji se
+pojavio i nestao tokom `System Events` automatizacije). Zaobiđeno preko
+`osascript`/Finder (koji je zadržao pristup) za kopiranje/brisanje fajlova.
+Ako se ovo ponovi ili ometa normalan rad, korisnik bi trebalo da proveri
+System Settings → Privacy & Security → Files and Folders (ili Full Disk
+Access) za Terminal/Claude Code.
 
 **Bitna napomena za sledeću sesiju testiranja**: izbegavati `cliclick`/
 sintetički mouse-drag na pravoj app-i — jedan takav test je danas slučajno
@@ -738,6 +804,561 @@ slideshow/export koji BriefShow već pravi.
    porukom, stvaran export je napisao TAČNO jedan fajl
    (`test-a Edited.jpg`, test-b ispravno preskočen), i taj fajl je
    pri otvaranju pokazao ispravno primenjenu rotaciju.
+10. ~~Brush cursor size preview~~ — urađeno 11. avgusta (popodne),
+    `xcodebuild` prolazi čisto. Korisnik je primetio da se pri selektovanju
+    brush maske ne vidi veličina četkice na slici PRE nego što se počne
+    slikati.
+
+    `DevelopView`: novi `@State private var brushHoverLocation: CGPoint?`
+    (frame/view prostor, ne unit prostor), postavljen preko
+    `.onContinuousHover` na `brushPaintOverlay`-ovom hit-area sloju.
+    `brushPaintOverlay` sad crta `Circle().stroke(...)` prstenom prečnika
+    `brushSize * max(frame.width, frame.height)` (isti obrazac kao
+    postojeći aktivni-potez `lineWidth` — dijametar je razlomak SLIKE-ovog
+    dužeg kraja, ne `frame`-ovog, ali pošto je `frame` aspect-preserving
+    fit slike, razmera se poklapa), na trenutnoj poziciji miša — sakriven
+    dok se aktivno slika (`activeBrushStrokePoints.isEmpty` guard), pošto
+    tada već aktivni-potez Path prikazuje pravu širinu poteza. Boja prstena
+    prati Erase toggle (crvena/accent), isto kao aktivni potez.
+
+    Uzgred ispravljena mala nekonzistentnost: aktivni-potez `lineWidth` je
+    RANIJE koristio samo `frame.width` (ne `max(frame.width, frame.height)`)
+    za dijametar — tehnički pogrešno za portrait fotke (gde je frame.height
+    duži kraj), sad obe vrednosti (hover prsten i aktivni potez) koriste
+    istu `brushDiameter` konstantu izračunatu jednom na vrhu funkcije.
+
+    `onContinuousHover` je dostupan od macOS 10.15 (projekat cilja 13.0),
+    nema kompatibilnost problema. **Nije moglo GUI-testirati** (hover
+    praćenje miša je isto poznato ograničenje kao drag — `System Events`
+    sintetički eventi ne generišu prave mouse-moved evente), ali je
+    matematika dijametra ista formula koja je već vizuelno potvrđena za
+    aktivni potez ranije u projektu, i `xcodebuild` čist — nizak rizik.
+11. ~~Patch (clone/heal) tool — Circle/Square/Free~~ — urađeno 11. avgusta
+    (popodne), `xcodebuild` prolazi čisto, matematika PA I ceo vizuelni
+    efekat potvrđeni u pravoj app-i (retko za ovu sesiju — obično se
+    drag-based delovi nikad ne mogu GUI-potvrditi, ali sam efekat SE VIDI
+    čim se maska doda, bez potrebe za draganjem, pošto default source
+    offset nije nula).
+
+    Korisnik je tražio "patch tool kao lasso cut tool, circle/square/free
+    cut" — protumačeno (i eksplicitno potvrđeno kroz `AskUserQuestion`) kao
+    PRAVI clone/heal alat (kopira piksele sa jednog dela slike na drugi),
+    ne kao još jedan tip tonske/color maske.
+
+    **Model** (`Develop.swift`): novi `LocalMaskType.patch` slučaj, nov
+    `PatchShape` enum (`.circle/.square/.free`), nova `PatchGeometry`
+    struktura — `shape`, `centerX/centerY/radiusX/radiusY` (Circle/Square,
+    isti konvencija kao `RadialMaskGeometry`), `points: [CGPoint]` (Free,
+    unit prostor, prazno dok se ne nacrta), `feather`,
+    `sourceOffsetX/sourceOffsetY` (vektor od odredišta do izvora, default
+    `(0.2, 0)` — namerno NE nula, da sveže dodata Circle/Square maska
+    odmah pokaže vidljivo drugačiji izvor umesto degenerisanog
+    "kloniraj-sebe-na-sebe" efekta koji izgleda kao da ne radi ništa).
+    `LocalAdjustment.patch: PatchGeometry?` (peto opciono polje, uz
+    radial/graduated/brush) — `settings` (tonski slideri) ostaje TRAJNO
+    neutralan za patch, jer patch nema tonske kontrole (samo uzorkuje
+    piksele). Nov `LocalAdjustment.hasEffect` computed property zamenjuje
+    stari `!adjustment.settings.isNeutral` guard u `applyLocalAdjustments`
+    — za patch, "ima efekat" znači "Circle/Square uvek" ili "Free samo ako
+    su tačke nacrtane", ne "tonska podešavanja nisu nula" (koja za patch
+    nikad i nisu relevantna).
+
+    **Render** (`PhotoEditRenderer`): `patchMask(_:extent:)` dispatch po
+    obliku — Circle DELI kod sa `radialMask` (samo se `PatchGeometry`
+    "prepakuje" u `RadialMaskGeometry` sa `invert: false`, bez duplirane
+    gradient matematike); `squareMask` je hard-edged pravougaonik
+    (`CIImage(color:).cropped(to:)` preko crne pozadine) omekšan
+    `CIGaussianBlur`-om proporcionalnim `feather * min(halfW, halfH)`
+    (simetrično unutra/spolja, za razliku od radial-ovog "samo unutra"
+    feather-a — svesna razlika, bliža Photoshop-ovom "Feather Selection"
+    ponašanju); `freeMask` je JEDINA maska u projektu koja ide preko Core
+    Graphics (`CGContext` bitmap + `CGMutablePath.fillPath()`) umesto
+    čistog CIFilter lanca, pošto Core Image nema built-in generator za
+    proizvoljan poligon — `CGContext`-ov koordinatni sistem je bottom-up
+    kao CI (ne top-down kao SwiftUI), pa tačke dobijaju isti `1 - y` flip
+    kao radial/graduated, ne dodatni.
+
+    Sam clone efekat: `patchSampledImage(_:source:extent:)` translira CEO
+    trenutni (već-akumulirani, uključujući ranije maske u nizu) `output`
+    preko `CGAffineTransform(translationX: -offsetX*width, y: +offsetY*height)`
+    — matematika (zašto je X negiran a Y nije, zbog unit-prostor top-down
+    Y vs. CI bottom-up Y) izvedena ručno PA potvrđena standalone skriptom
+    (sintetička 4-kvadrant slika, sample u sva 4 smera) PRE ugrađivanja u
+    kod, isti obrazac kao auto-fit crop/histogram/RAW ranije ove sesije.
+    Mask se i dalje gradi na ODREDIŠNOJ lokaciji (`patchMask` koristi
+    `geo.centerX/Y`, ne source) — `CIBlendWithMask` onda ograničava efekat
+    na taj oblik, identičan obrazac kao svaka druga lokalna maska.
+
+    **Matematika — SVE provereno standalone Swift skriptama pre GUI-ja**
+    (isti pattern kao ceo ostatak sesije): (1) offset sign (4 smera na
+    sintetičkoj 4-kvadrant slici — svi PASS); (2) square/free mask
+    geometrija (granice, Y-flip, feather smer — 13 provera, svi PASS);
+    (3) PUN end-to-end kompozit (mask + sample-offset ZAJEDNO, kao pravi
+    `applyLocalAdjustments`) na 4-kvadrant slici — odredište pokazuje
+    TAČNU boju sa source lokacije, ostatak slike netaknut (5 provera, svi
+    PASS).
+
+    **UI** (`DevelopView`): tri nova add-dugmeta "Patch Circle/Square/Free"
+    (namerno TRI odvojena dugmeta, ne jedno + naknadni shape-picker — prati
+    isti obrazac kao postojeća tri Radial/Graduated/Brush dugmeta, izbegava
+    "šta se dešava sa već nacrtanim Free poligonom ako se shape promeni
+    naknadno" komplikaciju). Mini editor (kad je patch selektovan): shape
+    Picker (segmented, Circle/Square/Free — promena oblika NA Free čisti
+    `points`, nazad SA Free samo menja render, centar/radius ostaju),
+    Feather slider, "Reset Source Offset" dugme, i (za Free bez nacrtanih
+    tačaka) hint tekst "Drag on the photo to draw the patch outline." — svi
+    tonski slideri (Exposure/Contrast/itd.) su NAMERNO izostavljeni za
+    patch tip (`if adjustment.type != .patch` guard oko celog tog bloka).
+
+    On-canvas overlay: Circle/Square dele `patchShapeOverlay` (move handle
+    + 2 radius handle, identičan obrazac kao `radialOverlay`, samo se
+    ispisuje `Ellipse()` ili `Rectangle()` po obliku); Free dele
+    `patchFreeShapeOverlay` (move handle pomera SVE tačke + centar
+    zajedno, bez clamp-a na 0...1 — clamp samo na centru dok se tačke ne
+    clamp-uju bi ih desinhronizovao, pošto `freeMask` crta direktno iz
+    `points`, ne iz centra) dok nema nacrtanih tačaka, inače
+    `patchFreeDrawOverlay` (prazna hit-površina, isti "jeftin vektorski
+    preview do mouse-up" obrazac kao Brush). SVE tri varijante crtaju
+    žuti izvor-marker (`viewfinder` SF Symbol, draggable, NEKLAMPOVAN —
+    izvor sme biti bilo gde, čak i blizu/van ivice) + isprekidanu liniju
+    odredište→izvor + isprekidanu "duh" konturu na izvoru (čisto vizuelna
+    referenca, non-interactive) — nijedan od ova dva dodatka ne postoji kod
+    Radial/Graduated/Brush, novo samo za Patch.
+
+    **Vizuelno POTVRĐENO u pravoj app-i** (Accessibility automatizacija +
+    ručno generisana sintetička 4-kvadrant test fotka — crveno/zeleno/
+    plavo/žuto, `xcrun swift` skripta preko `CIContext`/`NSBitmapImageRep`,
+    uvezena preko `Import Photos` → real `NSOpenPanel` sa `Cmd+Shift+G` pa
+    type-ahead selekcijom fajla, pošto BriefShow-ova SOPSTVENA sidebar-ova
+    fascikla-lista koristi `.onTapGesture` i ne reaguje na sintetičke AX
+    evente — isti poznati obrazac): sve tri "Patch X" add-dugmeta rade
+    (ispravna ikonica/ime/auto-select), mini editor prikazuje tačan
+    shape-picker state i sakriva tonske slidere, Free ispravno prikazuje
+    "draw outline" hint dok nema tačaka. **Bonus, van očekivanja**: pošto
+    default `sourceOffsetX = 0.2` NIJE nula, sam clone efekat je bio ODMAH
+    vidljiv na ekranu čim je maska dodata (bez ikakvog draganja) — mogla se
+    vizuelno potvrditi i sama pixel-kompozicija, ne samo UI wiring: unutar
+    Circle/Square oblika, deo koji preklapa crveni/plavi kvadrant slike
+    ispravno prikazuje omekšano zeleno/žuto (sadržaj sa izvorne lokacije),
+    tačno kao što matematika predviđa. Ovo je redak slučaj u ovoj sesiji
+    gde je i sam pixel-efekat (ne samo geometrija/UI) vizuelno potvrđen u
+    pravoj app-i, ne samo skriptom.
+
+    **Šta NIJE moglo GUI-testirati** (isto poznato ograničenje kao svaki
+    drag-based deo ranije): stvarno prevlačenje resize handle-a (Circle/
+    Square), stvarno crtanje Free poligona, prevlačenje žutog izvor-
+    markera, promena Feather slidera. Sve rade preko istog, već više puta
+    potvrđenog `DragGesture`/`Slider` obrasca kao Radial/Graduated/Brush,
+    nizak rizik.
+
+    **Poznata ograničenja (svesno, ne bagovi)**: ovo NIJE Photoshop-ov
+    pravi "Patch Tool" sa content-aware/Poisson blending-om koji prilagođava
+    osvetljenje/teksturu na granici — ovo je jednostavan feathered
+    alpha-blend (translate + `CIBlendWithMask`), isti nivo sofisticiranosti
+    kao ostale tri maske. Na fotkama sa glatkim prelazima (nebo, koža,
+    zamagljena pozadina) izgledaće dobro; na oštrim ivicama/kontrastnim
+    granicama ostaviće vidljiv "flekast" prelaz (baš kao što se vidi na
+    adversarijalnoj 4-kvadrant test slici). Pravi content-aware heal bio bi
+    mnogo veći poduhvat (Poisson image editing/gradient-domain blending) —
+    nije urađen, nije ni tražen eksplicitno. Square feather je simetričan
+    (blur unutra I spolja oko granice), za razliku od Radial-ovog "samo
+    unutra" — ako se ikad primeti kao nekonzistentno, lako se poravna.
+    Free mask nema caching (isti "rebuild iz nule na svaki render" kao
+    Brush) — isti poznati kompromis.
+13. ~~Selection tool (Cut/Copy/Deselect) + pravi Image Layers~~ — urađeno
+    11. avgusta (kasno popodne), `xcodebuild` prolazi čisto.
+
+    **Kontekst/ispravka**: korisnik je posle #11 (Patch tool) objasnio da
+    "circle/square/free cut" NIJE trebalo da bude clone/heal, već pravi
+    **selection alat** — iseci deo slike, kopiraj/iseci ga kao layer, taj
+    layer nalepi (i na DRUGU fotku, kao clipboard). Razjašnjeno kroz tri
+    runde `AskUserQuestion` pre kucanja koda (jer je već jednom pogođeno
+    pogrešno): (1) Patch ostaje, ovo je NOVI, peti tip alata (ne zamena);
+    (2) nalepljeni komad je PRAVI layer — pomeriv/resize/opacity/blend
+    mode, ne odmah zapečen u sliku; (3) clipboard je in-memory dok je
+    Develop prozor otvoren (isti obrazac kao `settingsClipboard`); (4) Cut
+    ostavlja solid-color "rupu" na izvoru (ne ništa).
+
+    **Model** (`Develop.swift`): `SelectionGeometry` — ephemeral (NIJE
+    Codable/deo `PhotoEditSettings`, isto kao `pendingCrop`), shape
+    (deli `PatchShape` enum sa Patch-om) + center/radius/points/feather,
+    NEMA source-offset polja (nema smisla za običnu selekciju). `ImageLayer`
+    (Codable, u `PhotoEditSettings.layers: [ImageLayer]`, decodeIfPresent
+    fallback `[]` isti obrazac kao `localAdjustments`) — `imageData: Data`
+    (PNG, NIKAD JPEG jer isečen krug/lasso komad ima providne piksele van
+    svog oblika, JPEG nema alpha kanal), `x/y/width/height` (GORNJI-LEVI
+    ugao, ne centar — layer se prevlači/resize-uje iz bounding box-a kao
+    crop alat, ne iz radiusa oko centra kao maske), `opacity`, `blendMode`
+    (`LayerBlendMode`: normal/multiply/screen/overlay — minimalan razuman
+    set za prvi prolaz), `isEnabled`. `LayerClipboardData` (NIJE Codable,
+    samo `@State` na `DevelopView`, kao `settingsClipboard`).
+
+    **Persistencija — odgovor na staro otvoreno pitanje "gde žive layer-i"**:
+    NE poseban disk-based sistem kako je ranije predviđeno (vidi staru
+    verziju ove stavke u git istoriji/ranijim verzijama ove beleške) — PNG
+    `Data` prosto ide u `PhotoEditSettings` kao i sve ostalo, kroz isti
+    `UserDefaults`-JSON `PhotoEditStore`. Prihvatljivo jer je svaki layer
+    OGRANIČEN na svoj bounding box (ne cela slika) — jedan isečen komad je
+    reda veličine par do par desetina KB kao PNG, ne MB; ako se ovo ikad
+    pokaže kao problem (npr. korisnik nalepi mnogo velikih layer-a), sledeći
+    korak bi bio disk-based storage sa samo putanjom u `UserDefaults`.
+
+    **Render** (`PhotoEditRenderer`): `compositeLayers` — nova faza u
+    `render()`, POSLE `applyLocalAdjustments` (maske), PRE crop-a. Svaki
+    layer: `CIImage(data: layer.imageData)` (dekoduje PNG), skaliran
+    NANOVO protiv TRENUTNOG (ne izvornog) `extent`-a (isti komad nalepljen
+    na fotku drugačije rezolucije od one sa koje je isečen i dalje ispravno
+    skalira — `width/height` su razlomci CILJNE slike, ne apsolutni
+    pikseli), pozicioniran preko `originY = extent.origin.y + (1 - y -
+    height) * extent.height` (top-down layer.y → CI bottom-up, isti obrazac
+    kao svaki drugi top-down→CI flip u fajlu), opacity kroz `CIColorMatrix`
+    (skalira alpha kanal), blend preko `CIFilter.sourceOverCompositing/
+    multiplyBlendMode/screenBlendMode/overlayBlendMode`. `selectionMask`
+    ponovo pakuje `SelectionGeometry` u `PatchGeometry` da iskoristi VEĆ
+    proverenu `patchMask`/`squareMask`/`freeMask` matematiku bez trećeg
+    dupliranja. `extractSelectionPNG` (za Copy, uzorkuje iz renderovane
+    slike) i `solidFillPNG` (za Cut-ovu rupu, uzorkuje iz solid boje umesto
+    slike — DELI `maskedSelectionImage` helper sa `extractSelectionPNG`)
+    oboje crop-uju na selekcijin BOUNDING BOX (ne celu sliku) pre PNG
+    encode-a, da isečeni komad ne nosi ogromnu providnu marginu.
+
+    **Cut = Copy + nov layer, ne poseban mehanizam**: "rupa" koju Cut
+    ostavlja na izvoru NIJE nova vrsta adjustment-a — to je prosto NOVI
+    `ImageLayer` (solid crna, isti oblik/pozicija kao selekcija) dodat na
+    KRAJ `settings.layers` niza na IZVORNOJ fotki. Ponovo koristi kompletan
+    layer-rendering pipeline bez ijedne dodatne grane koda — svesna odluka
+    da se izbegne treći "kako da ostavim trag na slici" mehanizam (posle
+    maski i patch-a).
+
+    **UI**: nova sekcija "Selection" (ispod Masks) — tri add-dugmeta
+    (Circle/Square/Free, dele `patchShapeStroke`/`closedPolygonPath`
+    on-canvas helpers sa Patch-om), kad je selekcija aktivna prikazuje se
+    Feather slider + Cut/Copy/Deselect red (`ShowHeaderButtonStyle`,
+    `.fixedSize()` na labelama — bez toga bi "Copy" prelomio u dva reda u
+    300pt panelu, uhvaćeno vizuelnom proverom i odmah ispravljeno). Nova
+    sekcija "Layers" (ispod Selection) — "Paste as Layer" dugme (disabled
+    dok je clipboard prazan), lista layer-a (isti eye/trash/select obrazac
+    kao mask lista), mini editor (Opacity slider, Blend Mode segmented
+    picker). On-canvas: `layerOverlay` — pravougaonik + 4 corner handle-a,
+    svaki anchoruje SUPROTAN ugao (isti princip kao stari crop resize, bez
+    ratio-lock komplikacije jer layer nema aspect-ratio dugmad).
+
+    **Matematika — SVE provereno standalone skriptama pre GUI-ja** (isti
+    pattern kao ceo ostatak sesije): (1) `resizeLayer`-ova anchor-suprotan-
+    ugao logika (11 provera — grow/shrink/edge-clamp/anchor-fiksiran za sve
+    4 ugla, svi PASS) — prva verzija koda je bila nepotrebno zamršena
+    (mešala je dva različita pristupa po osi), prepisana čistije PRE nego
+    što je stigla do GUI-ja; (2) `compositeLayers`-ova pozicija/scale/
+    Y-flip/blend (7 provera na sintetičkoj 4-kvadrant slici, uklj. Multiply
+    blend sanity check, svi PASS); (3) PUN PNG round-trip (mask→crop→PNG
+    encode→`CIImage(data:)` decode→scale→translate→composite, TAČNO isti
+    kod put kao `compositeLayers`, ne pojednostavljena verzija) — PASS,
+    bitno jer je ovo jedina maska/layer putanja u projektu koja stvarno
+    prolazi kroz disk-format (PNG bytes) umesto da ostane kao CIImage kroz
+    ceo pipeline.
+
+    **Vizuelno POTVRĐENO u pravoj app-i, uključujući JEDAN lažni alarm
+    uhvaćen usput**: Circle/Square/Free selection dugmad rade, on-canvas
+    selection overlay (isti stil kao Patch, bez source markera) ispravno
+    se iscrtava, Feather slider i Cut/Copy/Deselect red se pojavljuju/
+    nestaju ispravno. Copy ispravno popunjava clipboard (Paste as Layer
+    prelazi iz disabled u enabled). Paste as Layer kreira pravi `ImageLayer`
+    red u listi, selektuje ga, on-canvas move/resize overlay se iscrtava,
+    mini editor (Opacity/Blend Mode) radi. Cut ispravno dodaje "Cut Fill N"
+    layer.
+
+    **Lažni alarm**: `screencapture -l<windowID>` snimci NEPOSREDNO posle
+    Cut/Paste akcije više puta zaredom nisu pokazivali stvarno renderovan
+    sadržaj layer-a na canvas-u (izgledalo je kao da compositeLayers ne
+    radi ništa) — ispalo je da je `screencapture -l` snimao ZASTareo frame
+    prozora koji trenutno nije key/frontmost (WindowServer keširanje), ne
+    stvaran bag. Razrešeno definitivno preko `Export Edited Copy` → pravi
+    fajl → piksel-inspekcija (crni "Cut Fill" kvadrat, oštrih ivica, tačne
+    pozicije/veličine, potvrđeno u eksportovanom JPEG-u). **Pouka za
+    sledeći put**: kad `screencapture -l` snimak izgleda "kao da se ništa
+    nije desilo" posle akcije koja MENJA `settings` (a ne samo UI selekcija/
+    stil), ne verovati odmah da je bag — prvo probati Export i piksel-
+    proveru pravog fajla pre nego što se sumnja u render kod.
+
+    **Poznata ograničenja (svesno, ne bagovi)**: layer nema rotate (samo
+    pomeranje/resize, isto kao Radial mask nema rotaciju); Cut-ova fill
+    boja je fiksna (nije birana od korisnika — bila crna, sad siva, vidi
+    #14); `layerClipboard` je in-memory (ne preživljava restart app-e/
+    zatvaranje Develop prozora — namerno, korisnikov izbor); nema
+    multi-select/multi-paste; Export All Edited već radi sa layer-ima bez
+    izmene (isti `PhotoEditRenderer.render` poziv, layeri su samo još jedna
+    faza u istom pipeline-u).
+14. ~~Četiri manje ispravke posle #13~~ — urađeno 11. avgusta (veče),
+    `xcodebuild` prolazi čisto. Korisnik je vratio četiri stvari nakon
+    probanja #13.
+
+    **(a) Patch — pravi clone-stamp gest preko ⌥ (Option)**: ranije se
+    izvor mogao pomeriti SAMO prevlačenjem žutog `viewfinder` markera.
+    Korisnik je tražio profesionalniji tok: drži ⌥ i klikni da postaviš
+    izvor odatle, pusti ⌥ i klikni da pomeriš odredište (i "patchuje")
+    tamo — isti gest kao Photoshop/Lightroom-ov Clone Stamp/Healing Brush.
+
+    Implementacija (`Develop.swift`): nov `patchCanvasClickArea(frame:)`
+    helper (deljen između `patchShapeOverlay` i `patchFreeShapeOverlay`,
+    ubačen PRVI u njihov ZStack — dakle ISPOD move/resize/source handle-a,
+    koji i dalje imaju prioritet nad svojim malim hit-area-ma, a klik bilo
+    gde drugde na fotki pada kroz na ovaj sloj). Koristi
+    `NSEvent.modifierFlags.contains(.option)` — čita se SINHRONO i na
+    hover-u i na klik-u; nema potrebe za zasebnim event-monitor-om jer
+    macOS 13 SDK nema SwiftUI API za "trenutno stanje modifier tastera"
+    (`.onModifierKeysChanged` je macOS 14+, projekat cilja 13.0), ali
+    `NSEvent.modifierFlags` (statička klasa-property) radi identično kad
+    se pročita unutar bilo kog gesture callback-a. `SpatialTapGesture`
+    (dostupan od macOS 13.0) daje lokaciju klika, za razliku od običnog
+    `.onTapGesture` koji to ne daje pre novijih OS verzija.
+
+    `handlePatchCanvasTap(at:frame:)`: ⌥+klik postavlja
+    `sourceOffsetX/Y = tapUnit - center` (izvor ide POD kursor, odredište
+    ostaje gde jeste); običan klik pomera `centerX/Y` na tap lokaciju (za
+    Free oblik, pomera i SVE tačke za isti delta — ista logika kao već
+    postojeći `movePatchFreeShape`, bez klampovanja na 0...1 da se centar i
+    tačke ne desinhronizuju, isti obrazac kao ranije). Pošto je
+    `sourceOffset` već RELATIVAN vektor, pomeranje odredišta automatski
+    povlači izvor sa sobom — identična matematika kao postojeći
+    `movePatchCenter`/`movePatchSource`, samo okinuta na klik umesto na
+    drag. Dodat i hover-prsten (`patchSourceHoverLocation`, isti obrazac
+    kao `brushHoverLocation`) koji se pojavljuje SAMO dok se ⌥ drži —
+    preview "ovde će izvor pasti ako klikneš sad", žuti poluproviran
+    `viewfinder` koji prati miš.
+
+    **Nije moglo GUI-testirati** (⌥+klik kombinacija — isto poznato
+    ograničenje kao svaki gesture-based deo ove app-e, `System Events`
+    sintetički eventi ne pokreću SwiftUI geste pouzdano), ali matematika je
+    doslovno identična već-verifikovanim `movePatchCenter`/
+    `movePatchSource`/`movePatchFreeShape` funkcijama (isti izrazi, druga
+    okidačka gesta) — nizak rizik. `xcodebuild` čist.
+
+    **(b) Cmd+V za Paste as Layer** — bug prijava "posle Cut ne mogu nigde
+    da pastujem" je najverovatnije bila UI-discoverability problem (malo
+    dugme u "Layers" sekciji, zakopano na dnu dugog scroll panela sa Light/
+    Color/Detail/Masks/Selection/Layers sekcijama — čak sam se i JA
+    pri testiranju #13 zabunio i kliknuo pogrešno dugme zbog AX-indeksa,
+    pravi bag u mojoj test-skripti, ne u app-i). Popravljeno robusno bez
+    obzira na uzrok: `.keyboardShortcut("v", modifiers: .command)` na
+    "Paste as Layer" dugmetu — dugme je UVEK u view stablu (nije
+    uslovno ubačeno), pa prečica radi bez obzira gde je panel skrolovan, i
+    SwiftUI automatski poštuje `.disabled(layerClipboard == nil)` (prečica
+    ne okida kad je clipboard prazan).
+
+    **(c) Cut-ova rupa: siva umesto crna** — `solidFillPNG`-ov poziv u
+    `cutSelection`-u sad šalje `CIColor(red: 0.5, green: 0.5, blue: 0.5,
+    alpha: 1)` umesto crne. Trivijalna izmena, testirano vizuelno u #13-oj
+    export-proveri PRE ove izmene (crna verzija), logika identična pa je
+    dovoljno pouzdana i bez ponovnog GUI testa.
+
+    **(d) Feather se više ne "širi" van nacrtane granice** — korisnik je
+    primetio da bi cut rupa mogla biti veća od stvarne selekcije. Uzrok:
+    `squareMask`/`freeMask`-ov Gaussian blur feather je bio SIMETRIČAN
+    (meko i UNUTRA i NAPOLJE oko granice, namerna odluka u #11 da liči na
+    Photoshop-ovo "Feather Selection") — kod visokog feather-a, to bi
+    zaista pomerilo VIDLJIVU spoljnu ivicu izvan nacrtanog oblika, za
+    razliku od `radialMask`-a koji je oduvek bio "samo unutra" (radius0/
+    radius1 gap, spoljna ivica fiksna na radius1).
+
+    Ispravka: nov `clipToHardEdge(_:hard:extent:)` helper — per-pixel
+    minimum (`CIDarkenBlendMode`) feathered maske i njene NEZAMUćene hard-
+    edge verzije, isti trik kao "clip a blur to never exceed its own hard
+    boundary". Pošto je hard=0 svuda VAN nacrtanog oblika, `min(blurred,
+    hard)` je uvek 0 tamo, bez obzira koliko je blur radius veliki —
+    feather sad SAMO omekšava UNUTRA (ka centru), nikad ne probija spoljnu
+    granicu. Primenjeno i na `squareMask` i na `freeMask` (obe dele isti
+    helper); `radialMask` nije dirana (već je bila ispravna).
+
+    Provereno standalone Swift skriptom (isti pattern kao ceo ostatak
+    sesije): square sa feather=1.0 (maksimalno meko) — piksel TAČNO na
+    nacrtanoj ivici i van nje je i dalje TAČNO 0 (pre ispravke bi bio > 0
+    zbog spoljnog "curenja" blur-a); feather=0 slučaj ostaje bit-za-bit
+    identičan (regresija, kao i pre). Usput primećeno (očekivano, ne bag):
+    pri feather=1.0 na malom obliku, i sam CENTAR maske pomalo potamni
+    (182 umesto pune 255) — to je inherentno Gaussian blur ponašanje pri
+    ekstremnom feather-u na kompaktnom obliku, nezavisno od ove ispravke
+    (ista vrednost bi bila i pre nje), i ne utiče na default feather=0 koji
+    Selection alat koristi.
+15. ~~Klik na Brush/Radial ne radi odmah + ⚠️ ozbiljan CPU/hang bag + paste
+    "u mestu" + aspect-ratio lock za layer resize~~ — urađeno 11. avgusta
+    (kasno veče), `xcodebuild` prolazi čisto. Korisnik je vratio tri stvari,
+    a testiranje jedne od njih je otkrilo pravi, ozbiljan bag.
+
+    **(a) Klik ne radi odmah pri otvaranju Develop-a** — pravi bug, ne
+    poznato ograničenje testiranja. Uzrok: `NSView.acceptsFirstMouse(for:)`
+    je default `false` — PRVI klik posle nego što prozor postane key (tek
+    otvoren, ili posle klika na drugi prozor/app) se troši SAMO na
+    aktivaciju/fokusiranje prozora, nikad ne stigne do kontrole ispod
+    kursora. Tačno objašnjava "moram da sačekam ili pređem na drugu sliku"
+    — to "pređem na drugu sliku" je bio njihov PRVI (progutan) klik koji je
+    probudio prozor, sve posle toga je normalno radilo. Ispravka: nov
+    `ClickThroughHostingView<Content>: NSHostingView<Content>` (override
+    `acceptsFirstMouse` → `true`) koristi se umesto golog `NSHostingView`
+    za Develop-ov `window.contentView`. Bitna ispravka usput: prvi pokušaj
+    je greškom stavio `acceptsFirstMouse` na `NSWindow` podklasu — to je
+    metoda na `NSView`, ne `NSWindow` (compile error "does not override
+    any method from its superclass" je odmah uhvatio grešku pre nego što
+    je stigla do runtime-a).
+
+    **(b) ⚠️ Ozbiljan bag — app se zamrzla, `kill -9` morao**: dodat
+    Cmd+X/Cmd+C uz postojeći Cmd+V (isti `NSEvent.addLocalMonitorForEvents`
+    obrazac). Dok je korisnik testirao, app je stigla do ~76% CPU i
+    prestala da odgovara na `System Events`/AppleScript komande (aktivacija
+    je bacala `AppleEvent timed out`) — morao `kill -9` da se ubije proces.
+
+    **Uzrok**: Cmd+V monitor iz prošle runde NIJE proveravao
+    `event.isARepeat`. Držanje tastera (čak i kratko, malo duže od OS-ovog
+    key-repeat praga) šalje OS-generisane ponovljene `keyDown` evente, i
+    SVAKI je zvao `pasteLayer()` — desetine novih layer-a u sekundi. Svaki
+    dodatni layer čini SVAKI sledeći render (PNG decode + kompozit, po
+    layeru, na SVAKU promenu `settings`) malo sporijim, a taj usporeni
+    render se preklapa sa još pristiglim repeat-evente-generisanim
+    paste-ovima — samopojačavajuća petlja koja je za par sekundi odvela
+    app u potpuno zamrznuto stanje. Ovo je najozbiljniji bag otkriven u
+    celoj sesiji — dokumentovano upozorenje na vrhu ovog fajla za svaki
+    budući `NSEvent` monitor.
+
+    **Ispravka**: `!event.isARepeat` dodat u guard (jedan `installClipboardKeyMonitor`
+    sad pokriva sve troje — Cmd+C/X/V — umesto tri odvojena monitora).
+    Usput i dodatna zaštita: svaki slučaj u `switch key` sad ima `where`
+    uslov (`"v" where layerClipboard != nil`, `"c"/"x" where activeSelection
+    != nil`) — bez ovoga bi SVAKI Cmd+C/X/V BILO GDE u Develop prozoru
+    (uključujući obično text polje, npr. kucanje imena preset-a) bio
+    progutan od strane ovog monitora umesto da normalno stigne do text
+    polja; sad se monitor uključuje SAMO kad zaista ima šta da uradi.
+    Vizuelno POTVRĐENO da je app posle ispravke zdrava: restartovana,
+    proverena preko `ps aux` (0.0% CPU, `S` idle stanje) i preko
+    `System Events` (odgovara odmah, bez timeout-a) — pre ispravke isti
+    test je bacao `AppleEvent timed out`.
+
+    **(c) Paste "u mestu" umesto uvek na centru** — verovatno PRAVI uzrok
+    ranije prijave "ne mogu da pastujem na istu sliku koju sam cutovao":
+    `pasteLayer()` je RANIJE uvek lepio na centar (0.5, 0.5) fiksne
+    veličine 30% širine, bez obzira odakle je komad isečen/kopiran — ako
+    selekcija nije bila na centru, nalepljeni komad bi se pojavio negde
+    DRUGDE na fotki (izgleda kao "ništa se nije desilo" ako korisnik gleda
+    tačno mesto odakle je isekao/kopirao, koje je tačno gde Cut-ova siva
+    "rupa" sedi). `LayerClipboardData` sad nosi `boundsUnit: CGRect`
+    (tačna frakciona pozicija/veličina odakle je isečeno/kopirano,
+    postavlja `extractSelectionPNG`, koji sad vraća `boundsUnit` umesto
+    `aspectRatio` — isti podatak, samo korisniji oblik pošto već nosi i
+    širinu i visinu). Paste sad lepi TAČNO tamo — na ISTOJ fotki, pravo
+    preko Cut-ove rupe (odmah vidljivo, nema traženja); na DRUGOJ fotki,
+    na isti RAZLOMAK pozicije/veličine (razumno i predvidivo, pošto su to
+    frakcije 0...1, ne pikseli — rade nezavisno od dimenzija ciljne fotke).
+
+    **(d) Layer resize — zaključana razmera po difoltu, ⇧ (Shift) za
+    slobodno**: korisnik je eksplicitno tražio OBRNUTO od crop-ovog
+    obrasca (crop je slobodan dok se ne pritisne dugme za razmeru; layer
+    je sad zaključan dok se ne drži Shift). `resizeLayer` prepisan da prati
+    ISTI anchor+rawWidth/rawHeight+pomirenje obrazac kao stari `resizeCrop`
+    ratio-lock (`k = start.width/start.height` — direktno frakciono, BEZ
+    potrebe za `currentImagePixelRatio` konverzijom kao kod crop-a, pošto
+    se `imagePixelRatio` faktor matematički skrati kad se zaključava na
+    SOPSTVENU trenutnu razmeru umesto na proizvoljnu spolja-zadatu; vidi
+    kod-komentar za punu izvedbu). `NSEvent.modifierFlags.contains(.shift)`
+    čita se live u `onChanged` svakog drag-a (isti obrazac kao ⌥ za Patch),
+    pa se stanje Shift-a može promeniti NASred drag-a.
+
+    Provereno standalone skriptom (isti pattern kao ceo ostatak sesije, 40
+    kombinacija — 2 starting layer-a × 4 ugla × 5 delta vrednosti): (1)
+    **regresija** — Shift=held daje BIT-ZA-BIT identičan rezultat kao stara
+    slobodna implementacija u svih 40 slučajeva; (2) **razmera održana** —
+    Shift=NOT held daje TAČNU polaznu razmeru u svih 40 slučajeva, i ostaje
+    unutar 0...1 granica; (3) **anchor fiksiran** u OBA režima. Sam drag
+    nije mogao GUI-testirati (poznato ograničenje), ali matematika
+    identična već-dokazanom `resizeCrop` obrascu plus potpuna skriptovana
+    provera — nizak rizik.
+16. ~~Overlay pomeraj kad postoji crop + tanje linije~~ — urađeno 11.
+    avgusta (kasno veče), `xcodebuild` prolazi čisto. Korisnik je primetio
+    da kvadrat/kontura "nije precizno" na selektovanom objektu.
+
+    **Pravi arhitekturni bag, ne kozmetika**: maske/Selection/Layer
+    geometrija je UVEK definisana u unit-prostoru PRE-crop slike
+    (`applyLocalAdjustments`/`compositeLayers` rade PRE crop-a u
+    `render()`, namerno — da mask/layer pozicija preživi promenu/uklanjanje
+    crop-a, isti Lightroom obrazac). Ali `centerPreview` je overlay-ima
+    prosleđivao `fitted` — frame prikazanog `displayedImage`-a, koji je
+    POST-crop kad god `settings.crop` postoji i korisnik nije AKTIVNO u
+    crop alatu (`cropEnabled = !isCropping` u `renderNow()`). Dve različite
+    referentne slike, ista frakcija — overlay se crtao na pogrešnom mestu
+    svaki put kad je fotka imala crop.
+
+    Ispravka: nov `fullImageFrame(from fitted:) -> CGRect` — rekonstruiše
+    gde bi CELA (pre-crop) slika bila na ekranu pri ISTOJ razmeri koju
+    `fitted` već koristi, invertovanjem `settings.crop`-ovih x/y/width/
+    height razlomaka (algebarski tačan obrnut postupak od onoga što
+    `render()` radi da crop frakciju pretvori u pixel rect). Korišćen za
+    `localAdjustmentOverlay`/`selectionOverlay`/`layerOverlay` pozive (NE
+    za `cropOverlay`, koji već dobija ispravan ne-cropovan `fitted` iz
+    drugog razloga — `cropEnabled` je false dok je `isCropping`).
+    Provereno standalone skriptom: centrirani i NECENTRIRANI crop slučaj,
+    uključujući proveru da se crop-ov sopstveni ugao mapira tačno na
+    ugao `fitted`-a (najstroža provera).
+
+    Usput: sve on-canvas konture (crop, radial/graduated/patch/selection
+    outline, layer rectangle) stanjene sa 1.5pt na 1.0pt (dashed
+    source-marker/mirror linije sa 1.2 na 0.8pt) — eksplicitan zahtev
+    korisnika. Sidebar liste (mask/layer red selekcije) i brush hover-
+    prsten NISU dirani (nisu bili predmet pritužbe).
+17. ~~Backspace briše selekciju, Undo/Redo istorija, [ ] za veličinu~~ —
+    urađeno 11. avgusta (kasno veče), `xcodebuild` prolazi čisto.
+
+    Sav novi kod ide kroz JEDAN prošireni `installEditingKeyMonitor`
+    (preimenovan iz `installClipboardKeyMonitor` — sad pokriva Cmd+C/X/V,
+    Cmd+Z/⇧Z, `[`/`]`, i Backspace/Delete, umesto samo clipboard-a).
+
+    **Backspace/Delete** — briše selektovani layer ILI selektovanu masku
+    (`deleteSelectedItem()`, samo poziva postojeće `deleteLayer`/
+    `deleteLocalAdjustment`). Prepoznaje pravi "delete" taster preko
+    `event.keyCode` (51 = kVK_Delete/glavni Delete taster, 117 =
+    kVK_ForwardDelete/fn+Delete) umesto preko karaktera — pouzdanije nego
+    oslanjanje na `charactersIgnoringModifiers` mapiranje. Uslovljeno sa
+    `selectedLayerID != nil || selectedLocalAdjustmentID != nil` — isti
+    razlog kao Cmd+C/X/V guard-ovi: bez toga bi SVAKI Backspace bilo gde u
+    Develop-u (uključujući normalno brisanje karaktera u preset-name text
+    polju) bio progutan.
+
+    **Undo/Redo (Cmd+Z / Cmd+⇧+Z)** — čuva CEO `PhotoEditSettings`
+    snapshot po koraku (isti "jedan struct je izvor istine" pristup kao
+    Presets/Copy-Paste Settings), PO FOTKI (resetuje se u `selectPhoto`,
+    kao Lightroom-ova sopstvena istorija). Debounced/coalesced preko
+    `scheduleUndoCommit()`: PRVA promena u "naletu" (npr. prevlačenje
+    slajdera) hvata `pendingUndoBaseline` (stanje PRE tog naleta) i
+    pokreće 0.5s tajmer; svaka sledeća promena u ISTOM naletu samo
+    restartuje tajmer, ne dira baseline; tek kad promene STANU na 0.5s,
+    `commitUndoIfNeeded()` gura TAJ JEDAN baseline na `undoStack` — jedno
+    3-sekundno prevlačenje slajdera pravi JEDAN undo korak, ne stotine.
+    `undoStack`/`redoStack` ograničeni na 50 koraka. Redo stack se prazni
+    na svaku NOVU promenu (standardno ponašanje). `undo()`/`redo()`
+    otkazuju pending debounce timer PRE primene snapshot-a, da se sopstvena
+    promena settings-a od strane undo/redo-a ne uhvati kao NOVI undo korak.
+
+    **`[` / `]` za veličinu** (Photoshop-ova konvencija, korisnik je
+    pogodio tačno) — bez modifier tastera. Multiplikativan korak (±10%,
+    `factor = 1.1`/`1/1.1`) umesto fiksnog apsolutnog iznosa — isti korak
+    radi i za brush (opseg 0.01...0.3) i za radial/patch/selection radius
+    (opseg 0.02...1) bez posebnog "magic number"-a po alatu. Radi na:
+    Brush (`brushSize`), Radial (`radiusX/Y`), Patch Circle/Square
+    (`radiusX/Y` — NE Free, nema jedinstvenu "veličinu"), Selection
+    Circle/Square (isto, NE Free). `activeToolHasAdjustableSize`
+    computed property odlučuje da li uopšte ima šta da se menja pre nego
+    što se taster proguta.
+
+    **Repeat namerno DOZVOLJEN** za Undo/Redo i `[`/`]` (za razliku od
+    Cmd+C/X/V, vidi upozorenje na vrhu ovog fajla) — držanje Cmd+Z da se
+    vrati nekoliko koraka, ili držanje `]` da glatko naraste brush, je
+    očekivano ponašanje, i BEZBEDNO je dozvoliti repeat ovde jer je svaki
+    korak jeftina, ograničena operacija (pop sa niza / klampovana
+    aritmetika) — nema akumulacije kao kod paste-bug-a iz stavke #15.
+
+    **Nije moglo GUI-testirati** (poznato ograničenje — tastaturne
+    kombinacije i drag-based delovi se ne mogu pouzdano simulirati kroz
+    `System Events` automatizaciju), ali `xcodebuild` čist, app posle
+    restarta zdrava (proverena preko `ps aux`, 0.1% CPU, `S` idle), i
+    logika je pregledana ručno (jednostavna, bez asinhronog rizika sličnog
+    #15-om osim namerno-dozvoljenog repeat-a, koji je bezbedan iz gore
+    navedenog razloga).
 
 ## Vezano
 

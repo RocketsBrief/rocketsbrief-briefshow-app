@@ -41,6 +41,7 @@ struct PhotoEditSettings: Codable, Equatable {
     var straightenDegrees: Double = 0   // -45...45, fine rotation
     var crop: EditCropRect?             // nil = uncropped
     var localAdjustments: [LocalAdjustment] = []   // masks — see LocalAdjustment
+    var layers: [ImageLayer] = []        // pasted cut/copied pieces — see ImageLayer
 
     init() {}
 
@@ -67,12 +68,13 @@ struct PhotoEditSettings: Codable, Equatable {
         straightenDegrees = try c.decodeIfPresent(Double.self, forKey: .straightenDegrees) ?? 0
         crop = try c.decodeIfPresent(EditCropRect.self, forKey: .crop)
         localAdjustments = try c.decodeIfPresent([LocalAdjustment].self, forKey: .localAdjustments) ?? []
+        layers = try c.decodeIfPresent([ImageLayer].self, forKey: .layers) ?? []
     }
 
     private enum CodingKeys: String, CodingKey {
         case exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance
         case temperature, tint, sharpness, vignette, rotationQuarterTurns, straightenDegrees, crop
-        case localAdjustments
+        case localAdjustments, layers
     }
 
     var isNeutral: Bool {
@@ -81,6 +83,7 @@ struct PhotoEditSettings: Codable, Equatable {
             && saturation == 0 && vibrance == 0 && temperature == 0 && tint == 0
             && sharpness == 0 && vignette == 0 && rotationQuarterTurns == 0
             && straightenDegrees == 0 && crop == nil && localAdjustments.isEmpty
+            && layers.isEmpty
     }
 }
 
@@ -137,6 +140,17 @@ enum LocalMaskType: String, Codable {
     case radial
     case graduated
     case brush
+    case patch
+}
+
+// The three destination-outline shapes offered for the Patch (clone/heal)
+// tool — mirrors the "circle / square / free cut" request directly: Circle
+// and Square are drag-to-resize like RadialMaskGeometry, Free is a
+// hand-drawn closed polygon like a lasso selection.
+enum PatchShape: String, Codable, CaseIterable {
+    case circle
+    case square
+    case free
 }
 
 // The subset of PhotoEditSettings that makes sense applied to a masked
@@ -207,10 +221,36 @@ struct BrushMaskGeometry: Codable, Equatable {
     var strokes: [BrushStroke] = []
 }
 
-// One local adjustment: a mask (exactly one of radial/graduated/brush is
-// non-nil, matching `type`) plus its own tonal/color settings. `isEnabled`
-// lets the user preview with a mask temporarily switched off without
-// losing/deleting it.
+// A clone/heal "patch": a destination outline (Circle/Square use the same
+// center+radius convention as RadialMaskGeometry; Free is a hand-drawn
+// closed polygon, `points` in unit space, in draw order) plus a
+// `sourceOffsetX/Y` vector — the displacement (in the SAME unit space, so
+// still top-down Y) from the destination's own center to wherever the user
+// has dragged the source marker. Unlike the other three mask types, a patch
+// carries no tonal/color settings at all (LocalAdjustment.settings stays
+// permanently neutral for it) — its only "effect" is showing sampled pixels
+// from the source location inside the destination outline, feathered at the
+// edge like a soft clone-stamp paste. Defaults to a small rightward offset
+// (not (0,0)) so a freshly-added Circle/Square patch immediately shows a
+// visibly distinct source marker instead of a degenerate identity clone
+// that looks like it does nothing.
+struct PatchGeometry: Codable, Equatable {
+    var shape: PatchShape = .circle
+    var centerX: Double = 0.5
+    var centerY: Double = 0.5
+    var radiusX: Double = 0.12
+    var radiusY: Double = 0.12
+    var feather: Double = 0.3
+    var points: [CGPoint] = []   // unit space, Free shape only, empty until drawn
+    var sourceOffsetX: Double = 0.2
+    var sourceOffsetY: Double = 0
+}
+
+// One local adjustment: a mask (exactly one of radial/graduated/brush/patch
+// is non-nil, matching `type`) plus its own tonal/color settings (unused —
+// always neutral — for `.patch`, see PatchGeometry's doc comment).
+// `isEnabled` lets the user preview with a mask temporarily switched off
+// without losing/deleting it.
 struct LocalAdjustment: Codable, Equatable, Identifiable {
     var id = UUID()
     var name: String
@@ -218,6 +258,7 @@ struct LocalAdjustment: Codable, Equatable, Identifiable {
     var radial: RadialMaskGeometry?
     var graduated: GraduatedMaskGeometry?
     var brush: BrushMaskGeometry?
+    var patch: PatchGeometry?
     var settings = LocalAdjustmentSettings()
     var isEnabled: Bool = true
 
@@ -232,6 +273,102 @@ struct LocalAdjustment: Codable, Equatable, Identifiable {
     static func brush(name: String) -> LocalAdjustment {
         LocalAdjustment(name: name, type: .brush, brush: BrushMaskGeometry())
     }
+
+    static func patch(name: String, shape: PatchShape) -> LocalAdjustment {
+        LocalAdjustment(name: name, type: .patch, patch: PatchGeometry(shape: shape))
+    }
+
+    // Whether this adjustment currently changes anything, used by
+    // applyLocalAdjustments to skip rendering work. Tonal mask types
+    // (radial/graduated/brush) are neutral exactly when their settings are
+    // — the existing check. A patch has no tonal settings to be neutral or
+    // not; instead it "does nothing" only for a Free shape with no outline
+    // drawn yet (Circle/Square always have a valid default outline the
+    // moment they're added).
+    var hasEffect: Bool {
+        if type == .patch {
+            guard let patch else { return false }
+            return patch.shape != .free || !patch.points.isEmpty
+        }
+        return !settings.isNeutral
+    }
+}
+
+// MARK: - Selection tool (Cut / Copy / Deselect -> layer)
+
+// The Selection tool's current outline while the client is defining/
+// adjusting it. Deliberately NOT Codable/part of PhotoEditSettings — a
+// selection is pure ephemeral tool state (like isCropping's pendingCrop),
+// consumed by Cut/Copy/Deselect and never itself saved. Shares its shape
+// math with PatchGeometry's destination outline (Circle/Square use center+
+// radius, Free uses a hand-drawn point list, `feather` softens the cut
+// edge) via PhotoEditRenderer.selectionMask, which just re-packages this
+// into a PatchGeometry to reuse patchMask/squareMask/freeMask rather than
+// duplicating that geometry code a third time — but it deliberately has NO
+// source-offset fields, which mean nothing for a plain selection.
+struct SelectionGeometry: Equatable {
+    var shape: PatchShape = .circle
+    var centerX: Double = 0.5
+    var centerY: Double = 0.5
+    var radiusX: Double = 0.15
+    var radiusY: Double = 0.15
+    var feather: Double = 0
+    var points: [CGPoint] = []   // unit space, Free shape only
+}
+
+// MARK: - Image layers (pasted cut/copied pieces)
+
+enum LayerBlendMode: String, Codable, CaseIterable {
+    case normal, multiply, screen, overlay
+
+    var label: String {
+        switch self {
+        case .normal: return "Normal"
+        case .multiply: return "Multiply"
+        case .screen: return "Screen"
+        case .overlay: return "Overlay"
+        }
+    }
+}
+
+// A pasted cut/copied piece of a photo (from this photo or a DIFFERENT
+// one, via DevelopView's in-memory layerClipboard) composited as its own
+// positioned, resizable layer — the actual start of Photoshop-style image
+// layers (see BRIEFSHOW_DEVELOP_NOTES.md #12), reached here via the
+// Selection tool's Cut/Copy rather than importing a file.
+//
+// `imageData` is a PNG, never JPEG — a cut circle/free-lasso piece is
+// mostly transparent outside its own outline, and JPEG has no alpha
+// channel to hold that. x/y is the layer's TOP-LEFT corner (not center,
+// unlike the mask geometries above) in the same unit-square (0...1,
+// top-down Y) space as EditCropRect — a layer is dragged/resized from its
+// bounding box like the crop tool, not from a radius around a center.
+struct ImageLayer: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var imageData: Data
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+    var opacity: Double = 1     // 0...1
+    var blendMode: LayerBlendMode = .normal
+    var isEnabled: Bool = true
+}
+
+// DevelopView's in-memory Cut/Copy clipboard (see its `layerClipboard`
+// @State) — not Codable, never persisted, exists purely to hand a Paste
+// action everything it needs to build a fresh ImageLayer.
+struct LayerClipboardData {
+    var imageData: Data
+    // Where it was cut/copied FROM, in the source photo's own unit-square
+    // (0...1, top-down Y) space — Paste drops it back at this exact
+    // fraction of whatever photo is open when Paste happens, same photo or
+    // a different one, "paste in place" rather than always centering.
+    // Since these are FRACTIONS (not pixels), the same box is well-defined
+    // and visually reasonable on a differently-sized/shaped destination
+    // photo too, not just the source one.
+    var boundsUnit: CGRect
 }
 
 // MARK: - Persistence
@@ -625,6 +762,18 @@ enum PhotoEditRenderer {
             output = applyLocalAdjustments(settings.localAdjustments, to: output)
         }
 
+        // Layers always composite ON TOP of the base photo AND every local
+        // adjustment below them — a pasted piece is new content sitting
+        // above the stack, not something a mask underneath it should be
+        // able to reach up and tint. Runs before crop for the same reason
+        // local adjustments do: a layer's x/y/width/height are defined in
+        // this same pre-crop unit space, so cropping the photo afterward
+        // naturally clips whatever part of a layer falls outside the kept
+        // area too, instead of needing separate clipping logic.
+        if !settings.layers.isEmpty {
+            output = compositeLayers(settings.layers, onto: output)
+        }
+
         if applyCrop, let crop = settings.crop {
             let extent = output.extent
             guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
@@ -660,14 +809,19 @@ enum PhotoEditRenderer {
         }
 
         for adjustment in adjustments {
-            guard adjustment.isEnabled, !adjustment.settings.isNeutral else {
+            guard adjustment.isEnabled, adjustment.hasEffect else {
                 continue
             }
             guard let mask = maskImage(for: adjustment, extent: extent) else {
                 continue
             }
 
-            let adjusted = applyLocalToneColorDetail(adjustment.settings, to: output)
+            let adjusted: CIImage
+            if adjustment.type == .patch, let patch = adjustment.patch {
+                adjusted = patchSampledImage(patch, source: output, extent: extent)
+            } else {
+                adjusted = applyLocalToneColorDetail(adjustment.settings, to: output)
+            }
 
             let blend = CIFilter.blendWithMask()
             blend.inputImage = adjusted
@@ -677,6 +831,34 @@ enum PhotoEditRenderer {
         }
 
         return output
+    }
+
+    // Shifts the ENTIRE current image by the vector from the patch's
+    // destination center to its source marker, so that whatever content
+    // currently sits at the source location lands exactly on top of the
+    // destination location — the mask built by maskImage (at the
+    // DESTINATION outline, not the source) is what actually limits the
+    // visible effect to just that shape, same blend-with-mask compositing
+    // every other local adjustment uses. Deliberately shifts `source`
+    // (the already-accumulated `output` from applyLocalAdjustments, i.e.
+    // any earlier masks in the stack) rather than the pristine original —
+    // if a patch is layered after another local adjustment, cloning should
+    // pick up that earlier adjustment's effect too, same as Lightroom/
+    // Photoshop layer order.
+    //
+    // Unit space is top-down (+Y = down the image) but Core Image's own
+    // coordinate space is bottom-up (+Y = up) — same mismatch every other
+    // mask here (radialMask/graduatedMask/etc.) already accounts for with a
+    // `1 - y` flip. A translation only (no flip needed) works out to
+    // dx = -offsetX * width, dy = +offsetY * height; verified against a
+    // synthetic four-quadrant test image with a standalone script before
+    // wiring in (confirms both axes sample from the intended quadrant, not
+    // just "some" offset in roughly the right direction) — see
+    // BRIEFSHOW_DEVELOP_NOTES.md.
+    private static func patchSampledImage(_ patch: PatchGeometry, source: CIImage, extent: CGRect) -> CIImage {
+        let dx = -patch.sourceOffsetX * extent.width
+        let dy = patch.sourceOffsetY * extent.height
+        return source.transformed(by: CGAffineTransform(translationX: dx, y: dy))
     }
 
     // Mirrors the main render() pipeline's own temperature/exposure/tone-
@@ -762,6 +944,9 @@ enum PhotoEditRenderer {
         case .brush:
             guard let geo = adjustment.brush else { return nil }
             return brushMask(geo, extent: extent)
+        case .patch:
+            guard let geo = adjustment.patch else { return nil }
+            return patchMask(geo, extent: extent)
         }
     }
 
@@ -930,6 +1115,329 @@ enum PhotoEditRenderer {
         return dabsUnion
     }
 
+    // Builds the destination-outline mask for a Patch adjustment, dispatched
+    // by shape. Circle reuses radialMask directly (identical center+radius+
+    // feather math, just re-packaged into a RadialMaskGeometry with
+    // invert always false — a patch destination is never "everywhere
+    // outside" the shape) rather than duplicating the ellipse gradient
+    // code a second time.
+    private static func patchMask(_ geo: PatchGeometry, extent: CGRect) -> CIImage {
+        switch geo.shape {
+        case .circle:
+            let radial = RadialMaskGeometry(
+                centerX: geo.centerX, centerY: geo.centerY,
+                radiusX: geo.radiusX, radiusY: geo.radiusY,
+                feather: geo.feather, invert: false
+            )
+            return radialMask(radial, extent: extent)
+        case .square:
+            return squareMask(geo, extent: extent)
+        case .free:
+            return freeMask(geo, extent: extent)
+        }
+    }
+
+    // A hard-edged axis-aligned rectangle, softened by a Gaussian blur
+    // proportional to `feather` and the rectangle's own half-size.
+    // clampedToExtent() before the blur keeps the Gaussian from sampling
+    // (and darkening the edge with) transparent pixels outside the working
+    // image, the standard CI pattern for blurring near an edge. The blur
+    // itself would normally bleed OUTWARD past the drawn rectangle too
+    // (Gaussian blur softens both directions around a boundary) — clipped
+    // back with darkenBlendMode against the unblurred `hard` mask (a
+    // per-pixel minimum) so the feathered result can only ever be DIMMER
+    // than the hard edge, never brighter/wider than it. This matters most
+    // for the Selection tool's Cut, which drops this exact mask's shape in
+    // as a same-sized fill layer — a client cutting a precise selection
+    // expects the hole to match what they drew, not visibly balloon past
+    // it at high feather values (unlike radialMask, which was already
+    // "inward only" by construction via its radius0/radius1 gap).
+    private static func squareMask(_ geo: PatchGeometry, extent: CGRect) -> CIImage {
+        let feather = min(max(geo.feather, 0), 1)
+        let cx = extent.origin.x + geo.centerX * extent.width
+        let cy = extent.origin.y + (1 - geo.centerY) * extent.height
+        let halfW = max(geo.radiusX * extent.width, 1)
+        let halfH = max(geo.radiusY * extent.height, 1)
+        let rect = CGRect(x: cx - halfW, y: cy - halfH, width: halfW * 2, height: halfH * 2)
+
+        let hard = CIImage(color: maskWhite).cropped(to: rect)
+            .composited(over: CIImage(color: maskBlack).cropped(to: extent))
+
+        guard feather > 0 else {
+            return hard.cropped(to: extent)
+        }
+
+        let blurRadius = feather * min(halfW, halfH)
+        let blurred = hard.clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: blurRadius])
+        return clipToHardEdge(blurred, hard: hard, extent: extent)
+    }
+
+    // Per-pixel minimum of a feathered mask and its own unblurred hard
+    // edge — the standard trick for turning a symmetric blur into an
+    // "inward only" feather (soften toward the inside, never brighten/grow
+    // past the original boundary). Shared by squareMask and freeMask,
+    // which both start from a hard edge and blur it; radialMask needs no
+    // equivalent since its radius0/radius1 gap is already inward-only by
+    // construction.
+    private static func clipToHardEdge(_ blurred: CIImage, hard: CIImage, extent: CGRect) -> CIImage {
+        let clip = CIFilter.darkenBlendMode()
+        clip.inputImage = blurred
+        clip.backgroundImage = hard
+        return (clip.outputImage ?? blurred).cropped(to: extent)
+    }
+
+    // Rasterizes the hand-drawn closed polygon (`geo.points`, unit space,
+    // top-down Y like every other mask geometry) into a grayscale bitmap via
+    // CGContext — Core Image has no built-in "fill this arbitrary polygon"
+    // generator the way it does gradients, so this is the one mask type that
+    // goes through Core Graphics instead of a CIFilter chain. CGContext's
+    // own coordinate space is bottom-up like Core Image's (not top-down like
+    // SwiftUI's), so points get the same `1 - y` flip radialMask/graduatedMask
+    // already use, not an extra one. Feather blur radius is scaled to the
+    // polygon's own bounding box (not a fixed pixel count) so it feels
+    // proportionate whether the user drew a tiny or a huge outline.
+    private static func freeMask(_ geo: PatchGeometry, extent: CGRect) -> CIImage {
+        guard geo.points.count > 2 else {
+            return CIImage(color: maskBlack).cropped(to: extent)
+        }
+        let width = max(Int(extent.width.rounded()), 1)
+        let height = max(Int(extent.height.rounded()), 1)
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else {
+            return CIImage(color: maskBlack).cropped(to: extent)
+        }
+
+        ctx.setFillColor(gray: 0, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+
+        let path = CGMutablePath()
+        let first = geo.points[0]
+        path.move(to: CGPoint(x: first.x * Double(width), y: (1 - first.y) * Double(height)))
+        for point in geo.points.dropFirst() {
+            path.addLine(to: CGPoint(x: point.x * Double(width), y: (1 - point.y) * Double(height)))
+        }
+        path.closeSubpath()
+
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.addPath(path)
+        ctx.fillPath()
+
+        guard let cgImage = ctx.makeImage() else {
+            return CIImage(color: maskBlack).cropped(to: extent)
+        }
+
+        var mask = CIImage(cgImage: cgImage)
+            .transformed(by: CGAffineTransform(translationX: extent.origin.x, y: extent.origin.y))
+
+        let feather = min(max(geo.feather, 0), 1)
+        guard feather > 0 else {
+            return mask.cropped(to: extent)
+        }
+        let hard = mask
+        let bounds = path.boundingBoxOfPath
+        let blurRadius = feather * min(bounds.width, bounds.height) * 0.5
+        mask = mask.clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: blurRadius])
+        // Same inward-only clip as squareMask — see clipToHardEdge's doc
+        // comment for why.
+        return clipToHardEdge(mask, hard: hard, extent: extent)
+    }
+
+    // MARK: Image layers
+
+    // Composites every enabled ImageLayer on top of `image` in order (later
+    // entries in the array paint over earlier ones, same "list order is
+    // stack order" convention as Lightroom/Photoshop's own layer panels).
+    private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage) -> CIImage {
+        var output = image
+        let extent = image.extent
+        guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
+            return output
+        }
+
+        for layer in layers {
+            guard layer.isEnabled, layer.width > 0, layer.height > 0 else {
+                continue
+            }
+            guard let source = CIImage(data: layer.imageData), source.extent.width > 0, source.extent.height > 0 else {
+                continue
+            }
+
+            // Scaled fresh against THIS image's own extent, never assumed
+            // to match the piece's native resolution — the same cut/copied
+            // piece can be pasted onto a photo with entirely different
+            // pixel dimensions than the one it was cut from, and
+            // width/height are fractions of THIS photo either way.
+            let targetWidthPx = layer.width * extent.width
+            let targetHeightPx = layer.height * extent.height
+            let scaleX = targetWidthPx / source.extent.width
+            let scaleY = targetHeightPx / source.extent.height
+            let originX = extent.origin.x + layer.x * extent.width
+            // Unit Y is top-down (layer.y is the TOP edge); CI Y is
+            // bottom-up, so the piece's bottom-left corner in CI space
+            // sits at extent.height minus the distance down to that
+            // bottom edge — same `1 - y - height` shape as every other
+            // top-down-to-CI conversion in this file that deals with an
+            // extent rather than a single point.
+            let originY = extent.origin.y + (1 - layer.y - layer.height) * extent.height
+
+            var positioned = source.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+            positioned = positioned.transformed(by: CGAffineTransform(translationX: originX, y: originY))
+
+            if layer.opacity < 1 {
+                let alphaScale = CIFilter.colorMatrix()
+                alphaScale.inputImage = positioned
+                alphaScale.aVector = CIVector(x: 0, y: 0, z: 0, w: max(layer.opacity, 0))
+                positioned = alphaScale.outputImage ?? positioned
+            }
+
+            output = blendLayer(positioned, over: output, mode: layer.blendMode, extent: extent)
+        }
+
+        return output
+    }
+
+    private static func blendLayer(_ top: CIImage, over bottom: CIImage, mode: LayerBlendMode, extent: CGRect) -> CIImage {
+        let filter: CIFilter
+        switch mode {
+        case .normal: filter = CIFilter.sourceOverCompositing()
+        case .multiply: filter = CIFilter.multiplyBlendMode()
+        case .screen: filter = CIFilter.screenBlendMode()
+        case .overlay: filter = CIFilter.overlayBlendMode()
+        }
+        filter.setValue(top, forKey: kCIInputImageKey)
+        filter.setValue(bottom, forKey: kCIInputBackgroundImageKey)
+        return (filter.outputImage ?? bottom).cropped(to: extent)
+    }
+
+    // MARK: Selection tool (Cut / Copy -> layer clipboard)
+
+    // Re-packages a SelectionGeometry into a PatchGeometry purely to reuse
+    // patchMask/radialMask/squareMask/freeMask's already-verified shape
+    // math — a selection's "which pixels" question is geometrically
+    // identical to a patch's "where do I sample/blend" question, just
+    // without any source-offset concept.
+    static func selectionMask(_ selection: SelectionGeometry, extent: CGRect) -> CIImage {
+        let geo = PatchGeometry(
+            shape: selection.shape, centerX: selection.centerX, centerY: selection.centerY,
+            radiusX: selection.radiusX, radiusY: selection.radiusY, feather: selection.feather,
+            points: selection.points
+        )
+        return patchMask(geo, extent: extent)
+    }
+
+    // The selection's own bounding box in unit space (0...1, top-down Y),
+    // clamped to the image — shared by both extraction functions below so
+    // a cut/copied piece's PNG only covers the area it actually needs, not
+    // the whole photo (mask math itself doesn't naturally shrink to just
+    // this shape's box, since e.g. radialMask fills any Core Image extent
+    // it's given).
+    private static func selectionBoundsUnit(_ selection: SelectionGeometry) -> CGRect? {
+        let raw: CGRect
+        switch selection.shape {
+        case .circle, .square:
+            raw = CGRect(
+                x: selection.centerX - selection.radiusX, y: selection.centerY - selection.radiusY,
+                width: selection.radiusX * 2, height: selection.radiusY * 2
+            )
+        case .free:
+            guard !selection.points.isEmpty else {
+                return nil
+            }
+            let xs = selection.points.map(\.x), ys = selection.points.map(\.y)
+            raw = CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
+        }
+        let clamped = raw.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        return clamped.isEmpty ? nil : clamped
+    }
+
+    private static func selectionBoundsPixels(_ selection: SelectionGeometry, extent: CGRect) -> (unit: CGRect, pixels: CGRect)? {
+        guard let boundsUnit = selectionBoundsUnit(selection) else {
+            return nil
+        }
+        let pixelRect = CGRect(
+            x: extent.origin.x + boundsUnit.minX * extent.width,
+            y: extent.origin.y + (1 - boundsUnit.minY - boundsUnit.height) * extent.height,
+            width: boundsUnit.width * extent.width,
+            height: boundsUnit.height * extent.height
+        ).integral
+        guard pixelRect.width > 0, pixelRect.height > 0 else {
+            return nil
+        }
+        return (boundsUnit, pixelRect)
+    }
+
+    private static let sharedExtractionContext = CIContext()
+
+    // Cuts/copies the pixels under a Selection's outline out of `image`
+    // (expected to be the FULL-resolution, already-edited-and-cropped
+    // render a client is looking at — same image Export Edited Copy would
+    // write) into a PNG cropped to just the selection's own bounding box —
+    // PNG specifically to preserve the alpha the selection shape cut with,
+    // which a JPEG has no channel for. Returns nil for an empty/invalid
+    // selection (e.g. a Free selection with fewer than 3 points, or a box
+    // that doesn't intersect the image at all).
+    static func extractSelectionPNG(_ selection: SelectionGeometry, from image: CIImage) -> (data: Data, boundsUnit: CGRect)? {
+        guard let masked = maskedSelectionImage(selection, source: image, extent: image.extent) else {
+            return nil
+        }
+        guard let bounds = selectionBoundsPixels(selection, extent: image.extent) else {
+            return nil
+        }
+        guard let png = pngData(for: masked, pixelRect: bounds.pixels) else {
+            return nil
+        }
+        return (png, bounds.unit)
+    }
+
+    // The "hole" a Cut leaves behind: a solid-color, same-shaped-as-the-
+    // selection PNG (same mask, filled with `color` instead of sampled
+    // pixels) meant to be dropped straight into a new ImageLayer at the
+    // selection's own position — reuses the exact same layer-compositing
+    // path as any pasted piece, so "cut" needs no separate render-time
+    // concept of its own.
+    static func solidFillPNG(_ selection: SelectionGeometry, color: CIColor, extent: CGRect) -> (data: Data, boundsUnit: CGRect)? {
+        let solid = CIImage(color: color).cropped(to: extent)
+        guard let masked = maskedSelectionImage(selection, source: solid, extent: extent) else {
+            return nil
+        }
+        guard let bounds = selectionBoundsPixels(selection, extent: extent) else {
+            return nil
+        }
+        guard let png = pngData(for: masked, pixelRect: bounds.pixels) else {
+            return nil
+        }
+        return (png, bounds.unit)
+    }
+
+    private static func maskedSelectionImage(_ selection: SelectionGeometry, source: CIImage, extent: CGRect) -> CIImage? {
+        guard extent.width > 0, extent.height > 0 else {
+            return nil
+        }
+        if selection.shape == .free && selection.points.count < 3 {
+            return nil
+        }
+        let mask = selectionMask(selection, extent: extent)
+        let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: extent)
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = source
+        blend.backgroundImage = clear
+        blend.maskImage = mask
+        return blend.outputImage
+    }
+
+    private static func pngData(for image: CIImage, pixelRect: CGRect) -> Data? {
+        let cropped = image.cropped(to: pixelRect)
+        guard let cgImage = sharedExtractionContext.createCGImage(cropped, from: pixelRect) else {
+            return nil
+        }
+        let rep = NSBitmapImageRep(cgImage: cgImage)
+        return rep.representation(using: .png, properties: [:])
+    }
+
     // A single-channel (luminance) histogram of the already-rendered image,
     // as `bucketCount` bars normalized so the tallest bar is 1.0 — read by
     // the adjustment panel's histogram strip. Desaturating first (rather
@@ -1016,6 +1524,23 @@ private let developRenderQueue = DispatchQueue(label: "com.rocketsbrief.briefsho
 // open, this just refocuses it rather than swapping in a new photo set —
 // re-opening Develop while a session is already in progress there
 // shouldn't interrupt it.
+// A view's `acceptsFirstMouse(for:)` defaults to false — the very FIRST
+// click after this window becomes key (right after opening, or after
+// clicking back into it from another window/app) is consumed just to
+// activate/focus the window, never reaching whatever control is under the
+// cursor. That's exactly the "clicking Brush/Radial does nothing the
+// moment Develop opens, works after I click something else first" bug
+// report: that "something else" click was silently eaten by activation,
+// and everything after it worked normally because the window was already
+// key by then. Overriding this to true on the hosting view (this is an
+// NSView method, NOT NSWindow — there's no window-level equivalent) makes
+// the very first click count everywhere inside it.
+private final class ClickThroughHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
 final class DevelopWindowController {
     static let shared = DevelopWindowController()
 
@@ -1046,7 +1571,7 @@ final class DevelopWindowController {
         let controller = NSWindowController(window: window)
         windowController = controller
 
-        window.contentView = NSHostingView(
+        window.contentView = ClickThroughHostingView(
             rootView: DevelopView(
                 photoURLs: photoURLs,
                 initialSelection: initialSelection,
@@ -1130,12 +1655,64 @@ struct DevelopView: View {
     @State private var brushSize: Double = 0.08
     @State private var brushHardness: Double = 0.4
     @State private var brushIsErasing = false
+    // Live mouse position (frame/view space, not unit space) while hovering
+    // the brush's paint surface, purely for drawing a "you are about to
+    // paint this big" cursor-size ring — nil whenever the mouse isn't over
+    // the surface. Cleared on hover-exit and while a stroke is actively
+    // being painted (the in-progress stroke's own preview already shows
+    // where the brush is in that case).
+    @State private var brushHoverLocation: CGPoint?
     // Drag-start snapshots for the radial/graduated on-canvas handles —
     // same pattern as dragStartCrop: captured on the first onChanged of a
     // drag, cleared on onEnded, so each drag computes its delta against a
     // stable baseline instead of the (already-mutated) live value.
     @State private var radialDragStart: RadialMaskGeometry?
     @State private var graduatedDragStart: GraduatedMaskGeometry?
+    @State private var patchDragStart: PatchGeometry?
+    // Points of an in-progress Free-shape patch outline (unit space), live
+    // while the user is drawing it — same "don't touch the real model until
+    // mouse-up" reasoning as activeBrushStrokePoints, so a canceled/
+    // interrupted drag never leaves a stray half-drawn outline behind.
+    @State private var activePatchDrawPoints: [CGPoint] = []
+    // Live mouse position (frame/view space) while hovering a patch's
+    // canvas with ⌥ held — purely a "this is where the source will land if
+    // you click now" preview ring, nil whenever the mouse isn't over the
+    // canvas OR ⌥ isn't currently held. Mirrors brushHoverLocation's
+    // pattern/reasoning.
+    @State private var patchSourceHoverLocation: CGPoint?
+
+    // Selection tool (Cut/Copy/Deselect -> layer clipboard). `activeSelection`
+    // nil = tool not in use; non-nil = its outline is shown/editable on
+    // canvas. Ephemeral like isCropping's pendingCrop — never written into
+    // PhotoEditSettings itself, only consumed by Cut/Copy into a new/
+    // modified ImageLayer.
+    @State private var activeSelection: SelectionGeometry?
+    @State private var selectionDragStart: SelectionGeometry?
+    @State private var activeSelectionDrawPoints: [CGPoint] = []
+    @State private var isExtractingSelection = false
+
+    // The most recently Cut/Copy'd piece, in-memory only (like
+    // settingsClipboard) — survives switching photos in the filmstrip
+    // while this Develop window stays open, but not closing the window or
+    // restarting the app. `aspectRatio` lets Paste size the new layer
+    // sensibly without having to decode the full image just to ask its
+    // dimensions.
+    @State private var layerClipboard: LayerClipboardData?
+
+    // Image layers (pasted cut/copied pieces). Same UUID-not-index
+    // selection tracking as selectedLocalAdjustmentID, same reasoning
+    // (the array can shrink/reorder out from under a cached index).
+    @State private var selectedLayerID: UUID?
+    @State private var layerDragStart: ImageLayer?
+    // Token for the Cmd+C/X/V local key monitor — see installClipboardKeyMonitor.
+    @State private var editingKeyMonitor: Any?
+    // Undo/redo — see scheduleUndoCommit's doc comment for the
+    // debounce/coalescing reasoning.
+    @State private var undoStack: [PhotoEditSettings] = []
+    @State private var redoStack: [PhotoEditSettings] = []
+    @State private var pendingUndoBaseline: PhotoEditSettings?
+    @State private var undoCommitWorkItem: DispatchWorkItem?
+    @State private var lastCommittedSettings = PhotoEditSettings()
 
     // Same soft-yellow-in-Dark, mid-gray-elsewhere accent PhotoShowSheet
     // uses for its own selection border, kept consistent here for the
@@ -1173,13 +1750,240 @@ struct DevelopView: View {
                 selectPhoto(initial)
             }
         }
-        .onChange(of: settings) { _ in scheduleRender() }
+        .onChange(of: settings) { _ in
+            scheduleRender()
+            scheduleUndoCommit()
+        }
         .onChange(of: pendingCrop) { _ in
             if isCropping {
                 scheduleRender()
             }
         }
         .onChange(of: showOriginal) { _ in renderNow() }
+        .onAppear { installEditingKeyMonitor() }
+        .onDisappear { removeEditingKeyMonitor() }
+    }
+
+    // Every Develop keyboard shortcut that isn't a plain SwiftUI Button's
+    // own `.keyboardShortcut` goes through this ONE local NSEvent monitor
+    // — Cmd+C/X/V (clipboard), Cmd+Z / Cmd+⇧+Z (undo/redo), bare [ / ]
+    // (brush/patch/radial/selection size, Photoshop's own convention), and
+    // bare Backspace/Delete (delete the selected layer or mask). A single
+    // shared monitor rather than one per shortcut, since they all need the
+    // identical "only while Develop is key" scoping and it keeps the
+    // isARepeat reasoning (see below) in one place instead of repeated
+    // per-shortcut. Scoped to only fire while THIS window is key (by
+    // title, since window is otherwise anonymous/untyped here) — local
+    // monitors are app-wide, not per-window, so without this check these
+    // shortcuts pressed while some OTHER window (e.g. the main ShowGrid
+    // window) is frontmost would incorrectly act on whatever photo Develop
+    // last had open.
+    //
+    // event.isARepeat is checked for Cmd+C/X/V specifically — a previous
+    // version of this monitor omitted it there and shipped a real, serious
+    // bug: holding Cmd+V for even a fraction of a second past the OS's
+    // key-repeat threshold fired pasteLayer() on every repeated keyDown
+    // (tens of times a second), piling up dozens of layers in an instant.
+    // Each additional layer makes every subsequent render (PNG decode +
+    // composite, once per layer, on every settings change) a little
+    // slower, and that slowdown compounds with more repeats arriving
+    // faster than renders can finish — a runaway feedback loop that pegged
+    // the app at ~76% CPU and stopped responding to window activation
+    // entirely, observed firsthand this session (had to `kill -9` it).
+    // Undo/redo and [ / ] deliberately DO allow repeat — holding Cmd+Z to
+    // step back several states, or holding ] to smoothly grow a brush,
+    // are both the normal expected feel — but neither carries the same
+    // risk: each step is one cheap, bounded array-pop or clamped-arithmetic
+    // update, nothing accumulates the way an unbounded paste-per-repeat
+    // did.
+    private func installEditingKeyMonitor() {
+        guard editingKeyMonitor == nil else {
+            return
+        }
+        editingKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard NSApp.keyWindow?.title == "Develop" else {
+                return event
+            }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let key = event.charactersIgnoringModifiers?.lowercased()
+
+            // Each case only fires when there's actually something for it
+            // to DO (a populated clipboard / a non-empty undo stack / an
+            // active Selection outline / a selected mask or layer) —
+            // otherwise falls through to the final `return event`, so
+            // these keys still reach normal text-field editing (e.g.
+            // typing/backspacing a preset name) whenever the relevant tool
+            // isn't in active use. Without these guards, every one of
+            // these keys anywhere in Develop — including inside a plain
+            // text field — would be swallowed by this monitor.
+            if flags == .command, !event.isARepeat {
+                switch key {
+                case "v" where layerClipboard != nil: pasteLayer(); return nil
+                case "c" where activeSelection != nil: copySelection(); return nil
+                case "x" where activeSelection != nil: cutSelection(); return nil
+                default: break
+                }
+            }
+            if flags == .command, key == "z", !undoStack.isEmpty {
+                undo()
+                return nil
+            }
+            if flags == [.command, .shift], key == "z", !redoStack.isEmpty {
+                redo()
+                return nil
+            }
+            if flags.isEmpty, key == "[" || key == "]", activeToolHasAdjustableSize {
+                adjustActiveToolSize(increase: key == "]")
+                return nil
+            }
+            if flags.isEmpty, (event.keyCode == 51 || event.keyCode == 117),
+               selectedLayerID != nil || selectedLocalAdjustmentID != nil {
+                deleteSelectedItem()
+                return nil
+            }
+
+            return event
+        }
+    }
+
+    private func removeEditingKeyMonitor() {
+        if let editingKeyMonitor {
+            NSEvent.removeMonitor(editingKeyMonitor)
+        }
+        editingKeyMonitor = nil
+    }
+
+    private func deleteSelectedItem() {
+        if let id = selectedLayerID {
+            deleteLayer(id)
+        } else if let id = selectedLocalAdjustmentID {
+            deleteLocalAdjustment(id)
+        }
+    }
+
+    // Whether [ / ] currently have a "size" to act on — a Brush/Radial
+    // mask (brush diameter / radial radius), a Circle or Square Patch
+    // (its radius — Free has no single "size" to speak of), or an active
+    // Circle/Square Selection outline. Graduated and Free-shape
+    // Patch/Selection are excluded for the same reason: no single scalar
+    // "size" describes them.
+    private var activeToolHasAdjustableSize: Bool {
+        if let index = selectedAdjustmentIndex {
+            switch settings.localAdjustments[index].type {
+            case .brush, .radial: return true
+            case .patch: return settings.localAdjustments[index].patch?.shape != .free
+            case .graduated: return false
+            }
+        }
+        if let activeSelection {
+            return activeSelection.shape != .free
+        }
+        return false
+    }
+
+    // Multiplicative step (±10%) rather than a fixed absolute amount —
+    // feels proportionate whether the current size is tiny or huge, and
+    // means the SAME step works for brush (0.01...0.3 range) and a
+    // radial/patch/selection radius (0.02...1 range) without needing a
+    // different magic number per tool.
+    private func adjustActiveToolSize(increase: Bool) {
+        let factor = increase ? 1.1 : (1 / 1.1)
+
+        if let index = selectedAdjustmentIndex {
+            switch settings.localAdjustments[index].type {
+            case .brush:
+                brushSize = min(max(brushSize * factor, 0.01), 0.3)
+            case .radial:
+                guard var geo = settings.localAdjustments[index].radial else { return }
+                geo.radiusX = min(max(geo.radiusX * factor, 0.02), 1)
+                geo.radiusY = min(max(geo.radiusY * factor, 0.02), 1)
+                settings.localAdjustments[index].radial = geo
+            case .patch:
+                guard var geo = settings.localAdjustments[index].patch, geo.shape != .free else { return }
+                geo.radiusX = min(max(geo.radiusX * factor, 0.02), 1)
+                geo.radiusY = min(max(geo.radiusY * factor, 0.02), 1)
+                settings.localAdjustments[index].patch = geo
+            case .graduated:
+                break
+            }
+            return
+        }
+
+        if var selection = activeSelection, selection.shape != .free {
+            selection.radiusX = min(max(selection.radiusX * factor, 0.02), 1)
+            selection.radiusY = min(max(selection.radiusY * factor, 0.02), 1)
+            activeSelection = selection
+        }
+    }
+
+    // MARK: Undo / redo
+
+    // Coalesced, debounced undo — NOT one entry per slider-drag tick.
+    // scheduleUndoCommit is called on every `settings` change (see body's
+    // `.onChange`); the FIRST change in a burst captures `lastCommittedSettings`
+    // (the state before this burst started) into `pendingUndoBaseline` and
+    // starts a timer, and every subsequent change in the same burst just
+    // restarts the timer without touching the baseline. Only once changes
+    // STOP for 0.5s does commitUndoIfNeeded push that one baseline onto
+    // undoStack — so dragging a slider for 3 seconds produces ONE undo
+    // step (back to before the drag started), not hundreds.
+    private func scheduleUndoCommit() {
+        if pendingUndoBaseline == nil {
+            pendingUndoBaseline = lastCommittedSettings
+        }
+        undoCommitWorkItem?.cancel()
+        let workItem = DispatchWorkItem { commitUndoIfNeeded() }
+        undoCommitWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+    }
+
+    private func commitUndoIfNeeded() {
+        defer { pendingUndoBaseline = nil }
+        guard let baseline = pendingUndoBaseline, baseline != settings else {
+            return
+        }
+        undoStack.append(baseline)
+        if undoStack.count > 50 {
+            undoStack.removeFirst()
+        }
+        redoStack = []
+        lastCommittedSettings = settings
+    }
+
+    // Undo/redo restore the WHOLE PhotoEditSettings snapshot (crop/masks/
+    // layers/tonal sliders together), same "one struct is the source of
+    // truth" approach Presets/Copy-Paste Settings already use — simpler
+    // and more predictable than trying to undo individual fields
+    // independently, at the cost of a coarser step than some editors'
+    // per-field undo.
+    private func undo() {
+        guard let previous = undoStack.popLast() else {
+            return
+        }
+        undoCommitWorkItem?.cancel()
+        pendingUndoBaseline = nil
+        redoStack.append(settings)
+        applyUndoRedoSnapshot(previous)
+    }
+
+    private func redo() {
+        guard let next = redoStack.popLast() else {
+            return
+        }
+        undoCommitWorkItem?.cancel()
+        pendingUndoBaseline = nil
+        undoStack.append(settings)
+        applyUndoRedoSnapshot(next)
+    }
+
+    private func applyUndoRedoSnapshot(_ snapshot: PhotoEditSettings) {
+        settings = snapshot
+        lastCommittedSettings = snapshot
+        pendingCrop = snapshot.crop ?? .full
+        cropIsAutoFitted = false
+        selectedLocalAdjustmentID = nil
+        selectedLayerID = nil
+        activeSelection = nil
     }
 
     // MARK: Filmstrip
@@ -1342,7 +2146,11 @@ struct DevelopView: View {
                     if isCropping {
                         cropOverlay(frame: fitted, containerSize: proxy.size)
                     } else if let index = selectedAdjustmentIndex {
-                        localAdjustmentOverlay(settings.localAdjustments[index], frame: fitted)
+                        localAdjustmentOverlay(settings.localAdjustments[index], frame: fullImageFrame(from: fitted))
+                    } else if let activeSelection {
+                        selectionOverlay(activeSelection, frame: fullImageFrame(from: fitted))
+                    } else if let index = selectedLayerIndex {
+                        layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
                     }
                 } else if isLoadingPreview {
                     ProgressView()
@@ -1368,6 +2176,43 @@ struct DevelopView: View {
         return CGRect(x: (containerSize.width - width) / 2, y: (containerSize.height - height) / 2, width: width, height: height)
     }
 
+    // Mask/Selection/Layer geometry (unlike the crop rect itself) is
+    // always defined in the FULL, PRE-crop image's unit space — render()
+    // applies applyLocalAdjustments/compositeLayers BEFORE crop, so a
+    // mask keeps its position/size if the crop is later changed or
+    // removed, same as Lightroom's own local adjustments. But whenever a
+    // crop IS set and the client isn't actively in the crop tool
+    // (cropEnabled == true in that state, see renderNow), `displayedImage`
+    // — and therefore `fitted`, the on-screen frame everything else
+    // computes screen positions from — shows the CROPPED image, not the
+    // full one. Passing `fitted` straight to a mask/selection/layer
+    // overlay in that state was a real bug: the overlay would land
+    // wherever that fraction maps to on the SMALLER cropped frame, not
+    // where it actually renders in the full image the geometry describes
+    // — visibly offset from the actual masked/pasted content
+    // (reported as "square isn't precisely on it").
+    //
+    // This reconstructs the frame the FULL pre-crop image would occupy on
+    // screen at the SAME scale `fitted` is already using, by inverting
+    // `settings.crop`'s own x/y/width/height fractions — algebraically the
+    // exact inverse of how render() turns a crop fraction into a pixel
+    // rect. The result is typically BIGGER than `fitted` and extends
+    // beyond it (partly off in centerPreview's own letterboxing margin) —
+    // expected, since a mask positioned outside the current crop genuinely
+    // isn't visible in the cropped photo either. Not used for the crop
+    // overlay itself, which already gets a correct, uncropped `fitted`
+    // for a different reason (cropEnabled is false while isCropping).
+    private func fullImageFrame(from fitted: CGRect) -> CGRect {
+        guard let crop = settings.crop, crop.width > 0, crop.height > 0 else {
+            return fitted
+        }
+        let fullWidth = fitted.width / crop.width
+        let fullHeight = fitted.height / crop.height
+        let originX = fitted.minX - crop.x * fullWidth
+        let originY = fitted.minY - crop.y * fullHeight
+        return CGRect(x: originX, y: originY, width: fullWidth, height: fullHeight)
+    }
+
     private enum CropHandle: CaseIterable {
         case topLeft, topRight, bottomLeft, bottomRight
     }
@@ -1391,7 +2236,7 @@ struct DevelopView: View {
             .allowsHitTesting(false)
 
             Rectangle()
-                .stroke(Color.white, lineWidth: 1.5)
+                .stroke(Color.white, lineWidth: 1.0)
                 .frame(width: rect.width, height: rect.height)
                 .position(x: rect.midX, y: rect.midY)
                 .contentShape(Rectangle())
@@ -1581,6 +2426,10 @@ struct DevelopView: View {
             }
         case .brush:
             brushPaintOverlay(adjustment.brush, frame: frame)
+        case .patch:
+            if let geo = adjustment.patch {
+                patchOverlay(geo, frame: frame)
+            }
         }
     }
 
@@ -1596,7 +2445,7 @@ struct DevelopView: View {
 
         return ZStack {
             Ellipse()
-                .stroke(accentColor, lineWidth: 1.5)
+                .stroke(accentColor, lineWidth: 1.0)
                 .frame(width: rx * 2, height: ry * 2)
                 .position(center)
                 .allowsHitTesting(false)
@@ -1695,7 +2544,7 @@ struct DevelopView: View {
                 path.move(to: start)
                 path.addLine(to: end)
             }
-            .stroke(accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+            .stroke(accentColor, style: StrokeStyle(lineWidth: 1.0, dash: [5, 4]))
             .allowsHitTesting(false)
 
             Circle()
@@ -1754,6 +2603,814 @@ struct DevelopView: View {
         settings.localAdjustments[index].graduated = geo
     }
 
+    // Dispatches a Patch mask's on-canvas overlay by shape/draw-state: a
+    // Free shape with no outline drawn yet shows the drawing surface
+    // instead of handles (nothing to grab a handle ON before it exists).
+    @ViewBuilder
+    private func patchOverlay(_ geo: PatchGeometry, frame: CGRect) -> some View {
+        switch geo.shape {
+        case .circle, .square:
+            patchShapeOverlay(geo, frame: frame)
+        case .free:
+            if geo.points.isEmpty {
+                patchFreeDrawOverlay(frame: frame)
+            } else {
+                patchFreeShapeOverlay(geo, frame: frame)
+            }
+        }
+    }
+
+    // Circle/Square share this overlay — same center+radiusX/radiusY
+    // geometry, same move+2-axis-resize handle scheme as radialOverlay,
+    // differing only in which shape gets stroked (Ellipse vs Rectangle).
+    // Also draws the source marker (a draggable "viewfinder" glyph, styled
+    // distinctly in yellow rather than the accent color so it never reads
+    // as just another resize handle), a dashed line connecting destination
+    // to source, and a dashed MIRROR of the destination outline at the
+    // source location — purely a visual reference so the user can see
+    // exactly what region will be sampled, not interactive itself.
+    private func patchShapeOverlay(_ geo: PatchGeometry, frame: CGRect) -> some View {
+        let center = CGPoint(x: frame.minX + geo.centerX * frame.width, y: frame.minY + geo.centerY * frame.height)
+        let rx = geo.radiusX * frame.width
+        let ry = geo.radiusY * frame.height
+        let sourceCenter = CGPoint(x: center.x + geo.sourceOffsetX * frame.width, y: center.y + geo.sourceOffsetY * frame.height)
+
+        return ZStack {
+            patchCanvasClickArea(frame: frame)
+
+            Path { path in
+                path.move(to: center)
+                path.addLine(to: sourceCenter)
+            }
+            .stroke(Color.yellow, style: StrokeStyle(lineWidth: 1.0, dash: [4, 3]))
+            .allowsHitTesting(false)
+
+            patchShapeStroke(geo.shape, color: Color.yellow.opacity(0.7), lineWidth: 0.8, dash: [3, 3])
+                .frame(width: rx * 2, height: ry * 2)
+                .position(sourceCenter)
+                .allowsHitTesting(false)
+
+            patchShapeStroke(geo.shape, color: accentColor, lineWidth: 1.0, dash: [])
+                .frame(width: rx * 2, height: ry * 2)
+                .position(center)
+                .allowsHitTesting(false)
+
+            Circle()
+                .fill(accentColor)
+                .frame(width: 11, height: 11)
+                .shadow(radius: 1)
+                .position(center)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in movePatchCenter(by: value.translation, frame: frame) }
+                        .onEnded { _ in patchDragStart = nil }
+                )
+
+            Circle()
+                .fill(Color.white)
+                .frame(width: 10, height: 10)
+                .shadow(radius: 1)
+                .position(x: center.x + rx, y: center.y)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in resizePatchRadiusX(by: value.translation, frame: frame) }
+                        .onEnded { _ in patchDragStart = nil }
+                )
+
+            Circle()
+                .fill(Color.white)
+                .frame(width: 10, height: 10)
+                .shadow(radius: 1)
+                .position(x: center.x, y: center.y + ry)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in resizePatchRadiusY(by: value.translation, frame: frame) }
+                        .onEnded { _ in patchDragStart = nil }
+                )
+
+            Image(systemName: "viewfinder")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(.yellow)
+                .shadow(radius: 1)
+                .position(sourceCenter)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in movePatchSource(by: value.translation, frame: frame) }
+                        .onEnded { _ in patchDragStart = nil }
+                )
+        }
+    }
+
+    @ViewBuilder
+    private func patchShapeStroke(_ shape: PatchShape, color: Color, lineWidth: CGFloat, dash: [CGFloat]) -> some View {
+        if shape == .circle {
+            Ellipse().stroke(color, style: StrokeStyle(lineWidth: lineWidth, dash: dash))
+        } else {
+            Rectangle().stroke(color, style: StrokeStyle(lineWidth: lineWidth, dash: dash))
+        }
+    }
+
+    // A transparent, full-canvas layer shared by patchShapeOverlay and
+    // patchFreeShapeOverlay — placed FIRST in their ZStacks (so it sits
+    // BEHIND the move/resize/source handles, which still get hit-test
+    // priority for their own small areas) so clicking anywhere else on the
+    // photo acts on the patch directly: real clone-stamp UX, same gesture
+    // Photoshop/Lightroom's own Healing/Clone tools use. NSEvent.modifierFlags
+    // (not a SwiftUI modifier-key API — macOS 13's SDK has none) is read
+    // synchronously both on hover (to preview) and at tap time (to decide
+    // what the tap means), so no separate event-monitor bookkeeping is
+    // needed for ⌥'s current state.
+    private func patchCanvasClickArea(frame: CGRect) -> some View {
+        ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        patchSourceHoverLocation = NSEvent.modifierFlags.contains(.option) ? location : nil
+                    case .ended:
+                        patchSourceHoverLocation = nil
+                    }
+                }
+                .gesture(
+                    SpatialTapGesture()
+                        .onEnded { value in
+                            handlePatchCanvasTap(at: value.location, frame: frame)
+                        }
+                )
+
+            // "Source will land here if you click now" preview — only
+            // shown while ⌥ is actually held (patchSourceHoverLocation is
+            // nil otherwise), a cheap ring rather than a live pixel
+            // preview of the source content itself (which would mean
+            // re-rendering a cropped thumbnail on every hover event —
+            // too much for interactive hover, same tradeoff the brush
+            // cursor preview already made).
+            if let patchSourceHoverLocation {
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.yellow.opacity(0.7))
+                    .shadow(radius: 1)
+                    .position(patchSourceHoverLocation)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    // ⌥-click sets the SOURCE under the cursor (keeping the destination
+    // exactly where it is) — expressed as this patch's existing
+    // sourceOffsetX/Y (a vector from destination to source), the same
+    // value dragging the yellow marker already writes to, just reached by
+    // a single click instead of a drag. A plain click instead moves the
+    // DESTINATION under the cursor and patches there — the source comes
+    // along for free since sourceOffset is relative (same math
+    // movePatchCenter/movePatchFreeShape use for a drag).
+    private func handlePatchCanvasTap(at location: CGPoint, frame: CGRect) {
+        guard let index = selectedAdjustmentIndex, let unit = unitPoint(from: location, frame: frame) else {
+            return
+        }
+        guard var geo = settings.localAdjustments[index].patch else {
+            return
+        }
+
+        if NSEvent.modifierFlags.contains(.option) {
+            geo.sourceOffsetX = unit.x - geo.centerX
+            geo.sourceOffsetY = unit.y - geo.centerY
+        } else if geo.shape == .free {
+            // Unclamped, same reasoning as movePatchFreeShape — points and
+            // centerX/Y must move by the identical delta or they'd desync,
+            // since freeMask draws directly from `points`, not the center.
+            let dx = unit.x - geo.centerX
+            let dy = unit.y - geo.centerY
+            geo.centerX += dx
+            geo.centerY += dy
+            geo.points = geo.points.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
+        } else {
+            geo.centerX = min(max(unit.x, 0), 1)
+            geo.centerY = min(max(unit.y, 0), 1)
+        }
+
+        settings.localAdjustments[index].patch = geo
+        patchDragStart = nil
+    }
+
+    private func movePatchCenter(by translation: CGSize, frame: CGRect) {
+        guard let index = selectedAdjustmentIndex else {
+            return
+        }
+        if patchDragStart == nil {
+            patchDragStart = settings.localAdjustments[index].patch
+        }
+        guard let start = patchDragStart, frame.width > 0, frame.height > 0 else {
+            return
+        }
+        var geo = start
+        geo.centerX = min(max(start.centerX + translation.width / frame.width, 0), 1)
+        geo.centerY = min(max(start.centerY + translation.height / frame.height, 0), 1)
+        settings.localAdjustments[index].patch = geo
+    }
+
+    private func resizePatchRadiusX(by translation: CGSize, frame: CGRect) {
+        guard let index = selectedAdjustmentIndex else {
+            return
+        }
+        if patchDragStart == nil {
+            patchDragStart = settings.localAdjustments[index].patch
+        }
+        guard let start = patchDragStart, frame.width > 0 else {
+            return
+        }
+        var geo = start
+        geo.radiusX = min(max(start.radiusX + translation.width / frame.width, 0.02), 1)
+        settings.localAdjustments[index].patch = geo
+    }
+
+    private func resizePatchRadiusY(by translation: CGSize, frame: CGRect) {
+        guard let index = selectedAdjustmentIndex else {
+            return
+        }
+        if patchDragStart == nil {
+            patchDragStart = settings.localAdjustments[index].patch
+        }
+        guard let start = patchDragStart, frame.height > 0 else {
+            return
+        }
+        var geo = start
+        geo.radiusY = min(max(start.radiusY + translation.height / frame.height, 0.02), 1)
+        settings.localAdjustments[index].patch = geo
+    }
+
+    // No clamping to 0...1 here, unlike centerX/Y above — the source point
+    // is just "wherever the user is currently sampling from" and there's no
+    // reason it can't sit near an edge or even slightly off it; it isn't
+    // where anything gets DRAWN the way the destination outline is.
+    private func movePatchSource(by translation: CGSize, frame: CGRect) {
+        guard let index = selectedAdjustmentIndex else {
+            return
+        }
+        if patchDragStart == nil {
+            patchDragStart = settings.localAdjustments[index].patch
+        }
+        guard let start = patchDragStart, frame.width > 0, frame.height > 0 else {
+            return
+        }
+        var geo = start
+        geo.sourceOffsetX = start.sourceOffsetX + translation.width / frame.width
+        geo.sourceOffsetY = start.sourceOffsetY + translation.height / frame.height
+        settings.localAdjustments[index].patch = geo
+    }
+
+    // A Free-shape patch that already has a drawn outline: same move-handle
+    // + source-marker scheme as patchShapeOverlay, but the move handle
+    // shifts every polygon point together with centerX/Y (kept in sync as
+    // the shape's centroid) rather than adjusting a radius, since a
+    // freehand polygon has no "radius" to speak of.
+    private func patchFreeShapeOverlay(_ geo: PatchGeometry, frame: CGRect) -> some View {
+        let scaledPoints = geo.points.map { CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height) }
+        let center = CGPoint(x: frame.minX + geo.centerX * frame.width, y: frame.minY + geo.centerY * frame.height)
+        let sourceOffset = CGSize(width: geo.sourceOffsetX * frame.width, height: geo.sourceOffsetY * frame.height)
+        let sourceCenter = CGPoint(x: center.x + sourceOffset.width, y: center.y + sourceOffset.height)
+        let sourcePoints = scaledPoints.map { CGPoint(x: $0.x + sourceOffset.width, y: $0.y + sourceOffset.height) }
+
+        return ZStack {
+            patchCanvasClickArea(frame: frame)
+
+            Path { path in
+                path.move(to: center)
+                path.addLine(to: sourceCenter)
+            }
+            .stroke(Color.yellow, style: StrokeStyle(lineWidth: 1.0, dash: [4, 3]))
+            .allowsHitTesting(false)
+
+            closedPolygonPath(sourcePoints)
+                .stroke(Color.yellow.opacity(0.7), style: StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+                .allowsHitTesting(false)
+
+            closedPolygonPath(scaledPoints)
+                .stroke(accentColor, lineWidth: 1.0)
+                .allowsHitTesting(false)
+
+            Circle()
+                .fill(accentColor)
+                .frame(width: 11, height: 11)
+                .shadow(radius: 1)
+                .position(center)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in movePatchFreeShape(by: value.translation, frame: frame) }
+                        .onEnded { _ in patchDragStart = nil }
+                )
+
+            Image(systemName: "viewfinder")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(.yellow)
+                .shadow(radius: 1)
+                .position(sourceCenter)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in movePatchSource(by: value.translation, frame: frame) }
+                        .onEnded { _ in patchDragStart = nil }
+                )
+        }
+    }
+
+    private func closedPolygonPath(_ points: [CGPoint]) -> Path {
+        Path { path in
+            guard let first = points.first else {
+                return
+            }
+            path.move(to: first)
+            for point in points.dropFirst() {
+                path.addLine(to: point)
+            }
+            path.closeSubpath()
+        }
+    }
+
+    // Shifts every drawn point AND centerX/Y by the same delta, unclamped
+    // (matching movePatchSource's reasoning) — clamping centerX/Y alone
+    // while leaving points unclamped would desync the two, since the
+    // points array is what maskImage/freeMask actually draws from and
+    // centerX/Y is only a derived handle-position/source-anchor
+    // convenience, not source-of-truth geometry.
+    private func movePatchFreeShape(by translation: CGSize, frame: CGRect) {
+        guard let index = selectedAdjustmentIndex else {
+            return
+        }
+        if patchDragStart == nil {
+            patchDragStart = settings.localAdjustments[index].patch
+        }
+        guard let start = patchDragStart, frame.width > 0, frame.height > 0 else {
+            return
+        }
+        let dx = translation.width / frame.width
+        let dy = translation.height / frame.height
+        var geo = start
+        geo.centerX = start.centerX + dx
+        geo.centerY = start.centerY + dy
+        geo.points = start.points.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
+        settings.localAdjustments[index].patch = geo
+    }
+
+    // A transparent, full-frame hit area for drawing a Free-shape patch's
+    // outline — same cheap-vector-preview-until-mouse-up pattern as
+    // brushPaintOverlay (see its own doc comment for why), closing the path
+    // back to its start point so the in-progress preview already reads as
+    // the closed outline it will become on commit.
+    private func patchFreeDrawOverlay(frame: CGRect) -> some View {
+        ZStack {
+            if activePatchDrawPoints.count > 1 {
+                closedPolygonPath(activePatchDrawPoints.map {
+                    CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
+                })
+                .stroke(accentColor.opacity(0.9), style: StrokeStyle(lineWidth: 1.0, dash: [5, 3]))
+                .allowsHitTesting(false)
+            } else {
+                Text("Drag to draw the patch outline")
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .foregroundColor(.white)
+                    .padding(6)
+                    .background(Color.black.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .position(x: frame.midX, y: frame.midY)
+                    .allowsHitTesting(false)
+            }
+
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in paintPatchOutline(at: value.location, frame: frame) }
+                        .onEnded { _ in commitPatchOutline() }
+                )
+        }
+    }
+
+    private func paintPatchOutline(at location: CGPoint, frame: CGRect) {
+        guard let unit = unitPoint(from: location, frame: frame) else {
+            return
+        }
+        if let last = activePatchDrawPoints.last {
+            let dx = unit.x - last.x, dy = unit.y - last.y
+            if (dx * dx + dy * dy) < 0.0001 {
+                return
+            }
+        }
+        activePatchDrawPoints.append(unit)
+    }
+
+    // Requires at least 3 points (a real polygon, not a line/dot) to commit
+    // — mirrors commitBrushStroke's `count > 1` guard, just a higher bar
+    // since a 2-point "outline" wouldn't enclose any area for freeMask to
+    // fill. The outline's own centroid becomes centerX/Y, so the move
+    // handle and source marker both start from somewhere sensible on the
+    // shape the user actually drew, not the (0.5, 0.5) default.
+    private func commitPatchOutline() {
+        defer { activePatchDrawPoints = [] }
+        guard let index = selectedAdjustmentIndex, activePatchDrawPoints.count > 2 else {
+            return
+        }
+        let count = Double(activePatchDrawPoints.count)
+        let centroidX = activePatchDrawPoints.reduce(0) { $0 + $1.x } / count
+        let centroidY = activePatchDrawPoints.reduce(0) { $0 + $1.y } / count
+        settings.localAdjustments[index].patch?.points = activePatchDrawPoints
+        settings.localAdjustments[index].patch?.centerX = centroidX
+        settings.localAdjustments[index].patch?.centerY = centroidY
+    }
+
+    // MARK: Selection tool overlay (Cut/Copy/Deselect)
+
+    // Same shape/dispatch structure as patchOverlay, minus everything
+    // source-related (no marker, no dashed mirror, no drag-start snapshot
+    // needed beyond `selectionDragStart`) — a plain selection only ever
+    // has ONE outline to show.
+    @ViewBuilder
+    private func selectionOverlay(_ selection: SelectionGeometry, frame: CGRect) -> some View {
+        switch selection.shape {
+        case .circle, .square:
+            selectionShapeOverlay(selection, frame: frame)
+        case .free:
+            if selection.points.isEmpty {
+                selectionFreeDrawOverlay(frame: frame)
+            } else {
+                selectionFreeShapeOverlay(selection, frame: frame)
+            }
+        }
+    }
+
+    private func selectionShapeOverlay(_ selection: SelectionGeometry, frame: CGRect) -> some View {
+        let center = CGPoint(x: frame.minX + selection.centerX * frame.width, y: frame.minY + selection.centerY * frame.height)
+        let rx = selection.radiusX * frame.width
+        let ry = selection.radiusY * frame.height
+
+        return ZStack {
+            patchShapeStroke(selection.shape, color: accentColor, lineWidth: 1.0, dash: [5, 3])
+                .frame(width: rx * 2, height: ry * 2)
+                .position(center)
+                .allowsHitTesting(false)
+
+            Circle()
+                .fill(accentColor)
+                .frame(width: 11, height: 11)
+                .shadow(radius: 1)
+                .position(center)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in moveSelectionCenter(by: value.translation, frame: frame) }
+                        .onEnded { _ in selectionDragStart = nil }
+                )
+
+            Circle()
+                .fill(Color.white)
+                .frame(width: 10, height: 10)
+                .shadow(radius: 1)
+                .position(x: center.x + rx, y: center.y)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in resizeSelectionRadiusX(by: value.translation, frame: frame) }
+                        .onEnded { _ in selectionDragStart = nil }
+                )
+
+            Circle()
+                .fill(Color.white)
+                .frame(width: 10, height: 10)
+                .shadow(radius: 1)
+                .position(x: center.x, y: center.y + ry)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in resizeSelectionRadiusY(by: value.translation, frame: frame) }
+                        .onEnded { _ in selectionDragStart = nil }
+                )
+        }
+    }
+
+    private func moveSelectionCenter(by translation: CGSize, frame: CGRect) {
+        if selectionDragStart == nil {
+            selectionDragStart = activeSelection
+        }
+        guard let start = selectionDragStart, frame.width > 0, frame.height > 0 else {
+            return
+        }
+        var geo = start
+        geo.centerX = min(max(start.centerX + translation.width / frame.width, 0), 1)
+        geo.centerY = min(max(start.centerY + translation.height / frame.height, 0), 1)
+        activeSelection = geo
+    }
+
+    private func resizeSelectionRadiusX(by translation: CGSize, frame: CGRect) {
+        if selectionDragStart == nil {
+            selectionDragStart = activeSelection
+        }
+        guard let start = selectionDragStart, frame.width > 0 else {
+            return
+        }
+        var geo = start
+        geo.radiusX = min(max(start.radiusX + translation.width / frame.width, 0.02), 1)
+        activeSelection = geo
+    }
+
+    private func resizeSelectionRadiusY(by translation: CGSize, frame: CGRect) {
+        if selectionDragStart == nil {
+            selectionDragStart = activeSelection
+        }
+        guard let start = selectionDragStart, frame.height > 0 else {
+            return
+        }
+        var geo = start
+        geo.radiusY = min(max(start.radiusY + translation.height / frame.height, 0.02), 1)
+        activeSelection = geo
+    }
+
+    private func selectionFreeShapeOverlay(_ selection: SelectionGeometry, frame: CGRect) -> some View {
+        let scaledPoints = selection.points.map { CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height) }
+        let center = CGPoint(x: frame.minX + selection.centerX * frame.width, y: frame.minY + selection.centerY * frame.height)
+
+        return ZStack {
+            closedPolygonPath(scaledPoints)
+                .stroke(accentColor, style: StrokeStyle(lineWidth: 1.0, dash: [5, 3]))
+                .allowsHitTesting(false)
+
+            Circle()
+                .fill(accentColor)
+                .frame(width: 11, height: 11)
+                .shadow(radius: 1)
+                .position(center)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in moveSelectionFreeShape(by: value.translation, frame: frame) }
+                        .onEnded { _ in selectionDragStart = nil }
+                )
+        }
+    }
+
+    private func moveSelectionFreeShape(by translation: CGSize, frame: CGRect) {
+        if selectionDragStart == nil {
+            selectionDragStart = activeSelection
+        }
+        guard let start = selectionDragStart, frame.width > 0, frame.height > 0 else {
+            return
+        }
+        let dx = translation.width / frame.width
+        let dy = translation.height / frame.height
+        var geo = start
+        geo.centerX = start.centerX + dx
+        geo.centerY = start.centerY + dy
+        geo.points = start.points.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
+        activeSelection = geo
+    }
+
+    // Same cheap-vector-preview-until-mouse-up drawing surface as
+    // patchFreeDrawOverlay.
+    private func selectionFreeDrawOverlay(frame: CGRect) -> some View {
+        ZStack {
+            if activeSelectionDrawPoints.count > 1 {
+                closedPolygonPath(activeSelectionDrawPoints.map {
+                    CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
+                })
+                .stroke(accentColor.opacity(0.9), style: StrokeStyle(lineWidth: 1.0, dash: [5, 3]))
+                .allowsHitTesting(false)
+            } else {
+                Text("Drag to draw the selection outline")
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .foregroundColor(.white)
+                    .padding(6)
+                    .background(Color.black.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .position(x: frame.midX, y: frame.midY)
+                    .allowsHitTesting(false)
+            }
+
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in paintSelectionOutline(at: value.location, frame: frame) }
+                        .onEnded { _ in commitSelectionOutline() }
+                )
+        }
+    }
+
+    private func paintSelectionOutline(at location: CGPoint, frame: CGRect) {
+        guard let unit = unitPoint(from: location, frame: frame) else {
+            return
+        }
+        if let last = activeSelectionDrawPoints.last {
+            let dx = unit.x - last.x, dy = unit.y - last.y
+            if (dx * dx + dy * dy) < 0.0001 {
+                return
+            }
+        }
+        activeSelectionDrawPoints.append(unit)
+    }
+
+    private func commitSelectionOutline() {
+        defer { activeSelectionDrawPoints = [] }
+        guard activeSelectionDrawPoints.count > 2 else {
+            return
+        }
+        let count = Double(activeSelectionDrawPoints.count)
+        let centroidX = activeSelectionDrawPoints.reduce(0) { $0 + $1.x } / count
+        let centroidY = activeSelectionDrawPoints.reduce(0) { $0 + $1.y } / count
+        activeSelection?.points = activeSelectionDrawPoints
+        activeSelection?.centerX = centroidX
+        activeSelection?.centerY = centroidY
+    }
+
+    // MARK: Layer overlay (move/resize)
+
+    private enum LayerCorner: CaseIterable {
+        case topLeft, topRight, bottomLeft, bottomRight
+    }
+
+    // Move-by-dragging-the-body plus 4 independent-axis corner handles
+    // (each anchors the OPPOSITE corner, same reasoning as the crop tool's
+    // own corner handles) — no aspect-ratio lock, unlike crop's optional
+    // one, since a pasted layer has no equivalent "aspect ratio buttons" UI
+    // to lock to; keeping it simple for v1.
+    private func layerOverlay(_ layer: ImageLayer, frame: CGRect) -> some View {
+        let rect = CGRect(
+            x: frame.minX + layer.x * frame.width,
+            y: frame.minY + layer.y * frame.height,
+            width: layer.width * frame.width,
+            height: layer.height * frame.height
+        )
+
+        return ZStack {
+            Rectangle()
+                .stroke(accentColor, lineWidth: 1.0)
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in moveLayer(by: value.translation, frame: frame) }
+                        .onEnded { _ in layerDragStart = nil }
+                )
+
+            ForEach(LayerCorner.allCases, id: \.self) { corner in
+                layerHandleView(corner, rect: rect, frame: frame)
+            }
+        }
+    }
+
+    private func layerHandleView(_ corner: LayerCorner, rect: CGRect, frame: CGRect) -> some View {
+        let position: CGPoint
+        switch corner {
+        case .topLeft: position = CGPoint(x: rect.minX, y: rect.minY)
+        case .topRight: position = CGPoint(x: rect.maxX, y: rect.minY)
+        case .bottomLeft: position = CGPoint(x: rect.minX, y: rect.maxY)
+        case .bottomRight: position = CGPoint(x: rect.maxX, y: rect.maxY)
+        }
+
+        return Circle()
+            .fill(Color.white)
+            .frame(width: 12, height: 12)
+            .shadow(radius: 1)
+            .position(position)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in resizeLayer(corner, by: value.translation, frame: frame) }
+                    .onEnded { _ in layerDragStart = nil }
+            )
+    }
+
+    private func moveLayer(by translation: CGSize, frame: CGRect) {
+        guard let index = selectedLayerIndex else {
+            return
+        }
+        if layerDragStart == nil {
+            layerDragStart = settings.layers[index]
+        }
+        guard let start = layerDragStart, frame.width > 0, frame.height > 0 else {
+            return
+        }
+        let dx = translation.width / frame.width
+        let dy = translation.height / frame.height
+        var next = start
+        next.x = min(max(0, start.x + dx), 1 - start.width)
+        next.y = min(max(0, start.y + dy), 1 - start.height)
+        settings.layers[index] = next
+    }
+
+    // Anchors the corner OPPOSITE the one being dragged (e.g. dragging
+    // .bottomRight keeps .topLeft fixed), same as the crop tool's own
+    // corner resize. LOCKED to the layer's own starting aspect ratio by
+    // default — opposite of crop's own convention (crop is free unless a
+    // ratio button is tapped) but matches what the client explicitly asked
+    // for here: hold ⇧ (Shift) to resize free-form, otherwise the shape
+    // stays proportional. Locking to `start.width/start.height` directly
+    // (a fraction-space ratio) rather than converting through the photo's
+    // pixel dimensions still preserves the PIXEL aspect ratio exactly: for
+    // a fixed photo, pixelRatio = (widthFraction/heightFraction) *
+    // imagePixelRatio, so holding widthFraction/heightFraction constant
+    // holds pixelRatio constant too — the imagePixelRatio factor cancels
+    // out, so there's no need to look it up here at all (unlike the crop
+    // tool's ratio-lock, which targets an ARBITRARY externally-chosen
+    // pixel ratio like 4:3 and does need that conversion).
+    private func resizeLayer(_ corner: LayerCorner, by translation: CGSize, frame: CGRect) {
+        guard let index = selectedLayerIndex else {
+            return
+        }
+        if layerDragStart == nil {
+            layerDragStart = settings.layers[index]
+        }
+        guard let start = layerDragStart, frame.width > 0, frame.height > 0, start.height > 0 else {
+            return
+        }
+
+        let dx = translation.width / frame.width
+        let dy = translation.height / frame.height
+        let minSize = 0.02
+
+        let anchorX: Double
+        switch corner {
+        case .topLeft, .bottomLeft: anchorX = start.x + start.width
+        case .topRight, .bottomRight: anchorX = start.x
+        }
+        let anchorY: Double
+        switch corner {
+        case .topLeft, .topRight: anchorY = start.y + start.height
+        case .bottomLeft, .bottomRight: anchorY = start.y
+        }
+
+        // Raw, independent-axis proposed size — what a free-form resize
+        // would use directly; the ratio-lock branch below reconciles it.
+        var rawWidth: Double
+        var rawHeight: Double
+        switch corner {
+        case .topLeft: rawWidth = start.width - dx; rawHeight = start.height - dy
+        case .topRight: rawWidth = start.width + dx; rawHeight = start.height - dy
+        case .bottomLeft: rawWidth = start.width - dx; rawHeight = start.height + dy
+        case .bottomRight: rawWidth = start.width + dx; rawHeight = start.height + dy
+        }
+        rawWidth = max(rawWidth, minSize)
+        rawHeight = max(rawHeight, minSize)
+
+        let maxWidthAllowed: Double
+        switch corner {
+        case .topLeft, .bottomLeft: maxWidthAllowed = anchorX
+        case .topRight, .bottomRight: maxWidthAllowed = 1 - anchorX
+        }
+        let maxHeightAllowed: Double
+        switch corner {
+        case .topLeft, .topRight: maxHeightAllowed = anchorY
+        case .bottomLeft, .bottomRight: maxHeightAllowed = 1 - anchorY
+        }
+
+        var finalWidth: Double
+        var finalHeight: Double
+
+        if NSEvent.modifierFlags.contains(.shift) {
+            finalWidth = max(min(rawWidth, maxWidthAllowed), minSize)
+            finalHeight = max(min(rawHeight, maxHeightAllowed), minSize)
+        } else {
+            let k = start.width / start.height
+            let widthFromWidth = rawWidth
+            let heightFromWidth = rawWidth / k
+            let widthFromHeight = rawHeight * k
+            let heightFromHeight = rawHeight
+
+            // Whichever axis the drag moved further (in the resulting
+            // implied box) wins — the box grows/shrinks to follow
+            // whichever direction the client is actually dragging in,
+            // same feel as a Shift-drag corner resize in other editors
+            // (here inverted: this is the DEFAULT, not the modifier).
+            var w: Double
+            var h: Double
+            if widthFromWidth >= widthFromHeight {
+                w = widthFromWidth
+                h = heightFromWidth
+            } else {
+                w = widthFromHeight
+                h = heightFromHeight
+            }
+
+            // Scale both dimensions down together (never just one) so the
+            // ratio still holds exactly even after clamping to the anchor
+            // corner's on-image bounds.
+            let scale = min(1, maxWidthAllowed / max(w, 0.0001), maxHeightAllowed / max(h, 0.0001))
+            finalWidth = max(w * scale, minSize)
+            finalHeight = max(h * scale, minSize)
+        }
+
+        var next = start
+        switch corner {
+        case .topLeft: next.x = anchorX - finalWidth; next.y = anchorY - finalHeight
+        case .topRight: next.x = anchorX; next.y = anchorY - finalHeight
+        case .bottomLeft: next.x = anchorX - finalWidth; next.y = anchorY
+        case .bottomRight: next.x = anchorX; next.y = anchorY
+        }
+        next.width = finalWidth
+        next.height = finalHeight
+        settings.layers[index] = next
+    }
+
     // A transparent, full-frame hit area that records the drag as
     // `activeBrushStrokePoints` (unit space) and shows a cheap, purely
     // vector Path preview of the in-progress stroke — no CIImage re-render
@@ -1765,7 +3422,15 @@ struct DevelopView: View {
     // ALREADY-painted strokes stay visible once the drag ends (previously
     // nothing showed the mask at all outside of an active drag).
     private func brushPaintOverlay(_ brush: BrushMaskGeometry?, frame: CGRect) -> some View {
-        ZStack {
+        // Diameter in view space: `brushSize` is a fraction of the image's
+        // LONG edge (see BrushStroke.size doc comment), and since `frame` is
+        // an aspect-preserving fit of the image, frame's long edge scales
+        // proportionally to the image's regardless of zoom — so the same
+        // formula (size * longEdge) used at render time in
+        // PhotoEditRenderer.brushStrokeDabs applies here unchanged.
+        let brushDiameter = max(brushSize * max(frame.width, frame.height), 2)
+
+        return ZStack {
             if let brush {
                 brushMaskCanvas(brush, frame: frame)
             }
@@ -1782,18 +3447,42 @@ struct DevelopView: View {
                 }
                 .stroke(
                     brushIsErasing ? Color.red.opacity(0.7) : accentColor.opacity(0.8),
-                    style: StrokeStyle(lineWidth: max(brushSize * frame.width, 2), lineCap: .round, lineJoin: .round)
+                    style: StrokeStyle(lineWidth: brushDiameter, lineCap: .round, lineJoin: .round)
                 )
                 .allowsHitTesting(false)
+            }
+
+            // Cursor-size ring: shows exactly how big the next dab will be
+            // BEFORE the user commits to painting, tracking the mouse while
+            // it's merely hovering (not dragging) over the paint surface.
+            // Hidden during an active drag since the in-progress stroke
+            // above already shows the brush at its true width there.
+            if let hover = brushHoverLocation, activeBrushStrokePoints.isEmpty {
+                Circle()
+                    .stroke(brushIsErasing ? Color.red.opacity(0.9) : accentColor.opacity(0.9), lineWidth: 1.5)
+                    .frame(width: brushDiameter, height: brushDiameter)
+                    .position(hover)
+                    .allowsHitTesting(false)
             }
 
             Color.clear
                 .contentShape(Rectangle())
                 .frame(width: frame.width, height: frame.height)
                 .position(x: frame.midX, y: frame.midY)
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        brushHoverLocation = location
+                    case .ended:
+                        brushHoverLocation = nil
+                    }
+                }
                 .gesture(
                     DragGesture(minimumDistance: 0)
-                        .onChanged { value in paintBrush(at: value.location, frame: frame) }
+                        .onChanged { value in
+                            brushHoverLocation = value.location
+                            paintBrush(at: value.location, frame: frame)
+                        }
                         .onEnded { _ in commitBrushStroke() }
                 )
         }
@@ -1906,6 +3595,14 @@ struct DevelopView: View {
                 Divider()
 
                 masksSection
+
+                Divider()
+
+                selectionSection
+
+                Divider()
+
+                layersSection
 
                 Divider()
 
@@ -2178,6 +3875,18 @@ struct DevelopView: View {
                 }
             }
 
+            HStack(spacing: 8) {
+                maskAddButton("Patch Circle", systemImage: "circle") {
+                    addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .circle))
+                }
+                maskAddButton("Patch Square", systemImage: "square") {
+                    addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .square))
+                }
+                maskAddButton("Patch Free", systemImage: "lasso") {
+                    addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .free))
+                }
+            }
+
             if settings.localAdjustments.isEmpty {
                 Text("No masks yet")
                     .font(.custom("Figtree", size: 11))
@@ -2219,6 +3928,7 @@ struct DevelopView: View {
         case .radial: return "circle.dashed"
         case .graduated: return "rectangle.lefthalf.filled"
         case .brush: return "paintbrush.pointed"
+        case .patch: return "bandage"
         }
     }
 
@@ -2320,22 +4030,310 @@ struct DevelopView: View {
                     }
                     .buttonStyle(ShowHeaderButtonStyle())
                 }
+
+            case .patch:
+                Picker("Shape", selection: patchShapeBinding) {
+                    Text("Circle").tag(PatchShape.circle)
+                    Text("Square").tag(PatchShape.square)
+                    Text("Free").tag(PatchShape.free)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                editSlider("Feather", value: patchFeatherBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                if adjustment.patch?.shape == .free && (adjustment.patch?.points.isEmpty ?? true) {
+                    Text("Drag on the photo to draw the patch outline.")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+                } else {
+                    Text("Drag the marker on the photo to choose where to sample from.")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+                    Button("Reset Source Offset") {
+                        resetPatchSourceOffset(at: index)
+                    }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                }
+                if adjustment.patch?.shape == .free && !(adjustment.patch?.points.isEmpty ?? true) {
+                    Button("Redraw Outline") {
+                        clearPatchOutline(at: index)
+                    }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                }
             }
 
+            // A patch has no tonal/color settings of its own (see
+            // PatchGeometry's doc comment) — it just samples pixels, so the
+            // global-style Light/Color/Detail sliders below would be dead
+            // controls for it and are skipped entirely.
+            if adjustment.type != .patch {
+                Divider()
+
+                editSlider("Exposure", value: localAdjustmentBinding(\.exposure), range: -3...3) { String(format: "%+.2f", $0) }
+                editSlider("Contrast", value: localAdjustmentBinding(\.contrast), range: -1...1)
+                editSlider("Highlights", value: localAdjustmentBinding(\.highlights), range: -1...1)
+                editSlider("Shadows", value: localAdjustmentBinding(\.shadows), range: -1...1)
+                editSlider("Whites", value: localAdjustmentBinding(\.whites), range: -1...1)
+                editSlider("Blacks", value: localAdjustmentBinding(\.blacks), range: -1...1)
+                editSlider("Temperature", value: localAdjustmentBinding(\.temperature), range: -1...1)
+                editSlider("Tint", value: localAdjustmentBinding(\.tint), range: -1...1)
+                editSlider("Saturation", value: localAdjustmentBinding(\.saturation), range: -1...1)
+                editSlider("Vibrance", value: localAdjustmentBinding(\.vibrance), range: -1...1)
+                editSlider("Sharpness", value: localAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
+            }
+        }
+    }
+
+    // MARK: Selection tool (Cut/Copy/Deselect)
+
+    private var selectionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Selection")
+
+            HStack(spacing: 8) {
+                maskAddButton("Circle", systemImage: "circle") {
+                    addSelection(shape: .circle)
+                }
+                maskAddButton("Square", systemImage: "square") {
+                    addSelection(shape: .square)
+                }
+                maskAddButton("Free", systemImage: "lasso") {
+                    addSelection(shape: .free)
+                }
+            }
+
+            if let activeSelection {
+                let isFreeUndrawn = activeSelection.shape == .free && activeSelection.points.isEmpty
+
+                if isFreeUndrawn {
+                    Text("Drag on the photo to draw the selection outline.")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+                } else {
+                    editSlider("Feather", value: selectionFeatherBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                }
+
+                // .fixedSize() on each label — three icon+text buttons in a
+                // 300pt-wide panel are tight enough that without it, SwiftUI
+                // would rather wrap "Copy" onto two lines than let the
+                // HStack overflow; fixedSize forces each label to keep its
+                // natural single-line width instead (the row scrolls/
+                // clips before it wraps mid-word, which reads much better).
+                HStack(spacing: 10) {
+                    Button {
+                        cutSelection()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "scissors")
+                            Text("Cut")
+                        }
+                        .fixedSize()
+                    }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                    .disabled(isFreeUndrawn || isExtractingSelection)
+                    .opacity((isFreeUndrawn || isExtractingSelection) ? 0.4 : 1)
+
+                    Button {
+                        copySelection()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc.on.doc")
+                            Text("Copy")
+                        }
+                        .fixedSize()
+                    }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                    .disabled(isFreeUndrawn || isExtractingSelection)
+                    .opacity((isFreeUndrawn || isExtractingSelection) ? 0.4 : 1)
+
+                    Button("Deselect") {
+                        deselectSelection()
+                    }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                    .disabled(isExtractingSelection)
+                }
+
+                if isExtractingSelection {
+                    Text("Extracting…")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+                }
+            } else {
+                Text("No active selection")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+            }
+        }
+    }
+
+    private var selectionFeatherBinding: Binding<Double> {
+        Binding(
+            get: { activeSelection?.feather ?? 0 },
+            set: { activeSelection?.feather = $0 }
+        )
+    }
+
+    // MARK: Layers
+
+    private var selectedLayerIndex: Int? {
+        guard let id = selectedLayerID else {
+            return nil
+        }
+        return settings.layers.firstIndex { $0.id == id }
+    }
+
+    private var layersSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Layers")
+
+            Button {
+                pasteLayer()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.on.clipboard")
+                    Text("Paste as Layer")
+                }
+            }
+            .buttonStyle(ShowHeaderButtonStyle())
+            .disabled(layerClipboard == nil)
+            .opacity(layerClipboard == nil ? 0.4 : 1)
+            // Cmd+V pastes directly, same expectation as any other
+            // clipboard in macOS — this button is always in the view tree
+            // (not conditionally inserted), so the shortcut works no
+            // matter where the Layers section has scrolled to, and
+            // SwiftUI disables the shortcut itself whenever the button is
+            // (i.e. whenever the clipboard is empty).
+            .keyboardShortcut("v", modifiers: .command)
+
+            if settings.layers.isEmpty {
+                Text("No layers yet")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+            }
+
+            ForEach(settings.layers) { layer in
+                layerRow(layer)
+            }
+
+            if let index = selectedLayerIndex {
+                selectedLayerEditor(index: index)
+            }
+        }
+    }
+
+    private func layerRow(_ layer: ImageLayer) -> some View {
+        let isSelected = selectedLayerID == layer.id
+
+        return HStack(spacing: 8) {
+            Image(systemName: "square.2.layers.3d")
+                .font(.system(size: 11))
+                .foregroundColor(AppColors.muted)
+                .frame(width: 16)
+
+            Button {
+                selectLayer(layer.id)
+            } label: {
+                Text(layer.name)
+                    .font(.custom("Figtree", size: 12).weight(.medium))
+                    .foregroundColor(layer.isEnabled ? AppColors.ink : AppColors.muted)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                toggleLayerEnabled(layer.id)
+            } label: {
+                Image(systemName: layer.isEnabled ? "eye" : "eye.slash")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppColors.muted)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                deleteLayer(layer.id)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppColors.muted)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(AppColors.panelAlt.opacity(isSelected ? 1 : 0.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isSelected ? accentColor : Color.clear, lineWidth: 1.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func selectedLayerEditor(index: Int) -> some View {
+        let layer = settings.layers[index]
+
+        return VStack(alignment: .leading, spacing: 12) {
             Divider()
 
-            editSlider("Exposure", value: localAdjustmentBinding(\.exposure), range: -3...3) { String(format: "%+.2f", $0) }
-            editSlider("Contrast", value: localAdjustmentBinding(\.contrast), range: -1...1)
-            editSlider("Highlights", value: localAdjustmentBinding(\.highlights), range: -1...1)
-            editSlider("Shadows", value: localAdjustmentBinding(\.shadows), range: -1...1)
-            editSlider("Whites", value: localAdjustmentBinding(\.whites), range: -1...1)
-            editSlider("Blacks", value: localAdjustmentBinding(\.blacks), range: -1...1)
-            editSlider("Temperature", value: localAdjustmentBinding(\.temperature), range: -1...1)
-            editSlider("Tint", value: localAdjustmentBinding(\.tint), range: -1...1)
-            editSlider("Saturation", value: localAdjustmentBinding(\.saturation), range: -1...1)
-            editSlider("Vibrance", value: localAdjustmentBinding(\.vibrance), range: -1...1)
-            editSlider("Sharpness", value: localAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
+            HStack {
+                Text("Editing: \(layer.name)")
+                    .font(.custom("Figtree", size: 11).weight(.bold))
+                    .foregroundColor(AppColors.ink)
+                Spacer()
+                Button("Done") {
+                    selectedLayerID = nil
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+            }
+
+            editSlider("Opacity", value: layerOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+
+            Picker("Blend Mode", selection: layerBlendModeBinding) {
+                ForEach(LayerBlendMode.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            Text("Drag the layer on the photo to move it; drag a corner to resize.")
+                .font(.custom("Figtree", size: 11))
+                .foregroundColor(AppColors.muted)
         }
+    }
+
+    private var layerOpacityBinding: Binding<Double> {
+        Binding(
+            get: {
+                guard let index = selectedLayerIndex else {
+                    return 1
+                }
+                return settings.layers[index].opacity
+            },
+            set: { newValue in
+                guard let index = selectedLayerIndex else {
+                    return
+                }
+                settings.layers[index].opacity = newValue
+            }
+        )
+    }
+
+    private var layerBlendModeBinding: Binding<LayerBlendMode> {
+        Binding(
+            get: {
+                guard let index = selectedLayerIndex else {
+                    return .normal
+                }
+                return settings.layers[index].blendMode
+            },
+            set: { newValue in
+                guard let index = selectedLayerIndex else {
+                    return
+                }
+                settings.layers[index].blendMode = newValue
+            }
+        )
     }
 
     // Generic binding into the selected mask's own LocalAdjustmentSettings
@@ -2370,7 +4368,7 @@ struct DevelopView: View {
                 switch adjustment.type {
                 case .radial: return adjustment.radial?.invert ?? false
                 case .graduated: return adjustment.graduated?.invert ?? false
-                case .brush: return false
+                case .brush, .patch: return false
                 }
             },
             set: { newValue in
@@ -2380,8 +4378,50 @@ struct DevelopView: View {
                 switch settings.localAdjustments[index].type {
                 case .radial: settings.localAdjustments[index].radial?.invert = newValue
                 case .graduated: settings.localAdjustments[index].graduated?.invert = newValue
-                case .brush: break
+                case .brush, .patch: break
                 }
+            }
+        )
+    }
+
+    private var patchShapeBinding: Binding<PatchShape> {
+        Binding(
+            get: {
+                guard let index = selectedAdjustmentIndex else {
+                    return .circle
+                }
+                return settings.localAdjustments[index].patch?.shape ?? .circle
+            },
+            set: { newValue in
+                guard let index = selectedAdjustmentIndex else {
+                    return
+                }
+                // Switching shape discards the Free outline (a circle's
+                // center+radius has no sensible mapping onto a polygon, and
+                // vice versa) but keeps the center/radius/feather/source
+                // offset — switching Circle <-> Square just changes how
+                // those same numbers are rendered.
+                settings.localAdjustments[index].patch?.shape = newValue
+                if newValue == .free {
+                    settings.localAdjustments[index].patch?.points = []
+                }
+            }
+        )
+    }
+
+    private var patchFeatherBinding: Binding<Double> {
+        Binding(
+            get: {
+                guard let index = selectedAdjustmentIndex else {
+                    return 0.3
+                }
+                return settings.localAdjustments[index].patch?.feather ?? 0.3
+            },
+            set: { newValue in
+                guard let index = selectedAdjustmentIndex else {
+                    return
+                }
+                settings.localAdjustments[index].patch?.feather = newValue
             }
         )
     }
@@ -2465,6 +4505,9 @@ struct DevelopView: View {
             pendingCrop = .full
             cropIsAutoFitted = false
             selectedLocalAdjustmentID = nil
+            activeSelection = nil
+            activeSelectionDrawPoints = []
+            selectedLayerID = nil
         }
         .buttonStyle(ShowHeaderButtonStyle())
         .opacity(settings.isNeutral ? 0.4 : 1)
@@ -2532,6 +4575,24 @@ struct DevelopView: View {
         // drag so it can never bleed onto the newly-selected photo.
         selectedLocalAdjustmentID = nil
         activeBrushStrokePoints = []
+        activePatchDrawPoints = []
+        // Same reasoning as selectedLocalAdjustmentID above — a Selection
+        // outline or layer index from the PREVIOUS photo has no business
+        // surviving onto this one. layerClipboard is deliberately left
+        // alone: it's meant to survive a photo switch (that's the whole
+        // point of "cut from one photo, paste onto another").
+        activeSelection = nil
+        activeSelectionDrawPoints = []
+        selectedLayerID = nil
+        // Undo/redo history is per-photo, like Lightroom's own — a
+        // previous photo's undo stack describing edits to a DIFFERENT
+        // image has no meaning here.
+        undoCommitWorkItem?.cancel()
+        undoCommitWorkItem = nil
+        pendingUndoBaseline = nil
+        undoStack = []
+        redoStack = []
+        lastCommittedSettings = settings
         loadImages(for: url)
     }
 
@@ -2587,6 +4648,8 @@ struct DevelopView: View {
         settings.localAdjustments.append(adjustment)
         selectedLocalAdjustmentID = adjustment.id
         isCropping = false
+        activeSelection = nil
+        selectedLayerID = nil
     }
 
     // Tapping the already-selected mask's row deselects it (back to
@@ -2596,8 +4659,11 @@ struct DevelopView: View {
         selectedLocalAdjustmentID = (selectedLocalAdjustmentID == id) ? nil : id
         if selectedLocalAdjustmentID != nil {
             isCropping = false
+            activeSelection = nil
+            selectedLayerID = nil
         }
         activeBrushStrokePoints = []
+        activePatchDrawPoints = []
     }
 
     private func toggleMaskEnabled(_ id: UUID) {
@@ -2621,6 +4687,175 @@ struct DevelopView: View {
         settings.localAdjustments[index].brush?.strokes.removeAll()
     }
 
+    private func resetPatchSourceOffset(at index: Int) {
+        guard settings.localAdjustments.indices.contains(index) else {
+            return
+        }
+        settings.localAdjustments[index].patch?.sourceOffsetX = 0.2
+        settings.localAdjustments[index].patch?.sourceOffsetY = 0
+    }
+
+    // Clears a Free-shape patch's drawn outline so the user can redraw it
+    // (e.g. after a mistake) without deleting and re-adding the whole mask
+    // — keeps its feather/source-offset settings intact.
+    private func clearPatchOutline(at index: Int) {
+        guard settings.localAdjustments.indices.contains(index) else {
+            return
+        }
+        settings.localAdjustments[index].patch?.points = []
+    }
+
+    // MARK: Selection tool actions
+
+    private func addSelection(shape: PatchShape) {
+        activeSelection = SelectionGeometry(shape: shape)
+        selectionDragStart = nil
+        activeSelectionDrawPoints = []
+        selectedLocalAdjustmentID = nil
+        selectedLayerID = nil
+        isCropping = false
+    }
+
+    private func deselectSelection() {
+        activeSelection = nil
+        selectionDragStart = nil
+        activeSelectionDrawPoints = []
+    }
+
+    private func copySelection() {
+        performSelectionExtraction(cut: false)
+    }
+
+    private func cutSelection() {
+        performSelectionExtraction(cut: true)
+    }
+
+    // Renders the CURRENT settings onto the FULL-resolution base image
+    // (same starting point as Export Edited Copy) on developRenderQueue,
+    // then extracts the selection's pixels from that — full quality, and
+    // consistent with what's actually on screen (crop/masks/etc. already
+    // applied) rather than the raw undeveloped file. `cut` additionally
+    // builds a same-shaped solid-black fill and drops it in as a new layer
+    // at the selection's own position, right where the cut piece used to
+    // show through — see ImageLayer/PatchGeometry doc comments and
+    // BRIEFSHOW_DEVELOP_NOTES.md #13 for why a "hole" is implemented this
+    // way instead of as some new, one-off adjustment type.
+    private func performSelectionExtraction(cut: Bool) {
+        guard let selection = activeSelection, let fullBaseImage, let selectedURL else {
+            return
+        }
+        if selection.shape == .free && selection.points.count < 3 {
+            return
+        }
+
+        isExtractingSelection = true
+        let settingsSnapshot = settings
+        let photoAtActionTime = selectedURL
+
+        developRenderQueue.async(qos: .userInitiated) {
+            let rendered = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage)
+            let extracted = PhotoEditRenderer.extractSelectionPNG(selection, from: rendered)
+            // Neutral gray, not black — a black hole read as "broken"/
+            // suspiciously like a bug at a glance; mid-gray reads more
+            // clearly as a deliberate placeholder fill.
+            let fillResult = cut
+                ? PhotoEditRenderer.solidFillPNG(selection, color: CIColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1), extent: rendered.extent)
+                : nil
+
+            DispatchQueue.main.async {
+                isExtractingSelection = false
+                // The client may have switched to a different filmstrip
+                // photo while this was still running — the extracted piece
+                // is still good for the clipboard (that's meant to survive
+                // a photo switch), but a Cut's fill layer belongs on the
+                // SOURCE photo specifically, so bail on THAT part if the
+                // selection no longer matches what's on screen.
+                guard let extracted else {
+                    return
+                }
+                layerClipboard = LayerClipboardData(imageData: extracted.data, boundsUnit: extracted.boundsUnit)
+
+                if cut, selectedURL == photoAtActionTime, let fillResult {
+                    let layer = ImageLayer(
+                        name: nextLayerName("Cut Fill"), imageData: fillResult.data,
+                        x: fillResult.boundsUnit.minX, y: fillResult.boundsUnit.minY,
+                        width: fillResult.boundsUnit.width, height: fillResult.boundsUnit.height
+                    )
+                    settings.layers.append(layer)
+                }
+
+                activeSelection = nil
+                activeSelectionDrawPoints = []
+            }
+        }
+    }
+
+    // MARK: Layer actions
+
+    // "Layer 1", "Layer 2", ... / "Cut Fill 1", "Cut Fill 2", ... — same
+    // per-base-name counting as nextMaskName, for the same reason (so
+    // deleting "Layer 1" and pasting again doesn't produce a second
+    // "Layer 1").
+    private func nextLayerName(_ base: String) -> String {
+        let existingCount = settings.layers.filter { $0.name.hasPrefix(base) }.count
+        return "\(base) \(existingCount + 1)"
+    }
+
+    // Pastes the clipboard back at EXACTLY the fractional position/size it
+    // was cut/copied from ("paste in place") — same spot on the same
+    // photo if that's still open, or the same relative spot on a
+    // different one. Deliberately NOT a fixed centered default: a Cut's
+    // fill layer already sits at that exact same position (see
+    // performSelectionExtraction), so pasting back there means the piece
+    // reappears right on top of its own "hole" — the one place a client
+    // cutting and immediately pasting back would actually be looking,
+    // rather than a re-centered copy elsewhere on the photo they'd have to
+    // go hunt for.
+    private func pasteLayer() {
+        guard let layerClipboard else {
+            return
+        }
+        let bounds = layerClipboard.boundsUnit
+        let width = min(max(bounds.width, 0.02), 1)
+        let height = min(max(bounds.height, 0.02), 1)
+        let layer = ImageLayer(
+            name: nextLayerName("Layer"), imageData: layerClipboard.imageData,
+            x: min(max(bounds.minX, 0), 1 - width), y: min(max(bounds.minY, 0), 1 - height),
+            width: width, height: height
+        )
+        settings.layers.append(layer)
+        selectedLayerID = layer.id
+        selectedLocalAdjustmentID = nil
+        activeSelection = nil
+        isCropping = false
+    }
+
+    // Tapping the already-selected layer's row deselects it — same
+    // "tap again to close" affordance as selectLocalAdjustment/the crop
+    // tool's own icon button.
+    private func selectLayer(_ id: UUID) {
+        selectedLayerID = (selectedLayerID == id) ? nil : id
+        if selectedLayerID != nil {
+            isCropping = false
+            selectedLocalAdjustmentID = nil
+            activeSelection = nil
+        }
+    }
+
+    private func toggleLayerEnabled(_ id: UUID) {
+        guard let index = settings.layers.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        settings.layers[index].isEnabled.toggle()
+    }
+
+    private func deleteLayer(_ id: UUID) {
+        settings.layers.removeAll { $0.id == id }
+        if selectedLayerID == id {
+            selectedLayerID = nil
+        }
+    }
+
     private func rotateQuarterTurn(_ delta: Int) {
         settings.rotationQuarterTurns = ((settings.rotationQuarterTurns + delta) % 4 + 4) % 4
     }
@@ -2632,6 +4867,8 @@ struct DevelopView: View {
             pendingCrop = settings.crop ?? .full
             isCropping = true
             selectedLocalAdjustmentID = nil
+            activeSelection = nil
+            selectedLayerID = nil
             selectedCropAspectRatio = .free
             scheduleRender()
         }

@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 11. avgust 2026 (kasno veče/posle ponoći).
+Beleška za nastavak rada. Poslednja izmena: 14. avgust 2026 (veče).
 
 **⚠️ Za sledeću sesiju koja dodaje bilo kakav novi `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` monitor** — DVA obavezna pravila, oba naučena kroz prave incidente u produkciji:
 1. UVEK proveriti `event.isARepeat` i vratiti `event` (ne progutati) kad je true, OSIM ako je namerno drugačije. Stavka #15 ispod dokumentuje prvi incident (app zamrznut, `kill -9` morao) kad je ovo izostavljeno.
@@ -130,6 +130,55 @@ pravi produkcioni incident:
 zdrava (0% CPU idle posle restarta). Sledeći koraci su ili iz "Poznata
 ograničenja" ispod (nizak prioritet, niko nije tražio), ili nešto novo što
 korisnik zatraži.
+
+**Dopuna (14. avgust 2026, veče) — gde smo STVARNO stali sad**: cela ova
+sesija je bila RAW test + filmstrip/multi-select/sync feature rad, šest
+stavki (19-24), ceo hronološki tok:
+
+- **19**: RAW pipeline **konačno vizuelno potvrđen, u potpunosti end-to-end**
+  na pravoj RAW fotki (korisnik dostavio 4 Nikon `.NEF` fajla) — poslednja
+  preostala neproverena stavka iz #6, sad zatvorena. Import/Develop/RAW
+  bedž/native Exposure i Temperature kontrole sve potvrđeno na ekranu. Usput
+  otkrivene dve nove pouzdane tehnike za GUI testiranje: `AXIncrement`/
+  `AXDecrement` za slidere (klik ne radi), `AXScrollBar` `set value` za
+  scroll-ovanje panela.
+- **20**: Desni klik na filmstrip thumbnail → "Export…" (nova, do sada
+  nepostojeća opcija) — Save panel, export TE fotke sa RAW-a u maksimalnom
+  JPEG kvalitetu (1.0, ne 0.92 kao glavno dugme). Vizuelno potvrđeno
+  end-to-end preko `AXShowMenu` accessibility akcije (prvi uspešan right-click
+  GUI test u ovoj app-i, mada se ispostavilo nepouzdano za ponovljanje —
+  vidi #24).
+- **21**: Filmstrip premešten sa leve strane na DNO (horizontalno) — korisnik
+  eksplicitno tražio. Cmd/Shift multi-select na thumbnail-ima (isti
+  `NSEvent.modifierFlags` obrazac kao Patch ⌥/Layer ⇧). Desni klik na
+  fotku unutar veće selekcije → "Export N Selected…" (bulk, jedan folder
+  picker). **Korisnik POTVRDIO pravim mišem da multi-select radi** — prva
+  potvrda da klik na filmstrip thumbnail uopšte radi u ovoj app-i.
+- **22**: Dva popravka na korisnikov feedback: (a) checkmark bedž bio
+  nevidljiv (bledožuta na bledožutoj) — sad `.palette` render mod, zasićena
+  plava + bela kvačica + senka; (b) novo "Syncing (N)" dugme (Lightroom-style
+  sync settings preko multi-selekcije), ime bukvalno "Syncing" po zahtevu.
+- **23**: "Select All"/"Deselect" dugmad (PRAVI Button, van filmstrip
+  ScrollView-a) — ne dira koja je fotka otvorena u editoru (izričit zahtev).
+  Desni klik "Syncing…" dodat. Pravi Lightroom-style "Synchronize Settings"
+  dijalog sa checklist-om (Crop & Rotate/Light/Color/Detail & Effects/Masks,
+  Check All/Uncheck All) — delimičan merge, ne sve-ili-ništa. **Sve vizuelno
+  potvrđeno uživo preko Select All dugmeta** (pravi Button, prvi put ceo tok
+  stvarno kliknut, ne samo pregledan u kodu) — bedž se pojavljuje, view
+  ostaje na otvorenoj fotki, dijalog se otvara sa tačnim sadržajem.
+- **24**: Korisnik prijavio da je tekst/ikonice u Synchronize dijalogu
+  nečitljiv (taman na tamnom) — pravi uzrok: naslov/checklist nikad nisu
+  eksplicitno postavili `.foregroundColor(AppColors.ink)` kao SVAKI drugi
+  tekst u fajlu, pa je pao na platform default (prati sistemski light/dark,
+  ne internu temu app-e). Popravljeno. Nije ponovo vizuelno potvrđeno ovom
+  sesijom (AX klik na Syncing dugme prestao da pouzdano radi posle #23 —
+  test-environment flakiness/VS Code fokus-krađa, ne app regresija, pošto
+  je Select All i dalje radio pouzdano u istoj sesiji).
+
+**Trenutno stanje**: build čist (`xcodebuild`), app zdrava (0% CPU idle) kroz
+celu sesiju. **Nema potvrde od korisnika za #24** (bojin fix) — sledeća
+sesija bi trebalo da proveri je li tekst u Synchronize dijalogu sad čitljiv
+pravim mišem, pre bilo čega novog.
 
 **Napomena o Terminal/Desktop permisiji**: tokom testiranja ove sesije,
 `ls`/`cat`/itd. na `~/Desktop` iz Bash-a je počeo da vraća "Operation not
@@ -1509,6 +1558,368 @@ slideshow/export koji BriefShow već pravi.
       namerno Cmd+C na ceo folder + Cmd+V u isti folder bi to i dalje
       uradilo), ali je jeftina dodatna zaštita ako se ikad pokaže da
       zatreba.
+
+19. ✅ **RAW pipeline KONAČNO vizuelno potvrđen na pravoj RAW fotki** — 14.
+    avgusta 2026, `xcodebuild` prolazi čisto (build iz ove sesije, bez
+    izmena koda — čisto testiranje). Korisnik je dostavio 4 prava Nikon
+    `.NEF` fajla (`~/Desktop/RAW Tests Images/`, ~18-19MB svaki). Ovo je bio
+    poslednji preostali neproveren deo iz stavke #6 ("Šta dalje") — na
+    disku nikad ranije nije bilo RAW fajla za test.
+
+    **Import → Develop, potvrđeno**: "Import Photos" (NSOpenPanel,
+    navigacija do foldera preko Cmd+Shift+G + tipeahead + selekcija svih 4
+    fajla + Open) je uvezao sve 4 `.NEF` u ShowGrid grid sa ispravno
+    generisanim RGB thumbnail-ovima (ne prazni/pokvareni placeholderi).
+    Develop otvoren na prvoj fotki preko header dugmeta: **`RAW` bedž**
+    pored imena fajla (`C4S_5740.NEF`), live preview ispravno dekodiran
+    (topla, prirodna boja — pravi RAW demosaic, ne bagovan render), histogram
+    živ i odgovara slici, filmstrip prikazuje sve 4 RAW thumbnail-a.
+
+    **Native RAW kontrole potvrđene END-TO-END na pravom senzorskom RAW
+    fajlu** (prvi put ikad, ranije samo matematički/skriptom):
+    - **Exposure**: `AXIncrement` na slideru (vidi tehniku ispod) do +3.00 →
+      slika dramatično preeksponirana (bela/blown highlights), histogram se
+      skupio uz desnu ivicu — tačno očekivano ponašanje `CIRAWFilter.exposure`
+      primenjenog tokom demosaic-a (pun opseg senzora, ne generički
+      post-hoc exposure filter).
+    - **Temperature**: do +100 → slika vidljivo TOPLIJA (topliji ten, topliji
+      drveni tonovi) — potvrđuje da RAW putanja (`CIRAWFilter.neutralTemperature`,
+      `asShotTemperature + delta`) ima ISTI smer kao ispravljena JPEG putanja
+      iz stavke #6 (`+1` = toplije), dosledno kako je nameravano.
+    - Oba slidera vraćena nazad na 0 (Exposure 4× `AXDecrement` posle
+      overshoot-a, Temperature 4× `AXDecrement`) — finalni screenshot se
+      piksel-za-piksel poklapa sa originalnim (isti histogram, ista slika),
+      potvrđuje da je baseline (`asShotTemperature`) i dalje tačan posle
+      round-trip-a gore-dole, bez drifta.
+
+    **Nova tehnika testiranja otkrivena ovom sesijom** (bitno za sve buduće
+    GUI provere, ne samo RAW): obična `click at {x,y}` na slider track ne
+    pomera SwiftUI `Slider` (potvrđeno ponovo, poznato ograničenje), ALI
+    Accessibility akcija **`perform action "AXIncrement"` / `"AXDecrement"`**
+    na `AXSlider` elementu **RADI POUZDANO** — pomera pravi `@State`/binding,
+    render se okida, UI label i slika se ažuriraju. Ovo je PRVI put u celoj
+    istoriji ovog projekta da je slider uspešno pomeren bez pravog miša.
+    Napomene o koraku: korak nije uniforman po kontroli (Exposure ~0.3-0.6
+    po pozivu, Temperature 0.2 po pozivu — verovatno % od range-a po
+    kontroli), i može se "zaglaviti" na min/max granici (10 uzastopnih poziva
+    na već-graničnoj vrednosti daje isti clamp-ovan rezultat, ne grešku) —
+    zato je pouzdanije čitati `value of e` posle SVAKOG poziva i računati
+    ostatak, ne pretpostaviti fiksan korak unapred. I dalje ne postoji način
+    da se testira pravi `DragGesture` (crop handle, mask handle, brush
+    painting) preko ovoga — `AXIncrement`/`AXDecrement` radi SAMO za
+    `AXSlider` elemente, ne za proizvoljne drag interakcije.
+
+    App ostala zdrava kroz ceo test (`ps aux`: 0.0% CPU, `S` idle, posle
+    zatvaranja Develop-a preko "Done" dugmeta).
+
+    **Dopuna, isti dan — "Export Edited Copy" na RAW fajlu takođe
+    potvrđen end-to-end**: primenjena Temperature +100 (preko `AXIncrement`,
+    ista tehnika), pa klik na "Export Edited Copy" (dugme nema pristupačno
+    ime — AXButton-i u ovom desnom panelu nemaju `AXTitle`/`name`, samo
+    ugnježden `AXStaticText`; kliknuto preko position-match na pravi element,
+    NE preko raw `click at {x,y}` koordinate — raw koordinatni klik na istu
+    poziciju je tiho promašio, verovatno zbog sitnog stale-position
+    razmimoilaženja nakon scroll-a; element-referenca je pouzdana). Otvoren
+    pravi `NSSavePanel`, ceo tok (Cmd+Shift+G → putanja → Return → Return za
+    default ime) urađen u JEDNOM `osascript` bloku bez pauze (host VS Code je
+    prethodno OTEO fokus između dva odvojena poziva i "Save" prozor je nestao
+    pre nego što je stigla sledeća komanda — poznat obrazac iz ranije u ovoj
+    sesiji, potvrđen ponovo).
+
+    Rezultat: `C4S_5740 Edited.jpg`, **pravi JPEG, puna senzorska rezolucija
+    (5176×3448, ne 1600px preview)**, sa **upečenom Temperature +100 izmenom
+    vidljivom na slici** (topao/golden-hour ton) — potvrđuje da export
+    pipeline koristi `fullBaseImage` (odvojen od preview-a) i da RAW-specifične
+    kontrole (`CIRAWFilter.neutralTemperature`) stvarno uđu u finalni
+    eksportovan fajl, ne samo u live preview. Podešavanje potom vraćeno na 0
+    (scrollbar nazad na vrh pa `AXDecrement` na Temperature, opet u jednom
+    atomskom bloku), Develop zatvoren preko "Done", app ostala zdrava (0.0%
+    CPU, `S` idle).
+
+    Ovim je **ceo RAW pipeline (import → preview → edit → export) sada
+    potpuno vizuelno potvrđen end-to-end** — poslednja preostala nepoznanica
+    iz stavke #6 je zatvorena. "Export All Edited" na RAW-u specifično
+    (razlika: batch-export više fajlova odjednom) nije posebno testiran, ali
+    koristi isti kod-put kao pojedinačni export po fotki — nizak rizik.
+
+20. **Desni klik → "Export…" na filmstrip thumbnail-u, maksimalan JPEG
+    kvalitet** — 14. avgust 2026 (isto veče), `xcodebuild` prolazi čisto.
+    Korisnik je pitao dve stvari: (a) da li "Export All Edited" već
+    exportuje CEO folder odjednom — potvrđeno da, to je već postojalo
+    (stavka #9); (b) nova funkcija: desni klik na bilo koji filmstrip
+    thumbnail (ne mora biti trenutno otvorena fotka) → kontekstni meni sa
+    "Export…" → Save panel → upiše JPEG na **maksimalnom kvalitetu**
+    (`compressionFactor: 1.0`, za razliku od 0.92 kod postojećeg "Export
+    Edited Copy" dugmeta, koje je NEDIRANO).
+
+    **Implementacija** (`Develop.swift`): `.contextMenu { Button("Export…") { exportSinglePhoto(url) } }`
+    dodat na `filmstripThumbnail(for:)`. Nova `exportSinglePhoto(_ url: URL)`
+    — Save panel, pa `PhotoEditRenderer.loadBaseImage(from: url)` (ISTI poziv
+    kao "Export All Edited" koristi — pun RAW demosaic za RAW fajlove, ne
+    downsample-ovan preview) + `PhotoEditStore.settings(for: url)` (te
+    KONKRETNE fotke sopstvena sačuvana podešavanja, ne trenutno otvorene
+    fotke u editoru — bitno jer desni klik radi na BILO KOM thumbnail-u, ne
+    samo trenutno selektovanom; `renderNow()` već drži `PhotoEditStore`
+    ažurnim na svaku izmenu, pa je ovo uvek tačno). Render + `NSBitmapImageRep`
+    + JPEG write na `developRenderQueue`, isti obrazac kao ostale export
+    funkcije.
+
+    **GUI test rezultat — DELIMIČAN, iskreno rečeno**: `xcodebuild` čist,
+    kod pregledan ručno (trivijalan, ponovo koristi već-testovane funkcije
+    bez novog rizika). RAW→JPEG uvoz/pregled deo je ponovo potvrđen (fotka
+    ispravno prikazana sa `RAW` bedžom pre testa). ALI sam desni-klik gest
+    **NIJE mogao pouzdano da se GUI-testira**: `AXShowMenu` accessibility
+    akcija (koja NE zahteva pravi miš — poziva se direktno na elementu) je
+    USPELA JEDNOM rano u testiranju (potvrđeno preko novog CGWindowList
+    prozora i vidljivog "Export…" popup-a na ekranu), ali je posle toga
+    postala nepouzdana — isti poziv na istom elementu u kasnijim pokušajima
+    (uključujući posle punog restarta app-e i čiste sesije) više nije
+    otvarao meni, bez ikakve greške. Jedan raniji artefakt ovog testiranja:
+    stari "Export Edited Copy" test-fajl (iz stavke 19) se slučajno našao
+    ponovo uvezen u sesiju (bio je fizički u `RAW Tests Images` folderu u
+    trenutku Import Photos poziva) i alfabetski sortiran ISPRED pravih
+    `.NEF` fajlova (razmak < tačka u ASCII), što je kratko zbunilo testiranje
+    dok nije prepoznato i očišćeno (fajl obrisan u Trash, sesija restartovana
+    čisto).
+
+    **Zaključak**: funkcija je implementirana i build je čist, koristi
+    IDENTIČNU export logiku koja je već vizuelno potvrđena (stavka #19,
+    "Export All Edited"/"Export Edited Copy"), pa je rizik nizak — ali sâm
+    desni-klik/kontekstni-meni gest ostaje **GUI-neproveren** (nova kategorija
+    uz već poznata ograničenja drag-a i onTapGesture-a: `AXShowMenu` za
+    `.contextMenu` je OVOM app-u nepouzdana tehnika, za razliku od
+    `AXIncrement`/`AXScrollBar` koji su se pokazali pouzdani stavkom #19).
+    Sledeći put probati sa pravim mišem (desni klik na filmstrip thumbnail u
+    Develop-u → treba da se pojavi "Export…" stavka).
+
+21. **Filmstrip premešten na dno (horizontalno) + Cmd/Shift multi-select +
+    "Export N Selected…"** — 14. avgust 2026 (isto veče), `xcodebuild`
+    prolazi čisto. Korisnik je tražio dve stvari u istoj poruci.
+
+    **(a) Filmstrip dole umesto levo** — `body`-jev top-level `HStack`
+    (filmstrip | divider | [topBar+centerPreview] | divider | adjustmentPanel)
+    preuređen u `VStack` sa filmstripom kao POSLEDNJIM redom ispod
+    (HStack-a koji sad sadrži samo [topBar+centerPreview]+adjustmentPanel),
+    razdvojeno `Divider()`-om. `filmstrip` sam (unutar) promenjen sa
+    vertikalnog `ScrollView { VStack {...} }.frame(width: 120)` na
+    horizontalni `ScrollView(.horizontal) { HStack {...} }.frame(height: 120)`.
+    Vizuelno POTVRĐENO u pravoj app-i (screenshot) — filmstrip je sad traka
+    na dnu prozora, thumbnail-i se ređaju sleva nadesno.
+
+    **(b) Cmd/Shift multi-select na filmstrip thumbnail-ima** — dva nova
+    `@State`: `multiSelectedURLs: Set<URL>` (koje su fotke selektovane za
+    bulk akcije, odvojeno od `selectedURL` koja je "trenutno otvorena u
+    editoru") i `selectionAnchor: URL?` (odakle Shift meri range, postavlja
+    se na svaki plain/Cmd klik, Shift ga ne dira — isti obrazac kao
+    Finder/Photos, ponovljeni Shift-klik nastavlja da širi/skuplja iz ISTOG
+    anchora). Nova `handleFilmstripClick(_:)` čita `NSEvent.modifierFlags`
+    (identičan obrazac kao ⌥ za Patch/⇧ za Layer resize iz ranije sesije,
+    stavka #15d) — Cmd toggle-uje tu fotku u/iz seta, Shift selektuje ceo
+    opseg (anchor...kliknuto) u `photoURLs` redosledu i ZAMENJUJE dotadašnji
+    set, plain klik resetuje set na samo tu jednu fotku. Svaki klik (bez
+    obzira na modifier) i dalje otvara tu fotku u glavnom editoru preko
+    `selectPhoto(url)` — Develop ima samo JEDAN preview panel, pa bi
+    ostavljanje editora na nekoj DRUGOJ fotki dok se filmstrip menja bilo
+    zbunjujuće.
+
+    Vizuelni indikator: multi-selektovana (ali ne trenutno otvorena) fotka
+    dobija accentColor prsten na 50% providnosti (puna providnost/boja
+    ostaje rezervisana za "otvorenu" fotku, da se dve stvari razlikuju na
+    prvi pogled) PLUS beli checkmark bedž gore-levo (postojeći "has edits"
+    slider-bedž ostaje gore-desno, netaknut).
+
+    **Desni klik "Export…" postao svestan selekcije**: ako je fotka na koju
+    je kliknuto DEO multi-selekcije veće od 1, meni sad pokazuje
+    "Export N Selected…" → nova `exportSelectedPhotos(_ urls: [URL])`
+    (identičan obrazac kao `exportAllEditedPhotos`, ali za DATI proizvoljan
+    skup umesto "sve editovane", i na MAKSIMALNOM kvalitetu 1.0 kao
+    `exportSinglePhoto`, ne 0.92) — jedan folder-picker, sve odjednom.
+    Inače (fotka van selekcije, ili samo jedna selektovana) ostaje stari
+    "Export…" (Save panel, jedna fotka) iz stavke #20. Ovaj izbor
+    (export-cele-selekcije umesto uvek-samo-kliknute) je eksplicitno pitan
+    i potvrđen od korisnika pre implementacije.
+
+    **GUI test rezultat — isto poznato ograničenje kao uvek, ništa novo**:
+    `xcodebuild` čist, (a) filmstrip-na-dnu vizuelno POTVRĐENO screenshot-om.
+    (b) Cmd/Shift klik na thumbnail SAM PO SEBI nije mogao GUI-testirati —
+    filmstrip thumbnail-i su `onTapGesture`, ne pravi `Button`, i to NIKAD
+    nije pouzdano reagovalo na sintetičke AX evente u ovoj app-i (dokumentovano
+    još u stavci #5 ranije sesije, "Filmstrip thumbnail selekcija ne reaguje
+    na sintetički AX klik/AXPress") — probano `click at`, `key down command`
+    + `click at` + `key up command` za Cmd-klik, ni jedno nije promenilo
+    selekciju (nijedan checkmark se nije pojavio, header nije promenio
+    fotku). Ovo NIJE nova regresija — isti obrazac je važio i PRE ove
+    izmene (obično selectPhoto na klik), samo je sad prvi put pokušano da se
+    GUI-testira konkretno OVAJ deo koda. Kod je pregledan ručno (čitanje
+    `NSEvent.modifierFlags` unutar `onTapGesture` closure-a je isti,
+    već-korišćen obrazac kao Patch ⌥/Layer ⇧ iz stavke #15d, samo primenjen
+    na klik umesto na drag `onChanged`) — nizak rizik, ali ostaje da se
+    potvrdi pravim mišem.
+
+22. **Checkmark bedž vidljivost popravljena + "Syncing" (Lightroom-style
+    sync settings preko multi-selekcije)** — 14. avgust 2026 (isto veče),
+    `xcodebuild` prolazi čisto. Korisnik je POTVRDIO da #21 multi-select
+    (Cmd/Shift klik) stvarno radi pravim mišem — prva potvrda da klik na
+    filmstrip thumbnail uopšte radi u ovoj app-i, uprkos ranije dokumentovanom
+    "ne radi sa sintetičkim AX klikom" ograničenju (to ograničenje je i dalje
+    tačno, samo se odnosilo na MOJE testiranje, ne na pravog korisnika).
+    Korisnik je prijavio dva sledeća zahteva.
+
+    **(a) Checkmark bedž nije bio vidljiv** — pravi uzrok: `Image(systemName:
+    "checkmark.circle.fill")` je JEDAN glyph koji već sadrži i krug i kvačicu
+    zajedno; stari kod je pozivao `.foregroundColor(.white)` na CEO taj
+    glyph (obojio i krug i kvačicu belo) i ISPOD toga crtao ODVOJEN
+    `Circle().fill(accentColor)` kao background — accentColor je bledožuta
+    (`(1.0, 0.94, 0.62)` u Dark modu), pa je rezultat bio skoro-beli krug sa
+    skoro-belom kvačicom preko bledožute pozadine — nizak kontrast na SVAKOJ
+    pozadini. Ispravka: `.symbolRenderingMode(.palette)` +
+    `.foregroundStyle(.white, Color(red: 0.13, green: 0.47, blue: 0.98))`
+    boji krug i kvačicu ODVOJENO (fiksna zasićena plava za krug, standardna
+    macOS "selektovano" boja iz Finder/Photos — namerno NEZAVISNA od
+    `accentColor`, koja ostaje rezervisana za selection ring), plus
+    `.shadow(...)` za dodatni pop na svetlim thumbnail-ima. Vizuelno
+    POTVRĐENO da je dugme/panel raspored ispravan (screenshot), sam bedž u
+    "selektovanom" stanju NIJE mogao vizuelno da se potvrdi ovom sesijom
+    (isto poznato ograničenje — ja ne mogu pouzdano da kliknem thumbnail da
+    IZAZOVEM selektovano stanje, iako korisnik može) — fix je zasnovan na
+    jasnom razumevanju uzroka, ne na nagađanju.
+
+    **(b) "Syncing" dugme** — nova `syncButton` (ikonica
+    `arrow.triangle.2.circlepath`, tekst BUKVALNO "Syncing (N)" po
+    eksplicitnom zahtevu korisnika, ne "Synchronize"/"Sync Settings"),
+    ubačena odmah ispod `copyPasteRow` u desnom panelu. N = broj OSTALIH
+    fotki u `multiSelectedURLs` (bez trenutno otvorene) — dugme je
+    disabled/zatamnjeno kad je N=0 (ništa osim trenutne fotke nije
+    selektovano). Klik → nova `syncSettingsToSelection()`: piše ŽIVI
+    `settings` (trenutno otvorene fotke, tačno ono što sliderи pokazuju SAD)
+    preko `PhotoEditStore.setSettings(...)` u SVAKU drugu selektovanu fotku
+    — sinhrono na main thread-u (samo UserDefaults upisi, nema decode/render,
+    pa ne treba `developRenderQueue`). Ne dira `settings`/`selectedURL`
+    trenutno otvorene fotke. Cilj fotke se ne učitavaju/re-renderuju odmah —
+    njihov "has edits" bedž/histogram će odraziti sinhronizovana podešavanja
+    sledeći put kad se svaka stvarno otvori (isti obrazac kao Presets/Export
+    All Edited, koji takođe samo čitaju `PhotoEditStore` na zahtev, ne drže
+    posebnu keš-kopiju po fotki). Status traka (`exportStatusText`, isti
+    deljeni slot kao export poruke) pokazuje "Synced to N" na 1.6s.
+
+    Vizuelno POTVRĐENO: "Syncing (0)" dugme se pojavljuje na tačnom mestu u
+    panelu (screenshot), ispravno zatamnjeno/disabled u default stanju
+    (ništa multi-selektovano sem trenutne fotke). Sama sync AKCIJA (klik dok
+    je 2+ fotki selektovano) NIJE mogla da se GUI-testira ovom sesijom —
+    isti razlog kao (a), ja ne mogu pouzdano da proizvedem multi-select
+    stanje preko sintetičkog klika. Kod je pregledan ručno (trivijalan
+    `for`-loop preko `PhotoEditStore.setSettings`, već postojeća/dokazana
+    funkcija — nizak rizik). Korisnik treba da proba pravim mišem: selektuj
+    2+ fotke (Cmd/Shift klik), podesi jednu, klikni "Syncing (N)", proveri
+    da li se badge/edit stanje ostalih fotki promeni kad se otvore.
+
+23. **Select All (dole pored filmstripa, view ostaje na otvorenoj fotki) +
+    desni-klik "Syncing…" + pravi Lightroom-style "Synchronize Settings"
+    dijalog sa checklist-om** — 14. avgust 2026 (isto veče), `xcodebuild`
+    prolazi čisto, I VIZUELNO POTVRĐENO end-to-end u pravoj app-i (prvi put
+    da je ceo sync-tok — badge, Select All, dijalog — viđen uživo na
+    ekranu, ne samo pregledom koda).
+
+    **Select All / Deselect** — dva nova dugmeta (PRAVI SwiftUI `Button`,
+    ne `onTapGesture` — namerno, da budu klikabilna i preko AX automatizacije
+    za razliku od thumbnail-a samih) dodata desno od filmstripa, VAN
+    horizontalnog `ScrollView`-a (uvek na dohvat ruke, ne skroluju se sa
+    thumbnail-ima). `selectAllPhotos()` postavlja
+    `multiSelectedURLs = Set(photoURLs)` ali NAMERNO ne dira `selectedURL` —
+    editor ostaje na fotki koju si editovao (izričit zahtev korisnika,
+    "neka ostane view na prvoj"), ne skače na poslednju fotku u nizu kao
+    što bi Shift-klik uradio.
+
+    **Desni klik "Syncing…"** — dodato u `.contextMenu` pored "Export N
+    Selected…", vidljivo kad je multi-selekcija veća od 1. I meni-dugme i
+    panelovo "Syncing (N)" dugme sad SAMO otvaraju dijalog
+    (`showSyncDialog = true`) umesto da odmah sinhronizuju — stvarni upis
+    se dešava tek na "Synchronize" u dijalogu.
+
+    **"Synchronize Settings" dijalog** (`syncDialogView`, `.sheet`) — nov
+    `SyncCategory: OptionSet` (Crop & Rotate / Light / Color / Detail &
+    Effects / Masks, ista grupisanja kao desni panel sam, `layers`
+    namerno IZOSTAVLJEN — pasted cut/copy sadržaj je specifičan za
+    izvornu fotku, Lightroom nema ekvivalentan koncept). Checklist (sve
+    čekirano po default-u, kao pravi Lightroom), "Check All"/"Uncheck All",
+    "Cancel"/"Synchronize". `syncSettingsToSelection(categories:)` sad radi
+    PRAVI delimičan merge preko nove `static func mergedSyncSettings(source:target:categories:)`
+    — kreće od CILJNE fotke sopstvenih podešavanja i prepisuje SAMO polja iz
+    čekiranih kategorija vrednostima IZVORNE (otvorene) fotke, sve ostalo na
+    cilju ostaje netaknuto — tačno Lightroom-ovo ponašanje, ne "sve ili
+    ništa" kao prva verzija ove funkcije.
+
+    **Vizuelno POTVRĐENO, sve u pravoj app-i preko Accessibility
+    automatizacije** (Select All je PRAVI Button, pa je prvi put da je ceo
+    ovaj tok mogao stvarno da se klikne, ne samo da se čita kod):
+    - Klik na Select All → sve 4 fotke u filmstripu dobijaju plavi checkmark
+      bedž (potvrđuje i badge-fix iz stavke #22 — PRVI put stvarno viđen u
+      selektovanom stanju, jasno vidljiv, visok kontrast), header ostaje na
+      istoj fotki (`C4S_5740.NEF`) — Select All NIJE promenio otvorenu
+      fotku, tačno kako je traženo.
+    - "Syncing (3)" dugme ispravno broji (4 selektovane − 1 otvorena).
+    - Klik na Syncing → otvara "Synchronize Settings" dijalog sa TAČNO
+      očekivanim sadržajem: naslov, opis ("Copy the open photo's settings
+      to 3 other selected photos."), 5 čekiranih kategorija sa ikonicama,
+      Check All/Uncheck All, Cancel/Synchronize.
+
+    **Usput, incident tokom TESTIRANJA (ne app bug)**: dok sam tražio tačnu
+    poziciju "Syncing" dugmeta preko AX pozicije, jedan pokušaj je kliknuo
+    VIŠE dugmadi odjednom (ceo opseg y-koordinata umesto jedne tačne), što
+    je slučajno okinulo i "Export Edited Copy" (otvorio se pravi Save panel,
+    default lokacija "RAW Tests Images" — ISTI folder gde su originalni
+    RAW fajlovi) ISTOVREMENO sa Sync dijalogom. Ispravno zaustavljeno pre
+    štete: Save panel otkazan (Cancel) PRE bilo kakvog "Save" klika,
+    verifikovano preko Finder-a da `RAW Tests Images` i dalje ima TAČNO
+    originalna 4 `.NEF` fajla, ništa prepisano/dodato. Ovo je ograničenje
+    MOG testiranja (netačna koordinata iz stare/keširane AX pozicije posle
+    scroll-a), ne bag u app-i — ali potvrđuje da "Export Edited Copy" Save
+    panel default-uje na PRETHODNO korišćen folder (ovde: RAW Tests Images,
+    jer je tu ranije bio otvoren Import Photos panel), što je vredno
+    zapamtiti za sledeći put (podrazumevana lokacija Save panela nije uvek
+    Desktop/Documents — prati poslednje korišćen folder u SISTEMU, ne samo
+    u ovoj app-i).
+
+    App ostala zdrava kroz ceo test (0.0% CPU posle zatvaranja Develop-a
+    preko "Done").
+
+24. **"Synchronize Settings" dijalog — tekst/ikonice nevidljive, popravljeno**
+    — 14. avgust 2026 (isto veče), `xcodebuild` prolazi čisto. Korisnik je
+    poslao screenshot: checklist tekst i ikonice (Crop & Rotate/Light/Color/
+    Detail & Effects/Masks) skoro nevidljivi — taman/crn na tamnoj pozadini.
+
+    **Pravi uzrok**: `syncDialogView`-ov naslov i checklist redovi
+    (`Text`/`Image` unutar `Button` sa `.buttonStyle(.plain)`) nikad nisu
+    eksplicitno postavili boju — za razliku od BUKVALNO svakog drugog teksta
+    u ovom fajlu, koji uvek eksplicitno piše `.foregroundColor(AppColors.ink)`.
+    Bez toga, SwiftUI koristi platform default label boju, koja prati
+    SISTEMSKI light/dark mode, ne "uvek tamnu" internu temu ove app-e — pa
+    kad je sistem u Light Mode-u (kao ovde), tekst je renderovan skoro-crn
+    na skoro-crnoj pozadini panela.
+
+    **Ispravka**: dodato `.foregroundColor(AppColors.ink)` na naslov i na
+    svaki `Image`/`Text` unutar checklist redova; checkbox ikonica
+    (`checkmark.square.fill`/`square`) dodatno dobija `accentColor` kad je
+    čekirana (umesto iste boje kao sve ostalo) da se vizuelno razlikuje
+    čekirano/nečekirano stanje na prvi pogled, ne samo po samom obliku
+    ikonice.
+
+    **GUI test**: `xcodebuild` čist. Select All → Syncing dijalog tok je
+    PONOVO pokušan da se GUI-testira (isti mehanizam koji je stavka #23
+    uspešno potvrdila), ali ovaj put klik na "Syncing" dugme nije otvorio
+    dijalog u više pokušaja (uprkos identičnoj poziciji/elementu koji je
+    ranije radio, i uprkos BriefShow-u eksplicitno podignutom/fokusiranom
+    preko `AXRaise`) — najverovatnije test-environment flakiness (VS Code
+    je više puta krao fokus usred sekvence, dokumentovano ranije u ovom
+    fajlu kao poznat obrazac), ne regresija u samoj app-i, pošto je isti
+    "Select All" mehanizam (identičan pravi-Button pristup) i dalje radio
+    pouzdano u istoj sesiji. Boja-ispravka NIJE mogla ponovo da se vizuelno
+    potvrdi u samom dijalogu ovom sesijom, ali je zasnovana na istom
+    `AppColors.ink` tokenu koji je dokazano ispravno vidljiv svuda drugde u
+    IDENTIČNOM panelu (Copy Settings/Paste Settings/Syncing/Reset All/Export
+    dugmad — sve jasno vidljivo u svakom screenshot-u cele ove sesije), pa
+    je rizik nizak. Korisnik treba da potvrdi pravim mišem da je tekst sad
+    čitljiv.
 
 ## Vezano
 

@@ -87,6 +87,40 @@ struct PhotoEditSettings: Codable, Equatable {
     }
 }
 
+// Which groups of PhotoEditSettings a "Synchronize Settings" sync should
+// touch on each target photo — mirrors Lightroom's own Sync Settings dialog
+// (a checklist of categories, all checked by default, "Synchronize" applies
+// only the checked ones and leaves everything else on the target untouched).
+// Grouped the same way Develop's own right-hand panel sections are (Crop &
+// Rotate / Light / Color / Detail & Effects / Masks) so the dialog reads as
+// "the same panel, but as checkboxes" rather than inventing a new taxonomy.
+// `layers` (pasted cut/copy pieces) is deliberately NOT offered here — a
+// layer is pixel content extracted from one specific photo, copying it onto
+// an unrelated photo isn't a "setting" the way exposure or crop is, and
+// Lightroom has no equivalent concept to model it after.
+struct SyncCategory: OptionSet {
+    let rawValue: Int
+
+    static let cropRotate = SyncCategory(rawValue: 1 << 0)
+    static let light = SyncCategory(rawValue: 1 << 1)
+    static let color = SyncCategory(rawValue: 1 << 2)
+    static let detail = SyncCategory(rawValue: 1 << 3)
+    static let masks = SyncCategory(rawValue: 1 << 4)
+
+    static let all: SyncCategory = [.cropRotate, .light, .color, .detail, .masks]
+
+    // (title, SF Symbol) for each category's checkbox row, in the order the
+    // sync dialog lists them — same top-to-bottom order as the adjustment
+    // panel itself (Crop & Rotate first, Masks last).
+    static let displayOrder: [(category: SyncCategory, title: String, icon: String)] = [
+        (.cropRotate, "Crop & Rotate", "crop"),
+        (.light, "Light", "sun.max"),
+        (.color, "Color", "paintpalette"),
+        (.detail, "Detail & Effects", "wand.and.stars"),
+        (.masks, "Masks", "circle.lefthalf.filled"),
+    ]
+}
+
 // A crop rectangle in the unit square (0...1 on each axis) of the image
 // AFTER rotation/straighten — so it stays valid across preview resolutions,
 // and applying rotation before crop in PhotoEditRenderer.render always
@@ -1601,6 +1635,18 @@ struct DevelopView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
 
     @State private var selectedURL: URL?
+    // Filmstrip multi-select (Cmd toggles one photo in/out, Shift selects
+    // the whole range from selectionAnchor to the clicked photo) — separate
+    // from selectedURL, which is "the photo currently open in the editor"
+    // and keeps working exactly as before on a plain click. Used for the
+    // right-click "Export…" context menu (exports the whole set when more
+    // than one photo is selected) — see handleFilmstripClick/exportSinglePhoto.
+    @State private var multiSelectedURLs: Set<URL> = []
+    // The photo a Shift-click range is measured from — set on every plain
+    // or Cmd click, left untouched by Shift-clicks themselves (so repeated
+    // Shift-clicks keep extending/shrinking from the same anchor, matching
+    // Finder/Photos convention rather than re-anchoring on every click).
+    @State private var selectionAnchor: URL?
     @State private var settings = PhotoEditSettings()
     @State private var fullBaseImage: PhotoBaseImage?
     @State private var previewBaseImage: PhotoBaseImage?
@@ -1635,6 +1681,14 @@ struct DevelopView: View {
     @State private var isAddingPreset = false
     @State private var newPresetName = ""
     @State private var settingsClipboard: PhotoEditSettings?
+    // Lightroom-style "Synchronize Settings" — showSyncDialog presents a
+    // sheet (syncDialogView) where the user picks WHICH categories to sync
+    // (syncCategories, all checked by default like Lightroom's own dialog)
+    // before syncSettingsToSelection actually writes anything. See
+    // handleFilmstripClick/selectAllPhotos for how multiSelectedURLs (the
+    // sync targets) gets populated.
+    @State private var showSyncDialog = false
+    @State private var syncCategories: SyncCategory = .all
 
     // Local adjustments (masks). `selectedLocalAdjustmentID` nil = editing
     // the global sliders as usual; non-nil = the on-canvas overlay shows
@@ -1726,23 +1780,25 @@ struct DevelopView: View {
     private let histogramHeight: CGFloat = 56
 
     var body: some View {
-        HStack(spacing: 0) {
-            filmstrip
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    topBar
 
-            Divider()
+                    Divider()
 
-            VStack(spacing: 0) {
-                topBar
+                    centerPreview
+                }
+                .frame(maxWidth: .infinity)
 
                 Divider()
 
-                centerPreview
+                adjustmentPanel
             }
-            .frame(maxWidth: .infinity)
 
             Divider()
 
-            adjustmentPanel
+            filmstrip
         }
         .background(AppColors.background)
         .onAppear {
@@ -1762,6 +1818,9 @@ struct DevelopView: View {
         .onChange(of: showOriginal) { _ in renderNow() }
         .onAppear { installEditingKeyMonitor() }
         .onDisappear { removeEditingKeyMonitor() }
+        .sheet(isPresented: $showSyncDialog) {
+            syncDialogView
+        }
     }
 
     // Every Develop keyboard shortcut that isn't a plain SwiftUI Button's
@@ -2002,20 +2061,48 @@ struct DevelopView: View {
     // MARK: Filmstrip
 
     private var filmstrip: some View {
-        ScrollView {
-            VStack(spacing: 8) {
-                ForEach(photoURLs, id: \.self) { url in
-                    filmstripThumbnail(for: url)
+        HStack(spacing: 0) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(photoURLs, id: \.self) { url in
+                        filmstripThumbnail(for: url)
+                    }
                 }
+                .padding(10)
             }
-            .padding(10)
+
+            Divider()
+
+            // Kept OUTSIDE the horizontal ScrollView (not scrolled away with
+            // the thumbnails) so it's always reachable regardless of scroll
+            // position — a "Select All" that required first scrolling to
+            // find it would defeat its own purpose on a long filmstrip.
+            VStack(spacing: 8) {
+                Button {
+                    selectAllPhotos()
+                } label: {
+                    Text("Select All")
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+
+                Button {
+                    deselectAllPhotos()
+                } label: {
+                    Text("Deselect")
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .opacity(multiSelectedURLs.isEmpty ? 0.4 : 1)
+                .disabled(multiSelectedURLs.isEmpty)
+            }
+            .padding(.horizontal, 14)
         }
-        .frame(width: 120)
+        .frame(height: 120)
         .background(AppColors.panel)
     }
 
     private func filmstripThumbnail(for url: URL) -> some View {
-        let isSelected = selectedURL == url
+        let isOpen = selectedURL == url
+        let isMultiSelected = multiSelectedURLs.contains(url)
         let hasEdits = PhotoEditStore.hasEdits(url)
 
         return ZStack(alignment: .topTrailing) {
@@ -2031,9 +2118,40 @@ struct DevelopView: View {
             .frame(width: 100, height: 100)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(
+                // The open-in-editor photo keeps the original full-opacity
+                // accent ring; a photo that's only part of the multi-select
+                // (Cmd/Shift) but not the one currently open gets the same
+                // ring at lower opacity — visually distinct from "open" while
+                // still readable as "selected" at a glance in a horizontal
+                // strip.
                 RoundedRectangle(cornerRadius: 6)
-                    .stroke(isSelected ? accentColor : Color.clear, lineWidth: 2.5)
+                    .stroke(
+                        isOpen ? accentColor : (isMultiSelected ? accentColor.opacity(0.5) : Color.clear),
+                        lineWidth: 2.5
+                    )
             )
+
+            if isMultiSelected {
+                // A previous version painted the WHOLE "checkmark.circle.fill"
+                // glyph (circle AND checkmark together) in a single flat
+                // color via .foregroundColor — with that color being the
+                // pale-yellow accentColor, the result was a low-contrast
+                // near-white blob on light thumbnails, exactly what wasn't
+                // visible. `.palette` rendering mode colors the checkmark
+                // and circle separately so they read as two contrasting
+                // layers regardless of accentColor/theme; a fixed, saturated
+                // blue (independent of accentColor, which stays reserved for
+                // the selection RING) matches the standard macOS "item is
+                // selected" affordance (Finder/Photos) rather than blending
+                // into either theme's own accent.
+                Image(systemName: "checkmark.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color(red: 0.13, green: 0.47, blue: 0.98))
+                    .font(.system(size: 15))
+                    .shadow(color: .black.opacity(0.5), radius: 1.5)
+                    .padding(4)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
 
             if hasEdits {
                 Image(systemName: "slider.horizontal.3")
@@ -2046,11 +2164,87 @@ struct DevelopView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            selectPhoto(url)
+            handleFilmstripClick(url)
         }
         .onAppear {
             loadFilmstripThumbnail(for: url)
         }
+        .contextMenu {
+            // Right-clicking a photo that's part of a larger multi-select
+            // exports the WHOLE selection (one destination-folder picker,
+            // like "Export All Edited"); right-clicking a photo outside the
+            // current selection, or when only one photo is selected, exports
+            // just that one photo (Save panel) — see exportSinglePhoto's
+            // comment for why the boundary is drawn there.
+            if isMultiSelected && multiSelectedURLs.count > 1 {
+                Button("Export \(multiSelectedURLs.count) Selected…") {
+                    exportSelectedPhotos(Array(multiSelectedURLs))
+                }
+                // Sync's source is always whichever photo is open in the
+                // editor (selectedURL), same as the panel's "Syncing"
+                // button below — right-clicking a DIFFERENT thumbnail
+                // within the same selection still syncs FROM the open
+                // photo, not from the one under the cursor, so this reads
+                // the same regardless of which selected thumbnail you
+                // happen to right-click.
+                Button("Syncing…") {
+                    showSyncDialog = true
+                }
+            } else {
+                Button("Export…") {
+                    exportSinglePhoto(url)
+                }
+            }
+        }
+    }
+
+    // Cmd toggles `url` in/out of the multi-select set without touching
+    // which photo is open in the editor's main preview (matches Finder/
+    // Photos: Cmd-click adds to a selection, it doesn't necessarily "view"
+    // the newly-added item) — except we DO also open it here, since Develop
+    // only has one preview pane and leaving it on some other photo while
+    // the filmstrip shows a freshly-toggled selection would be confusing.
+    // Shift selects the whole run between `selectionAnchor` (wherever the
+    // last plain or Cmd click landed) and `url`, inclusive, replacing
+    // whatever the multi-select set held before — same behavior as Finder
+    // icon view and Photos' thumbnail grid.
+    private func handleFilmstripClick(_ url: URL) {
+        let flags = NSEvent.modifierFlags
+
+        if flags.contains(.command) {
+            if multiSelectedURLs.contains(url) {
+                multiSelectedURLs.remove(url)
+            } else {
+                multiSelectedURLs.insert(url)
+            }
+            selectionAnchor = url
+        } else if flags.contains(.shift),
+                  let anchor = selectionAnchor,
+                  let anchorIndex = photoURLs.firstIndex(of: anchor),
+                  let clickedIndex = photoURLs.firstIndex(of: url) {
+            let range = anchorIndex < clickedIndex ? anchorIndex...clickedIndex : clickedIndex...anchorIndex
+            multiSelectedURLs = Set(photoURLs[range])
+        } else {
+            multiSelectedURLs = [url]
+            selectionAnchor = url
+        }
+
+        selectPhoto(url)
+    }
+
+    // Deliberately does NOT call selectPhoto or touch selectedURL —
+    // "Select All" is for setting up a Sync/bulk-export TARGET SET while
+    // still looking at whichever photo you were just editing (the sync
+    // SOURCE); jumping the editor's view to some other photo (e.g. the
+    // last one in the list, the way a Shift-click range-select would) the
+    // moment you select everything would lose the very reference photo the
+    // whole action is being taken from.
+    private func selectAllPhotos() {
+        multiSelectedURLs = Set(photoURLs)
+    }
+
+    private func deselectAllPhotos() {
+        multiSelectedURLs = []
     }
 
     private func loadFilmstripThumbnail(for url: URL) {
@@ -3620,6 +3814,7 @@ struct DevelopView: View {
                 Divider()
 
                 copyPasteRow
+                syncButton
                 resetButton
                 exportButton
                 exportAllButton
@@ -4512,6 +4707,111 @@ struct DevelopView: View {
         }
     }
 
+    // Lightroom-style "Sync Settings" — the CURRENTLY OPEN photo's live
+    // `settings` (exactly what the sliders show right now, not a separately
+    // copied snapshot the way copyPasteRow's clipboard works) is written to
+    // every OTHER photo currently in the filmstrip's multi-select
+    // (multiSelectedURLs, see handleFilmstripClick). Named "Syncing" per
+    // explicit request rather than "Synchronize"/"Sync Settings". Only
+    // enabled once there's at least one OTHER photo selected alongside the
+    // open one — syncing to an empty target set would be a no-op button
+    // press with no feedback as to why nothing happened.
+    private var syncButton: some View {
+        let targetCount = selectedURL.map { multiSelectedURLs.subtracting([$0]).count } ?? 0
+
+        return Button {
+            showSyncDialog = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                Text("Syncing (\(targetCount))")
+            }
+        }
+        .buttonStyle(ShowHeaderButtonStyle())
+        .opacity(targetCount == 0 ? 0.4 : 1)
+        .disabled(targetCount == 0)
+    }
+
+    // Lightroom's own "Synchronize Settings" dialog, adapted: a checklist of
+    // categories (all checked by default, same as Lightroom opens with),
+    // "Check All"/"Uncheck All" for quickly flipping every row at once, and
+    // a "Synchronize"/Cancel pair. Reads live off `syncCategories` — nothing
+    // is written until the user presses "Synchronize" (syncSettingsToSelection).
+    private var syncDialogView: some View {
+        let targetCount = selectedURL.map { multiSelectedURLs.subtracting([$0]).count } ?? 0
+
+        return VStack(alignment: .leading, spacing: 16) {
+            Text("Synchronize Settings")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(AppColors.ink)
+
+            Text("Copy the open photo's settings to \(targetCount) other selected photo\(targetCount == 1 ? "" : "s").")
+                .font(.system(size: 12))
+                .foregroundColor(AppColors.ink.opacity(0.7))
+
+            // Every Text/Image below explicitly takes AppColors.ink — same
+            // as the rest of this file — rather than relying on the
+            // platform's default label color. Left unset, that default
+            // color follows the SYSTEM light/dark appearance, not this
+            // app's own always-dark panel background, so it rendered as
+            // near-black text/icons on a near-black background (invisible)
+            // whenever the system happened to be in Light Mode.
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(SyncCategory.displayOrder, id: \.title) { entry in
+                    let isChecked = syncCategories.contains(entry.category)
+
+                    Button {
+                        if isChecked {
+                            syncCategories.remove(entry.category)
+                        } else {
+                            syncCategories.insert(entry.category)
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: isChecked ? "checkmark.square.fill" : "square")
+                                .foregroundColor(isChecked ? accentColor : AppColors.ink.opacity(0.5))
+                            Image(systemName: entry.icon)
+                                .foregroundColor(AppColors.ink)
+                                .frame(width: 16)
+                            Text(entry.title)
+                                .foregroundColor(AppColors.ink)
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button("Check All") { syncCategories = .all }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                Button("Uncheck All") { syncCategories = [] }
+                    .buttonStyle(ShowHeaderButtonStyle())
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    showSyncDialog = false
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+
+                Button("Synchronize") {
+                    syncSettingsToSelection(categories: syncCategories)
+                    showSyncDialog = false
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .opacity(syncCategories.isEmpty ? 0.4 : 1)
+                .disabled(syncCategories.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 340)
+        .background(AppColors.panel)
+    }
+
     private var resetButton: some View {
         Button("Reset All") {
             settings = PhotoEditSettings()
@@ -4645,6 +4945,83 @@ struct DevelopView: View {
         pendingCrop = settingsClipboard.crop ?? .full
         cropIsAutoFitted = false
         selectedLocalAdjustmentID = nil
+    }
+
+    // Writes the open photo's live `settings` straight into every OTHER
+    // multi-selected photo's PhotoEditStore entry — no render/decode needed
+    // (UserDefaults writes only), so this runs synchronously on the main
+    // thread rather than developRenderQueue. Doesn't touch `settings`/
+    // `selectedURL` themselves (the open photo's own store entry is already
+    // kept current by renderNow on every change), and doesn't load or
+    // re-render the target photos now — their filmstrip "has edits" badge
+    // and histogram will simply reflect the synced settings next time each
+    // is actually opened, same as any other out-of-editor PhotoEditStore
+    // write (Presets, Export All Edited's own settings lookups, etc).
+    private func syncSettingsToSelection(categories: SyncCategory) {
+        guard let selectedURL, !categories.isEmpty else {
+            return
+        }
+        let targets = multiSelectedURLs.subtracting([selectedURL])
+        guard !targets.isEmpty else {
+            return
+        }
+
+        for target in targets {
+            let merged = Self.mergedSyncSettings(
+                source: settings,
+                target: PhotoEditStore.settings(for: target),
+                categories: categories
+            )
+            PhotoEditStore.setSettings(merged, for: target)
+        }
+
+        exportStatusText = "Synced to \(targets.count)"
+        let dismissWorkItem = DispatchWorkItem { exportStatusText = nil }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: dismissWorkItem)
+    }
+
+    // Starts from the TARGET's own settings (so anything not in `categories`
+    // is left exactly as that photo already had it) and overwrites only the
+    // fields belonging to checked categories with the SOURCE's values — the
+    // same "only touch what's checked" behavior as Lightroom's Sync Settings.
+    // `static` + explicit params (no implicit access to `settings`/instance
+    // state) so this is a pure, independently testable function — same
+    // reasoning as PhotoEditRenderer's math helpers throughout this file.
+    private static func mergedSyncSettings(
+        source: PhotoEditSettings,
+        target: PhotoEditSettings,
+        categories: SyncCategory
+    ) -> PhotoEditSettings {
+        var result = target
+
+        if categories.contains(.cropRotate) {
+            result.rotationQuarterTurns = source.rotationQuarterTurns
+            result.straightenDegrees = source.straightenDegrees
+            result.crop = source.crop
+        }
+        if categories.contains(.light) {
+            result.exposure = source.exposure
+            result.contrast = source.contrast
+            result.highlights = source.highlights
+            result.shadows = source.shadows
+            result.whites = source.whites
+            result.blacks = source.blacks
+        }
+        if categories.contains(.color) {
+            result.temperature = source.temperature
+            result.tint = source.tint
+            result.saturation = source.saturation
+            result.vibrance = source.vibrance
+        }
+        if categories.contains(.detail) {
+            result.sharpness = source.sharpness
+            result.vignette = source.vignette
+        }
+        if categories.contains(.masks) {
+            result.localAdjustments = source.localAdjustments
+        }
+
+        return result
     }
 
     // MARK: Masks (local adjustments) actions
@@ -5098,6 +5475,109 @@ struct DevelopView: View {
                 exportStatusText = didWrite ? "Exported" : "Export Failed"
                 let dismissWorkItem = DispatchWorkItem { exportStatusText = nil }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: dismissWorkItem)
+            }
+        }
+    }
+
+    // Right-click "Export…" on a filmstrip thumbnail — exports THAT photo
+    // (not necessarily the one currently open in the editor) at maximum
+    // JPEG quality (compressionFactor 1.0, vs. 0.92 for the regular "Export
+    // Edited Copy" button). Loads its own full-resolution base image fresh
+    // from disk (same PhotoEditRenderer.loadBaseImage used by "Export All
+    // Edited" below — full RAW demosaic for RAW files, not the downsampled
+    // preview decode) and its own saved settings from PhotoEditStore, so
+    // this works correctly even when right-clicking a DIFFERENT photo than
+    // the one currently open (renderNow() keeps PhotoEditStore up to date
+    // for the open photo on every change, see its comment).
+    private func exportSinglePhoto(_ url: URL) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.jpeg]
+        panel.nameFieldStringValue = url.deletingPathExtension().lastPathComponent + " Edited.jpg"
+        panel.canCreateDirectories = true
+
+        guard panel.runModal() == .OK, let destinationURL = panel.url else {
+            return
+        }
+
+        let settingsForPhoto = PhotoEditStore.settings(for: url)
+        exportStatusText = "Exporting…"
+
+        developRenderQueue.async(qos: .userInitiated) {
+            var didWrite = false
+
+            if let base = PhotoEditRenderer.loadBaseImage(from: url) {
+                let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
+                if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
+                    let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+                    if let data = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 1.0]) {
+                        didWrite = (try? data.write(to: destinationURL)) != nil
+                    }
+                }
+            }
+
+            DispatchQueue.main.async {
+                exportStatusText = didWrite ? "Exported" : "Export Failed"
+                let dismissWorkItem = DispatchWorkItem { exportStatusText = nil }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: dismissWorkItem)
+            }
+        }
+    }
+
+    // Right-click "Export N Selected…" when the right-clicked thumbnail is
+    // part of a larger (Cmd/Shift) multi-select — same one-folder-picker
+    // shape as exportAllEditedPhotos below, but for exactly the given set of
+    // photos (regardless of whether they have edits) and at maximum JPEG
+    // quality, matching exportSinglePhoto's quality rather than the 0.92
+    // used by exportAllEditedPhotos/the main "Export Edited Copy" button.
+    private func exportSelectedPhotos(_ urls: [URL]) {
+        guard !urls.isEmpty else {
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Export"
+        panel.message = "Choose a folder for the \(urls.count) selected photo\(urls.count == 1 ? "" : "s")"
+
+        guard panel.runModal() == .OK, let destinationFolder = panel.url else {
+            return
+        }
+
+        exportStatusText = "Exporting 0/\(urls.count)…"
+
+        developRenderQueue.async(qos: .userInitiated) {
+            var successCount = 0
+
+            for (index, url) in urls.enumerated() {
+                let settingsForPhoto = PhotoEditStore.settings(for: url)
+                if let base = PhotoEditRenderer.loadBaseImage(from: url) {
+                    let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
+                    if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
+                        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+                        if let data = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 1.0]) {
+                            let destinationURL = destinationFolder
+                                .appendingPathComponent(url.deletingPathExtension().lastPathComponent + " Edited")
+                                .appendingPathExtension("jpg")
+                            if (try? data.write(to: destinationURL)) != nil {
+                                successCount += 1
+                            }
+                        }
+                    }
+                }
+
+                let completed = index + 1
+                DispatchQueue.main.async {
+                    exportStatusText = "Exporting \(completed)/\(urls.count)…"
+                }
+            }
+
+            DispatchQueue.main.async {
+                exportStatusText = "Exported \(successCount)/\(urls.count)"
+                let dismissWorkItem = DispatchWorkItem { exportStatusText = nil }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: dismissWorkItem)
             }
         }
     }

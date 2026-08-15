@@ -985,12 +985,53 @@ enum PhotoEditRenderer {
             }
         }
 
+        // Custom corner-only vignette — CIVignette (the built-in filter
+        // this used to call) has no way to confine its falloff to just the
+        // corners; even at its own default radius, the darkening visibly
+        // crept in along the top/bottom/left/right edges too, not just the
+        // four corners, which is exactly what was reported. Built instead
+        // as a radial gradient DARKENING MASK, multiplied onto the image —
+        // an ELLIPSE (not a circle), same non-uniform-scale-of-a-unit-
+        // gradient technique radialMask uses for the Radial local
+        // adjustment above: a plain CIRCULAR inscribed/circumscribed pair
+        // was tried first and rejected after a pixel-sampling test script
+        // caught it leaving a non-square (e.g. landscape) photo's LEFT/
+        // RIGHT edge midpoints partially darkened too — a circle can only
+        // be tangent to the SHORTER pair of edges, not both pairs at once.
+        // Building the gradient in unit space (radius0 = 1, the ellipse
+        // that — once scaled by halfW/halfH below — touches ALL FOUR edge
+        // midpoints simultaneously; radius1 = √2, the unit-space distance
+        // that scales to reach the actual corners) and only THEN applying
+        // the (halfW, halfH) non-uniform scale fixes this: verified with
+        // the same kind of standalone pixel-sampling script the codebase's
+        // other mask math uses (see BRIEFSHOW_DEVELOP_NOTES.md) — all four
+        // edge midpoints read full brightness, only the four corner wedges
+        // outside the ellipse are darkened, on both a landscape and (by
+        // symmetry) a portrait frame.
         if settings.vignette > 0 {
-            let filter = CIFilter.vignette()
-            filter.inputImage = output
-            filter.radius = 1.6
-            filter.intensity = Float(settings.vignette)
-            output = filter.outputImage ?? output
+            let extent = output.extent
+            if extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 {
+                let halfW = extent.width / 2
+                let halfH = extent.height / 2
+                let darkAmount = CGFloat(min(max(settings.vignette, 0), 1))
+
+                let gradient = CIFilter.radialGradient()
+                gradient.center = .zero
+                gradient.radius0 = 1
+                gradient.radius1 = Float(2.0.squareRoot())
+                gradient.color0 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+                gradient.color1 = CIColor(red: 1 - darkAmount, green: 1 - darkAmount, blue: 1 - darkAmount, alpha: 1)
+
+                if let unitGradient = gradient.outputImage {
+                    let transform = CGAffineTransform(a: halfW, b: 0, c: 0, d: halfH, tx: extent.midX, ty: extent.midY)
+                    let mask = unitGradient.transformed(by: transform).cropped(to: extent)
+
+                    let multiply = CIFilter.multiplyCompositing()
+                    multiply.inputImage = mask
+                    multiply.backgroundImage = output
+                    output = multiply.outputImage ?? output
+                }
+            }
         }
 
         if !settings.localAdjustments.isEmpty {

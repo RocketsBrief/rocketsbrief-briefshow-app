@@ -2304,6 +2304,41 @@ slideshow/export koji BriefShow već pravi.
     očekivanom pravcu (Dehaze = "jasnije/kontrastnije", Soft Glow =
     "mekše/sjajnije").
 
+29. **Vignette prepravljen — striktno samo ćoškovi, ne cela slika** — 15.
+    avgust 2026, isto veče. Korisnik je eksplicitno tražio da Vignette
+    zatamnjuje SAMO ćoškove. Stari `CIFilter.vignette()` (ugrađen CI
+    filter) nema način da ograniči efekat samo na ćoškove — čak i na
+    default radijusu, zatamnjenje vidljivo zahvata i gornju/donju/levu/
+    desnu ivicu, ne samo ćoškove.
+
+    **Prvi pokušaj (odbačen)**: custom radial-gradient maska, KRUG upisan
+    u kadar (radius0 = dodiruje najbližu ivicu) do kruga koji dopire do
+    ćoškova (radius1). Pixel-sampling test skriptom (`xcrun swift`,
+    `CIContext.createCGImage` + čitanje raw bajtova preko `CGDataProvider`
+    — `CIContext.render(toBitmap:)` se pokazao nepouzdan/vraćao nule u
+    ovom standalone kontekstu, pa je zamenjen) UHVAĆEN pravi bag PRE nego
+    što je ušao u app: za landscape sliku (1600×1067), krug dodiruje SAMO
+    gornju/donju ivicu (kraća osa) — leva/desna ivica (duža osa) ostaju
+    DELIMIČNO zatamnjene (R=169 umesto 255 na sredini leve ivice), što je
+    tačno ono što korisnik ne želi.
+
+    **Ispravka**: ELIPSA umesto kruga — ista tehnika kao `radialMask` za
+    Radial lokalnu masku (grade gradient u UNIT prostoru, PA primeni
+    non-uniform affine skaliranje `(halfW, halfH)`). `radius0 = 1` (u unit
+    prostoru — posle skaliranja, dodiruje SVE ČETIRI ivice na sredini
+    istovremeno), `radius1 = √2` (posle skaliranja, dopire tačno do
+    ćoškova). Isti test skriptom PONOVLJEN na ispravci — sve četiri sredine
+    ivica čitaju punu svetlinu (255), samo četiri ćoška su zatamnjena —
+    potvrđeno PRE nego što je ušlo u kod, ne posle.
+
+    **Provera**: `xcodebuild` čist, matematika verifikovana standalone
+    pixel-sampling skriptom (ne samo pročitana/proverena logikom — stvarno
+    izvršena i pixel-i pročitani), isti nivo rigoroznosti kao ranije mask-
+    geometrija u ovom fajlu (auto-fit crop, radial mask, itd. — vidi
+    #3/#4/#7). Nije vizuelno potvrđeno u pravoj app-i pravim očima —
+    korisnik treba da potvrdi da sad STVARNO izgleda kao "samo ćoškovi",
+    posebno na landscape fotki gde je stari bag bio najvidljiviji.
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

@@ -2380,6 +2380,38 @@ slideshow/export koji BriefShow već pravi.
     post-crop ekstentu, ali pravi test — kropuj pa dodaj/proveri vinjetu —
     zahteva pravi UI tok koji nisam mogao da simuliram).
 
+30. **Isti "dugme ne radi na prvi klik" bug, sad na Crop dugmetu — potvrđuje
+    obrazac iz stavke #26** — 15. avgust 2026, isto veče. Korisnik je
+    prijavio: hteo Crop, klik nije radio, dok nije kliknuo Patch (koje je
+    ODMAH radilo — potvrda da je #26-ov fix za mask-add dugmad ispravan),
+    pa je TEK ONDA Crop proradio. Isti obrazac, druga dugmad.
+
+    **Pravi uzrok, potvrđen**: `EditToolButtonStyle` (koristi ga Rotate
+    Left/Right i Crop toggle dugme — fiksni 30×30 icon dugmići) i
+    `AspectRatioButtonStyle` (crop aspect-ratio red) NISU imali
+    `.contentShape(Rectangle())`, isti propust kao `maskAddButton` iz #26,
+    samo na DRUGOJ dugmadi. Za razliku od #26 (gde je fix dodat na nivou
+    pojedinačne helper funkcije), ovog puta je fix dodat NA SAM STIL
+    (`EditToolButtonStyle`/`AspectRatioButtonStyle`) — pokriva svako
+    dugme koje taj stil koristi odjednom, ne samo Crop, uključujući Rotate
+    Left/Right i celu aspect-ratio dugmad, bez potrebe da se svako
+    pojedinačno prijavi kao bug prvo.
+
+    **Namerno NIJE dirano**: `ShowHeaderButtonStyle` (`ContentView.swift`)
+    — i dalje koristi ga par preostalih Develop dugmadi (Reset Crop, Done,
+    Check All/Uncheck All/Cancel/Synchronize u sync dijalogu) I ceo
+    ShowGrid header bar. Verovatno ista propust postoji i tu (`.contentShape`
+    nedostaje i tamo), ali ContentView.swift je ogroman, deljen fajl van
+    Develop-a — nisam menjao dok se ne prijavi konkretan problem na TIM
+    dugmadima, da ne širim izmenu van onoga što je stvarno zatraženo/
+    potvrđeno. Ako se isti bug javi na Reset Crop/Done/bilo kom ShowGrid
+    header dugmetu, ovo je prvo mesto za proveru.
+
+    **Provera**: `xcodebuild` čist. Nije vizuelno potvrđeno mišem — korisnik
+    treba da proveri Crop/Rotate Left/Rotate Right/aspect-ratio dugmad
+    posebno na SVEŽE otvorenom Develop-u (ili posle promene fotke), pre
+    bilo kog drugog klika u panelu.
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

@@ -6377,6 +6377,21 @@ private struct EditToolButtonStyle: ButtonStyle {
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
             )
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            // Same fix as maskAddButton/PanelActionButtonStyle above (see
+            // their doc comments) — without an explicit content shape, a
+            // Button's hit-test area can fall back to just its rendered
+            // glyph's own ink bounds rather than this style's full 30×30
+            // box, especially right after a layout pass elsewhere in the
+            // panel changes this section's height (e.g. aspectRatioRow/
+            // Reset Crop/Done appearing under Crop & Rotate when isCropping
+            // flips). Reported directly: the Crop button not responding to
+            // the first click, "waking up" only after clicking a DIFFERENT
+            // button (Patch) that already had this fix — same bug class,
+            // different button, not something specific to Crop. Fixed at
+            // the STYLE level so it covers every button using
+            // EditToolButtonStyle (Rotate Left/Right, Crop, and any other
+            // fixed-size icon tool button), not just this one report.
+            .contentShape(Rectangle())
     }
 }
 
@@ -6450,5 +6465,8 @@ private struct AspectRatioButtonStyle: ButtonStyle {
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
             )
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            // Same fix as EditToolButtonStyle just above — see its doc
+            // comment.
+            .contentShape(Rectangle())
     }
 }

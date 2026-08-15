@@ -723,7 +723,21 @@ enum PhotoEditRenderer {
             guard let previewFilter = CIRAWFilter(imageURL: url) else {
                 return full
             }
-            previewFilter.isDraftModeEnabled = false
+            // Draft mode ON here — unlike the full-res filter above (which
+            // MUST stay full-quality, it's what export uses), this is the
+            // filter re-demosaiced on every slider tick while dragging.
+            // Full-quality RAW demosaic is expensive enough that on an
+            // actual .NEF it was the real bottleneck behind "moving any
+            // slider on a RAW photo feels choppy" (reported directly,
+            // isolated by benchmarking the non-RAW filter chain separately
+            // at ~13ms — fast — which pointed straight at RAW decode being
+            // the one path left at full quality on every interactive
+            // render). Draft mode trades some quality for a much faster
+            // decode — an acceptable tradeoff for a downsampled (`scale`
+            // below), live-dragging preview; the export render() call
+            // above never touches this filter, so the final exported file
+            // is completely unaffected.
+            previewFilter.isDraftModeEnabled = true
             if scale < 1 {
                 previewFilter.scaleFactor = Float(scale)
             }

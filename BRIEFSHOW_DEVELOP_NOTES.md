@@ -2152,6 +2152,42 @@ slideshow/export koji BriefShow već pravi.
     `selectedMaskEditor` panel ispod tek POJAVLJUJE nakon prvog uspešnog
     dodavanja, menjajući visinu/layout sekcije usred prvog klika).
 
+    **Dopuna (isto veče, četvrti krug)**: korisnik je probao throttle-fix
+    — i dalje sečkanje, ALI ovog puta precizirao da testira na RAW (.NEF)
+    fotki. To je bila ključna informacija — throttle fix je proveren kao
+    ispravan (i logikom i standalone benchmark-om: standardni ne-RAW
+    filter lanac, `xcrun swift` skripta, ~13ms po frejmu na sintetičkoj
+    1600×1067 slici, daleko ispod 20ms throttle prozora). Takođe direktno
+    pregledani SVI sačuvani `PhotoEditSettings` iz UserDefaults (`defaults
+    export com.rocketsbrief.BriefShow -`) — nijedna od 13 fotki trenutno
+    nema stvarno naslikane Patch poteze (sve iz ranijeg
+    screenshot-testiranja nikad nije zapravo komitovano, verovatno zbog
+    istog "dugme ne radi" buga), pa Patch dab-cost teorija otpala.
+
+    **Pravi uzrok**: `PhotoBaseImage.loadPreviewBaseImage`, RAW grana —
+    filter korišćen za LIVE preview tokom prevlačenja slajdera
+    (redekodiran na SVAKI render) imao je `previewFilter.isDraftModeEnabled
+    = false` — identično kao export-ov punokvalitetni filter, bukvalno
+    kopirano bez preispitivanja. `CIRAWFilter`-ov draft mod postoji TAČNO
+    za ovaj scenario (brz demosaic za interaktivni preview, uz manji
+    kvalitet) — nikad iskorišćen. Pravi RAW demosaic pun-kvalitet na SVAKOM
+    od ~50 render-a u sekundi tokom prevlačenja slajdera je mnogo skuplji
+    od bilo kog CIFilter-a u standardnom lancu — to objašnjava zašto
+    throttle fix nije bio dovoljan SAMO za RAW fotke (za JPEG/PNG/HEIC
+    fotke throttle fix bi trebalo da bude dovoljan, pošto je render
+    jeftin).
+
+    **Ispravka**: `previewFilter.isDraftModeEnabled = true` (SAMO za
+    preview filter — export-ov filter u `loadFullBaseImage`, linija ~683,
+    ostaje netaknut na `false`, pun kvalitet za finalni fajl). `xcodebuild`
+    čist. **Nije mereno na pravom .NEF fajlu** (nijedan nije bio dostupan
+    na disku za standalone benchmark ovom sesijom — verovatno na
+    eksternom disku ili folderu van pretraženih putanja) — promena je
+    zasnovana na Apple-ovoj dokumentovanoj nameni `isDraftModeEnabled`
+    (postoji baš za "brz interaktivni preview" slučaj), visoka pouzdanost
+    bez merenja. Korisnik treba da potvrdi na istoj RAW fotki da li je sad
+    primetno glađe.
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

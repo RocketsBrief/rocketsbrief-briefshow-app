@@ -37,6 +37,8 @@ struct PhotoEditSettings: Codable, Equatable {
     var tint: Double = 0            // -1 (green) ...1 (magenta)
     var sharpness: Double = 0       // 0...1
     var clarity: Double = 0         // 0...1 — Lightroom-style local (midtone) contrast boost, see PhotoEditRenderer.render. Positive only for now — no softening/negative range yet.
+    var dehaze: Double = 0          // 0...1 — contrast/saturation/black-point APPROXIMATION of Lightroom's Dehaze, not a real dark-channel-prior algorithm, see PhotoEditRenderer.render.
+    var softGlow: Double = 0        // 0...1 — diffusion/"soft focus" glow (blurred copy screen-blended back over the original), see PhotoEditRenderer.render.
     var vignette: Double = 0        // 0...1
     var rotationQuarterTurns: Int = 0   // 0...3, applied in 90° steps
     var straightenDegrees: Double = 0   // -45...45, fine rotation
@@ -65,6 +67,8 @@ struct PhotoEditSettings: Codable, Equatable {
         tint = try c.decodeIfPresent(Double.self, forKey: .tint) ?? 0
         sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? 0
         clarity = try c.decodeIfPresent(Double.self, forKey: .clarity) ?? 0
+        dehaze = try c.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0
+        softGlow = try c.decodeIfPresent(Double.self, forKey: .softGlow) ?? 0
         vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
         rotationQuarterTurns = try c.decodeIfPresent(Int.self, forKey: .rotationQuarterTurns) ?? 0
         straightenDegrees = try c.decodeIfPresent(Double.self, forKey: .straightenDegrees) ?? 0
@@ -75,7 +79,8 @@ struct PhotoEditSettings: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance
-        case temperature, tint, sharpness, clarity, vignette, rotationQuarterTurns, straightenDegrees, crop
+        case temperature, tint, sharpness, clarity, dehaze, softGlow, vignette
+        case rotationQuarterTurns, straightenDegrees, crop
         case localAdjustments, layers
     }
 
@@ -83,7 +88,8 @@ struct PhotoEditSettings: Codable, Equatable {
         exposure == 0 && contrast == 0 && highlights == 0 && shadows == 0
             && whites == 0 && blacks == 0
             && saturation == 0 && vibrance == 0 && temperature == 0 && tint == 0
-            && sharpness == 0 && clarity == 0 && vignette == 0 && rotationQuarterTurns == 0
+            && sharpness == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
+            && vignette == 0 && rotationQuarterTurns == 0
             && straightenDegrees == 0 && crop == nil && localAdjustments.isEmpty
             && layers.isEmpty
     }
@@ -907,6 +913,75 @@ enum PhotoEditRenderer {
                 filter.radius = Float(min(max(longEdge * 0.02, 8), 100))
                 filter.intensity = Float(settings.clarity * 0.8)
                 output = filter.outputImage ?? output
+            }
+        }
+
+        // Dehaze — an APPROXIMATION, not Lightroom's real algorithm (which
+        // uses a dark-channel-prior atmospheric-scattering model — a much
+        // bigger undertaking, explicitly deferred, see
+        // BRIEFSHOW_DEVELOP_NOTES.md). Haze visually reads as two things:
+        // flattened contrast/color (light scattered by atmospheric
+        // particles washes everything toward gray) and a lifted black
+        // point (true blacks never quite reach black through the haze) —
+        // so this fakes the "haze removed" look by boosting contrast and
+        // saturation, THEN crushing the black point back down and pulling
+        // the lower-midtones with it via a tone curve (same point0...
+        // point4 curve-bending technique the Blacks/Shadows/Highlights/
+        // Whites sliders above use, just dehaze-specific coefficients).
+        // Reads as "punchier and clearer" on a real hazy photo without
+        // needing the full atmospheric-scattering math.
+        if settings.dehaze > 0 {
+            let d = Float(settings.dehaze)
+
+            let colorFilter = CIFilter.colorControls()
+            colorFilter.inputImage = output
+            colorFilter.contrast = 1 + d * 0.35
+            colorFilter.saturation = 1 + d * 0.25
+            colorFilter.brightness = 0
+            output = colorFilter.outputImage ?? output
+
+            let curve = CIFilter.toneCurve()
+            curve.inputImage = output
+            curve.point0 = CGPoint(x: 0, y: CGFloat(-0.08 * d))
+            curve.point1 = CGPoint(x: 0.25, y: CGFloat(0.25 - 0.05 * d))
+            curve.point2 = CGPoint(x: 0.5, y: 0.5)
+            curve.point3 = CGPoint(x: 0.75, y: 0.75)
+            curve.point4 = CGPoint(x: 1, y: 1)
+            output = curve.outputImage ?? output
+        }
+
+        // Soft Glow — a classic diffusion/"soft focus" portrait look: blur
+        // a copy of the image and screen-blend it back over the sharp
+        // original (screen only ever LIGHTENS, so this reads as a soft
+        // glow/bloom rather than a plain blur), then mix between the crisp
+        // original and the fully-glowed version by `softGlow` via
+        // CIBlendWithMask against a flat gray mask — same "scale a mask's
+        // blend strength for an opacity dial" trick Patch's own Opacity
+        // slider uses. `.clampedToExtent()` before the blur (undone by the
+        // final `.cropped(to:)`) is the standard Core Image pattern for
+        // blurring without the transparent/undefined edge outside the
+        // image bleeding black into the result.
+        if settings.softGlow > 0 {
+            let extent = output.extent
+            let longEdge = max(extent.width, extent.height)
+            if longEdge.isFinite, longEdge > 0 {
+                let blurred = output
+                    .clampedToExtent()
+                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: longEdge * 0.025])
+                    .cropped(to: extent)
+
+                let screen = CIFilter.screenBlendMode()
+                screen.inputImage = blurred
+                screen.backgroundImage = output
+                let glowed = screen.outputImage ?? output
+
+                let amount = CGFloat(min(max(settings.softGlow, 0), 1))
+                let mixMask = CIImage(color: CIColor(red: amount, green: amount, blue: amount)).cropped(to: extent)
+                let blend = CIFilter.blendWithMask()
+                blend.inputImage = glowed
+                blend.backgroundImage = output
+                blend.maskImage = mixMask
+                output = blend.outputImage ?? output
             }
         }
 
@@ -4508,6 +4583,8 @@ struct DevelopView: View {
             sectionTitle("Detail & Effects")
             editSlider("Sharpness", value: $settings.sharpness, range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Clarity", value: $settings.clarity, range: 0...1) { String(format: "%.0f", $0 * 100) }
+            editSlider("Dehaze", value: $settings.dehaze, range: 0...1) { String(format: "%.0f", $0 * 100) }
+            editSlider("Soft Glow", value: $settings.softGlow, range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Vignette", value: $settings.vignette, range: 0...1) { String(format: "%.0f", $0 * 100) }
         }
     }
@@ -5533,6 +5610,8 @@ struct DevelopView: View {
         if categories.contains(.detail) {
             result.sharpness = source.sharpness
             result.clarity = source.clarity
+            result.dehaze = source.dehaze
+            result.softGlow = source.softGlow
             result.vignette = source.vignette
         }
         if categories.contains(.masks) {

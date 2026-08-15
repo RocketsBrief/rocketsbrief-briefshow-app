@@ -2262,6 +2262,48 @@ slideshow/export koji BriefShow već pravi.
     potvrđeni `MaskAddButtonStyle`), ali korisnik treba da pogleda i
     potvrdi da izgleda kako je tražio.
 
+28. **Dehaze i Soft Glow — dva nova global slajdera** — 15. avgust 2026,
+    isto veče, "Detail & Effects" panel (posle Clarity, pre Vignette).
+    Korisnik je ranije (stavka #26) izričito odložio Dehaze; ovom
+    dopunom je zatražio da se ipak doda, plus nov "mekana slika" efekat —
+    kroz `AskUserQuestion` potvrđeno da to znači soft-focus/dreamy sjaj
+    (Lightroom-stil "Soft Portrait"), ne obrnuta Clarity i ne skin-only
+    retuš (ta dva su bila ponuđene alternative).
+
+    - **Dehaze** (0...1): i dalje EKSPLICITNO aproksimacija, ne pravi
+      dark-channel-prior algoritam (isto upozorenje kao ranije). Magla
+      vizuelno = spljošten kontrast/boja + podignuta crna tačka — pa ovo
+      pojača kontrast (`+0.35×d`) i saturaciju (`+0.25×d`) preko
+      `CIColorControls`, PA spusti crnu tačku i donje sredње tonove
+      preko `CIToneCurve` (ista point0...point4 tehnika kao Blacks/
+      Shadows/Highlights/Whites slajderi, samo dehaze-specifični
+      koeficijenti).
+    - **Soft Glow** (0...1): klasičan diffusion/soft-focus efekat —
+      zamućena kopija slike (`CIGaussianBlur`, radijus opet RAZLOMAK
+      duže ivice kao i Clarity/Patch brush, `longEdge * 0.025`,
+      `.clampedToExtent()` pre/`.cropped()` posle da ivica slike ne
+      "pocrni") se screen-blenduje nazad preko originala (screen SAMO
+      posvetljava, nikad ne zatamni — zato čita kao sjaj/bloom, ne prosto
+      zamućenje), pa se meša sa oštrim originalom preko `slajder` procenta
+      koristeći `CIBlendWithMask` protiv ravne sive maske — ista "skaliraj
+      jačinu maske za opacity dial" trik koji Patch-ov Opacity slajder
+      već koristi.
+    - Threaded kroz `isNeutral`/custom decoder/`CodingKeys`/
+      `mergedSyncSettings(.detail)` — isti obrazac kao Clarity (stavka
+      #26), bez novih migration rizika (oba polja imaju default 0, i
+      `PhotoEditSettings` već ima ručni `decodeIfPresent`-baziran decoder
+      za baš ovaj razlog).
+
+    **Provera**: `xcodebuild` čist. Standalone `xcrun swift` benchmark
+    (isti pristup kao stavka #26/perf-istraga) — Dehaze+Soft Glow zajedno
+    na sintetičkoj 1600×1067 slici: ~22ms po frejmu, tik iznad 20ms throttle
+    prozora (ali `renderGeneration` guard iz ranije ove sesije to bezbedno
+    apsorbuje — u najgorem slučaju povremeno preskoči jedan frejm, ne
+    gomila backlog). Nije vizuelno potvrđeno pravim očima — korisnik treba
+    da proveri da oba slajdera stvarno vidljivo menjaju sliku u
+    očekivanom pravcu (Dehaze = "jasnije/kontrastnije", Soft Glow =
+    "mekše/sjajnije").
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

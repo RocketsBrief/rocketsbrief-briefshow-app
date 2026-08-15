@@ -1968,6 +1968,104 @@ slideshow/export koji BriefShow već pravi.
     i dalje o PRVOJ fotki (proveri po tome što se slajderi/postavke u
     desnom panelu ne menjaju posle Shift-klika).
 
+26. **Cmd+A select-all u ShowGrid-u, Clarity slajder, i pravi Photoshop-style
+    clone-stamp Patch tool** — 15. avgust 2026, isto veče. Tri odvojena
+    zahteva u jednoj poruci; sve troje urađeno + `xcodebuild` čist posle
+    svake celine.
+
+    - **Cmd+A** (`ContentView.swift`, isti keyMonitor blok kao Cmd+C/X/V):
+      selektuje sve fotke trenutno u gridu. Samo dok loupe NIJE otvoren
+      (nema šta da se "select all"-uje unutar pregleda jedne fotke), i samo
+      kad ima bar jedna fotka. Isti `!event.isARepeat` guard kao C/X/V (vidi
+      #18) — bez njega bi držanje Cmd+A ponavljalo `replaceSelection` na
+      svaki key-repeat, bezopasno ovde (idempotentno) ali nepotrebno.
+
+    - **Clarity** (novi global slajder, "Detail & Effects" panel, posle
+      Sharpness, pre Vignette): lokalni/midtone kontrast, na zahtev "sve sto
+      ima Lightroom, dehaze, clarity, etc". Implementirano kao
+      `CIUnsharpMask` sa VELIKIM radijusom (za razliku od Sharpness, koji
+      koristi `CISharpenLuminance` — taj filter uopšte nema radius parametar,
+      pa je inherentno fin/ivični sharpen). Radijus je RAZLOMAK slike duže
+      ivice (`longEdge * 0.02`, klampovano 8...200px), ne fiksni broj piksela
+      — render() radi i na preview i na full-export rezoluciji, pa bi fiksni
+      radijus izgledao pogrešno na jednoj od te dve. Samo pozitivan opseg
+      (0...1) ovom sesijom — `CIUnsharpMask.intensity` nije dokumentovan za
+      negativne vrednosti, a pravo "smanji lokalni kontrast" bi tražio
+      sopstveni subtract-based blend, ne samo negativan intensity — odloženo.
+      Threaded kroz `isNeutral`/custom decoder/`mergedSyncSettings(.detail)`
+      (vidi migration napomenu ispod za ZAŠTO custom decoder uopšte postoji).
+      **Dehaze eksplicitno preskočen ovu sesiju** (korisnikov izbor) — pravi
+      dehaze algoritam (dark-channel-prior) je mnogo veći posao, ostaje za
+      kasnije ako se zatraži.
+
+    - **Patch tool — pravi kontinuirani clone-stamp brush** (korisnikov
+      eksplicitan izbor između dve ponuđene opcije — vidi razgovor). Circle
+      više NIJE jedan pomerivi krug/kvadrat oblik; sad je prava četkica:
+      ⌥-klik postavlja IZVOR (`pendingPatchSource`), zatim prevlačenje
+      SLIKA kontinuirano duž celog poteza — svaki potez postaje `PatchStroke`
+      (sopstveni `points`/`size`/`feather`, tačno isti "svaki potez pamti
+      SVOJE podešavanje" princip kao `BrushStroke`) sa FIKSNIM
+      `sourceOffsetX/Y` postavljenim u trenutku ⌥-klika. Taj offset ostaje
+      "aligned" (Photoshop terminologija) kroz VIŠE poteza dok se korisnik
+      ponovo ne ⌥-klikne — nije potrebno resetovati izvor između svakog
+      poteza. Free shape je NETAKNUT (identičan stari mehanizam — jedan
+      hand-drawn outline, reposition-only). **Square uklonjen iz Patch UI-a**
+      (add-dugme i shape picker) po eksplicitnom zahtevu — enum
+      `PatchShape.square` i sav render kod za njega ostaju netaknuti jer ih
+      Selection tool i dalje koristi (odvojena feature, #13).
+      - **Opacity** (novo, `PatchGeometry.opacity`, 0...1 slajder): skalira
+        blend-mask-a preko `CIColorMatrix` (množi RGB kanale faktorom) pre
+        `CIBlendWithMask` — jeftino, jedan extra filter samo kad je
+        opacity < 1.
+      - **Feather sad ima pod (floor)**: `patchMinimumFeather = 0.05`,
+        primenjeno i na Circle-brush slajder i na legacy Free slajder (i u
+        UI range-u i kao clamp u setter-u) — ivice NIKAD ne mogu biti hard
+        0, po eksplicitnom zahtevu ("obavezno ivice da budu feather").
+      - **Migration bug uhvaćen i ispravljen PRE nego što je postao
+        problem**: `PhotoEditSettings` ima ručno pisan `init(from:)` baš
+        zato što synthesized Codable NE koristi property default vrednosti
+        za key koji nedostaje u starom sačuvanom JSON-u — potvrđeno
+        standalone `xcrun swift` test skriptom (`Inner(a: Double=1, b:
+        Double=2)`, JSON sa samo `a`, decode BACA `keyNotFound` za `b`, ne
+        vraća default). Dodavanje `opacity`/`strokes` polja u
+        `PatchGeometry` bi BEZ custom decoder-a pokvarilo decode SVAKOG
+        već-sačuvanog Patch adjustment-a iz build-a pre danas — a pošto
+        `PhotoEditSettings.localAdjustments` dekodira ceo niz odjednom,
+        JEDAN loš element baca CEO fotkin sačuvani edit (vidi
+        `PhotoEditStore.allSettings`, briše sve što ne uspe da dekodira).
+        Ispravljeno dodavanjem identičnog ručnog `init(from:)` +
+        `CodingKeys` na `PatchGeometry`, isti `decodeIfPresent ?? default`
+        idiom. **Lekcija za svaku buduću sesiju**: pre dodavanja NOVOG
+        polja u BILO KOJI `Codable` struct koji se već čuva na disku
+        (`PhotoEditSettings` i sve što je ugnježdeno u njemu), proveriti da
+        li taj tip ima ručni decoder — ako nema (oslanja se na sintetisani),
+        ili dodati ga, ili prihvatiti da stari sačuvani podaci sa TIM tipom
+        prestaju da se učitavaju. `PatchStroke` (nov tip, danas dodat) NEMA
+        ovu zaštitu — nije potrebna JOŠ (nema starih podataka), ali svako
+        buduće dodavanje polja u `PatchStroke` treba istu tretman.
+      - **Poznata, prihvaćena posledica ovog rewrite-a**: stari sačuvani
+        Circle patch (iz sesije PRE danas, ako postoji na nekoj pravoj
+        fotki — malo verovatno, testirano samo na sintetičkoj test-fotki po
+        #11) sad neće prikazivati NIŠTA dok se ne naslika bar jedan potez —
+        `hasEffect` za `.circle` zahteva `!strokes.isEmpty`, a stari podaci
+        nemaju `strokes` (default `[]`). Namerna, očekivana posledica
+        prelaska sa "shape-placement" na "brush-painting" paradigmu — isto
+        ponašanje kao prazna `BrushMaskGeometry` (dodavanje Brush maske ne
+        prikazuje ništa dok se ne naslika), ne bug.
+
+    **Provera**: `xcodebuild` čist posle svake od tri celine. Sve troje
+    logički/matematički provereno čitanjem (offset predznak isti kao
+    postojeći `patchSampledImage`/`movePatchSource` konvencija, hardness =
+    1 − feather inverzija tačna, `patchStrokeDabs` ponovo koristi već
+    pixel-verifikovani `brushStrokeDabs`). **NIJE GUI-testirano pravim
+    mišem ovom sesijom** — ⌥-klik + drag kombinacija je poznato
+    netestabilna preko accessibility-ja (isto ograničenje kao svaki
+    gesture-based deo ove app-e, vidi napomenu iz 10. avgusta). Korisnik
+    treba da proveri sve troje pravim mišem: Cmd+A u gridu, Clarity vizuelno
+    menja sliku, i glavno — Patch Circle: ⌥-klik na jedno mesto, prevuci
+    negde drugde, treba da se pojavi kloniran sadržaj duž celog poteza (ne
+    samo na jednoj tački), sa vidljivim feather ivicama.
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

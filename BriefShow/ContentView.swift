@@ -22564,6 +22564,16 @@ struct PhotoShowSheet: View {
                     pasteIntoGrid()
                     return nil
                 }
+
+                // Cmd-A selects every photo currently in the grid at once
+                // (Finder/Photos convention) — only back in the grid itself,
+                // not while the loupe is open (there's nothing to "select
+                // all" inside a single-photo preview) and only when there's
+                // at least one photo to select.
+                if character == "a", loupeURLs == nil, !photoURLs.isEmpty {
+                    replaceSelection(with: photoURLs)
+                    return nil
+                }
             }
 
             // "c" closes the loupe, same as Space/Escape — checked first

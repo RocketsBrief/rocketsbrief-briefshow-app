@@ -36,6 +36,7 @@ struct PhotoEditSettings: Codable, Equatable {
     var temperature: Double = 0     // -1 (cooler) ...1 (warmer)
     var tint: Double = 0            // -1 (green) ...1 (magenta)
     var sharpness: Double = 0       // 0...1
+    var clarity: Double = 0         // 0...1 — Lightroom-style local (midtone) contrast boost, see PhotoEditRenderer.render. Positive only for now — no softening/negative range yet.
     var vignette: Double = 0        // 0...1
     var rotationQuarterTurns: Int = 0   // 0...3, applied in 90° steps
     var straightenDegrees: Double = 0   // -45...45, fine rotation
@@ -63,6 +64,7 @@ struct PhotoEditSettings: Codable, Equatable {
         temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? 0
         tint = try c.decodeIfPresent(Double.self, forKey: .tint) ?? 0
         sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? 0
+        clarity = try c.decodeIfPresent(Double.self, forKey: .clarity) ?? 0
         vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
         rotationQuarterTurns = try c.decodeIfPresent(Int.self, forKey: .rotationQuarterTurns) ?? 0
         straightenDegrees = try c.decodeIfPresent(Double.self, forKey: .straightenDegrees) ?? 0
@@ -73,7 +75,7 @@ struct PhotoEditSettings: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance
-        case temperature, tint, sharpness, vignette, rotationQuarterTurns, straightenDegrees, crop
+        case temperature, tint, sharpness, clarity, vignette, rotationQuarterTurns, straightenDegrees, crop
         case localAdjustments, layers
     }
 
@@ -81,7 +83,7 @@ struct PhotoEditSettings: Codable, Equatable {
         exposure == 0 && contrast == 0 && highlights == 0 && shadows == 0
             && whites == 0 && blacks == 0
             && saturation == 0 && vibrance == 0 && temperature == 0 && tint == 0
-            && sharpness == 0 && vignette == 0 && rotationQuarterTurns == 0
+            && sharpness == 0 && clarity == 0 && vignette == 0 && rotationQuarterTurns == 0
             && straightenDegrees == 0 && crop == nil && localAdjustments.isEmpty
             && layers.isEmpty
     }
@@ -268,6 +270,19 @@ struct BrushMaskGeometry: Codable, Equatable {
 // (not (0,0)) so a freshly-added Circle/Square patch immediately shows a
 // visibly distinct source marker instead of a degenerate identity clone
 // that looks like it does nothing.
+//
+// `.circle` is a real continuous clone-stamp BRUSH (as of the 15. avgust
+// 2026 rework, see BRIEFSHOW_DEVELOP_NOTES.md): `strokes` holds every
+// painted drag, Photoshop-style — ⌥-click sets the source point, then
+// dragging paints a `PatchStroke` whose `sourceOffsetX/Y` stays FIXED for
+// that whole stroke (and carries over "aligned" into the next stroke too,
+// until the user ⌥-clicks again), sampling from source+offset continuously
+// as the cursor moves rather than repositioning one fixed shape. `.free`
+// keeps the ORIGINAL single-hand-drawn-outline mechanic below (`points`/
+// `centerX/Y`/`radiusX/Y`/`sourceOffsetX/Y`/`feather`) unchanged — it isn't
+// painted incrementally. `.square` is kept only so old saved data still
+// decodes/renders; it's no longer offered in the UI (Patch is Circle-brush
+// or Free only — Square remains a Selection-tool-only shape).
 struct PatchGeometry: Codable, Equatable {
     var shape: PatchShape = .circle
     var centerX: Double = 0.5
@@ -278,6 +293,72 @@ struct PatchGeometry: Codable, Equatable {
     var points: [CGPoint] = []   // unit space, Free shape only, empty until drawn
     var sourceOffsetX: Double = 0.2
     var sourceOffsetY: Double = 0
+    var opacity: Double = 1.0    // 0...1, applies to the whole patch (brush strokes AND legacy Free outline)
+    var strokes: [PatchStroke] = []   // Circle-brush mode only, see doc comment above
+
+    init(
+        shape: PatchShape = .circle, centerX: Double = 0.5, centerY: Double = 0.5,
+        radiusX: Double = 0.12, radiusY: Double = 0.12, feather: Double = 0.3,
+        points: [CGPoint] = [], sourceOffsetX: Double = 0.2, sourceOffsetY: Double = 0,
+        opacity: Double = 1.0, strokes: [PatchStroke] = []
+    ) {
+        self.shape = shape
+        self.centerX = centerX
+        self.centerY = centerY
+        self.radiusX = radiusX
+        self.radiusY = radiusY
+        self.feather = feather
+        self.points = points
+        self.sourceOffsetX = sourceOffsetX
+        self.sourceOffsetY = sourceOffsetY
+        self.opacity = opacity
+        self.strokes = strokes
+    }
+
+    // Written by hand, same reasoning/idiom as PhotoEditSettings' own
+    // custom init(from:) — a plain synthesized Decodable does NOT fall
+    // back to a property's default value for a key that's simply missing
+    // from older saved JSON (confirmed with a standalone decode test
+    // before relying on it here, see BRIEFSHOW_DEVELOP_NOTES.md); it
+    // throws instead. Without this, adding `opacity`/`strokes` today would
+    // make any Patch adjustment saved by a build before this rework fail
+    // to decode — and since PhotoEditSettings.localAdjustments decodes the
+    // WHOLE array at once, ONE bad element throws the whole photo's saved
+    // edit away (see PhotoEditStore.allSettings), not just that one mask.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        shape = try c.decodeIfPresent(PatchShape.self, forKey: .shape) ?? .circle
+        centerX = try c.decodeIfPresent(Double.self, forKey: .centerX) ?? 0.5
+        centerY = try c.decodeIfPresent(Double.self, forKey: .centerY) ?? 0.5
+        radiusX = try c.decodeIfPresent(Double.self, forKey: .radiusX) ?? 0.12
+        radiusY = try c.decodeIfPresent(Double.self, forKey: .radiusY) ?? 0.12
+        feather = try c.decodeIfPresent(Double.self, forKey: .feather) ?? 0.3
+        points = try c.decodeIfPresent([CGPoint].self, forKey: .points) ?? []
+        sourceOffsetX = try c.decodeIfPresent(Double.self, forKey: .sourceOffsetX) ?? 0.2
+        sourceOffsetY = try c.decodeIfPresent(Double.self, forKey: .sourceOffsetY) ?? 0
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1.0
+        strokes = try c.decodeIfPresent([PatchStroke].self, forKey: .strokes) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case shape, centerX, centerY, radiusX, radiusY, feather, points
+        case sourceOffsetX, sourceOffsetY, opacity, strokes
+    }
+}
+
+// One continuous clone-stamp brush drag for a Circle-mode Patch — same
+// "each stroke keeps its own size/feather" reasoning as BrushStroke (so
+// nudging the Feather/Brush Size sliders for the NEXT stroke never
+// reshapes strokes already painted), plus a `sourceOffsetX/Y` fixed at the
+// moment this stroke started (Photoshop's "Aligned" clone-stamp behavior —
+// see PatchGeometry's doc comment).
+struct PatchStroke: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var points: [CGPoint] = []        // unit space, destination path painted, in drag order
+    var sourceOffsetX: Double = 0.2   // fixed for this stroke's whole drag, same convention as PatchGeometry.sourceOffsetX
+    var sourceOffsetY: Double = 0
+    var size: Double = 0.08           // brush diameter, fraction of the image's long edge — same convention as BrushStroke.size
+    var feather: Double = 0.35        // patchMinimumFeather...1 — edges are ALWAYS at least a little feathered, per explicit request; never a hard 0 edge like a raw brush dab would give
 }
 
 // One local adjustment: a mask (exactly one of radial/graduated/brush/patch
@@ -316,13 +397,18 @@ struct LocalAdjustment: Codable, Equatable, Identifiable {
     // applyLocalAdjustments to skip rendering work. Tonal mask types
     // (radial/graduated/brush) are neutral exactly when their settings are
     // — the existing check. A patch has no tonal settings to be neutral or
-    // not; instead it "does nothing" only for a Free shape with no outline
-    // drawn yet (Circle/Square always have a valid default outline the
-    // moment they're added).
+    // not; instead it "does nothing" until there's actually something to
+    // render: a Circle-brush patch needs at least one painted stroke, a
+    // Free patch needs a drawn outline, a (legacy) Square always had a
+    // valid default outline the moment it was added.
     var hasEffect: Bool {
         if type == .patch {
             guard let patch else { return false }
-            return patch.shape != .free || !patch.points.isEmpty
+            switch patch.shape {
+            case .circle: return !patch.strokes.isEmpty
+            case .free: return !patch.points.isEmpty
+            case .square: return true
+            }
         }
         return !settings.isNeutral
     }
@@ -784,6 +870,32 @@ enum PhotoEditRenderer {
             output = filter.outputImage ?? output
         }
 
+        // Clarity — Lightroom's "local/midtone contrast" — is a LARGE-radius
+        // unsharp mask, as distinct from Sharpness' small-radius edge
+        // sharpening above (CISharpenLuminance has no radius knob at all;
+        // CIUnsharpMask's `radius` is what makes this read as "punch" in
+        // the midtones rather than "crisper edges"). The radius is a
+        // FRACTION of the image's long edge, not a fixed pixel count —
+        // render() runs at both preview and full-export resolution, and a
+        // radius picked for one would look wrong (too small or too smeared)
+        // at the other; the brush/patch tools above already use the same
+        // "size as a fraction of the long edge" convention for the same
+        // reason. Positive-only for now (no negative/softening range) —
+        // CIUnsharpMask's `intensity` isn't documented for negative values,
+        // and a properly signed "reduce local contrast" would need its own
+        // subtract-based blend rather than reusing this filter — deferred,
+        // see BRIEFSHOW_DEVELOP_NOTES.md.
+        if settings.clarity > 0 {
+            let longEdge = max(output.extent.width, output.extent.height)
+            if longEdge.isFinite, longEdge > 0 {
+                let filter = CIFilter.unsharpMask()
+                filter.inputImage = output
+                filter.radius = Float(min(max(longEdge * 0.02, 8), 200))
+                filter.intensity = Float(settings.clarity * 0.8)
+                output = filter.outputImage ?? output
+            }
+        }
+
         if settings.vignette > 0 {
             let filter = CIFilter.vignette()
             filter.inputImage = output
@@ -846,6 +958,17 @@ enum PhotoEditRenderer {
             guard adjustment.isEnabled, adjustment.hasEffect else {
                 continue
             }
+
+            // A Circle-mode patch is a whole SEQUENCE of independently-
+            // sourced brush strokes (see PatchGeometry's doc comment), not
+            // one mask+one sample the way every other adjustment type (and
+            // a legacy Square/Free patch) is — routed to its own compositor
+            // rather than forced through the generic single-mask path below.
+            if adjustment.type == .patch, let patch = adjustment.patch, patch.shape == .circle {
+                output = applyPatchBrushStrokes(patch, to: output, extent: extent)
+                continue
+            }
+
             guard let mask = maskImage(for: adjustment, extent: extent) else {
                 continue
             }
@@ -857,14 +980,89 @@ enum PhotoEditRenderer {
                 adjusted = applyLocalToneColorDetail(adjustment.settings, to: output)
             }
 
+            let scaledMask = adjustment.type == .patch
+                ? scaleMaskOpacity(mask, by: adjustment.patch?.opacity ?? 1)
+                : mask
+
             let blend = CIFilter.blendWithMask()
             blend.inputImage = adjusted
+            blend.backgroundImage = output
+            blend.maskImage = scaledMask
+            output = blend.outputImage ?? output
+        }
+
+        return output
+    }
+
+    // Paints every recorded PatchStroke in order, each with its OWN fixed
+    // source offset (see PatchStroke's doc comment) — a soft brush-dab mask
+    // built the same way brushStrokeDabs builds a Brush tool stroke, blended
+    // against a copy of `output` shifted by that stroke's offset. Strokes
+    // are applied sequentially against the running `output` (not all
+    // against the original `image`), so painting one stroke's source
+    // OVER an area an earlier stroke already patched samples the already-
+    // patched result, matching a real clone stamp / how every other local
+    // adjustment here already stacks.
+    private static func applyPatchBrushStrokes(_ geo: PatchGeometry, to image: CIImage, extent: CGRect) -> CIImage {
+        var output = image
+        let opacity = min(max(geo.opacity, 0), 1)
+
+        for stroke in geo.strokes {
+            guard let dabs = patchStrokeDabs(stroke, extent: extent) else {
+                continue
+            }
+            let mask = scaleMaskOpacity(dabs, by: opacity)
+            let sampled = patchSampledImage(
+                PatchGeometry(sourceOffsetX: stroke.sourceOffsetX, sourceOffsetY: stroke.sourceOffsetY),
+                source: output, extent: extent
+            )
+
+            let blend = CIFilter.blendWithMask()
+            blend.inputImage = sampled
             blend.backgroundImage = output
             blend.maskImage = mask
             output = blend.outputImage ?? output
         }
 
         return output
+    }
+
+    // Reuses brushStrokeDabs' exact dab-interpolation/stamping math (see its
+    // own doc comment) by re-packaging a PatchStroke as a BrushStroke —
+    // `feather` (0 = hard edge, 1 = very soft, same convention as every
+    // other mask here) maps to `hardness` inverted, since brushStrokeDabs'
+    // "hardness" and a patch's "feather" describe the same radius0/radius1
+    // gap from opposite ends.
+    private static func patchStrokeDabs(_ stroke: PatchStroke, extent: CGRect) -> CIImage? {
+        let feather = min(max(stroke.feather, patchMinimumFeather), 1)
+        let brushStroke = BrushStroke(points: stroke.points, size: stroke.size, hardness: 1 - feather, isErase: false)
+        return brushStrokeDabs(brushStroke, extent: extent)
+    }
+
+    // Edges are ALWAYS at least a little feathered per explicit request —
+    // this is the floor the Patch UI's Feather sliders clamp to (both the
+    // Circle-brush's per-stroke slider and the legacy Free outline's
+    // slider), so a client can never accidentally leave a hard, visibly
+    // "pasted" edge the way a bare brush dab (hardness 1) would.
+    fileprivate static let patchMinimumFeather = 0.05
+
+    // Scales a grayscale mask's brightness by `factor` (CIColorMatrix,
+    // RGB channels multiplied, alpha left at 1) — used to implement a
+    // patch's Opacity: blendWithMask treats the mask's brightness as the
+    // blend strength, so dimming it uniformly weakens the whole patch
+    // (strokes or outline alike) without needing a second blend pass.
+    private static func scaleMaskOpacity(_ mask: CIImage, by factor: Double) -> CIImage {
+        guard factor < 1 else {
+            return mask
+        }
+        let f = CGFloat(min(max(factor, 0), 1))
+        let matrix = CIFilter.colorMatrix()
+        matrix.inputImage = mask
+        matrix.rVector = CIVector(x: f, y: 0, z: 0, w: 0)
+        matrix.gVector = CIVector(x: 0, y: f, z: 0, w: 0)
+        matrix.bVector = CIVector(x: 0, y: 0, z: f, w: 0)
+        matrix.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        return matrix.outputImage ?? mask
     }
 
     // Shifts the ENTIRE current image by the vector from the patch's
@@ -1735,6 +1933,28 @@ struct DevelopView: View {
     // pattern/reasoning.
     @State private var patchSourceHoverLocation: CGPoint?
 
+    // Circle-mode Patch (clone-stamp brush) state — same "don't touch the
+    // real model until mouse-up" pattern as activeBrushStrokePoints/
+    // activePatchDrawPoints above. `pendingPatchSource` is the unit-space
+    // point an ⌥-click just landed on, consumed (and cleared) by the FIRST
+    // dab of the next painted stroke, which turns it into `patchStrokeOffset`
+    // — a fixed destination→source vector that then stays in effect across
+    // MULTIPLE stroke drags ("Aligned" clone-stamp behavior, matching
+    // Photoshop) until the user ⌥-clicks again to pick a new source.
+    // `patchBrushSize`/`patchBrushFeather` are shared UI state read when a
+    // stroke is committed (see commitPatchStroke) — exactly how brushSize/
+    // brushHardness work for the Brush tool — so each already-painted
+    // stroke keeps whatever size/feather was in effect when IT was drawn.
+    @State private var activePatchStrokePoints: [CGPoint] = []
+    @State private var pendingPatchSource: CGPoint?
+    @State private var patchStrokeOffset: CGSize?
+    @State private var patchBrushSize: Double = 0.08
+    @State private var patchBrushFeather: Double = 0.35
+    // Cursor-size ring preview while hovering (not dragging, not ⌥-held) —
+    // mirrors brushHoverLocation exactly, just a separate var since the two
+    // tools' hover state can't be conflated (different rings/sizes).
+    @State private var patchBrushHoverLocation: CGPoint?
+
     // Selection tool (Cut/Copy/Deselect -> layer clipboard). `activeSelection`
     // nil = tool not in use; non-nil = its outline is shown/editable on
     // canvas. Ephemeral like isCropping's pendingCrop — never written into
@@ -1971,10 +2191,18 @@ struct DevelopView: View {
                 geo.radiusY = min(max(geo.radiusY * factor, 0.02), 1)
                 settings.localAdjustments[index].radial = geo
             case .patch:
-                guard var geo = settings.localAdjustments[index].patch, geo.shape != .free else { return }
-                geo.radiusX = min(max(geo.radiusX * factor, 0.02), 1)
-                geo.radiusY = min(max(geo.radiusY * factor, 0.02), 1)
-                settings.localAdjustments[index].patch = geo
+                guard let shape = settings.localAdjustments[index].patch?.shape, shape != .free else { return }
+                if shape == .circle {
+                    // Adjusts the brush for the NEXT stroke, same as
+                    // brushSize above — strokes already painted keep
+                    // whatever size they were drawn with.
+                    patchBrushSize = min(max(patchBrushSize * factor, 0.02), 0.3)
+                } else if var geo = settings.localAdjustments[index].patch {
+                    // Legacy Square data only.
+                    geo.radiusX = min(max(geo.radiusX * factor, 0.02), 1)
+                    geo.radiusY = min(max(geo.radiusY * factor, 0.02), 1)
+                    settings.localAdjustments[index].patch = geo
+                }
             case .graduated:
                 break
             }
@@ -2820,10 +3048,15 @@ struct DevelopView: View {
     // Dispatches a Patch mask's on-canvas overlay by shape/draw-state: a
     // Free shape with no outline drawn yet shows the drawing surface
     // instead of handles (nothing to grab a handle ON before it exists).
+    // Circle is the clone-stamp BRUSH (patchBrushOverlay) — .square is kept
+    // only so old saved data still has SOMETHING to render (patchShapeOverlay),
+    // it's no longer reachable from the UI.
     @ViewBuilder
     private func patchOverlay(_ geo: PatchGeometry, frame: CGRect) -> some View {
         switch geo.shape {
-        case .circle, .square:
+        case .circle:
+            patchBrushOverlay(geo, frame: frame)
+        case .square:
             patchShapeOverlay(geo, frame: frame)
         case .free:
             if geo.points.isEmpty {
@@ -2832,6 +3065,166 @@ struct DevelopView: View {
                 patchFreeShapeOverlay(geo, frame: frame)
             }
         }
+    }
+
+    // The clone-stamp BRUSH overlay for a Circle-mode patch — paints
+    // continuously as the user drags, exactly like Photoshop/Lightroom's
+    // own clone stamp (see PatchGeometry's doc comment and
+    // paintPatchStroke/commitPatchStroke for the gesture logic). Layered
+    // like brushPaintOverlay: already-painted strokes underneath
+    // (patchStrokeMaskCanvas), a live vector preview of the IN-PROGRESS
+    // stroke above that, source/size cursor previews above that, and the
+    // transparent hit area last so its gesture/hover modifiers stay on top.
+    private func patchBrushOverlay(_ geo: PatchGeometry, frame: CGRect) -> some View {
+        let brushDiameter = max(patchBrushSize * max(frame.width, frame.height), 2)
+
+        return ZStack {
+            patchStrokeMaskCanvas(geo, frame: frame)
+
+            if activePatchStrokePoints.count > 1 {
+                Path { path in
+                    let scaled = activePatchStrokePoints.map {
+                        CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
+                    }
+                    path.move(to: scaled[0])
+                    for point in scaled.dropFirst() {
+                        path.addLine(to: point)
+                    }
+                }
+                .stroke(accentColor.opacity(0.8), style: StrokeStyle(lineWidth: brushDiameter, lineCap: .round, lineJoin: .round))
+                .allowsHitTesting(false)
+            }
+
+            // While actively painting, a second yellow "twin cursor" tracks
+            // where content is being sampled FROM (last painted point plus
+            // this stroke's fixed offset) — the same live feedback a real
+            // clone stamp gives, so the user sees what's about to land
+            // before it does.
+            if let last = activePatchStrokePoints.last, let offset = patchStrokeOffset {
+                let sourcePoint = CGPoint(
+                    x: frame.minX + (last.x + offset.width) * frame.width,
+                    y: frame.minY + (last.y + offset.height) * frame.height
+                )
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.yellow)
+                    .shadow(radius: 1)
+                    .position(sourcePoint)
+                    .allowsHitTesting(false)
+            }
+
+            // "Source will land here if you ⌥-click now" preview — only
+            // while ⌥ is held and nothing's mid-paint, same reasoning as
+            // the legacy patchCanvasClickArea's identical preview below.
+            if let patchSourceHoverLocation, activePatchStrokePoints.isEmpty {
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.yellow.opacity(0.7))
+                    .shadow(radius: 1)
+                    .position(patchSourceHoverLocation)
+                    .allowsHitTesting(false)
+            }
+
+            // Cursor-size ring — shows the brush diameter before painting.
+            // Hidden the instant ⌥ is held (the source-preview ring above
+            // takes over) or a stroke is actively in progress (the stroke
+            // itself already shows the true width). Mirrors
+            // brushPaintOverlay's identical ring.
+            if let patchBrushHoverLocation, patchSourceHoverLocation == nil, activePatchStrokePoints.isEmpty {
+                Circle()
+                    .stroke(accentColor.opacity(0.9), lineWidth: 1.5)
+                    .frame(width: brushDiameter, height: brushDiameter)
+                    .position(patchBrushHoverLocation)
+                    .allowsHitTesting(false)
+            }
+
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        if NSEvent.modifierFlags.contains(.option) {
+                            patchSourceHoverLocation = location
+                            patchBrushHoverLocation = nil
+                        } else {
+                            patchBrushHoverLocation = location
+                            patchSourceHoverLocation = nil
+                        }
+                    case .ended:
+                        patchSourceHoverLocation = nil
+                        patchBrushHoverLocation = nil
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            // Nothing painted yet in THIS gesture and ⌥ is
+                            // held: this drag is setting the source, not
+                            // painting — just track the preview ring,
+                            // don't touch activePatchStrokePoints. Once a
+                            // point HAS been recorded, ⌥ being pressed
+                            // transiently mid-stroke can never flip modes
+                            // (a real clone stamp never reinterprets an
+                            // in-progress stroke either).
+                            if activePatchStrokePoints.isEmpty && NSEvent.modifierFlags.contains(.option) {
+                                patchSourceHoverLocation = value.location
+                                return
+                            }
+                            paintPatchStroke(at: value.location, frame: frame)
+                        }
+                        .onEnded { value in
+                            if activePatchStrokePoints.isEmpty {
+                                if NSEvent.modifierFlags.contains(.option), let unit = unitPoint(from: value.location, frame: frame) {
+                                    pendingPatchSource = unit
+                                }
+                                patchSourceHoverLocation = nil
+                            } else {
+                                commitPatchStroke()
+                            }
+                        }
+                )
+        }
+    }
+
+    // Persistent, translucent overlay of every ALREADY-PAINTED stroke —
+    // same Canvas-based approach as brushMaskCanvas (see its doc comment),
+    // minus the erase/destinationOut branch (a clone-stamp patch has no
+    // erase mode). A single-dab stroke (one click, no drag) has no line
+    // to stroke — drawn as a small filled dot instead so it doesn't just
+    // vanish, matching how brushStrokeDabs already handles a 1-point
+    // stroke at render time.
+    private func patchStrokeMaskCanvas(_ geo: PatchGeometry, frame: CGRect) -> some View {
+        Canvas { context, size in
+            for stroke in geo.strokes {
+                guard !stroke.points.isEmpty else {
+                    continue
+                }
+                let scaled = stroke.points.map { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
+                let lineWidth = max(stroke.size * size.width, 2)
+
+                if scaled.count == 1 {
+                    let rect = CGRect(x: scaled[0].x - lineWidth / 2, y: scaled[0].y - lineWidth / 2, width: lineWidth, height: lineWidth)
+                    context.fill(Path(ellipseIn: rect), with: .color(accentColor.opacity(0.35)))
+                    continue
+                }
+
+                var path = Path()
+                path.move(to: scaled[0])
+                for point in scaled.dropFirst() {
+                    path.addLine(to: point)
+                }
+                context.stroke(
+                    path,
+                    with: .color(accentColor.opacity(0.35)),
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+                )
+            }
+        }
+        .frame(width: frame.width, height: frame.height)
+        .position(x: frame.midX, y: frame.midY)
+        .allowsHitTesting(false)
     }
 
     // Circle/Square share this overlay — same center+radiusX/radiusY
@@ -2843,6 +3236,8 @@ struct DevelopView: View {
     // to source, and a dashed MIRROR of the destination outline at the
     // source location — purely a visual reference so the user can see
     // exactly what region will be sampled, not interactive itself.
+    // (Circle no longer reaches here from the UI — see patchBrushOverlay —
+    // this stays only so old saved Square/Circle data still renders.)
     private func patchShapeOverlay(_ geo: PatchGeometry, frame: CGRect) -> some View {
         let center = CGPoint(x: frame.minX + geo.centerX * frame.width, y: frame.minY + geo.centerY * frame.height)
         let rx = geo.radiusX * frame.width
@@ -3779,6 +4174,60 @@ struct DevelopView: View {
         settings.localAdjustments[index].brush?.strokes.append(stroke)
     }
 
+    // Records one dab of an in-progress clone-stamp stroke. The FIRST dab
+    // of a fresh stroke (activePatchStrokePoints still empty) is where a
+    // pending ⌥-click source (if any) gets turned into this stroke's fixed
+    // offset — see patchStrokeOffset's doc comment for why that offset then
+    // carries over to later strokes too. If no source has EVER been set
+    // (patchStrokeOffset is still nil), painting is a no-op: there's
+    // nothing to clone from yet.
+    private func paintPatchStroke(at location: CGPoint, frame: CGRect) {
+        guard let unit = unitPoint(from: location, frame: frame) else {
+            return
+        }
+        if activePatchStrokePoints.isEmpty {
+            if let source = pendingPatchSource {
+                patchStrokeOffset = CGSize(width: source.x - unit.x, height: source.y - unit.y)
+                pendingPatchSource = nil
+            }
+            guard patchStrokeOffset != nil else {
+                return
+            }
+        }
+        if let last = activePatchStrokePoints.last {
+            let dx = unit.x - last.x, dy = unit.y - last.y
+            if (dx * dx + dy * dy) < 0.0001 {
+                return
+            }
+        }
+        activePatchStrokePoints.append(unit)
+    }
+
+    // Unlike commitBrushStroke, a single-point "stroke" (a plain click, no
+    // drag) IS committed — a one-dab clone stamp is a normal, common use
+    // (spot-heal a single blemish), and brushStrokeDabs already renders a
+    // 1-point stroke correctly (see its own doc comment).
+    private func commitPatchStroke() {
+        defer { activePatchStrokePoints = [] }
+        guard let index = selectedAdjustmentIndex, !activePatchStrokePoints.isEmpty, let offset = patchStrokeOffset else {
+            return
+        }
+        let stroke = PatchStroke(
+            points: activePatchStrokePoints,
+            sourceOffsetX: offset.width, sourceOffsetY: offset.height,
+            size: patchBrushSize,
+            feather: max(patchBrushFeather, PhotoEditRenderer.patchMinimumFeather)
+        )
+        settings.localAdjustments[index].patch?.strokes.append(stroke)
+    }
+
+    private func clearPatchStrokes(at index: Int) {
+        guard settings.localAdjustments.indices.contains(index) else {
+            return
+        }
+        settings.localAdjustments[index].patch?.strokes.removeAll()
+    }
+
     // MARK: Adjustment panel
 
     private var adjustmentPanel: some View {
@@ -4057,6 +4506,7 @@ struct DevelopView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Detail & Effects")
             editSlider("Sharpness", value: $settings.sharpness, range: 0...1) { String(format: "%.0f", $0 * 100) }
+            editSlider("Clarity", value: $settings.clarity, range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Vignette", value: $settings.vignette, range: 0...1) { String(format: "%.0f", $0 * 100) }
         }
     }
@@ -4090,12 +4540,12 @@ struct DevelopView: View {
                 }
             }
 
+            // Square dropped per explicit request — Patch is Circle
+            // (clone-stamp brush) or Free only now; Square remains a
+            // Selection-tool-only shape (see addSelection below).
             HStack(spacing: 8) {
                 maskAddButton("Patch Circle", systemImage: "circle") {
                     addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .circle))
-                }
-                maskAddButton("Patch Square", systemImage: "square") {
-                    addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .square))
                 }
                 maskAddButton("Patch Free", systemImage: "lasso") {
                     addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .free))
@@ -4247,32 +4697,53 @@ struct DevelopView: View {
                 }
 
             case .patch:
+                // Square dropped from the picker per explicit request —
+                // still handled elsewhere purely so old saved data renders.
                 Picker("Shape", selection: patchShapeBinding) {
                     Text("Circle").tag(PatchShape.circle)
-                    Text("Square").tag(PatchShape.square)
                     Text("Free").tag(PatchShape.free)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                editSlider("Feather", value: patchFeatherBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
-                if adjustment.patch?.shape == .free && (adjustment.patch?.points.isEmpty ?? true) {
-                    Text("Drag on the photo to draw the patch outline.")
-                        .font(.custom("Figtree", size: 11))
-                        .foregroundColor(AppColors.muted)
+
+                if adjustment.patch?.shape == .free {
+                    editSlider("Feather", value: patchFeatherBinding, range: PhotoEditRenderer.patchMinimumFeather...1) { String(format: "%.0f", $0 * 100) }
+                    editSlider("Opacity", value: patchOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                    if adjustment.patch?.points.isEmpty ?? true {
+                        Text("Drag on the photo to draw the patch outline.")
+                            .font(.custom("Figtree", size: 11))
+                            .foregroundColor(AppColors.muted)
+                    } else {
+                        Text("Drag the marker on the photo to choose where to sample from.")
+                            .font(.custom("Figtree", size: 11))
+                            .foregroundColor(AppColors.muted)
+                        Button("Reset Source Offset") {
+                            resetPatchSourceOffset(at: index)
+                        }
+                        .buttonStyle(ShowHeaderButtonStyle())
+                        Button("Redraw Outline") {
+                            clearPatchOutline(at: index)
+                        }
+                        .buttonStyle(ShowHeaderButtonStyle())
+                    }
                 } else {
-                    Text("Drag the marker on the photo to choose where to sample from.")
+                    // Circle = clone-stamp brush. Brush Size/Feather here
+                    // are shared UI state (like the Brush tool's own
+                    // brushSize/brushHardness) read when a NEW stroke is
+                    // committed — nudging them never reshapes strokes
+                    // already painted, same reasoning as the Brush tool.
+                    editSlider("Brush Size", value: $patchBrushSize, range: 0.02...0.3) { String(format: "%.0f", $0 * 100) }
+                    editSlider("Feather", value: $patchBrushFeather, range: PhotoEditRenderer.patchMinimumFeather...1) { String(format: "%.0f", $0 * 100) }
+                    editSlider("Opacity", value: patchOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                    Text("⌥-click to set the clone source, then drag on the photo to paint.")
                         .font(.custom("Figtree", size: 11))
                         .foregroundColor(AppColors.muted)
-                    Button("Reset Source Offset") {
-                        resetPatchSourceOffset(at: index)
+                    if !(adjustment.patch?.strokes.isEmpty ?? true) {
+                        Button("Clear Strokes") {
+                            clearPatchStrokes(at: index)
+                        }
+                        .buttonStyle(ShowHeaderButtonStyle())
                     }
-                    .buttonStyle(ShowHeaderButtonStyle())
-                }
-                if adjustment.patch?.shape == .free && !(adjustment.patch?.points.isEmpty ?? true) {
-                    Button("Redraw Outline") {
-                        clearPatchOutline(at: index)
-                    }
-                    .buttonStyle(ShowHeaderButtonStyle())
                 }
             }
 
@@ -4611,11 +5082,13 @@ struct DevelopView: View {
                 guard let index = selectedAdjustmentIndex else {
                     return
                 }
-                // Switching shape discards the Free outline (a circle's
-                // center+radius has no sensible mapping onto a polygon, and
-                // vice versa) but keeps the center/radius/feather/source
-                // offset — switching Circle <-> Square just changes how
-                // those same numbers are rendered.
+                // Switching TO Free discards centerX/Y-derived state that
+                // no longer means anything for a hand-drawn polygon;
+                // switching Circle <-> Free otherwise just leaves both
+                // representations (strokes vs points/center/radius) intact
+                // side by side — whichever one the current shape doesn't
+                // use is simply dormant, not deleted, so switching back
+                // restores it.
                 settings.localAdjustments[index].patch?.shape = newValue
                 if newValue == .free {
                     settings.localAdjustments[index].patch?.points = []
@@ -4636,7 +5109,27 @@ struct DevelopView: View {
                 guard let index = selectedAdjustmentIndex else {
                     return
                 }
-                settings.localAdjustments[index].patch?.feather = newValue
+                // Floored, never a hard 0 edge — edges are ALWAYS at least
+                // a little feathered, per explicit request (same floor
+                // patchStrokeDabs applies for Circle-mode strokes).
+                settings.localAdjustments[index].patch?.feather = max(newValue, PhotoEditRenderer.patchMinimumFeather)
+            }
+        )
+    }
+
+    private var patchOpacityBinding: Binding<Double> {
+        Binding(
+            get: {
+                guard let index = selectedAdjustmentIndex else {
+                    return 1.0
+                }
+                return settings.localAdjustments[index].patch?.opacity ?? 1.0
+            },
+            set: { newValue in
+                guard let index = selectedAdjustmentIndex else {
+                    return
+                }
+                settings.localAdjustments[index].patch?.opacity = min(max(newValue, 0), 1)
             }
         )
     }
@@ -4896,6 +5389,9 @@ struct DevelopView: View {
         selectedLocalAdjustmentID = nil
         activeBrushStrokePoints = []
         activePatchDrawPoints = []
+        activePatchStrokePoints = []
+        pendingPatchSource = nil
+        patchStrokeOffset = nil
         // Same reasoning as selectedLocalAdjustmentID above — a Selection
         // outline or layer index from the PREVIOUS photo has no business
         // surviving onto this one. layerClipboard is deliberately left
@@ -5022,6 +5518,7 @@ struct DevelopView: View {
         }
         if categories.contains(.detail) {
             result.sharpness = source.sharpness
+            result.clarity = source.clarity
             result.vignette = source.vignette
         }
         if categories.contains(.masks) {
@@ -5061,6 +5558,9 @@ struct DevelopView: View {
         }
         activeBrushStrokePoints = []
         activePatchDrawPoints = []
+        activePatchStrokePoints = []
+        pendingPatchSource = nil
+        patchStrokeOffset = nil
     }
 
     private func toggleMaskEnabled(_ id: UUID) {

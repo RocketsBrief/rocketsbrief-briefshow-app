@@ -4266,11 +4266,15 @@ struct DevelopView: View {
 
                 Divider()
 
-                copyPasteRow
-                syncButton
+                settingsActionsSection
+
+                Divider()
+
                 resetButton
-                exportButton
-                exportAllButton
+
+                Divider()
+
+                exportActionsSection
             }
             .padding(18)
         }
@@ -4601,6 +4605,34 @@ struct DevelopView: View {
         .buttonStyle(MaskAddButtonStyle())
     }
 
+    // Full-width, left-aligned icon+label row — every action button at the
+    // bottom of the panel (Paste as Layer, Copy/Paste Settings, Syncing,
+    // Reset All, both Export buttons) now goes through this ONE helper
+    // instead of each independently building its own HStack and reaching
+    // for `ShowHeaderButtonStyle()`. That style has no button "chrome" at
+    // all (no border/fill — it was built for ShowGrid's HORIZONTAL header
+    // bar, not this 264px-wide vertical sidebar) and let "Copy Settings"/
+    // "Paste Settings" wrap onto two lines when squeezed side by side —
+    // reported directly against a screenshot as looking cluttered/
+    // unorganized. Bordered pill look matches maskAddButton's/
+    // MaskAddButtonStyle's existing visual language above, just full-width
+    // horizontal instead of a fixed-width icon-over-label square, so the
+    // whole panel reads as one consistent system rather than two different
+    // button languages stacked on top of each other.
+    private func panelActionButton(_ title: String, systemImage: String, isProminent: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12))
+                    .frame(width: 16)
+                Text(title)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+        }
+        .buttonStyle(PanelActionButtonStyle(isProminent: isProminent))
+    }
+
     private func maskTypeIcon(_ type: LocalMaskType) -> String {
         switch type {
         case .radial: return "circle.dashed"
@@ -4884,15 +4916,9 @@ struct DevelopView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Layers")
 
-            Button {
+            panelActionButton("Paste as Layer", systemImage: "doc.on.clipboard") {
                 pasteLayer()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "doc.on.clipboard")
-                    Text("Paste as Layer")
-                }
             }
-            .buttonStyle(ShowHeaderButtonStyle())
             .disabled(layerClipboard == nil)
             .opacity(layerClipboard == nil ? 0.4 : 1)
             // Cmd+V pastes directly, same expectation as any other
@@ -5191,58 +5217,41 @@ struct DevelopView: View {
     // Copy the current photo's full settings into an in-memory clipboard
     // (see settingsClipboard) and paste them onto whichever photo is
     // selected when Paste is pressed — deliberately one photo at a time,
-    // no multi-select (see BRIEFSHOW_DEVELOP_NOTES.md #5).
-    private var copyPasteRow: some View {
-        HStack(spacing: 10) {
-            Button {
+    // no multi-select (see BRIEFSHOW_DEVELOP_NOTES.md #5). Stacked full-
+    // width (not side by side) together with Sync, one consistent group —
+    // see panelActionButton's own doc comment for why.
+    private var settingsActionsSection: some View {
+        let targetCount = selectedURL.map { multiSelectedURLs.subtracting([$0]).count } ?? 0
+
+        return VStack(alignment: .leading, spacing: 8) {
+            panelActionButton("Copy Settings", systemImage: "doc.on.doc") {
                 settingsClipboard = settings
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "doc.on.doc")
-                    Text("Copy Settings")
-                }
             }
-            .buttonStyle(ShowHeaderButtonStyle())
             .opacity(settings.isNeutral ? 0.4 : 1)
             .disabled(settings.isNeutral)
 
-            Button {
+            panelActionButton("Paste Settings", systemImage: "doc.on.clipboard") {
                 pasteSettings()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "doc.on.clipboard")
-                    Text("Paste Settings")
-                }
             }
-            .buttonStyle(ShowHeaderButtonStyle())
             .opacity(settingsClipboard == nil ? 0.4 : 1)
             .disabled(settingsClipboard == nil)
-        }
-    }
 
-    // Lightroom-style "Sync Settings" — the CURRENTLY OPEN photo's live
-    // `settings` (exactly what the sliders show right now, not a separately
-    // copied snapshot the way copyPasteRow's clipboard works) is written to
-    // every OTHER photo currently in the filmstrip's multi-select
-    // (multiSelectedURLs, see handleFilmstripClick). Named "Syncing" per
-    // explicit request rather than "Synchronize"/"Sync Settings". Only
-    // enabled once there's at least one OTHER photo selected alongside the
-    // open one — syncing to an empty target set would be a no-op button
-    // press with no feedback as to why nothing happened.
-    private var syncButton: some View {
-        let targetCount = selectedURL.map { multiSelectedURLs.subtracting([$0]).count } ?? 0
-
-        return Button {
-            showSyncDialog = true
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                Text("Syncing (\(targetCount))")
+            // Lightroom-style "Sync Settings" — the CURRENTLY OPEN photo's
+            // live `settings` (exactly what the sliders show right now,
+            // not a separately copied snapshot the way the clipboard
+            // above works) is written to every OTHER photo currently in
+            // the filmstrip's multi-select (multiSelectedURLs, see
+            // handleFilmstripClick). Named "Syncing" per explicit request
+            // rather than "Synchronize"/"Sync Settings". Only enabled once
+            // there's at least one OTHER photo selected alongside the open
+            // one — syncing to an empty target set would be a no-op
+            // button press with no feedback as to why nothing happened.
+            panelActionButton("Syncing (\(targetCount))", systemImage: "arrow.triangle.2.circlepath") {
+                showSyncDialog = true
             }
+            .opacity(targetCount == 0 ? 0.4 : 1)
+            .disabled(targetCount == 0)
         }
-        .buttonStyle(ShowHeaderButtonStyle())
-        .opacity(targetCount == 0 ? 0.4 : 1)
-        .disabled(targetCount == 0)
     }
 
     // Lightroom's own "Synchronize Settings" dialog, adapted: a checklist of
@@ -5326,7 +5335,7 @@ struct DevelopView: View {
     }
 
     private var resetButton: some View {
-        Button("Reset All") {
+        panelActionButton("Reset All", systemImage: "arrow.counterclockwise") {
             settings = PhotoEditSettings()
             pendingCrop = .full
             cropIsAutoFitted = false
@@ -5335,45 +5344,37 @@ struct DevelopView: View {
             activeSelectionDrawPoints = []
             selectedLayerID = nil
         }
-        .buttonStyle(ShowHeaderButtonStyle())
         .opacity(settings.isNeutral ? 0.4 : 1)
         .disabled(settings.isNeutral)
     }
 
-    private var exportButton: some View {
-        Button {
-            exportEditedCopy()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "square.and.arrow.up")
-                Text("Export Edited Copy")
-            }
-        }
-        .buttonStyle(ShowHeaderButtonStyle())
-        .opacity(fullBaseImage == nil ? 0.4 : 1)
-        .disabled(fullBaseImage == nil)
-    }
-
-    // Exports every photo in this folder (photoURLs — the same list the
-    // filmstrip shows, not just the current selection) that has a saved
-    // edit, skipping untouched ones — one destination-folder picker
-    // instead of Save-panel-per-photo. Count is read fresh on every body
-    // re-render (not cached), so it stays accurate as edits are made/reset
-    // while this panel is open.
-    private var exportAllButton: some View {
+    // The two "final" actions of the panel — visually set apart as
+    // prominent (solid fill, semibold) rather than the plain bordered rows
+    // above, same "this is where you finish" emphasis Export already had
+    // by virtue of being physically last, just made visible in the style
+    // too now instead of looking identical to Reset All/Copy Settings/etc.
+    private var exportActionsSection: some View {
+        // Read fresh on every body re-render (not cached), so it stays
+        // accurate as edits are made/reset while this panel is open.
         let editedCount = photoURLs.filter { PhotoEditStore.hasEdits($0) }.count
 
-        return Button {
-            exportAllEditedPhotos()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "square.and.arrow.up.on.square")
-                Text("Export All Edited (\(editedCount))")
+        return VStack(alignment: .leading, spacing: 8) {
+            panelActionButton("Export Edited Copy", systemImage: "square.and.arrow.up", isProminent: true) {
+                exportEditedCopy()
             }
+            .opacity(fullBaseImage == nil ? 0.4 : 1)
+            .disabled(fullBaseImage == nil)
+
+            // Exports every photo in this folder (photoURLs — the same
+            // list the filmstrip shows, not just the current selection)
+            // that has a saved edit, skipping untouched ones — one
+            // destination-folder picker instead of Save-panel-per-photo.
+            panelActionButton("Export All Edited (\(editedCount))", systemImage: "square.and.arrow.up.on.square", isProminent: true) {
+                exportAllEditedPhotos()
+            }
+            .opacity(editedCount == 0 ? 0.4 : 1)
+            .disabled(editedCount == 0)
         }
-        .buttonStyle(ShowHeaderButtonStyle())
-        .opacity(editedCount == 0 ? 0.4 : 1)
-        .disabled(editedCount == 0)
     }
 
     // MARK: Actions
@@ -6243,6 +6244,39 @@ private struct MaskAddButtonStyle: ButtonStyle {
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
             )
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
+    }
+}
+
+// Full-width bordered row, used via panelActionButton for every action
+// button at the bottom of the Develop panel. `isProminent` (Export Edited
+// Copy/Export All Edited) gets a filled background + semibold weight so
+// the panel's two "finishing" actions read as visually distinct from the
+// plain utility rows above (Copy/Paste Settings, Syncing, Reset All) —
+// same bordered-pill language as MaskAddButtonStyle just above, so the
+// whole panel reads as one consistent system rather than mixing this with
+// the borderless ShowHeaderButtonStyle it replaced here (that style is
+// still correct/unchanged for its original job, ShowGrid's HORIZONTAL
+// header bar — just wasn't a fit for a narrow vertical sidebar).
+private struct PanelActionButtonStyle: ButtonStyle {
+    var isProminent: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.custom("Figtree", size: 12).weight(isProminent ? .semibold : .medium))
+            .foregroundColor(AppColors.ink)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(isProminent ? AppColors.panelAlt : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(AppColors.border.opacity(isProminent ? 0.9 : 0.6), lineWidth: isProminent ? 1.4 : 1)
+            )
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .contentShape(Rectangle())
     }
 }
 

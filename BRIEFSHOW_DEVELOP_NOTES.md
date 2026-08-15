@@ -2223,6 +2223,45 @@ slideshow/export koji BriefShow već pravi.
     (trenutno je obična `VStack`, pa ovo verovatno nije lazy-loading
     problem, ali vredi proveriti prvo pre ičeg složenijeg).
 
+27. **Vizuelno sređivanje dna panela (Layers/Copy-Paste/Sync/Reset/Export
+    dugmad)** — 15. avgust 2026, isto veče, po screenshot-u. Korisnik je
+    poslao sliku: "Copy Settings"/"Paste Settings" lome se u dva reda
+    ("Copy" / "Settings"), i cela dugmad u tom delu panela deluje kao gola
+    tekst+ikonica bez ikakvog "izgleda dugmeta" — bez granice/pozadine.
+
+    **Pravi uzrok**: sva ta dugmad (Paste as Layer, Copy Settings, Paste
+    Settings, Syncing, Reset All, oba Export dugmeta) su koristila
+    `ShowHeaderButtonStyle` — stil napravljen za ShowGrid-ov HORIZONTALNI
+    header bar (samo padding + hover skaliranje, BEZ border-a/pozadine),
+    ponovo iskorišćen ovde u uskoj 264px vertikalnoj bočnoj traci gde
+    "Copy Settings"/"Paste Settings" u HStack-u nemaju dovoljno prostora
+    pa tekst prelama.
+
+    **Ispravka**: nov `panelActionButton(_:systemImage:isProminent:action:)`
+    helper + `PanelActionButtonStyle` (puna širina, levo poravnato,
+    bordered pill — ista vizuelna porodica kao `MaskAddButtonStyle`/
+    `maskAddButton` koji već postoje za Masks sekciju, tako da ceo panel
+    sad čita kao JEDAN konzistentan sistem dugmadi, ne dva različita
+    jezika stila zalepljena jedan na drugi). Sva dugmad na dnu panela sad
+    idu kroz ovaj JEDAN helper, punom širinom, umesto svako da pravi svoj
+    HStack — garantovano bez prelamanja teksta bez obzira na dužinu
+    labele. Copy/Paste/Syncing grupisani u `settingsActionsSection` (jedna
+    VStack grupa, spacing 8), Export Edited Copy/Export All Edited u
+    `exportActionsSection` sa `isProminent: true` (ispunjena pozadina +
+    poluboldovan font) da se vizuelno izdvoje kao "završne" akcije panela,
+    razdvojeno Divider-ima od Reset All. `PanelActionButtonStyle` usput
+    dobija i `.contentShape(Rectangle())` na sve ove dugmad (ista
+    hardening tehnika kao stavka #26 — sad primenjena svuda, ne samo na
+    mask-add dugmad).
+
+    **Provera**: `xcodebuild` čist. **Nije vizuelno potvrđeno pravim
+    očima ovom sesijom** (GUI automatizacija do Develop ekrana nije
+    pokušana — poznato nepouzdana za ovaj tok, vidi napomene ranije u
+    fajlu) — SwiftUI struktura je jednostavna i niskorizična (VStack punih-
+    širine bordered dugmadi, isti obrazac kao već postojeći i vizuelno
+    potvrđeni `MaskAddButtonStyle`), ali korisnik treba da pogleda i
+    potvrdi da izgleda kako je tražio.
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

@@ -2109,6 +2109,49 @@ slideshow/export koji BriefShow već pravi.
       da se gomila), ali korisnik treba da potvrdi da li se sečkanje
       stvarno smanjilo osećajem uživo, ne samo teorijski.
 
+    **Dopuna (isto veče, treći krug povratne informacije)**: korisnik je
+    preciznije opisao slajder-problem — nije bilo "sečkanje/kašnjenje" nego
+    da slajder SKAČE odmah na krajnju vrednost (npr. vučeš od 0 do 10, vidi
+    se samo 10, nikad postepeni prelaz 0→1→2...→10). **Pravi uzrok, drugačiji
+    od gornjeg**: `scheduleRender()` je bio ČIST debounce (otkaži pa zakaži
+    ponovo +20ms na SVAKU promenu) — SwiftUI-jev `.onChange(of: settings)`
+    opaljuje skoro na svaki frame tokom prevlačenja (brže od 20ms), pa se
+    tajmer stalno otkazivao i ponovo zakazivao PRE nego što bi ikad opalio
+    — nikad nije ni renderovao međuvrednost, samo krajnju, kad bi
+    prevlačenje prestalo. Gornji `renderGeneration` fix (pileup/backlog)
+    ovo uopšte nije rešavao — bez tajmera koji ikad opali, backlog-a ni
+    nema. **Ispravka**: `scheduleRender()` promenjen iz debounce-a u pravi
+    THROTTLE — zakazuje nov tajmer SAMO ako trenutno nijedan nije već na
+    čekanju; već-zakazan tajmer se ostavlja da opali po planu umesto da se
+    gura unazad, dajući stalan ritam renderovanja (~svakih 20ms) tokom
+    celog prevlačenja umesto samo na kraju. `renderGeneration` fix od malopre
+    sad postaje STVARNO potreban (pre ove izmene je bio bezopasan ali
+    suvišan, pošto nikad nije bilo backlog-a da se sredi) — sad kad
+    render-i STVARNO opaljuju često tokom prevlačenja, on sprečava da se
+    zaista nagomilaju. `xcodebuild` čist. Nije mereno uživo — korisnik treba
+    da potvrdi da sad VIDI postepen prelaz dok prevlači slajder, ne samo
+    skok na kraj.
+
+    **Otvorena stavka za sledeću sesiju — NIJE rešeno, potrebno pravo
+    testiranje mišem**: korisnik je prijavio da "Patch Circle"/"Patch Free"
+    add-dugme (bočni panel, "Masks" sekcija) povremeno ne reaguje na PRVI
+    klik — ali klik na BILO KOJI DRUGI mask-add-dugme (npr. klikneš Circle,
+    posle toga Free proradi) ga "probudi". Ovo NIJE window-focus problem
+    (taj je već rešen preko `acceptsFirstMouse` na `ClickThroughHostingView`,
+    pokriva ceo Develop prozor, vidi #15) — dešava se i kad je prozor već
+    odavno fokusiran. Pošto se javlja i za Circle i za Free (ne samo Patch
+    specifično), verovatno je opštiji "Masks" panel hir, ne nešto uneto
+    ovom sesijom — ali nisam mogao da potvrdim ni uzrok ni da li je uopšte
+    postojao pre danas, pošto ne mogu sam da testiram mišem (poznato
+    ograničenje, gesture/klik-testiranje u ovoj app-i). **Nisam menjao kod
+    za ovo** — nagađanje bez mogućnosti provere bi rizikovalo lažnu
+    "popravku". Sledeća sesija: probati GUI-test ponovnim otvaranjem
+    Develop-a na svež/prazan set masks (nijedna još dodata) i klikom na
+    prvi mask-add-dugme, videti da li se AX klik uopšte razlikuje od
+    drugog klika po nekom timing/layout signalu (npr. da li se
+    `selectedMaskEditor` panel ispod tek POJAVLJUJE nakon prvog uspešnog
+    dodavanja, menjajući visinu/layout sekcije usred prvog klika).
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

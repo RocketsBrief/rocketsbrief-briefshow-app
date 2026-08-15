@@ -5892,11 +5892,30 @@ struct DevelopView: View {
         }
     }
 
-    // A short debounce so dragging a slider re-renders once it settles
-    // rather than on every intermediate value.
+    // A THROTTLE, not a debounce — this used to cancel+reschedule on every
+    // single call, which means a value arriving faster than the 20ms delay
+    // (exactly what a normal slider drag does, via SwiftUI's own .onChange
+    // firing on essentially every frame) kept pushing the timer back
+    // forever, so it never actually fired until the drag stopped — the
+    // photo would visibly jump straight from its start value to wherever
+    // the slider ended up, with nothing smooth shown in between (reported
+    // directly: dragging 0...10 "shows immediately 10", no live in-between
+    // frames at all). Fixed by only scheduling a NEW timer when none is
+    // already pending — an in-flight timer is left alone to fire on its
+    // original schedule instead of being pushed back, giving a steady
+    // ~20ms cadence of renders throughout a drag (reads `settings` live
+    // when it actually runs, via renderNow(), so it always picks up
+    // whatever's current by then, never a stale value from scheduling
+    // time). renderGeneration (see its own doc comment) is what keeps
+    // this safe against pileup now that renders genuinely fire this often.
     private func scheduleRender() {
-        renderWorkItem?.cancel()
-        let workItem = DispatchWorkItem { renderNow() }
+        guard renderWorkItem == nil else {
+            return
+        }
+        let workItem = DispatchWorkItem {
+            renderWorkItem = nil
+            renderNow()
+        }
         renderWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: workItem)
     }

@@ -188,6 +188,60 @@ sledećem otvaranju Synchronize dijaloga: (a) tekst/ikonice čitljivi, (b)
 posle Shift-range-select-a dijalog i dalje piše "Copy the open photo's
 settings" o PRVOJ kliknutoj fotki, ne poslednjoj.
 
+**Dopuna (15. avgust 2026, cela večernja sesija, GDE SMO STVARNO STALI) —
+ovo je najnovije, čitaj OVO prvo sledeći put**: posle #25 urađeno je još
+pet stavki (26-30), sve komitovano na `briefshow-develop` (i dalje
+NEPUSHOVANO), poslednji commit `a50776f`. Radna kopija čista (`git status`
+pokazuje samo netraćen `build_dd/` build-artefakt folder, ništa
+nesačuvano). Redom:
+
+- **#26**: Cmd+A select-all u ShowGrid-u; novi Clarity slajder; Patch
+  Circle prepravljen u pravu kontinuiranu clone-stamp četkicu (⌥-klik
+  izvor, prevlačenje slika); Square uklonjen iz Patch UI-a; Opacity +
+  obavezan minimalni Feather dodati. Usput uhvaćen i ispravljen PRAVI
+  migration bug (Codable decoder za `PatchGeometry`) PRE nego što je
+  ikad postao problem.
+- **#27**: dva bug-a iz prve provere — Patch je ostavljao trajne "zalepljene"
+  žute kružiće (uklonjen pogrešan overlay), i OPŠTI slider "seckanje" —
+  ispostavilo se dva ODVOJENA uzroka kroz nekoliko krugova povratne
+  informacije: (a) debounce koji se nikad nije oglašavao tokom
+  prevlačenja (ispravljen u throttle), (b) RAW preview filter bez draft
+  mode-a (uključen samo za preview, export ostaje pun kvalitet).
+- **#26/#30**: bag "dugme ne radi na prvi klik" — uzrok: nedostajao
+  `.contentShape(Rectangle())`. Ispravljeno na `maskAddButton` (Patch/
+  Radial/Graduated/Brush add-dugmad) i na `EditToolButtonStyle`/
+  `AspectRatioButtonStyle` (Crop/Rotate/aspect-ratio). **NAMERNO NIJE
+  DIRANO**: `ShowHeaderButtonStyle` u `ContentView.swift` (Reset Crop/
+  Done/sync-dijalog dugmad + ceo ShowGrid header) — verovatno ista rupa,
+  ali nije dirano dok se ne prijavi konkretno na TIM dugmadima (veliki
+  deljeni fajl van Develop-a). **Ako se bug ponovo javi na BILO KOM
+  dugmetu, prvo proveri da li mu stil ima `.contentShape(Rectangle())`
+  — obrazac je sad jasno utvrđen, 3 potvrđena slučaja.**
+- **#27 (deo dva)**: bottom-of-panel dugmad (Layers/Copy-Paste/Sync/Reset/
+  Export) potpuno predizajnirana — nov `panelActionButton`/
+  `PanelActionButtonStyle`, puna širina, bordered, bez više prelamanja
+  teksta.
+- **#28**: Dehaze (aproksimacija, NE pravi dark-channel-prior algoritam)
+  i Soft Glow (diffusion/soft-focus, screen-blend zamućene kopije) —
+  oba nova global slajdera u Detail & Effects.
+- **#29**: Vignette PREPRAVLJEN DVA PUTA u istoj sesiji — prvo na
+  striktno-samo-ćoškove (elipsa, ne krug — krug je bio pogrešan za
+  landscape slike, uhvaćeno standalone test skriptom PRE nego što je
+  ušlo u kod), pa DOPUNJENO kad je korisnik prijavio vidljivu ivicu i
+  crop-problem: (a) maska sad blur-ovana (feather, uklanja Mach-band
+  ivicu), (b) ceo Vignette blok pomeren da radi POSLE crop-a u
+  render() pipeline-u (ranije se računao na pre-crop veličini).
+
+**NIJE vizuelno potvrđeno pravim očima kroz CELU ovu veče sesiju** (GUI
+automatizacija do Develop ekrana nije ni pokušavana ovog puta — korisnik
+je sam testirao mišem i javljao bagove u nekoliko krugova, što je i
+uhvatilo #27/#29/#30). **Sledeća sesija PRVO treba da**: (1) potvrdi da
+su #29 (vinjeta+crop, feather) i #30 (Crop/Rotate dugmad) sad stvarno
+ispravni pravim testom, (2) proveri Dehaze/Soft Glow vizuelno stvarno
+menjaju sliku u očekivanom pravcu, (3) ima na umu da isti
+"nedostaje contentShape" obrazac može da se javi na `ShowHeaderButtonStyle`
+dugmadima (Reset Crop/Done/sync dijalog/ShowGrid header) ako se prijavi.
+
 **Napomena o Terminal/Desktop permisiji**: tokom testiranja ove sesije,
 `ls`/`cat`/itd. na `~/Desktop` iz Bash-a je počeo da vraća "Operation not
 permitted" usred sesije (radilo je ranije u istoj sesiji) — izgleda kao da

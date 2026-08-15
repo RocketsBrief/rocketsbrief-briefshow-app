@@ -2339,6 +2339,47 @@ slideshow/export koji BriefShow već pravi.
     korisnik treba da potvrdi da sad STVARNO izgleda kao "samo ćoškovi",
     posebno na landscape fotki gde je stari bag bio najvidljiviji.
 
+    **Dopuna (isto veče, drugi krug)**: korisnik je javio dva dodatna
+    problema na istoj funkciji — (a) vidljiva "linija" na granici elipse
+    (iako je gradient matematički kontinuiran, RATE promene skače tačno na
+    radius0 — flat pa naglo nagnuto — klasičan Mach-band efekat, oko je
+    vrlo osetljivo na to), tražio je "još feather"; (b) kad se slika
+    kropuje, vinjeta ostaje računata na ORIGINALNOJ (pre-crop) veličini —
+    pošto je Vignette blok u kodu bio POZICIONIRAN PRE crop koraka u
+    render() pipeline-u, kropovanje samo iseče već-zatamnjeni pravougaonik,
+    pa tamni ćoškovi mogu da završe potpuno VAN kropovane oblasti (nema
+    vinjete uopšte) ili da seku kroz sredinu kropovanog kadra — korisnik je
+    tražio da vinjeta "popuni uglove kropovane slike".
+
+    **Ispravke, obe u `PhotoEditRenderer.render`**:
+    - **(b) prvo, arhitekturno**: ceo Vignette blok POMEREN sa svoje stare
+      pozicije (odmah posle Sharpness/Clarity/Dehaze/Soft Glow, PRE local
+      adjustments/layers/crop) na sam KRAJ funkcije, POSLE crop koraka.
+      Sad se ekstent za elipsu uvek čita sa FINALNE (post-crop, ako je
+      crop primenjen) slike, pa vinjeta uvek zatamnjuje STVARNE ćoškove
+      onoga što se trenutno gleda/exportuje, bez obzira na crop. Kad je
+      `applyCrop == false` (dok je crop alat otvoren), i dalje ispravno
+      radi na punoj pre-crop veličini, pošto crop blok u tom slučaju
+      uopšte ne izvršava — nema posebne grane potrebne.
+    - **(a) drugo, feather**: maska (elipsa gradient) se sad BLUR-uje
+      (`CIGaussianBlur`, `.clampedToExtent()` pre/`.cropped()` posle, isti
+      obrazac kao Soft Glow) PRE nego što se koristi za multiply — ovo
+      uklanja OŠTRINU granice bez menjanja osnovnog oblika (i dalje
+      zatamnjuje samo blizu ćoškova, sredine ivica ostaju skoro netaknute).
+      Radijus blur-a je razlomak kraće ivice slike (`0.06×`), ista "veličina
+      skalira sa slikom" konvencija kao svuda drugde ovom sesijom.
+
+    **Provera**: standalone pixel-sampling skripta PONOVO pokrenuta na
+    ispravci (isti pristup kao gore) — sredine ivica sad čitaju ~230-237
+    (umesto oštrog 255 pa naglog pada), ćoškovi ~70 (i dalje vidno
+    zatamnjeni), i ceo gradient ka ćošku je proveren tačku-po-tačku:
+    255→255→255→253→236→186→121→70 — potpuno gladak, bez ijednog skoka.
+    `xcodebuild` čist. Nije vizuelno potvrđeno u pravoj app-i, i POSEBNO
+    nije testirano da li crop+vinjeta zajedno stvarno rade kako treba u
+    praksi (matematika je ispravna po konstrukciji pošto se sad računa na
+    post-crop ekstentu, ali pravi test — kropuj pa dodaj/proveri vinjetu —
+    zahteva pravi UI tok koji nisam mogao da simuliram).
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

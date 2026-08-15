@@ -985,54 +985,9 @@ enum PhotoEditRenderer {
             }
         }
 
-        // Custom corner-only vignette — CIVignette (the built-in filter
-        // this used to call) has no way to confine its falloff to just the
-        // corners; even at its own default radius, the darkening visibly
-        // crept in along the top/bottom/left/right edges too, not just the
-        // four corners, which is exactly what was reported. Built instead
-        // as a radial gradient DARKENING MASK, multiplied onto the image —
-        // an ELLIPSE (not a circle), same non-uniform-scale-of-a-unit-
-        // gradient technique radialMask uses for the Radial local
-        // adjustment above: a plain CIRCULAR inscribed/circumscribed pair
-        // was tried first and rejected after a pixel-sampling test script
-        // caught it leaving a non-square (e.g. landscape) photo's LEFT/
-        // RIGHT edge midpoints partially darkened too — a circle can only
-        // be tangent to the SHORTER pair of edges, not both pairs at once.
-        // Building the gradient in unit space (radius0 = 1, the ellipse
-        // that — once scaled by halfW/halfH below — touches ALL FOUR edge
-        // midpoints simultaneously; radius1 = √2, the unit-space distance
-        // that scales to reach the actual corners) and only THEN applying
-        // the (halfW, halfH) non-uniform scale fixes this: verified with
-        // the same kind of standalone pixel-sampling script the codebase's
-        // other mask math uses (see BRIEFSHOW_DEVELOP_NOTES.md) — all four
-        // edge midpoints read full brightness, only the four corner wedges
-        // outside the ellipse are darkened, on both a landscape and (by
-        // symmetry) a portrait frame.
-        if settings.vignette > 0 {
-            let extent = output.extent
-            if extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 {
-                let halfW = extent.width / 2
-                let halfH = extent.height / 2
-                let darkAmount = CGFloat(min(max(settings.vignette, 0), 1))
-
-                let gradient = CIFilter.radialGradient()
-                gradient.center = .zero
-                gradient.radius0 = 1
-                gradient.radius1 = Float(2.0.squareRoot())
-                gradient.color0 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
-                gradient.color1 = CIColor(red: 1 - darkAmount, green: 1 - darkAmount, blue: 1 - darkAmount, alpha: 1)
-
-                if let unitGradient = gradient.outputImage {
-                    let transform = CGAffineTransform(a: halfW, b: 0, c: 0, d: halfH, tx: extent.midX, ty: extent.midY)
-                    let mask = unitGradient.transformed(by: transform).cropped(to: extent)
-
-                    let multiply = CIFilter.multiplyCompositing()
-                    multiply.inputImage = mask
-                    multiply.backgroundImage = output
-                    output = multiply.outputImage ?? output
-                }
-            }
-        }
+        // Vignette moved to AFTER crop (see the end of this function) — it
+        // needs to darken the CROPPED image's own corners, not the
+        // original full-frame's, see its doc comment down there.
 
         if !settings.localAdjustments.isEmpty {
             output = applyLocalAdjustments(settings.localAdjustments, to: output)
@@ -1062,6 +1017,80 @@ enum PhotoEditRenderer {
                 height: crop.height * extent.height
             ).integral
             output = output.cropped(to: rect)
+        }
+
+        // Custom corner-only vignette, applied LAST (after crop) — CIVignette
+        // (the built-in filter this used to call) has no way to confine its
+        // falloff to just the corners; even at its own default radius, the
+        // darkening visibly crept in along the top/bottom/left/right edges
+        // too, not just the four corners. Deliberately placed AFTER crop
+        // (not back where the other Detail & Effects sliders run, before
+        // local adjustments/layers/crop): a vignette needs to darken the
+        // image's OWN actual corners — if it were computed against the
+        // pre-crop extent instead, cropping in tight could leave the dark
+        // corners entirely outside the kept area (no visible vignette left
+        // at all) or cut across the middle of the cropped frame as a
+        // visible edge, neither of which is "corners of the photo you're
+        // looking at" — reported directly (a visible vignette "line" after
+        // cropping, wanting the vignette to re-fill the CROPPED image's own
+        // corners). Built as a radial gradient DARKENING MASK, multiplied
+        // onto the image — an ELLIPSE (not a circle), same non-uniform-
+        // scale-of-a-unit-gradient technique radialMask uses for the Radial
+        // local adjustment: a plain CIRCULAR inscribed/circumscribed pair
+        // was tried first and rejected after a pixel-sampling test script
+        // caught it leaving a non-square (e.g. landscape) photo's LEFT/
+        // RIGHT edge midpoints partially darkened too — a circle can only
+        // be tangent to the SHORTER pair of edges, not both pairs at once.
+        // Building the gradient in unit space (radius0 = 1, the ellipse
+        // that — once scaled by halfW/halfH below — touches ALL FOUR edge
+        // midpoints simultaneously; radius1 = √2, the unit-space distance
+        // that scales to reach the actual corners) and only THEN applying
+        // the (halfW, halfH) non-uniform scale fixes this: verified with a
+        // standalone pixel-sampling script (see BRIEFSHOW_DEVELOP_NOTES.md)
+        // — all four edge midpoints read full brightness, only the four
+        // corner wedges outside the ellipse are darkened.
+        //
+        // The mask is then BLURRED (not the photo — just this gradient)
+        // before use: the crisp geometric ellipse boundary above read as a
+        // visible "vignette line" even though the underlying gradient IS
+        // continuous with no value jump at that boundary — the RATE of
+        // change jumps there (flat right up to radius0, then suddenly
+        // sloped), a classic Mach-band effect the eye is very sensitive to.
+        // Blurring the mask itself removes that slope discontinuity, giving
+        // a soft, organic falloff instead of a geometric edge — also
+        // directly the "more feather" ask. Blur radius is a fraction of the
+        // (now-final, post-crop) image's shorter edge, same "size scales
+        // with the actual image, not a fixed pixel count" convention as
+        // Clarity/Soft Glow/the Patch brush above.
+        if settings.vignette > 0 {
+            let extent = output.extent
+            if extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 {
+                let halfW = extent.width / 2
+                let halfH = extent.height / 2
+                let darkAmount = CGFloat(min(max(settings.vignette, 0), 1))
+
+                let gradient = CIFilter.radialGradient()
+                gradient.center = .zero
+                gradient.radius0 = 1
+                gradient.radius1 = Float(2.0.squareRoot())
+                gradient.color0 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+                gradient.color1 = CIColor(red: 1 - darkAmount, green: 1 - darkAmount, blue: 1 - darkAmount, alpha: 1)
+
+                if let unitGradient = gradient.outputImage {
+                    let transform = CGAffineTransform(a: halfW, b: 0, c: 0, d: halfH, tx: extent.midX, ty: extent.midY)
+                    let featherRadius = min(extent.width, extent.height) * 0.06
+                    let mask = unitGradient
+                        .transformed(by: transform)
+                        .clampedToExtent()
+                        .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: featherRadius])
+                        .cropped(to: extent)
+
+                    let multiply = CIFilter.multiplyCompositing()
+                    multiply.inputImage = mask
+                    multiply.backgroundImage = output
+                    output = multiply.outputImage ?? output
+                }
+            }
         }
 
         return output

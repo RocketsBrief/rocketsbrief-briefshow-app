@@ -180,6 +180,14 @@ celu sesiju. **Nema potvrde od korisnika za #24** (bojin fix) — sledeća
 sesija bi trebalo da proveri je li tekst u Synchronize dijalogu sad čitljiv
 pravim mišem, pre bilo čega novog.
 
+**Dopuna (15. avgust 2026)**: umesto potvrde #24, korisnik je prijavio nov,
+stvaran bug u istom toku — Shift-range-select je pomerao Sync IZVOR sa prve
+kliknute fotke na poslednju. Popravljeno kao stavka **#25** (pun opis
+ispod). #24 (boja) i dalje NIJE vizuelno potvrđena — proveri oba pri
+sledećem otvaranju Synchronize dijaloga: (a) tekst/ikonice čitljivi, (b)
+posle Shift-range-select-a dijalog i dalje piše "Copy the open photo's
+settings" o PRVOJ kliknutoj fotki, ne poslednjoj.
+
 **Napomena o Terminal/Desktop permisiji**: tokom testiranja ove sesije,
 `ls`/`cat`/itd. na `~/Desktop` iz Bash-a je počeo da vraća "Operation not
 permitted" usred sesije (radilo je ranije u istoj sesiji) — izgleda kao da
@@ -1920,6 +1928,45 @@ slideshow/export koji BriefShow već pravi.
     dugmad — sve jasno vidljivo u svakom screenshot-u cele ove sesije), pa
     je rizik nizak. Korisnik treba da potvrdi pravim mišem da je tekst sad
     čitljiv.
+
+    **Status (15. avgust 2026)**: korisnik nije potvrdio/negirao vidljivost
+    boje direktno — umesto toga prijavio je DRUGI, stvaran bug u istom
+    Select→Sync toku (vidi stavku #25 ispod). #24 (boja) ostaje formalno
+    NEPOTVRĐENA pravim očima, i dalje niskog rizika iz gore navedenog
+    razloga, ali treba proveriti prvom prilikom kad se dijalog stvarno
+    otvori.
+
+25. **Bug: Shift-range-select u filmstripu je krao Sync IZVOR sa prve na
+    poslednju fotku u opsegu** — 15. avgust 2026. Korisnik je prijavio:
+    klikne prvu fotku (nju hoće kao izvor za Synchronize), pa Shift-klikne
+    poslednju da proširi selekciju na ceo opseg — i otvorena/aktivna fotka
+    (izvor sinhronizacije) tiho skoči na POSLEDNJU, ne ostaje na PRVOJ.
+
+    **Pravi uzrok**: `handleFilmstripClick` je na kraju, bezuslovno za SVAKU
+    granu (plain/Cmd/Shift), zvao `selectPhoto(url)` — što otvara `url` kao
+    aktivnu fotku u editoru (i time i kao Sync izvor, pošto `syncButton`/
+    `syncDialogView`/`syncSettingsToSelection` svi čitaju `selectedURL` kao
+    izvor). Za Shift granu, `url` je fotka na koju je NAKNADNO kliknuto da
+    se PROŠIRI opseg (obično poslednja), ne fotka čije podešavanje korisnik
+    hoće da kopira. Ista logika je već postojala i bila namerno primenjena
+    za `selectAllPhotos()` (vidi njen komentar) — samo nije bila primenjena
+    i na Shift granu `handleFilmstripClick`-a.
+
+    **Ispravka**: `selectPhoto(url)` premešten unutar `if`/`else` grana za
+    plain klik i Cmd-klik (nepromenjeno ponašanje za oba), ali IZOSTAVLJEN
+    iz Shift grane — Shift sad samo proširuje `multiSelectedURLs` na ceo
+    opseg, ne dira `selectedURL`/otvorenu fotku. Anchor (prva kliknuta
+    fotka, već otvorena pre Shift-a) ostaje sync izvor, i uvek je deo
+    proširenog opsega (range je inkluzivan na oba kraja), pa je i dalje
+    validan target-subtract u `syncButton`/`syncSettingsToSelection`.
+
+    **Provera**: `xcodebuild` prolazi čisto. Logički potvrđeno čitanjem
+    (anchor uvek ostaje unutar range-a, `selectPhoto` i dalje radi
+    identično za plain/Cmd klik). Nije GUI-testirano pravim mišem ovom
+    sesijom — korisnik treba da proveri: klikni prvu fotku, Shift-klikni
+    poslednju, otvori Sync — treba da piše "Copy the open photo's settings"
+    i dalje o PRVOJ fotki (proveri po tome što se slajderi/postavke u
+    desnom panelu ne menjaju posle Shift-klika).
 
 ## Vezano
 

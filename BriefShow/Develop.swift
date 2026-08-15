@@ -2207,7 +2207,14 @@ struct DevelopView: View {
     // Shift selects the whole run between `selectionAnchor` (wherever the
     // last plain or Cmd click landed) and `url`, inclusive, replacing
     // whatever the multi-select set held before — same behavior as Finder
-    // icon view and Photos' thumbnail grid.
+    // icon view and Photos' thumbnail grid. Unlike Cmd/plain click, Shift
+    // deliberately does NOT call selectPhoto: the anchor (the first photo
+    // you plain-clicked before shift-extending) stays open as the Sync
+    // SOURCE the whole range is compared/copied FROM (see selectAllPhotos'
+    // identical reasoning below). Jumping the open preview to whichever
+    // photo happens to be under the shift-click — i.e. usually the LAST
+    // one in the range — would silently swap the sync source out from
+    // under the user mid-selection.
     private func handleFilmstripClick(_ url: URL) {
         let flags = NSEvent.modifierFlags
 
@@ -2218,6 +2225,7 @@ struct DevelopView: View {
                 multiSelectedURLs.insert(url)
             }
             selectionAnchor = url
+            selectPhoto(url)
         } else if flags.contains(.shift),
                   let anchor = selectionAnchor,
                   let anchorIndex = photoURLs.firstIndex(of: anchor),
@@ -2227,9 +2235,8 @@ struct DevelopView: View {
         } else {
             multiSelectedURLs = [url]
             selectionAnchor = url
+            selectPhoto(url)
         }
-
-        selectPhoto(url)
     }
 
     // Deliberately does NOT call selectPhoto or touch selectedURL —

@@ -2066,6 +2066,49 @@ slideshow/export koji BriefShow već pravi.
     negde drugde, treba da se pojavi kloniran sadržaj duž celog poteza (ne
     samo na jednoj tački), sa vidljivim feather ivicama.
 
+    **Dopuna (isto veče, posle prve provere pravim mišem)**: korisnik je
+    poslao pravi screenshot — dva bug-a, oba ispravljena:
+    - **Patch Circle je ostavljao "zalepljene" bledo-žute kružiće** umesto
+      da se vidi pravi kloniran sadržaj (screenshot: nekoliko providnih
+      žutih mrlja po licu/dekolteu/ogradi, ništa što liči na kloniranje).
+      Pravi uzrok: `patchStrokeMaskCanvas` (SwiftUI overlay iznad slike, NE
+      Core Image render) je crtala TRAJAN `accentColor.opacity(0.35)`
+      tint preko svakog već-naslikanog poteza — kopirano po uzoru na
+      `brushMaskCanvas` (koja MORA imati trajan overlay jer je Brush-ov
+      efekat inače nevidljiv). Za Patch je to bila greška: pravi
+      kloniran sadržaj je VEĆ vidljiv u pravom render-u, a `accentColor`
+      u ovoj temi je baš žuto-zlatna ("rocket yellow") — kad se klonira
+      iz slično obojene obližnje oblasti (čest slučaj, npr. koža→koža,
+      nebo→nebo), pravi efekat je suptilan i JEDINO što se vidi je taj
+      trajni tint, što izgleda kao pokvarena nalepnica. Ispravka: obrisana
+      cela funkcija i njen poziv — Patch sad ne ostavlja NIKAKAV trajan
+      overlay posle bojenja (isto kao pravi Photoshop clone stamp), samo
+      privremeni indikatori dok se aktivno slika (live poteza-linija,
+      žuti "twin cursor" izvor, hover prstenovi).
+    - **"Sečkanje" pri pomeranju BILO KOG slajdera** (Exposure/Brightness/
+      itd, ne samo Patch-specifično) — pravi uzrok: `developRenderQueue` je
+      obična SERIJSKA queue, i `renderNow()` nije imao nikakav mehanizam
+      da otkaže/preskoči render koji je u međuvremenu ZASTAREO (stigla je
+      novija vrednost slajdera dok je stari render još radio) — svaki
+      render se izvršavao do kraja PRE nego što bi sledeći uopšte počeo,
+      pa je brzo prevlačenje slajdera pravilo rastući "backlog" zastarelih
+      render-a; ekran je zato skakao kroz niz zastarelih međurezultata
+      umesto da glatko prati live poziciju slajdera. Ovo je POSTOJALO i
+      pre ove sesije, ali ga je nova Patch četkica (koja može da doda dosta
+      dab-ova po potezu) i Clarity (skup veliki-radijus blur) učinila
+      primetnijim. Ispravka: dodat `renderGeneration` brojač (bump-uje se
+      na svaki `renderNow()` poziv) — svaki render u background queue-u
+      proveri PRE skupog rada, i opet PRE slanja rezultata na ekran, da li
+      je u međuvremenu stigao noviji generation; ako jeste, odustaje odmah
+      umesto da završi posao koji niko neće videti — isti "pročitaj @State
+      live, cross-thread" obrazac koji `selectedURL`/`photoAtRenderTime`
+      provera već koristi za drugi razlog (promena fotke usred render-a).
+      Usput i smanjen Clarity-jev max radijus (200→100px) kao dodatna
+      jeftina mera. **Nije mereno/profajlisano** (nema alata za to u ovom
+      okruženju) — logički ispravna promena (queue se sad prazni brzo umesto
+      da se gomila), ali korisnik treba da potvrdi da li se sečkanje
+      stvarno smanjilo osećajem uživo, ne samo teorijski.
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

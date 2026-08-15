@@ -890,7 +890,7 @@ enum PhotoEditRenderer {
             if longEdge.isFinite, longEdge > 0 {
                 let filter = CIFilter.unsharpMask()
                 filter.inputImage = output
-                filter.radius = Float(min(max(longEdge * 0.02, 8), 200))
+                filter.radius = Float(min(max(longEdge * 0.02, 8), 100))
                 filter.intensity = Float(settings.clarity * 0.8)
                 output = filter.outputImage ?? output
             }
@@ -1869,6 +1869,17 @@ struct DevelopView: View {
     @State private var cropIsAutoFitted = false
     @State private var exportStatusText: String?
     @State private var renderWorkItem: DispatchWorkItem?
+    // Bumped once per renderNow() call, read live (cross-thread, same
+    // pattern as `selectedURL`/`photoAtRenderTime` below) from inside the
+    // background render — lets a render that's been superseded by a NEWER
+    // one bail out immediately, before or during the expensive CIImage
+    // work, instead of finishing anyway. Without this, dragging a slider
+    // fast enough to outrun a single render's cost queues up a growing
+    // backlog on `developRenderQueue` (a plain serial queue) — each stale
+    // render still runs to completion before the next one even starts, so
+    // the displayed image visibly lags/jumps through a chain of stale
+    // in-between values instead of tracking the live slider smoothly.
+    @State private var renderGeneration = 0
 
     // Presets: a global, persisted library of full-settings snapshots (see
     // PhotoEditPresetStore). Copy/paste: a lightweight in-memory clipboard
@@ -3070,17 +3081,28 @@ struct DevelopView: View {
     // The clone-stamp BRUSH overlay for a Circle-mode patch — paints
     // continuously as the user drags, exactly like Photoshop/Lightroom's
     // own clone stamp (see PatchGeometry's doc comment and
-    // paintPatchStroke/commitPatchStroke for the gesture logic). Layered
-    // like brushPaintOverlay: already-painted strokes underneath
-    // (patchStrokeMaskCanvas), a live vector preview of the IN-PROGRESS
-    // stroke above that, source/size cursor previews above that, and the
-    // transparent hit area last so its gesture/hover modifiers stay on top.
+    // paintPatchStroke/commitPatchStroke for the gesture logic).
+    //
+    // Deliberately shows NOTHING persistent for already-committed strokes
+    // (unlike brushPaintOverlay's brushMaskCanvas, which stays visible on
+    // purpose — a Brush mask's tonal effect is otherwise invisible, so it
+    // NEEDS a permanent coverage indicator). A Patch's effect is the
+    // cloned pixels themselves, already visible in the real rendered
+    // image — an earlier version of this overlay also painted a
+    // translucent accentColor tint over every committed stroke "for
+    // visibility", which back-fired badly: sampling from a similarly-toned
+    // nearby area (the common case) makes the real clone subtle, so the
+    // filled tint circles were the ONLY thing visibly showing, reading as
+    // stuck yellow stickers doing nothing rather than an edit (reported
+    // directly against a real screenshot, 15. avgust 2026 evening). Real
+    // Photoshop shows no such overlay after painting either. Layered:
+    // a live vector preview of the IN-PROGRESS stroke, then source/size
+    // cursor previews, then the transparent hit area last so its
+    // gesture/hover modifiers stay on top.
     private func patchBrushOverlay(_ geo: PatchGeometry, frame: CGRect) -> some View {
         let brushDiameter = max(patchBrushSize * max(frame.width, frame.height), 2)
 
         return ZStack {
-            patchStrokeMaskCanvas(geo, frame: frame)
-
             if activePatchStrokePoints.count > 1 {
                 Path { path in
                     let scaled = activePatchStrokePoints.map {
@@ -3186,45 +3208,6 @@ struct DevelopView: View {
                         }
                 )
         }
-    }
-
-    // Persistent, translucent overlay of every ALREADY-PAINTED stroke —
-    // same Canvas-based approach as brushMaskCanvas (see its doc comment),
-    // minus the erase/destinationOut branch (a clone-stamp patch has no
-    // erase mode). A single-dab stroke (one click, no drag) has no line
-    // to stroke — drawn as a small filled dot instead so it doesn't just
-    // vanish, matching how brushStrokeDabs already handles a 1-point
-    // stroke at render time.
-    private func patchStrokeMaskCanvas(_ geo: PatchGeometry, frame: CGRect) -> some View {
-        Canvas { context, size in
-            for stroke in geo.strokes {
-                guard !stroke.points.isEmpty else {
-                    continue
-                }
-                let scaled = stroke.points.map { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
-                let lineWidth = max(stroke.size * size.width, 2)
-
-                if scaled.count == 1 {
-                    let rect = CGRect(x: scaled[0].x - lineWidth / 2, y: scaled[0].y - lineWidth / 2, width: lineWidth, height: lineWidth)
-                    context.fill(Path(ellipseIn: rect), with: .color(accentColor.opacity(0.35)))
-                    continue
-                }
-
-                var path = Path()
-                path.move(to: scaled[0])
-                for point in scaled.dropFirst() {
-                    path.addLine(to: point)
-                }
-                context.stroke(
-                    path,
-                    with: .color(accentColor.opacity(0.35)),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-                )
-            }
-        }
-        .frame(width: frame.width, height: frame.height)
-        .position(x: frame.midX, y: frame.midY)
-        .allowsHitTesting(false)
     }
 
     // Circle/Square share this overlay — same center+radiusX/radiusY
@@ -5927,21 +5910,33 @@ struct DevelopView: View {
             return
         }
 
+        renderGeneration += 1
+        let generation = renderGeneration
         let effectiveSettings = showOriginal ? PhotoEditSettings() : settings
         let cropEnabled = !isCropping
         let source = previewBaseImage
         let photoAtRenderTime = selectedURL
 
         developRenderQueue.async(qos: .userInteractive) {
+            // A NEWER renderNow() already landed while this one was sitting
+            // in the queue — skip the expensive render entirely rather than
+            // computing a result nobody will see (see renderGeneration's
+            // doc comment).
+            guard generation == renderGeneration else {
+                return
+            }
             let rendered = PhotoEditRenderer.render(effectiveSettings, on: source, applyCrop: cropEnabled)
-            guard let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) else {
+            // Superseded WHILE rendering — still worth checking before the
+            // (also non-trivial) CGImage conversion below.
+            guard generation == renderGeneration,
+                  let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) else {
                 return
             }
             let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
             let bins = PhotoEditRenderer.luminanceHistogram(of: rendered)
 
             DispatchQueue.main.async {
-                guard selectedURL == photoAtRenderTime else {
+                guard selectedURL == photoAtRenderTime, generation == renderGeneration else {
                     return
                 }
                 displayedImage = image

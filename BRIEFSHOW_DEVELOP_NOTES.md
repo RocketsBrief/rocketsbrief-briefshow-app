@@ -2188,6 +2188,41 @@ slideshow/export koji BriefShow već pravi.
     bez merenja. Korisnik treba da potvrdi na istoj RAW fotki da li je sad
     primetno glađe.
 
+    **Dopuna (isto veče, peti krug) — mask-add-dugme bug, konačno neka
+    stvarna zacepka**: korisnik je precizirao da se dešava "čim udjem u
+    Develop", za BILO KOJI mask-add-dugme (Patch, Radial, "any"), i još
+    bitnije — dešava se ČAK I POSLE selektovanja fotke (dakle prozor je
+    već sigurno key/fokusiran, foto-selekcija je uspela) — što ISKLJUČUJE
+    `acceptsFirstMouse`/window-focus teoriju kao (jedini) uzrok, pošto je
+    ta ista teorija zahtevala da baš PRVI klik u prozoru bude problem, a
+    ovde nije bio. Opet se "budi" nekim potpuno nepovezanim spoljašnjim
+    dogadjajem (klik na dugme za snimanje ekrana — dvaput zaredom prijavio
+    isti obrazac). Pregledom koda nadjena je STVARNA asimetrija koja baca
+    sumnju u pravom pravcu: `maskRow`-ov dugme za SELEKTOVANJE postojeće
+    maske VEĆ ima `.contentShape(Rectangle())` (dodato neku raniju sesiju),
+    ali `maskAddButton` (dugme za DODAVANJE nove Patch/Radial/Graduated/
+    Brush maske — baš ono što korisnik prijavljuje) NIJE imalo
+    `.contentShape(Rectangle())` uopšte. Bez eksplicitnog content shape-a,
+    SwiftUI dugme može (na nekim layout prolazima, posebno odmah pošto se
+    visina sekcije promeni — npr. `selectedMaskEditor` panel ispod se
+    pojavljuje/nestaje kad se maska doda/selektuje) da hit-testira samo
+    stvarno iscrtane piksele (ikonica+tekst) umesto celog `.frame(maxWidth:
+    .infinity)` okvira dugmeta — poznata, dokumentovana klasa SwiftUI-macOS
+    bug-a, ne nagadjanje specifično za Patch. Dodato `.contentShape(Rectangle())`
+    na SVAKI mask-add-dugme (funkcija je deljena za Radial/Graduated/Brush/
+    Patch Circle/Patch Free, pa pokriva sve odjednom). `xcodebuild` čist.
+
+    **Iskreno o pouzdanosti**: ovo je najbolja, najkonkretnija hipoteza do
+    sad (stvarna asimetrija u kodu, poznat bug-obrazac, ne slepo nagadjanje)
+    ali NIJE 100% potvrdjena bez pravog testiranja mišem — ako se bug i
+    dalje javlja posle ovoga, sledeći trag za istragu je da li se
+    `selectedMaskEditor` panel STVARNO pojavljuje/nestaje TAČNO u trenutku
+    klika (proveriti tajming `if let index = selectedAdjustmentIndex` grane
+    u `masksSection` naspram trenutka klika), ili probati da se ceo
+    `adjustmentPanel` ScrollView zameni sa `LazyVStack` unutar `ScrollView`
+    (trenutno je obična `VStack`, pa ovo verovatno nije lazy-loading
+    problem, ali vredi proveriti prvo pre ičeg složenijeg).
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

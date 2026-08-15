@@ -4577,6 +4577,22 @@ struct DevelopView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
+            // Explicit hit-test shape covering the FULL frame (including
+            // the padding/whitespace around the icon+text, which has no
+            // rendered pixels of its own) — without this, SwiftUI can fall
+            // back to hit-testing only the actual glyph content on some
+            // layout passes, especially right after this section's height
+            // changes (e.g. selectedMaskEditor appearing/disappearing below
+            // as a mask gets added/selected). Reported directly: "Patch"/
+            // "Radial"/any mask-add button intermittently not responding
+            // to the first click right after opening Develop or selecting
+            // a photo, working again only after some UNRELATED interaction
+            // — this is the standard, known fix for exactly that class of
+            // intermittent-miss bug in a SwiftUI ScrollView (this whole
+            // panel is one, see adjustmentPanel), not a guess specific to
+            // Patch — added to every mask-add button since Radial/Graduated/
+            // Brush share this same function.
+            .contentShape(Rectangle())
         }
         // NOT EditToolButtonStyle — that style hard-codes a 30×30 frame
         // sized for a single icon glyph (Rotate/Crop), which would clip

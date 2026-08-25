@@ -3169,6 +3169,77 @@ tačan pojedinačni gain i offset po kanalu. Novi `SDInpaintPipeline.toneMatch()
   stoje tačno na ivici slike i clip na nivou kontejnera bi ih odsekao.
 - Zoom se resetuje pri promeni fotke.
 
+## KORAK 6 — LaMa kao „Quick AI Clean Up" (25. avgust 2026)
+
+**Odluka**: dva dugmeta, bez automatskog prebacivanja. **„Quick AI Clean Up"**
+koristi LaMu, **„AI Clean Up"** koristi SD. Staro „Erase (Instant)" (exemplar)
+je uklonjeno iz UI-ja — LaMa radi isti posao brže i neuporedivo bolje.
+
+**Zašto je LaMa uzeta prva, pre SD skidanja**: ide U APP (99 MB), pa AI
+čišćenje radi na svakom Macu odmah, bez ijednog skidanja i bez odluke o
+hostingu. SD skidanje i dalje treba, ali rešava manji deo problema.
+
+**Konverzija** (`CoreMLModels/convert_lama.py`):
+- Iz `best.ckpt` se uzima SAMO generator. `.ckpt` je PyTorch Lightning bundle
+  sa diskriminatorima, perceptual loss mrežom i stanjem optimizatora — ništa
+  od toga nije inference, i utrostručilo bi ono što isporučujemo.
+- 51 M parametara, 989 tenzora, fp16 → **99 MB**. App: 23 MB → **121 MB**.
+- Maskiranje i concat su NAMERNO unutar traced grafa (`image * (1 - mask)`,
+  pa `cat([masked, mask])`). To su dve linije koje je lako suptilno pogrešiti
+  na Swift strani (redosled kanala, da li je maska 1-za-rupu ili 1-za-zadržati),
+  pa je ugovor Core ML modela sada prosto „evo fotke i maske".
+- **Provera**: isti ulaz kroz torch i kroz Core ML — **max razlika 0.0062,
+  prosek 0.00043**. To je fp16 zaokruživanje, dakle graf je prenet ispravno.
+  Konverzija koja tiho promeni graf se i dalje uredno sačuva, pa se ovo mora
+  proveriti a ne pretpostaviti.
+
+**Compute units: `.cpuAndGPU`, ne ANE.** LaMine Fourier konvolucije nemaju
+implementaciju na Neural Engine-u — kompajler to kaže naglas tokom konverzije
+(`MILCompilerForANE error ... ANECCompile() FAILED`). Traženje ANE kupuje samo
+neuspeo compile i fallback. Ovo je usput i razlog zašto LaMa radi na Intelu:
+ionako joj ANE ne treba.
+
+**Izmereno na M2** (512 region, ista maska):
+| | LaMa | SD |
+|---|---|---|
+| jedno brisanje (toplo) | **0,7 s** | 13,4 s |
+| veličina | 99 MB, u app-i | ~2 GB, skida se |
+| Intel Mac | radi | 2–5 min, neupotrebljivo |
+
+**Kvalitet — i to je opravdanje za dva dugmeta:**
+- Drveni zid: **nevidljivo**, čak je nastavila i spoj dasaka.
+- Figura u vratima: uklonila je, ali je popunila skoro belim umesto da nastavi
+  brdo. LaMa **produžava teksturu oko rupe**, ne izmišlja sadržaj; SD izmišlja.
+  Tu razliku dugmad i prodaju: Quick za pozadine i teksture, AI Clean Up kad
+  treba izmisliti šta je iza.
+
+**Deljeno između sva tri puta**: `toneMatch` i `featherRadius` su prebačeni iz
+`SDInpaintPipeline` u `InpaintPipeline` — tiču se krpljenja rupe, ne difuzije.
+LaMa koristi isti tone match iz istog razloga: i ona rekonstruiše poznate
+piksele, pa je njen promašaj na njima tačna mera koliko zakrpu vratiti nazad.
+
+**Licenca**: LaMa je Apache-2.0, Copyright 2021 Samsung Research (proveren sam
+LICENSE fajl u zvaničnom repou; NOTICE fajla nema, pa treba samo kopija licence
+i attribution). Težine su skinute sa linka na koji upućuje ZVANIČNI README
+(`huggingface.co/smartywu/big-lama`). Kopija licence je u
+`CoreMLModels/LaMa/Legal/`. README repoa ne kaže ništa posebno o licenci
+TEŽINA — „nije rečeno" nije isto što i „dozvoljeno", pa pred prodaju to vredi
+da pravnik potvrdi u jednoj rečenici.
+
+**Zaostalo iz ovog koraka:**
+1. **Exemplar kod je i dalje u `DevelopInpaint.swift`, samo se više ne poziva**
+   (`ExemplarInpainter.fill` + `InpaintPipeline.removal`, ~400 linija). Dugme
+   je uklonjeno; brisanje koda je zaseban, siguran cleanup.
+2. **`LaMa.mlpackage` (99 MB) sada stoji u `BriefShow/BriefShow/`** i NIJE
+   commit-ovan — 99 MB u git istoriji je trajno. Treba odlučiti: Git LFS, ili
+   ostaviti van git-a uz `convert_lama.py` koji ga napravi iz težina.
+3. **Legal/ u app bundle-u + „Licenses" ekran** — obe licence (Apache-2.0 za
+   LaMu, OpenRAIL za SD) i Attachment A u EULA.
+
+**Python okruženje**: `CoreMLModels/.venv` (Python 3.11 preko Homebrew-a,
+torch 2.13, coremltools 9.0, kornia, pytorch-lightning). Treba i za SD
+palettizaciju. Uklanja se brisanjem foldera.
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

@@ -15,7 +15,7 @@ import Foundation
 // that a model was involved. What SD replaces is exactly one call:
 // ExemplarInpainter.fill().
 //
-// The prompt is normally invisible: AI Remove is one button, and the default
+// The prompt is normally invisible: AI Clean Up is one button, and the default
 // prompt below is what it always asks for. A gear in the panel reveals it for
 // anyone who wants to say what should be behind the thing they removed.
 //
@@ -321,7 +321,7 @@ final class SDInpaintPipeline {
     static let contextLength = 77
     static let embedWidth = 768
 
-    /// What AI Remove asks for when the user has not changed anything. It reads
+    /// What AI Clean Up asks for when the user has not changed anything. It reads
     /// oddly for a removal tool, and that is the point: CLIP has no notion of
     /// an instruction, so the prompt must NAME WHAT SHOULD BE THERE rather than
     /// describe the edit. Instruction-shaped text ("remove the selected object,
@@ -353,7 +353,7 @@ final class SDInpaintPipeline {
     // Loading the 1.6 GB UNet is ~18 seconds of Neural Engine compilation, so
     // the models are loaded once and kept. `warmUp()` moves that cost to the
     // moment Develop opens, where nobody is waiting on it, instead of onto
-    // the first click of AI Remove, where everybody is.
+    // the first click of AI Clean Up, where everybody is.
     static let shared = SDInpaintPipeline()
     private init() {}
 
@@ -384,7 +384,8 @@ final class SDInpaintPipeline {
     // fails silently — a wrong sign or a bad scale still produces AN image —
     // so the only cheap way to tell a working pipeline from a plausible-
     // looking broken one is to watch the numbers.
-    private static let debugging = !(ProcessInfo.processInfo.environment["BRIEFSHOW_SD_DEBUG"] ?? "").isEmpty
+    static let isDebugging = !(ProcessInfo.processInfo.environment["BRIEFSHOW_SD_DEBUG"] ?? "").isEmpty
+    private static var debugging: Bool { isDebugging }
 
     // Diagnostic only: the whole 512x512 working buffer, before it is cut down
     // to the hole, written next to the models so a round trip can be looked at.
@@ -423,8 +424,13 @@ final class SDInpaintPipeline {
         // The UNet is converted ANE-friendly and is ~95% of the compute; the
         // VAE passes run once each and are quicker on the GPU.
         let aneConfiguration = MLModelConfiguration()
-        aneConfiguration.computeUnits = ProcessInfo.processInfo.environment["BRIEFSHOW_SD_UNET"] == "gpu"
-            ? .cpuAndGPU : .cpuAndNeuralEngine
+        switch ProcessInfo.processInfo.environment["BRIEFSHOW_SD_UNET"] {
+        case "gpu": aneConfiguration.computeUnits = .cpuAndGPU
+        // No Neural Engine at all is what an Intel Mac looks like; this is
+        // here to measure that case rather than guess at it.
+        case "cpu": aneConfiguration.computeUnits = .cpuOnly
+        default: aneConfiguration.computeUnits = .cpuAndNeuralEngine
+        }
         let gpuConfiguration = MLModelConfiguration()
         gpuConfiguration.computeUnits = .cpuAndGPU
 
@@ -814,7 +820,7 @@ final class SDInpaintPipeline {
         // output — correcting it would hide the very drift it is there to show.
         let correction = everywhere
             ? Array(repeating: (gain: Float(1), offset: Float(0)), count: 3)
-            : Self.toneMatch(decoded: pixels, buffers: buffers, side: side)
+            : InpaintPipeline.toneMatch(decoded: pixels, buffers: buffers, side: side)
         for index in 0..<pixelCount where everywhere || buffers.known[index] == 0 {
             for channel in 0..<3 {
                 let (gain, offset) = correction[channel]
@@ -825,84 +831,6 @@ final class SDInpaintPipeline {
         }
     }
 
-    /// How far the model's colours drifted, measured rather than guessed.
-    ///
-    /// The patch comes back a shade darker than the photo — the VAE round trip
-    /// and the sampler each shift tone a little — and against a flat area like
-    /// a sky that reads as a visibly darker rectangle, which no amount of edge
-    /// feathering hides. The measurement is free: the decoder also rebuilt the
-    /// KNOWN pixels in the ring around the hole, and there the right answer is
-    /// already on hand, so comparing its ring against the real one gives the
-    /// exact per-channel gain and offset needed to put the patch back on the
-    /// photo's own scale.
-    ///
-    /// Returns identity when there is too little ring to measure from.
-    private static func toneMatch(
-        decoded: [Float],
-        buffers: ExemplarInpainter.Buffers,
-        side: Int
-    ) -> [(gain: Float, offset: Float)] {
-        let identity = Array(repeating: (gain: Float(1), offset: Float(0)), count: 3)
-        guard ProcessInfo.processInfo.environment["BRIEFSHOW_SD_TONEMATCH"] != "off" else { return identity }
-
-        // The ring: known pixels near the hole, not the whole frame. Near,
-        // because a sunset sky three hundred pixels away is not the tone the
-        // patch has to match — the pixels it actually touches are.
-        var minX = Int.max, minY = Int.max, maxX = -1, maxY = -1
-        for y in 0..<side {
-            for x in 0..<side where buffers.known[y * side + x] == 0 {
-                minX = min(minX, x); maxX = max(maxX, x)
-                minY = min(minY, y); maxY = max(maxY, y)
-            }
-        }
-        guard maxX >= minX else { return identity }
-        let band = 48
-        let x0 = max(minX - band, 0), x1 = min(maxX + band, side - 1)
-        let y0 = max(minY - band, 0), y1 = min(maxY + band, side - 1)
-
-        let pixelCount = side * side
-        var result = identity
-        for channel in 0..<3 {
-            var count = 0
-            var sumReal: Double = 0, sumModel: Double = 0
-            var sumRealSquared: Double = 0, sumModelSquared: Double = 0
-            for y in y0...y1 {
-                for x in x0...x1 {
-                    let index = y * side + x
-                    guard buffers.known[index] == 1 else { continue }
-                    let real = Double(buffers.pixels[index * 4 + channel])
-                    let model = Double(decoded[channel * pixelCount + index])
-                    sumReal += real; sumModel += model
-                    sumRealSquared += real * real; sumModelSquared += model * model
-                    count += 1
-                }
-            }
-            // A thousand pixels is enough for a mean to be steady; below that
-            // the ring is mostly hole and the correction would be noise.
-            guard count > 1000 else { return identity }
-
-            let n = Double(count)
-            let meanReal = sumReal / n, meanModel = sumModel / n
-            let varianceReal = max(sumRealSquared / n - meanReal * meanReal, 0)
-            let varianceModel = max(sumModelSquared / n - meanModel * meanModel, 0)
-
-            // Gain is clamped hard and deliberately: the drift being corrected
-            // is essentially a bias, and a contrast ratio measured on a nearly
-            // flat ring is a small number over a small number. The offset does
-            // the real work; the gain only trims what is left.
-            var gain = 1.0
-            if varianceModel > 4, varianceReal > 4 {
-                gain = min(max(varianceReal.squareRoot() / varianceModel.squareRoot(), 0.85), 1.18)
-            }
-            result[channel] = (gain: Float(gain), offset: Float(meanReal - gain * meanModel))
-        }
-
-        if debugging {
-            let text = result.map { String(format: "x%.3f %+.1f", $0.gain, $0.offset) }.joined(separator: "  ")
-            print("  [sd] tone match  \(text)")
-        }
-        return result
-    }
 }
 
 // MARK: - The Remove tool's second button
@@ -950,26 +878,11 @@ extension InpaintPipeline {
             steps: steps, seed: seed, progress: progress, shouldContinue: shouldContinue)
         guard shouldContinue() else { return nil }
 
-        // The ramp is capped against the hole's own size, and that cap is the
-        // point: a fixed radius that looks right on a large removal will, on a
-        // small one, blur away every fully-opaque pixel — and a patch with no
-        // solid core does not remove anything, it just veils it. Divided by
-        // five because `package` blurs twice, so the band it produces is about
-        // twice the radius wide on each side.
-        var holeMinX = Int.max, holeMinY = Int.max, holeMaxX = -1, holeMaxY = -1
-        for y in 0..<side {
-            for x in 0..<side where originalKnown[y * side + x] == 0 {
-                holeMinX = min(holeMinX, x); holeMaxX = max(holeMaxX, x)
-                holeMinY = min(holeMinY, y); holeMaxY = max(holeMaxY, y)
-            }
-        }
-        let holeEdge = min(holeMaxX - holeMinX + 1, holeMaxY - holeMinY + 1)
-        let widest = Double(max(holeEdge, 20)) / 5
-        let radius = Int((2 + min(max(feather, 0), 1) * (widest - 2)).rounded())
         return package(
             buffers: buffers, originalKnown: originalKnown,
             region: region, imageExtent: extent,
-            growRadius: 2, blurRadius: radius)
+            growRadius: 2,
+            blurRadius: InpaintPipeline.featherRadius(feather, originalKnown: originalKnown, side: side))
     }
 
     /// A square window around the hole, because the converted models only

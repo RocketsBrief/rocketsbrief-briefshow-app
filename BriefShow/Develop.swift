@@ -2351,10 +2351,14 @@ struct DevelopView: View {
     // user can act on (weights not installed yet), so unlike the exemplar
     // path it has somewhere to say so.
     @State private var removeErrorMessage: String?
-    // App-wide, not per-photo: this is a preference about how AI Remove
+    // App-wide, not per-photo: this is a preference about how AI Clean Up
     // behaves, not part of any one picture's edit. Empty string is allowed and
     // meaningful — it means "no prompt at all" — so the reset button restores
     // the default rather than an empty field standing in for it.
+    //
+    // The defaults keys keep the old "aiRemove" name on purpose: renaming them
+    // to match the button would silently throw away a prompt someone had
+    // already written.
     @AppStorage("develop.aiRemove.prompt")
     private var aiRemovePrompt: String = SDInpaintPipeline.defaultPrompt
     @State private var showsAIPromptEditor = false
@@ -2416,10 +2420,11 @@ struct DevelopView: View {
             if selectedURL == nil, let initial = initialSelection ?? photoURLs.first {
                 selectPhoto(initial)
             }
-            // Eat the model load here rather than on the first AI Remove: it is
+            // Eat the model load here rather than on the first AI Clean Up: it is
             // ~18 seconds of Neural Engine compilation, and opening Develop is
             // the one moment the user is not already waiting for a result.
             SDInpaintPipeline.shared.warmUp()
+            LaMaInpaintPipeline.shared.warmUp()
         }
         .onChange(of: settings) { _ in
             scheduleRender()
@@ -2521,6 +2526,8 @@ struct DevelopView: View {
                 switch key {
                 case "=", "+": stepZoom(1); return nil
                 case "-", "_": stepZoom(-1); return nil
+                // Cmd+0 only. Cmd+Space was tried and dropped: Spotlight owns
+                // it system-wide, so it never reaches the app.
                 case "0" where flags == .command: resetZoom(); return nil
                 default: break
                 }
@@ -4678,26 +4685,36 @@ struct DevelopView: View {
         let ink = Color(red: 0.90, green: 0.25, blue: 0.22)
 
         return ZStack {
-            ForEach(removalStrokes) { stroke in
-                strokePath(stroke.points, frame: frame)
-                    .stroke(
-                        ink.opacity(0.45),
-                        style: StrokeStyle(
-                            lineWidth: max(stroke.size * longEdge, 2),
-                            lineCap: .round, lineJoin: .round
+            // Every stroke is painted OPAQUE into one group, and the group is
+            // made translucent afterwards. Painting each stroke at 45% instead
+            // — which is what this did — meant two strokes crossing showed a
+            // darker patch where they overlapped, so going back over an area
+            // already covered looked like it was doing something when it was
+            // not. The mask never worked that way (it takes the maximum), so
+            // this only ever misrepresented what was selected.
+            ZStack {
+                ForEach(removalStrokes) { stroke in
+                    strokePath(stroke.points, frame: frame)
+                        .stroke(
+                            ink,
+                            style: StrokeStyle(
+                                lineWidth: max(stroke.size * longEdge, 2),
+                                lineCap: .round, lineJoin: .round
+                            )
                         )
-                    )
-                    .allowsHitTesting(false)
-            }
+                }
 
-            if activeRemovalStrokePoints.count > 1 {
-                strokePath(activeRemovalStrokePoints, frame: frame)
-                    .stroke(
-                        ink.opacity(0.45),
-                        style: StrokeStyle(lineWidth: brushDiameter, lineCap: .round, lineJoin: .round)
-                    )
-                    .allowsHitTesting(false)
+                if !activeRemovalStrokePoints.isEmpty {
+                    strokePath(activeRemovalStrokePoints, frame: frame)
+                        .stroke(
+                            ink,
+                            style: StrokeStyle(lineWidth: brushDiameter, lineCap: .round, lineJoin: .round)
+                        )
+                }
             }
+            .compositingGroup()
+            .opacity(0.45)
+            .allowsHitTesting(false)
 
             if let hover = removalBrushHoverLocation, activeRemovalStrokePoints.isEmpty {
                 Circle()
@@ -4739,6 +4756,11 @@ struct DevelopView: View {
                 return
             }
             path.move(to: first)
+            // A lone point needs a zero-length line, not just a move: with a
+            // round cap that draws the dab, while a bare move draws nothing.
+            if scaled.count == 1 {
+                path.addLine(to: first)
+            }
             for point in scaled.dropFirst() {
                 path.addLine(to: point)
             }
@@ -5629,16 +5651,22 @@ struct DevelopView: View {
                     .foregroundColor(AppColors.muted)
             } else if hasRemovalArea {
                 Text(removalMask == nil
-                     ? "Painted area ready. Erase fills it from the surrounding photo."
+                     ? "Painted area ready. Quick is fast and matches the surroundings; AI Clean Up invents what belongs there."
                      : (activeSelection == nil
-                        ? "People found. Erase fills the area from the surrounding photo."
-                        : "People inside the selection. Erase fills from the surrounding photo."))
+                        ? "People found. Quick is fast and matches the surroundings; AI Clean Up invents what belongs there."
+                        : "People inside the selection. Quick is fast; AI Clean Up invents what belongs there."))
                     .font(.custom("Figtree", size: 11))
                     .foregroundColor(AppColors.muted)
                     .fixedSize(horizontal: false, vertical: true)
 
-                panelActionButton("Erase (Instant)", systemImage: "eraser") {
-                    eraseMaskedArea(useAI: false)
+                // LaMa: one forward pass, about a second, and it ships inside
+                // the app — so this works on every Mac, including Intel
+                // machines with no Neural Engine where the generative path
+                // below takes minutes. Best at continuing texture and
+                // background; it extends what is around the hole rather than
+                // inventing something new.
+                panelActionButton("Quick AI Clean Up", systemImage: "wand.and.rays") {
+                    eraseMaskedArea(using: .quick)
                 }
                 .disabled(isRemoving)
                 .opacity(isRemoving ? 0.4 : 1)
@@ -5654,8 +5682,8 @@ struct DevelopView: View {
                 // controls — and it stays closed by default, since the whole
                 // point is that the tool is one button.
                 HStack(spacing: 6) {
-                    panelActionButton("AI Remove", systemImage: "wand.and.stars") {
-                        eraseMaskedArea(useAI: true)
+                    panelActionButton("AI Clean Up", systemImage: "wand.and.stars") {
+                        eraseMaskedArea(using: .generative)
                     }
                     Button {
                         showsAIPromptEditor.toggle()
@@ -5666,7 +5694,7 @@ struct DevelopView: View {
                             .frame(width: 24, height: 24)
                     }
                     .buttonStyle(.plain)
-                    .help("What AI Remove should put in place of what you erased")
+                    .help("What AI Clean Up should put in place of what you erased")
                 }
                 .disabled(isRemoving)
                 .opacity(isRemoving ? 0.4 : 1)
@@ -5688,7 +5716,7 @@ struct DevelopView: View {
             }
 
             if isRemoving {
-                Text(aiEraseProgress.map { "Erasing with AI… \(Int($0 * 100))%" } ?? "Erasing…")
+                Text(aiEraseProgress.map { "Cleaning up… \(Int($0 * 100))%" } ?? "Erasing…")
                     .font(.custom("Figtree", size: 11))
                     .foregroundColor(AppColors.muted)
             }
@@ -5702,7 +5730,7 @@ struct DevelopView: View {
         }
     }
 
-    // The prompt AI Remove runs with. Hidden behind the gear because the tool
+    // The prompt AI Clean Up runs with. Hidden behind the gear because the tool
     // is meant to be one button: brush, click, done. It is here for the case
     // the model guesses wrong about what belongs behind the thing that was
     // removed, and naming it ("a wooden terrace", "sand") fixes it.
@@ -5806,7 +5834,11 @@ struct DevelopView: View {
 
     private func commitRemovalStroke() {
         defer { activeRemovalStrokePoints = [] }
-        guard activeRemovalStrokePoints.count > 1 else {
+        // One point counts: a single click should dab the brush where it was
+        // clicked, rather than needing a drag before anything appears.
+        // brushStrokeDabs already handles a one-point stroke, so the mask side
+        // has always been ready for this.
+        guard !activeRemovalStrokePoints.isEmpty else {
             return
         }
         // hardness 1: this is a SELECTION, not a soft adjustment — a feathered
@@ -5860,17 +5892,24 @@ struct DevelopView: View {
         }
     }
 
-    // `useAI` picks which filler runs; everything either side of it — the
-    // union of the Vision mask and the painted strokes, the guard against the
-    // client moving on mid-run, the ImageLayer that comes out — is shared, so
-    // the two buttons stay genuinely interchangeable.
-    private func eraseMaskedArea(useAI: Bool) {
+    // Which model fills the hole. Everything either side of it — the union of
+    // the Vision mask and the painted strokes, the guard against the client
+    // moving on mid-run, the ImageLayer that comes out — is shared, so the two
+    // buttons stay genuinely interchangeable.
+    private enum RemovalEngine {
+        case quick        // LaMa, bundled, ~1s, every Mac
+        case generative   // Stable Diffusion, downloaded, ~13s, Apple Silicon
+    }
+
+    private func eraseMaskedArea(using engine: RemovalEngine) {
         guard hasRemovalArea, let fullBaseImage, let selectedURL else {
             return
         }
         isRemoving = true
         removeErrorMessage = nil
-        aiEraseProgress = useAI ? 0 : nil
+        // Only the generative path is slow enough to need a percentage; LaMa
+        // finishes before a progress bar would finish appearing.
+        aiEraseProgress = engine == .generative ? 0 : nil
         let settingsSnapshot = settings
         let photoAtActionTime = selectedURL
         let visionMask = removalMask
@@ -5898,8 +5937,12 @@ struct DevelopView: View {
                 return
             }
             let removal: InpaintPipeline.Removal?
-            if useAI {
-                do {
+            do {
+                switch engine {
+                case .quick:
+                    removal = try InpaintPipeline.quickAIRemoval(
+                        mask: mask, from: full, context: briefEditsCIContext, feather: feather)
+                case .generative:
                     removal = try InpaintPipeline.aiRemoval(
                         mask: mask, from: full, context: briefEditsCIContext,
                         prompt: prompt, feather: feather,
@@ -5909,16 +5952,14 @@ struct DevelopView: View {
                             }
                         }
                     )
-                } catch {
-                    DispatchQueue.main.async {
-                        isRemoving = false
-                        aiEraseProgress = nil
-                        removeErrorMessage = error.localizedDescription
-                    }
-                    return
                 }
-            } else {
-                removal = InpaintPipeline.removal(mask: mask, from: full, context: briefEditsCIContext)
+            } catch {
+                DispatchQueue.main.async {
+                    isRemoving = false
+                    aiEraseProgress = nil
+                    removeErrorMessage = error.localizedDescription
+                }
+                return
             }
 
             DispatchQueue.main.async {

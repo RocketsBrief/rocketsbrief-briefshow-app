@@ -637,6 +637,105 @@ enum InpaintPipeline {
         )
     }
 
+    /// How far the model's colours drifted, measured rather than guessed.
+    ///
+    /// The patch comes back a shade darker than the photo — the VAE round trip
+    /// and the sampler each shift tone a little — and against a flat area like
+    /// a sky that reads as a visibly darker rectangle, which no amount of edge
+    /// feathering hides. The measurement is free: the decoder also rebuilt the
+    /// KNOWN pixels in the ring around the hole, and there the right answer is
+    /// already on hand, so comparing its ring against the real one gives the
+    /// exact per-channel gain and offset needed to put the patch back on the
+    /// photo's own scale.
+    ///
+    /// Returns identity when there is too little ring to measure from.
+    static func toneMatch(
+        decoded: [Float],
+        buffers: ExemplarInpainter.Buffers,
+        side: Int
+    ) -> [(gain: Float, offset: Float)] {
+        let identity = Array(repeating: (gain: Float(1), offset: Float(0)), count: 3)
+        guard ProcessInfo.processInfo.environment["BRIEFSHOW_SD_TONEMATCH"] != "off" else { return identity }
+
+        // The ring: known pixels near the hole, not the whole frame. Near,
+        // because a sunset sky three hundred pixels away is not the tone the
+        // patch has to match — the pixels it actually touches are.
+        var minX = Int.max, minY = Int.max, maxX = -1, maxY = -1
+        for y in 0..<side {
+            for x in 0..<side where buffers.known[y * side + x] == 0 {
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        guard maxX >= minX else { return identity }
+        let band = 48
+        let x0 = max(minX - band, 0), x1 = min(maxX + band, side - 1)
+        let y0 = max(minY - band, 0), y1 = min(maxY + band, side - 1)
+
+        let pixelCount = side * side
+        var result = identity
+        for channel in 0..<3 {
+            var count = 0
+            var sumReal: Double = 0, sumModel: Double = 0
+            var sumRealSquared: Double = 0, sumModelSquared: Double = 0
+            for y in y0...y1 {
+                for x in x0...x1 {
+                    let index = y * side + x
+                    guard buffers.known[index] == 1 else { continue }
+                    let real = Double(buffers.pixels[index * 4 + channel])
+                    let model = Double(decoded[channel * pixelCount + index])
+                    sumReal += real; sumModel += model
+                    sumRealSquared += real * real; sumModelSquared += model * model
+                    count += 1
+                }
+            }
+            // A thousand pixels is enough for a mean to be steady; below that
+            // the ring is mostly hole and the correction would be noise.
+            guard count > 1000 else { return identity }
+
+            let n = Double(count)
+            let meanReal = sumReal / n, meanModel = sumModel / n
+            let varianceReal = max(sumRealSquared / n - meanReal * meanReal, 0)
+            let varianceModel = max(sumModelSquared / n - meanModel * meanModel, 0)
+
+            // Gain is clamped hard and deliberately: the drift being corrected
+            // is essentially a bias, and a contrast ratio measured on a nearly
+            // flat ring is a small number over a small number. The offset does
+            // the real work; the gain only trims what is left.
+            var gain = 1.0
+            if varianceModel > 4, varianceReal > 4 {
+                gain = min(max(varianceReal.squareRoot() / varianceModel.squareRoot(), 0.85), 1.18)
+            }
+            result[channel] = (gain: Float(gain), offset: Float(meanReal - gain * meanModel))
+        }
+
+        if SDInpaintPipeline.isDebugging {
+            let text = result.map { String(format: "x%.3f %+.1f", $0.gain, $0.offset) }.joined(separator: "  ")
+            print("  [sd] tone match  \(text)")
+        }
+        return result
+    }
+
+    static func featherRadius(_ feather: Double, originalKnown: [UInt8], side: Int) -> Int {
+        // The ramp is capped against the hole's own size, and that cap is the
+        // point: a fixed radius that looks right on a large removal will, on a
+        // small one, blur away every fully-opaque pixel — and a patch with no
+        // solid core does not remove anything, it just veils it. Divided by
+        // five because `package` blurs twice, so the band it produces is about
+        // twice the radius wide on each side.
+        var holeMinX = Int.max, holeMinY = Int.max, holeMaxX = -1, holeMaxY = -1
+        for y in 0..<side {
+            for x in 0..<side where originalKnown[y * side + x] == 0 {
+                holeMinX = min(holeMinX, x); holeMaxX = max(holeMaxX, x)
+                holeMinY = min(holeMinY, y); holeMaxY = max(holeMaxY, y)
+            }
+        }
+        let holeEdge = min(holeMaxX - holeMinX + 1, holeMaxY - holeMinY + 1)
+        let widest = Double(max(holeEdge, 20)) / 5
+        let radius = Int((2 + min(max(feather, 0), 1) * (widest - 2)).rounded())
+        return radius
+    }
+
     static let regionPaddingFraction: CGFloat = ExemplarInpainter.regionPadding
 
     // MARK: Steps

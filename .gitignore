@@ -12,3 +12,10 @@ dist/
 # dist-universal/ is deliberately NOT here: it is already tracked (a shipped
 # build), and listing it would only look like it was ignored.
 build_dd/
+
+# Core ML weights. Not a preference: GitHub rejects any single file over
+# 100 MB, and SD's UNet alone is 1.6 GB. LaMa's is 97 MB — under the limit
+# today, over it after any reconversion. CoreMLModels/convert_lama.py rebuilds
+# LaMa from the published weights; see BRIEFSHOW_DEVELOP_NOTES.md for SD.
+BriefShow/*.mlpackage/
+BriefShow/*.mlmodelc/

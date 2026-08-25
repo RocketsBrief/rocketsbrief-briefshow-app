@@ -131,6 +131,58 @@ struct SyncCategory: OptionSet {
     ]
 }
 
+// What "Export" writes. Until now every export path hardcoded JPEG, and not
+// even the same JPEG: the panel's own button used quality 0.92 while the
+// filmstrip's right-click export used 1.0, so which button you happened to
+// press changed the file you got. One setting now feeds all four paths.
+enum ExportFormat: String, CaseIterable, Identifiable {
+    case jpeg, png, tiff
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .jpeg: return "JPEG"
+        case .png: return "PNG"
+        case .tiff: return "TIFF"
+        }
+    }
+
+    var fileExtension: String {
+        switch self {
+        case .jpeg: return "jpg"
+        case .png: return "png"
+        case .tiff: return "tif"
+        }
+    }
+
+    var contentType: UTType {
+        switch self {
+        case .jpeg: return .jpeg
+        case .png: return .png
+        case .tiff: return .tiff
+        }
+    }
+
+    /// Only JPEG is lossy, so only JPEG has anything to trade.
+    var isLossy: Bool { self == .jpeg }
+
+    func encode(_ representation: NSBitmapImageRep, quality: Double) -> Data? {
+        switch self {
+        case .jpeg:
+            return representation.representation(
+                using: .jpeg, properties: [.compressionFactor: min(max(quality, 0.1), 1.0)])
+        case .png:
+            return representation.representation(using: .png, properties: [:])
+        case .tiff:
+            // LZW rather than none: lossless either way, and a 45MP export is
+            // a very large file to leave uncompressed for no gain.
+            return representation.representation(
+                using: .tiff, properties: [.compressionMethod: NSBitmapImageRep.TIFFCompression.lzw.rawValue])
+        }
+    }
+}
+
 // A crop rectangle in the unit square (0...1 on each axis) of the image
 // AFTER rotation/straighten — so it stays valid across preview resolutions,
 // and applying rotation before crop in PhotoEditRenderer.render always
@@ -2219,6 +2271,15 @@ struct DevelopView: View {
     // before syncSettingsToSelection actually writes anything. See
     // handleFilmstripClick/selectAllPhotos for how multiSelectedURLs (the
     // sync targets) gets populated.
+    // App-wide, like every other preference here: what to write and how hard
+    // to squeeze it. Stored as the raw string so the enum can gain cases
+    // without invalidating what someone already picked.
+    @AppStorage("develop.export.format") private var exportFormatRaw: String = ExportFormat.jpeg.rawValue
+    @AppStorage("develop.export.quality") private var exportQuality: Double = 0.92
+    private var exportFormat: ExportFormat {
+        ExportFormat(rawValue: exportFormatRaw) ?? .jpeg
+    }
+
     @State private var showSyncDialog = false
     @State private var syncCategories: SyncCategory = .all
 
@@ -6609,6 +6670,29 @@ struct DevelopView: View {
         let editedCount = photoURLs.filter { PhotoEditStore.hasEdits($0) }.count
 
         return VStack(alignment: .leading, spacing: 8) {
+            // Above the buttons rather than behind a gear, unlike the AI
+            // prompt: format is something you decide before exporting, not a
+            // setting you tune once and forget.
+            Picker("", selection: $exportFormatRaw) {
+                ForEach(ExportFormat.allCases) { option in
+                    Text(option.title).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            if exportFormat.isLossy {
+                editSlider("Quality", key: "export.quality",
+                           value: $exportQuality, range: 0.4...1.0) {
+                    String(format: "%.0f", $0 * 100)
+                }
+            } else {
+                Text("\(exportFormat.title) is lossless — every export is full quality and a much larger file.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             panelActionButton("Export Edited Copy", systemImage: "square.and.arrow.up", isProminent: true) {
                 exportEditedCopy()
             }
@@ -7260,9 +7344,16 @@ struct DevelopView: View {
             return
         }
 
+        // Captured before the background work starts, like the settings
+        // snapshot beside it: changing the format mid-export must not change
+        // the file being written.
+        let format = exportFormat
+        let quality = exportQuality
+
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.jpeg]
-        panel.nameFieldStringValue = selectedURL.deletingPathExtension().lastPathComponent + " Edited.jpg"
+        panel.allowedContentTypes = [format.contentType]
+        panel.nameFieldStringValue = selectedURL.deletingPathExtension().lastPathComponent
+            + " Edited." + format.fileExtension
         panel.canCreateDirectories = true
 
         guard panel.runModal() == .OK, let destinationURL = panel.url else {
@@ -7278,7 +7369,7 @@ struct DevelopView: View {
 
             if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
                 let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-                if let data = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.92]) {
+                if let data = format.encode(bitmapRep, quality: quality) {
                     didWrite = (try? data.write(to: destinationURL)) != nil
                 }
             }
@@ -7302,9 +7393,15 @@ struct DevelopView: View {
     // the one currently open (renderNow() keeps PhotoEditStore up to date
     // for the open photo on every change, see its comment).
     private func exportSinglePhoto(_ url: URL) {
+        // Captured before the background work starts, like the settings
+        // snapshot beside it: changing the format mid-export must not change
+        // the file being written.
+        let format = exportFormat
+        let quality = exportQuality
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.jpeg]
-        panel.nameFieldStringValue = url.deletingPathExtension().lastPathComponent + " Edited.jpg"
+        panel.allowedContentTypes = [format.contentType]
+        panel.nameFieldStringValue = url.deletingPathExtension().lastPathComponent
+            + " Edited." + format.fileExtension
         panel.canCreateDirectories = true
 
         guard panel.runModal() == .OK, let destinationURL = panel.url else {
@@ -7321,7 +7418,7 @@ struct DevelopView: View {
                 let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
                 if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
                     let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-                    if let data = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 1.0]) {
+                    if let data = format.encode(bitmapRep, quality: quality) {
                         didWrite = (try? data.write(to: destinationURL)) != nil
                     }
                 }
@@ -7342,6 +7439,11 @@ struct DevelopView: View {
     // quality, matching exportSinglePhoto's quality rather than the 0.92
     // used by exportAllEditedPhotos/the main "Export Edited Copy" button.
     private func exportSelectedPhotos(_ urls: [URL]) {
+        // Captured before the background work starts, like the settings
+        // snapshot beside it: changing the format mid-export must not change
+        // the file being written.
+        let format = exportFormat
+        let quality = exportQuality
         guard !urls.isEmpty else {
             return
         }
@@ -7369,10 +7471,10 @@ struct DevelopView: View {
                     let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
                     if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
                         let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-                        if let data = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 1.0]) {
+                        if let data = format.encode(bitmapRep, quality: quality) {
                             let destinationURL = destinationFolder
                                 .appendingPathComponent(url.deletingPathExtension().lastPathComponent + " Edited")
-                                .appendingPathExtension("jpg")
+                                .appendingPathExtension(format.fileExtension)
                             if (try? data.write(to: destinationURL)) != nil {
                                 successCount += 1
                             }
@@ -7406,6 +7508,11 @@ struct DevelopView: View {
     // once, especially RAW, would spike memory for no real speed benefit
     // once you're bottlenecked on disk/CPU anyway.
     private func exportAllEditedPhotos() {
+        // Captured before the background work starts, like the settings
+        // snapshot beside it: changing the format mid-export must not change
+        // the file being written.
+        let format = exportFormat
+        let quality = exportQuality
         let editedURLs = photoURLs.filter { PhotoEditStore.hasEdits($0) }
         guard !editedURLs.isEmpty else {
             return
@@ -7434,8 +7541,8 @@ struct DevelopView: View {
                     let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
                     if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
                         let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-                        if let data = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.92]) {
-                            // Same "<name> Edited.jpg" naming as the
+                        if let data = format.encode(bitmapRep, quality: quality) {
+                            // Same "<name> Edited.<ext>" naming as the
                             // single-photo export — re-running this into
                             // the same destination folder later (e.g.
                             // after further edits) overwrites its own
@@ -7446,7 +7553,7 @@ struct DevelopView: View {
                             // stale exports.
                             let destinationURL = destinationFolder
                                 .appendingPathComponent(url.deletingPathExtension().lastPathComponent + " Edited")
-                                .appendingPathExtension("jpg")
+                                .appendingPathExtension(format.fileExtension)
                             if (try? data.write(to: destinationURL)) != nil {
                                 successCount += 1
                             }

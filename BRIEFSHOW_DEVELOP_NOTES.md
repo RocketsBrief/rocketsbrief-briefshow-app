@@ -8,6 +8,22 @@ Beleška za nastavak rada. Poslednja izmena: 25. avgust 2026.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 25. avgust 2026, veče
+
+Nastavlja se sa **„Select People in Background"**, pa **Layers kartica**, pa
+**AI sinhronizacija**. Sve troje je dogovoreno i razrađeno u „Plan" sekciji
+niže; ništa od toga nije počelo.
+
+Gotovo i pushovano danas: SD inpainting (KORAK 3–5), LaMa (KORAK 6), merenja
+za pakovanje v8.0 (KORAK 7), export sa opcijama (KORAK 8).
+
+Radna app: `BriefShow/build_dd/Build/Products/Release/BriefShow.app`.
+Modeli su na dev putanji `~/Desktop/BriefShow/CoreMLModels/` i NISU u git-u
+(GitHub odbija fajlove preko 100 MB) — `BriefShow/Tools/` drži skripte koje
+ih prave.
+
+---
+
 **25. avgust 2026 — SD inpainting je U APP-I i radi.** „AI Remove" stoji pored
 „Erase (Instant)" u Remove sekciji, ~13 s po brisanju na M2, sve na uređaju.
 Detalji su u KORACIMA 3–5 pri dnu; ukratko, i tri od pet nalaza su bile MOJE
@@ -3275,6 +3291,54 @@ na uzorku od 300 MB Unet-a, gzip daje 92,4% originalne veličine.
 **Napomena o veličini update-a**: korisnik skida ~2 GB pri SVAKOM update-u, ne
 samo prvom. Ako v8.1 popravi jedan slajder, opet je 2 GB. To je prihvaćeno
 svesno; to je i glavni razlog zašto većina alata modele drži van app-e.
+
+## KORAK 8 — Export sa opcijama (25. avgust 2026)
+
+Format i kvalitet su bili **zakucani na četiri mesta, i ne isto**: dugme
+„Export Edited Copy" je pisalo JPEG 0.92, a desni klik na filmstrip →
+„Export…" je pisao 1.0. Dakle koje dugme si slučajno pritisnuo menjalo je
+fajl koji dobiješ. To je bila nenamerna nedoslednost, ne odluka.
+
+Urađeno:
+- Nov `ExportFormat` enum (JPEG / PNG / TIFF) sa ekstenzijom, `UTType` i
+  kodiranjem na jednom mestu. Sva ČETIRI puta idu kroz njega.
+- `@AppStorage "develop.export.format"` i `"develop.export.quality"`
+  (podrazumevano JPEG 0.92). Format se čuva kao raw string da enum može da
+  dobije nove slučajeve bez poništavanja onoga što je korisnik izabrao.
+- Segmentirani picker + klizač „Quality" iznad Export dugmadi. Klizač se
+  prikazuje SAMO za JPEG; za PNG/TIFF stoji rečenica da su bezgubitni i da je
+  fajl mnogo veći.
+- TIFF ide sa LZW. Bezgubitno svejedno, a 45MP nekompresovan je ogroman fajl
+  bez ikakve koristi.
+- Ime fajla i `NSSavePanel.allowedContentTypes` prate izabrani format.
+- Format i kvalitet se hvataju PRE nego što pozadinski posao krene, kao i
+  snapshot podešavanja pored njih — promena formata usred exporta ne sme da
+  promeni fajl koji se piše.
+
+Provereno zasebnim binarijem da sva tri formata daju validne fajlove, a ne
+`nil` (što bi se u app-i videlo samo kao tiho „Export Failed"). Napomena za
+sledeći put: TIFF magic je `MM` (big-endian), ne `II` — moj prvi test je
+očekivao pogrešan bajt i lažno prijavio grešku.
+
+## Dizajn — „Select People in Background" (dogovoreno, nije počelo)
+
+**Problem**: slikaš par ili porodicu na plaži, klikneš „Select People", a
+Vision označi i NJIH — pa bi ih obrisao zajedno sa ljudima iza.
+
+`VNGeneratePersonSegmentationRequest` vraća JEDNU masku svih ljudi, bez
+razdvajanja na osobe. Rešenje bez ijednog novog Vision API-ja (radi i na
+macOS 13, i ne oslanja se na dubinu koju RAW ionako nema):
+
+1. razložiti masku na **povezane komponente** (connected components);
+2. par ispred kamere je jedna VELIKA mrlja — stoje zajedno pa se ne razdvajaju
+   greškom, što je ovde prednost, ne mana;
+3. ljudi u pozadini su više malih mrlja;
+4. „Select People in Background" = sve mrlje osim najveće, uz prag na veličinu
+   (npr. zadrži one ispod ~35% površine najveće).
+
+**Poznato ograničenje koje treba reći korisniku**: ako neko u pozadini stoji
+tik uz par tako da im se maske dodiruju, spojiće se u istu mrlju i biće
+preskočen. Za to ostaje ručni brush, koji već postoji.
 
 ## Plan — dogovoreno 25. avgusta 2026, nije još počelo
 

@@ -3240,6 +3240,78 @@ da pravnik potvrdi u jednoj rečenici.
 torch 2.13, coremltools 9.0, kornia, pytorch-lightning). Treba i za SD
 palettizaciju. Uklanja se brisanjem foldera.
 
+## KORAK 7 — pakovanje za v8.0, izmereno (25. avgust 2026)
+
+**ODLUKA: palettizacija se PRESKAČE.** SD ostaje fp16, oba modela idu U APP,
+korisnik skine BriefShow i ima sve. Time otpada cela grana plana: skidanje na
+prvo korišćenje, hosting, progres bar, checksum, nastavak prekinutog skidanja.
+
+**Izmereno na pravom paketu (`ditto -c -k`, kako se Mac app pakuje), ne procenjeno:**
+
+| | |
+|---|---|
+| app sa oba modela | 2,1 GB |
+| **zapakovano** | **1986,5 MiB** |
+| GitHub granica po fajlu u Release-u | 2048 MiB |
+| **rezerva** | **61,5 MiB (3%)** |
+
+Prolazi, ali **na 3% rezerve**. Bilo šta dodato posle ovoga lomi Release —
+za poređenje, SD TextEncoder sam je 235 MiB, četiri puta veći od cele rezerve.
+Izlaz ako ikad zatreba prostor: palettizovati SAMO UNet (1,6 GB od 2 GB) i
+ostaviti VAE dekoder na fp16, jer on određuje oštrinu a mali je.
+
+Razlog zašto je razlika tako tanka: fp16 težine se **jedva pakuju** — izmereno
+na uzorku od 300 MB Unet-a, gzip daje 92,4% originalne veličine.
+
+**Dve stvari koje slede iz ovoga:**
+1. **Gotov build više ne sme u git.** `dist-universal/BriefShow-macOS-Universal.zip`
+   se do sada komitovao (14,7 MB); na 2 GB git ga odbija (granica je 100 MB po
+   fajlu). Od v8.0 build ide SAMO u GitHub Release. Release dozvoljava 2 GiB
+   po fajlu — proveren GitHub-ov dokument, nije po sećanju.
+2. **`SDModelStore` treba da gleda i u `Bundle.main`.** Sada traži samo u
+   Application Support i na dev putanji, pa modele spakovane u app ne bi našao.
+   Nekoliko linija, još nije urađeno.
+
+**Napomena o veličini update-a**: korisnik skida ~2 GB pri SVAKOM update-u, ne
+samo prvom. Ako v8.1 popravi jedan slajder, opet je 2 GB. To je prihvaćeno
+svesno; to je i glavni razlog zašto većina alata modele drži van app-e.
+
+## Plan — dogovoreno 25. avgusta 2026, nije još počelo
+
+**1) Layers kao u Photoshopu.** Kartica koja može da se istakne, ili da postane
+vidljiva na klik. Trenutno je `layersSection` samo spisak u panelu.
+
+**2) Export sa opcijama.** Sada je format i kvalitet ZAKUCAN: JPEG na 0.92 za
+„Export Edited Copy", 1.0 na nekim drugim putanjama (vidi četiri poziva
+`representation(using: .jpeg, ...)`). Treba dijalog: format (JPEG/PNG/TIFF),
+kvalitet, i verovatno veličina.
+
+**3) Sinhronizacija AI uklanjanja.** Ovo je najveće i ima suštinsku podelu na
+DVA različita posla, koje ne treba mešati:
+
+- **(A) Kopiranje zakrpe** — `ImageLayer` sa gotovim popravljenim pikselima se
+  prepiše na druge fotke. Brzo, besplatno. Ispravno SAMO ako su kadrovi skoro
+  identični (stativ, burst). Ako se čovek pomerio, zalepimo „praznu plažu"
+  preko mesta gde čovek i dalje jeste, a on ostane vidljiv pored. **Ovde ide
+  korisnikova napomena da radi samo na sličnim slikama.**
+- **(B) Ponovno pokretanje uklanjanja** — na svakoj ciljnoj fotki se PONOVO
+  pusti Vision da nađe ljude, pa LaMa/SD obriše. Ispravno bez obzira koliko su
+  fotke slične, jer se svaka analizira za sebe. Skoro sve već postoji
+  (`SubjectMasker.personMask` + `quickAIRemoval`/`aiRemoval`); posao je petlja,
+  napredak i prekid.
+
+**Koji se može koristiti zavisi od toga KAKO je uklanjanje napravljeno:**
+- napravljeno preko „Select People" → (B) radi, i tada napomena o sličnim
+  slikama NIJE potrebna;
+- napravljeno ručno brushom → (B) ne može, jer model ne zna šta je korisnik
+  hteo da ukloni na DRUGOJ fotki; ostaje samo (A), i tu napomena vredi.
+
+Cena (B): LaMa ~1 s po fotki (50 fotki = minut), SD ~13 s po fotki (50 fotki =
+11 minuta) — dakle traži napredak i dugme za prekid.
+
+**4) `SyncCategory` treba novu stavku.** Sada ima cropRotate/light/color/
+detail/masks; layeri i AI uklanjanja nisu sinhronizabilni uopšte.
+
 ## Vezano
 
 - Odluke iz razgovora: ostaje **u istom** Xcode projektu/app-u kao BriefShow

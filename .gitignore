@@ -7,3 +7,8 @@ dist/
 
 # macOS
 .DS_Store
+
+# Alternate derived-data output from xcodebuild -derivedDataPath (392 MB).
+# dist-universal/ is deliberately NOT here: it is already tracked (a shipped
+# build), and listing it would only look like it was ignored.
+build_dd/

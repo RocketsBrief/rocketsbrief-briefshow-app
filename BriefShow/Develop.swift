@@ -36,6 +36,7 @@ struct PhotoEditSettings: Codable, Equatable {
     var temperature: Double = 0     // -1 (cooler) ...1 (warmer)
     var tint: Double = 0            // -1 (green) ...1 (magenta)
     var sharpness: Double = 0       // 0...1
+    var texture: Double = 0         // -1 (smooth/soften mid-frequency detail — "younger, softer" portrait skin) ...1 (bring skin/fabric/hair texture out), see PhotoEditRenderer.render.
     var clarity: Double = 0         // 0...1 — Lightroom-style local (midtone) contrast boost, see PhotoEditRenderer.render. Positive only for now — no softening/negative range yet.
     var dehaze: Double = 0          // 0...1 — contrast/saturation/black-point APPROXIMATION of Lightroom's Dehaze, not a real dark-channel-prior algorithm, see PhotoEditRenderer.render.
     var softGlow: Double = 0        // 0...1 — diffusion/"soft focus" glow (blurred copy screen-blended back over the original), see PhotoEditRenderer.render.
@@ -66,6 +67,7 @@ struct PhotoEditSettings: Codable, Equatable {
         temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? 0
         tint = try c.decodeIfPresent(Double.self, forKey: .tint) ?? 0
         sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? 0
+        texture = try c.decodeIfPresent(Double.self, forKey: .texture) ?? 0
         clarity = try c.decodeIfPresent(Double.self, forKey: .clarity) ?? 0
         dehaze = try c.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0
         softGlow = try c.decodeIfPresent(Double.self, forKey: .softGlow) ?? 0
@@ -79,7 +81,7 @@ struct PhotoEditSettings: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance
-        case temperature, tint, sharpness, clarity, dehaze, softGlow, vignette
+        case temperature, tint, sharpness, texture, clarity, dehaze, softGlow, vignette
         case rotationQuarterTurns, straightenDegrees, crop
         case localAdjustments, layers
     }
@@ -88,7 +90,7 @@ struct PhotoEditSettings: Codable, Equatable {
         exposure == 0 && contrast == 0 && highlights == 0 && shadows == 0
             && whites == 0 && blacks == 0
             && saturation == 0 && vibrance == 0 && temperature == 0 && tint == 0
-            && sharpness == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
+            && sharpness == 0 && texture == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
             && vignette == 0 && rotationQuarterTurns == 0
             && straightenDegrees == 0 && crop == nil && localAdjustments.isEmpty
             && layers.isEmpty
@@ -890,6 +892,100 @@ enum PhotoEditRenderer {
             output = filter.outputImage ?? output
         }
 
+        // Texture — Lightroom's mid-frequency detail dial, and the only
+        // slider in this section that runs BOTH ways. Positive brings skin/
+        // fabric/hair detail OUT (a small-radius unsharp mask — finer than
+        // Clarity's large-radius midtone "punch" below, coarser than
+        // Sharpness' edge-only pass above; that middle frequency band is
+        // exactly what reads as "texture" rather than "sharper" or
+        // "punchier"). Negative pushes that same band back DOWN so a face
+        // reads softer/younger, the way a portrait retouch does.
+        //
+        // The negative side is a frequency-separation MIX, not a plain blur
+        // of everything: `blurred` is the low-frequency copy, and
+        // CIBlendWithMask against a flat gray mask cross-fades toward it by
+        // |texture| (the same "flat gray mask as an opacity dial" trick Soft
+        // Glow and Patch's Opacity already use). The mix is capped at 0.85
+        // so even -100 keeps some of the original's detail — a full 1.0
+        // would hand back a straight blur, which reads as "out of focus",
+        // not "smooth skin". This is an APPROXIMATION of Lightroom's
+        // edge-preserving version (which leaves eyes/lips/edges crisp while
+        // smoothing only flat areas) — same kind of documented shortcut as
+        // Dehaze below.
+        //
+        // Both radii are a FRACTION of the image's long edge, not a fixed
+        // pixel count — render() runs at both preview and full-export
+        // resolution and a radius picked for one would look wrong at the
+        // other (see Clarity's own radius comment right below for the full
+        // reasoning, and the brush/patch tools for the same convention).
+        if settings.texture != 0 {
+            let extent = output.extent
+            let longEdge = max(extent.width, extent.height)
+            if longEdge.isFinite, longEdge > 0 {
+                if settings.texture > 0 {
+                    let filter = CIFilter.unsharpMask()
+                    filter.inputImage = output
+                    filter.radius = Float(min(max(longEdge * 0.006, 2), 40))
+                    filter.intensity = Float(settings.texture * 1.1)
+                    output = filter.outputImage ?? output
+                } else {
+                    let blurred = output
+                        .clampedToExtent()
+                        .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: min(max(longEdge * 0.003, 1.5), 24)])
+                        .cropped(to: extent)
+
+                    // Edge guard. Cross-fading the whole frame toward
+                    // `blurred` by a FLAT mask was the first version of
+                    // this and it read as "out of focus", not "smooth
+                    // skin" — eyes, lashes and hair went soft right along
+                    // with the pores. |original - blurred| is exactly the
+                    // mid-frequency band this slider owns, so amplified
+                    // (x10) and clamped to 0...1 it doubles as a "there is
+                    // real structure here" map: flat skin scores ~0, an
+                    // eyelash or a lip edge saturates to 1. Inverting that
+                    // and scaling it by |texture| gives a per-pixel mix
+                    // that smooths the flat areas hard while leaving edges
+                    // essentially untouched.
+                    //
+                    // CIBlendWithMask reads the mask's RGB level (not its
+                    // alpha) — the same thing Soft Glow above and Patch's
+                    // Opacity rely on, confirmed by a standalone render
+                    // test, which is why a fully opaque mask image can
+                    // still act as a per-pixel strength dial.
+                    let detailBoost = 10.0
+                    let detail = output
+                        .applyingFilter("CIDifferenceBlendMode", parameters: [kCIInputBackgroundImageKey: blurred])
+                        .applyingFilter("CIColorMatrix", parameters: [
+                            "inputRVector": CIVector(x: 0.333 * detailBoost, y: 0.333 * detailBoost, z: 0.333 * detailBoost, w: 0),
+                            "inputGVector": CIVector(x: 0.333 * detailBoost, y: 0.333 * detailBoost, z: 0.333 * detailBoost, w: 0),
+                            "inputBVector": CIVector(x: 0.333 * detailBoost, y: 0.333 * detailBoost, z: 0.333 * detailBoost, w: 0),
+                            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+                        ])
+                        .applyingFilter("CIColorClamp", parameters: [
+                            "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+                            "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)
+                        ])
+
+                    let amount = CGFloat(min(max(-settings.texture, 0), 1) * 0.9)
+                    let mixMask = detail
+                        .applyingFilter("CIColorInvert")
+                        .applyingFilter("CIColorMatrix", parameters: [
+                            "inputRVector": CIVector(x: amount, y: 0, z: 0, w: 0),
+                            "inputGVector": CIVector(x: 0, y: amount, z: 0, w: 0),
+                            "inputBVector": CIVector(x: 0, y: 0, z: amount, w: 0),
+                            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+                        ])
+                        .cropped(to: extent)
+
+                    let blend = CIFilter.blendWithMask()
+                    blend.inputImage = blurred
+                    blend.backgroundImage = output
+                    blend.maskImage = mixMask
+                    output = blend.outputImage ?? output
+                }
+            }
+        }
+
         // Clarity — Lightroom's "local/midtone contrast" — is a LARGE-radius
         // unsharp mask, as distinct from Sharpness' small-radius edge
         // sharpening above (CISharpenLuminance has no radius knob at all;
@@ -1413,6 +1509,14 @@ enum PhotoEditRenderer {
     // A real fix would cache each LocalAdjustment's rendered mask keyed to
     // its own Equatable value and only rebuild the ones that changed —
     // deferred for now, see BRIEFSHOW_DEVELOP_NOTES.md #7.
+    // Same stroke-to-mask renderer the Brush local adjustment uses, reached
+    // from outside PhotoEditRenderer — the Remove tool paints its own
+    // strokes and needs exactly this, with no reason for a second
+    // implementation of dab stamping.
+    static func strokeMask(_ strokes: [BrushStroke], extent: CGRect) -> CIImage {
+        brushMask(BrushMaskGeometry(strokes: strokes), extent: extent)
+    }
+
     private static func brushMask(_ geo: BrushMaskGeometry, extent: CGRect) -> CIImage {
         var mask = CIImage(color: maskBlack).cropped(to: extent)
         guard !geo.strokes.isEmpty else {
@@ -1926,7 +2030,17 @@ private let developRenderQueue = DispatchQueue(label: "com.rocketsbrief.briefsho
 // key by then. Overriding this to true on the hosting view (this is an
 // NSView method, NOT NSWindow — there's no window-level equivalent) makes
 // the very first click count everywhere inside it.
-private final class ClickThroughHostingView<Content: View>: NSHostingView<Content> {
+//
+// Concrete (NSHostingView<DevelopView>) rather than generic over its
+// content: Swift 6.3.3's optimizer crashes — a hard compiler crash, not a
+// diagnostic — while inlining into the SYNTHESIZED deinit of a generic
+// NSHostingView subclass, which made every Release build of this app fail
+// (Debug, which doesn't run that pass, was fine, so it stayed hidden until
+// the first Release build). This class only ever wraps DevelopView anyway,
+// so naming that type costs nothing and sidesteps the bug. If a second
+// content type ever needs it, re-check whether the toolchain still crashes
+// before making it generic again.
+private final class ClickThroughHostingView: NSHostingView<DevelopView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
     }
@@ -1980,6 +2094,56 @@ final class DevelopWindowController {
         windowController?.close()
         windowController = nil
     }
+}
+
+// MARK: - Keyboard-nudgeable sliders
+
+// Which slider the ← / → keys currently act on, plus the transient card
+// that announces the pick — Lightroom's own behaviour, where clicking a
+// slider's NAME arms it and the arrow keys then step it up/down without
+// ever touching the mouse again.
+//
+// The nudge itself can't be resolved from a key alone: every editSlider is
+// built with its own Binding (a plain `$settings.exposure` for the global
+// ones, but a computed get/set pair for masks, patch and layer opacity),
+// and there's no single keypath that reaches all of them. So each slider
+// REGISTERS a closure over its own binding here, keyed by its slider key,
+// and the key monitor just looks that closure up and calls it. Registration
+// happens on every body pass (not in .onAppear) so the closure always holds
+// the most recent render's binding, and the registry is a plain class — NOT
+// ObservableObject — precisely so writing to it during a body pass can't
+// invalidate the view it was written from.
+//
+// Entries for sliders that have since scrolled away or belong to a
+// deselected mask are harmless: those bindings' own setters already guard
+// on "is anything selected" and no-op, and only the ONE key in
+// selectedSliderKey is ever invoked anyway.
+final class SliderNudgeRegistry {
+    private var entries: [String: (Bool, Double) -> Void] = [:]
+
+    func register(_ key: String, apply: @escaping (_ increase: Bool, _ multiplier: Double) -> Void) {
+        entries[key] = apply
+    }
+
+    // Returns false when the key isn't registered (slider not currently
+    // built) so the caller can leave the keypress alone instead of
+    // swallowing an arrow key that did nothing.
+    @discardableResult
+    func nudge(_ key: String, increase: Bool, multiplier: Double) -> Bool {
+        guard let apply = entries[key] else {
+            return false
+        }
+        apply(increase, multiplier)
+        return true
+    }
+}
+
+// The "Exposure selected — ← / → to adjust" card. Identifiable (fresh id per
+// pick) so re-clicking a DIFFERENT slider while the card is still up
+// re-triggers its transition instead of silently swapping the text.
+struct SliderSelectionToast: Identifiable, Equatable {
+    let id = UUID()
+    let title: String
 }
 
 // MARK: - Main view
@@ -2158,6 +2322,63 @@ struct DevelopView: View {
     @State private var undoCommitWorkItem: DispatchWorkItem?
     @State private var lastCommittedSettings = PhotoEditSettings()
 
+    // Arrow-key slider nudging (see SliderNudgeRegistry). selectedSliderKey
+    // is the armed slider (nil = arrows are left alone entirely, so they
+    // still reach text fields and anything else that wants them);
+    // sliderToast is the transient card announcing the pick, cleared by
+    // sliderToastDismissWork after a couple of seconds or immediately when
+    // another slider is picked.
+    @State private var sliderRegistry = SliderNudgeRegistry()
+    @State private var selectedSliderKey: String?
+    @State private var sliderToast: SliderSelectionToast?
+    @State private var sliderToastDismissWork: DispatchWorkItem?
+
+    // "Remove" tool — Vision picks the people out, ExemplarInpainter fills
+    // the hole (see DevelopInpaint.swift). Both are ephemeral, like
+    // activeSelection: the mask lives only until it is erased or the photo
+    // changes, and what PERSISTS is the ImageLayer the erase produces.
+    // `removalMask` is in the FULL, pre-crop image's space, the same space
+    // ImageLayer coordinates are interpreted in.
+    @State private var removalMask: CIImage?
+    @State private var removalOverlay: NSImage?
+    @State private var isFindingPeople = false
+    @State private var isRemoving = false
+    // Only the AI erase reports progress: it is thirty UNet passes, not the
+    // second or two the exemplar fill takes, so a bare "Erasing…" would read
+    // as a hang. nil means no AI erase is running.
+    @State private var aiEraseProgress: Double?
+    // The AI erase is the one half of Remove that can fail for a reason the
+    // user can act on (weights not installed yet), so unlike the exemplar
+    // path it has somewhere to say so.
+    @State private var removeErrorMessage: String?
+    // App-wide, not per-photo: this is a preference about how AI Remove
+    // behaves, not part of any one picture's edit. Empty string is allowed and
+    // meaningful — it means "no prompt at all" — so the reset button restores
+    // the default rather than an empty field standing in for it.
+    @AppStorage("develop.aiRemove.prompt")
+    private var aiRemovePrompt: String = SDInpaintPipeline.defaultPrompt
+    @State private var showsAIPromptEditor = false
+    // 1 means "fit the window", which is where every photo starts. Zoom and
+    // pan live in fittedImageFrame, so every overlay that derives its screen
+    // position from that frame — crop, masks, layers, the removal brush —
+    // follows the zoom without knowing it exists.
+    @State private var zoomLevel: Double = 1
+    @State private var panOffset: CGSize = .zero
+    @State private var panStart: CGSize?
+    @AppStorage("develop.aiRemove.feather")
+    private var aiRemoveFeather: Double = SDInpaintPipeline.defaultFeather
+    // Hand-painted half of the Remove tool: paint over anything (a bin, a
+    // sign, a stranger Vision didn't call a person) and erase that instead.
+    // Strokes live in the FULL, pre-crop image's unit space, same as
+    // removalMask, and are only turned into a real CIImage mask at Erase
+    // time — while painting, the red ink on screen is a plain vector Path,
+    // the same trick brushPaintOverlay uses to stay interactive.
+    @State private var isRemoveBrushActive = false
+    @State private var removalStrokes: [BrushStroke] = []
+    @State private var activeRemovalStrokePoints: [CGPoint] = []
+    @State private var removalBrushSize: Double = 0.06
+    @State private var removalBrushHoverLocation: CGPoint?
+
     // Same soft-yellow-in-Dark, mid-gray-elsewhere accent PhotoShowSheet
     // uses for its own selection border, kept consistent here for the
     // filmstrip's selection ring and the "has edits" badge.
@@ -2195,6 +2416,10 @@ struct DevelopView: View {
             if selectedURL == nil, let initial = initialSelection ?? photoURLs.first {
                 selectPhoto(initial)
             }
+            // Eat the model load here rather than on the first AI Remove: it is
+            // ~18 seconds of Neural Engine compilation, and opening Develop is
+            // the one moment the user is not already waiting for a result.
+            SDInpaintPipeline.shared.warmUp()
         }
         .onChange(of: settings) { _ in
             scheduleRender()
@@ -2286,6 +2511,20 @@ struct DevelopView: View {
                 default: break
                 }
             }
+            // Cmd +/- zoom, Cmd 0 back to fit. Repeat is allowed on purpose —
+            // holding Cmd+= to zoom in is the expected feel — and each press
+            // is one clamped multiply, so nothing accumulates the way the
+            // Cmd+V paste-per-repeat bug did. Both "=" and "+" are matched
+            // because the same physical key reports as "=" unshifted and "+"
+            // with shift, and people press it either way.
+            if flags == .command || flags == [.command, .shift] {
+                switch key {
+                case "=", "+": stepZoom(1); return nil
+                case "-", "_": stepZoom(-1); return nil
+                case "0" where flags == .command: resetZoom(); return nil
+                default: break
+                }
+            }
             if flags == .command, key == "z", !undoStack.isEmpty {
                 undo()
                 return nil
@@ -2296,6 +2535,31 @@ struct DevelopView: View {
             }
             if flags.isEmpty, key == "[" || key == "]", activeToolHasAdjustableSize {
                 adjustActiveToolSize(increase: key == "]")
+                return nil
+            }
+            // ← / → step whichever slider is currently armed (clicking a
+            // slider's name arms it, see selectSlider), Shift+arrow steps it
+            // 5x — Lightroom's own fine/coarse pairing. Repeat is allowed on
+            // purpose: holding an arrow to ramp a value up is the whole
+            // point, and each press is one clamped add on a single Double,
+            // nothing that can pile up the way the Cmd+V bug above did.
+            //
+            // Guarded three ways so these keys stay untouched everywhere
+            // else in Develop: nothing armed → fall through; a field editor
+            // (the preset-name text field) has focus → fall through, so
+            // arrows still move the caret; and nudgeSelectedSlider itself
+            // returns false when the armed slider isn't on screen right now
+            // (e.g. its mask got deselected) rather than swallowing the key
+            // for nothing. Escape disarms.
+            if flags.isEmpty, event.keyCode == 53, selectedSliderKey != nil {
+                clearSelectedSlider()
+                return nil
+            }
+            if flags.isEmpty || flags == .shift,
+               event.keyCode == 123 || event.keyCode == 124,
+               selectedSliderKey != nil,
+               !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false),
+               nudgeSelectedSlider(increase: event.keyCode == 124, coarse: flags == .shift) {
                 return nil
             }
             if flags.isEmpty, (event.keyCode == 51 || event.keyCode == 117),
@@ -2330,6 +2594,9 @@ struct DevelopView: View {
     // Patch/Selection are excluded for the same reason: no single scalar
     // "size" describes them.
     private var activeToolHasAdjustableSize: Bool {
+        if isRemoveBrushActive {
+            return true
+        }
         if let index = selectedAdjustmentIndex {
             switch settings.localAdjustments[index].type {
             case .brush, .radial: return true
@@ -2350,6 +2617,13 @@ struct DevelopView: View {
     // different magic number per tool.
     private func adjustActiveToolSize(increase: Bool) {
         let factor = increase ? 1.1 : (1 / 1.1)
+
+        // Checked before any mask/selection so the bracket keys follow the
+        // tool the client is actually painting with right now.
+        if isRemoveBrushActive {
+            removalBrushSize = min(max(removalBrushSize * factor, 0.01), 0.3)
+            return
+        }
 
         if let index = selectedAdjustmentIndex {
             switch settings.localAdjustments[index].type {
@@ -2750,13 +3024,52 @@ struct DevelopView: View {
                 if let displayedImage {
                     let fitted = fittedImageFrame(imageSize: displayedImage.size, in: proxy.size)
 
+                    // Clipped on its own rather than by clipping the whole
+                    // ZStack: zoomed in, the picture has to stop at the edge
+                    // of the preview, but the crop tool's corner handles sit
+                    // right on the image edge and a container-level clip would
+                    // shave them off.
                     Image(nsImage: displayedImage)
                         .resizable()
                         .frame(width: fitted.width, height: fitted.height)
-                        .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                        .position(x: fitted.midX, y: fitted.midY)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+
+                    // Drag to pan, but ONLY when zoomed in and no tool owns
+                    // the canvas — every tool below claims the same drag, and
+                    // a pan layer that outranked them would quietly break
+                    // painting, cropping and mask dragging. At fit there is
+                    // nothing to pan, so the layer is not there at all.
+                    if zoomLevel > 1, !isCropping, !isRemoveBrushActive,
+                       selectedAdjustmentIndex == nil, activeSelection == nil,
+                       selectedLayerIndex == nil {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .gesture(
+                                DragGesture()
+                                    .onChanged { value in
+                                        let start = panStart ?? panOffset
+                                        panStart = start
+                                        // Clamped here, not just where the frame
+                                        // is placed: letting the stored offset run
+                                        // past the edge would mean dragging back
+                                        // does nothing until it unwinds the slack.
+                                        let limitX = max((fitted.width - proxy.size.width) / 2, 0)
+                                        let limitY = max((fitted.height - proxy.size.height) / 2, 0)
+                                        panOffset = CGSize(
+                                            width: min(max(start.width + value.translation.width, -limitX), limitX),
+                                            height: min(max(start.height + value.translation.height, -limitY), limitY))
+                                    }
+                                    .onEnded { _ in panStart = nil }
+                            )
+                    }
 
                     if isCropping {
                         cropOverlay(frame: fitted, containerSize: proxy.size)
+                    } else if isRemoveBrushActive {
+                        removalPaintOverlay(frame: fullImageFrame(from: fitted))
                     } else if let index = selectedAdjustmentIndex {
                         localAdjustmentOverlay(settings.localAdjustments[index], frame: fullImageFrame(from: fitted))
                     } else if let activeSelection {
@@ -2764,12 +3077,52 @@ struct DevelopView: View {
                     } else if let index = selectedLayerIndex {
                         layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
                     }
+
+                    // What the Remove tool is about to erase, painted red
+                    // over the photo. Drawn on the FULL (pre-crop) frame
+                    // because that is the space the mask itself is in, and
+                    // clipped to the preview area so a tight crop — whose
+                    // full frame is far bigger than what's on screen —
+                    // can't paint outside the picture.
+                    if let removalOverlay {
+                        let fullFrame = fullImageFrame(from: fitted)
+                        ZStack {
+                            Image(nsImage: removalOverlay)
+                                .resizable()
+                                .frame(width: fullFrame.width, height: fullFrame.height)
+                                .position(x: fullFrame.midX, y: fullFrame.midY)
+                        }
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                        .allowsHitTesting(false)
+                    }
                 } else if isLoadingPreview {
                     ProgressView()
                 } else {
                     Text("Select a photo from the filmstrip")
                         .font(.custom("Figtree", size: 13))
                         .foregroundColor(AppColors.muted)
+                }
+
+                // "Exposure selected — ← / → to adjust", over the bottom of
+                // the preview. Hit-testing off so it never steals a click
+                // from the crop/mask/layer overlays it floats above, and it
+                // slides up on the way in / fades on the way out (see
+                // selectSlider for the timing).
+                if let sliderToast {
+                    VStack {
+                        Spacer()
+                        sliderToastCard(sliderToast)
+                            .padding(.bottom, 18)
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .allowsHitTesting(false)
+                    // Scale-from-the-bottom + fade rather than a slide up
+                    // from off-screen: no clipping needed on the container
+                    // (which would cut the crop tool's corner handles where
+                    // they sit right on the image edge), and it still reads
+                    // as the card "arriving" rather than blinking on.
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -2782,10 +3135,45 @@ struct DevelopView: View {
             return CGRect(origin: .zero, size: containerSize)
         }
 
-        let scale = min(containerSize.width / imageSize.width, containerSize.height / imageSize.height)
+        let scale = min(containerSize.width / imageSize.width, containerSize.height / imageSize.height) * zoomLevel
         let width = imageSize.width * scale
         let height = imageSize.height * scale
-        return CGRect(x: (containerSize.width - width) / 2, y: (containerSize.height - height) / 2, width: width, height: height)
+
+        // Panning only means anything along an axis the image overflows on;
+        // along the other one it stays centred, so a zoomed-in portrait photo
+        // cannot be dragged sideways into empty space.
+        func placed(container: CGFloat, content: CGFloat, offset: CGFloat) -> CGFloat {
+            let centred = (container - content) / 2
+            guard content > container else { return centred }
+            return min(max(centred + offset, container - content), 0)
+        }
+
+        return CGRect(
+            x: placed(container: containerSize.width, content: width, offset: panOffset.width),
+            y: placed(container: containerSize.height, content: height, offset: panOffset.height),
+            width: width, height: height)
+    }
+
+    // Steps rather than a continuous gesture, because Cmd +/- is a keyboard
+    // shortcut: 1.25x a press reaches 4x in six presses, which is about the
+    // range that matters for checking an erase.
+    private func stepZoom(_ direction: Double) {
+        let next = min(max(zoomLevel * (direction > 0 ? 1.25 : 1 / 1.25), 1), 8)
+        // Back at fit there is nothing to pan, and leaving a stale offset
+        // behind would make the next zoom-in start off-centre for no reason.
+        if next == 1 {
+            panOffset = .zero
+        } else if zoomLevel > 0 {
+            // Keep whatever is in the middle of the view in the middle of it.
+            let ratio = next / zoomLevel
+            panOffset = CGSize(width: panOffset.width * ratio, height: panOffset.height * ratio)
+        }
+        zoomLevel = next
+    }
+
+    private func resetZoom() {
+        zoomLevel = 1
+        panOffset = .zero
     }
 
     // Mask/Selection/Layer geometry (unlike the crop rect itself) is
@@ -4278,6 +4666,85 @@ struct DevelopView: View {
         .allowsHitTesting(false)
     }
 
+    // The Remove brush's canvas. Committed strokes and the in-progress one
+    // are drawn as plain red Paths rather than by rendering the real mask
+    // through Core Image — the same reason brushPaintOverlay does it (a
+    // CIImage re-render per drag point can't keep up), and here it doubles
+    // as the "red translucent paint" the tool is supposed to look like.
+    // The real mask is only built at Erase time (see eraseMaskedArea).
+    private func removalPaintOverlay(frame: CGRect) -> some View {
+        let longEdge = max(frame.width, frame.height)
+        let brushDiameter = max(removalBrushSize * longEdge, 2)
+        let ink = Color(red: 0.90, green: 0.25, blue: 0.22)
+
+        return ZStack {
+            ForEach(removalStrokes) { stroke in
+                strokePath(stroke.points, frame: frame)
+                    .stroke(
+                        ink.opacity(0.45),
+                        style: StrokeStyle(
+                            lineWidth: max(stroke.size * longEdge, 2),
+                            lineCap: .round, lineJoin: .round
+                        )
+                    )
+                    .allowsHitTesting(false)
+            }
+
+            if activeRemovalStrokePoints.count > 1 {
+                strokePath(activeRemovalStrokePoints, frame: frame)
+                    .stroke(
+                        ink.opacity(0.45),
+                        style: StrokeStyle(lineWidth: brushDiameter, lineCap: .round, lineJoin: .round)
+                    )
+                    .allowsHitTesting(false)
+            }
+
+            if let hover = removalBrushHoverLocation, activeRemovalStrokePoints.isEmpty {
+                Circle()
+                    .stroke(ink.opacity(0.9), lineWidth: 1.5)
+                    .frame(width: brushDiameter, height: brushDiameter)
+                    .position(hover)
+                    .allowsHitTesting(false)
+            }
+
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        removalBrushHoverLocation = location
+                    case .ended:
+                        removalBrushHoverLocation = nil
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            removalBrushHoverLocation = value.location
+                            paintRemovalBrush(at: value.location, frame: frame)
+                        }
+                        .onEnded { _ in commitRemovalStroke() }
+                )
+        }
+    }
+
+    private func strokePath(_ points: [CGPoint], frame: CGRect) -> Path {
+        Path { path in
+            let scaled = points.map {
+                CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
+            }
+            guard let first = scaled.first else {
+                return
+            }
+            path.move(to: first)
+            for point in scaled.dropFirst() {
+                path.addLine(to: point)
+            }
+        }
+    }
+
     private func unitPoint(from location: CGPoint, frame: CGRect) -> CGPoint? {
         guard frame.width > 0, frame.height > 0 else {
             return nil
@@ -4407,6 +4874,10 @@ struct DevelopView: View {
 
                 Divider()
 
+                removeSection
+
+                Divider()
+
                 layersSection
 
                 Divider()
@@ -4491,7 +4962,7 @@ struct DevelopView: View {
                 Spacer()
             }
 
-            editSlider("Straighten", value: straightenBinding, range: -45...45) {
+            editSlider("Straighten", value: straightenBinding, range: -45...45, step: 0.1) {
                 String(format: "%+.1f°", $0)
             }
 
@@ -4629,7 +5100,7 @@ struct DevelopView: View {
     private var lightSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Light")
-            editSlider("Exposure", value: $settings.exposure, range: -3...3) { String(format: "%+.2f", $0) }
+            editSlider("Exposure", value: $settings.exposure, range: -3...3, step: 0.05) { String(format: "%+.2f", $0) }
             editSlider("Contrast", value: $settings.contrast, range: -1...1)
             editSlider("Highlights", value: $settings.highlights, range: -1...1)
             editSlider("Shadows", value: $settings.shadows, range: -1...1)
@@ -4641,17 +5112,78 @@ struct DevelopView: View {
     private var colorSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Color")
-            editSlider("Temperature", value: $settings.temperature, range: -1...1)
-            editSlider("Tint", value: $settings.tint, range: -1...1)
-            editSlider("Saturation", value: $settings.saturation, range: -1...1)
-            editSlider("Vibrance", value: $settings.vibrance, range: -1...1)
+            editSlider("Temperature", value: $settings.temperature, range: -1...1,
+                       trackGradient: DevelopView.temperatureTrack)
+            editSlider("Tint", value: $settings.tint, range: -1...1,
+                       trackGradient: DevelopView.tintTrack)
+            editSlider("Saturation", value: $settings.saturation, range: -1...1,
+                       trackGradient: DevelopView.saturationTrack)
+            editSlider("Vibrance", value: $settings.vibrance, range: -1...1,
+                       trackGradient: DevelopView.vibranceTrack)
         }
     }
+
+    // The four Color-panel track gradients. Each one shows what its own
+    // ENDS do to the photo, so the control reads the same way Lightroom's
+    // does: push Temperature right and the photo warms, and the track's
+    // right end is already amber.
+    //
+    // Temperature/Tint pass through a near-neutral middle stop rather than
+    // interpolating one end straight into the other — a direct blue→amber
+    // ramp crosses through muddy green on the way and would put a false
+    // "green here" cue at the slider's zero point, which is exactly where
+    // the photo is untouched.
+    private static let temperatureTrack = LinearGradient(
+        colors: [
+            Color(red: 0.20, green: 0.47, blue: 0.90),
+            Color(red: 0.88, green: 0.88, blue: 0.88),
+            Color(red: 0.99, green: 0.76, blue: 0.18)
+        ],
+        startPoint: .leading,
+        endPoint: .trailing
+    )
+
+    private static let tintTrack = LinearGradient(
+        colors: [
+            Color(red: 0.30, green: 0.74, blue: 0.35),
+            Color(red: 0.88, green: 0.88, blue: 0.88),
+            Color(red: 0.85, green: 0.28, blue: 0.78)
+        ],
+        startPoint: .leading,
+        endPoint: .trailing
+    )
+
+    // Saturation/Vibrance: a hue sweep whose SATURATION ramps with the
+    // slider's own position — flat gray at the far left (where -100 takes
+    // the photo), fully saturated at the right. The hue only runs to 0.85
+    // instead of wrapping the full circle, so the two ends don't both come
+    // back around to red and read as the same value. Vibrance gets the
+    // same sweep at a lower ceiling, matching what it actually does: the
+    // gentler, already-saturated-colors-protected version of Saturation.
+    private static func colorfulTrack(maxSaturation: Double) -> LinearGradient {
+        let steps = 12
+        let colors: [Color] = (0...steps).map { index in
+            let fraction = Double(index) / Double(steps)
+            return Color(
+                hue: fraction * 0.85,
+                saturation: fraction * maxSaturation,
+                // Slightly darker than the colored stops so the far-left
+                // end lands on a readable mid-gray rather than washing out
+                // into the panel's own light background.
+                brightness: 0.86
+            )
+        }
+        return LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing)
+    }
+
+    private static let saturationTrack = colorfulTrack(maxSaturation: 1.0)
+    private static let vibranceTrack = colorfulTrack(maxSaturation: 0.62)
 
     private var detailSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Detail & Effects")
             editSlider("Sharpness", value: $settings.sharpness, range: 0...1) { String(format: "%.0f", $0 * 100) }
+            editSlider("Texture", value: $settings.texture, range: -1...1)
             editSlider("Clarity", value: $settings.clarity, range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Dehaze", value: $settings.dehaze, range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Soft Glow", value: $settings.softGlow, range: 0...1) { String(format: "%.0f", $0 * 100) }
@@ -4866,7 +5398,7 @@ struct DevelopView: View {
                     .toggleStyle(.checkbox)
                     .font(.custom("Figtree", size: 12).weight(.medium))
                     .foregroundColor(AppColors.ink)
-                editSlider("Feather", value: radialFeatherBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                editSlider("Feather", key: "radial.feather", value: radialFeatherBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
 
             case .graduated:
                 Toggle("Invert", isOn: invertBinding)
@@ -4879,8 +5411,8 @@ struct DevelopView: View {
                     .toggleStyle(.checkbox)
                     .font(.custom("Figtree", size: 12).weight(.medium))
                     .foregroundColor(AppColors.ink)
-                editSlider("Brush Size", value: $brushSize, range: 0.01...0.3) { String(format: "%.0f", $0 * 100) }
-                editSlider("Hardness", value: $brushHardness, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                editSlider("Brush Size", key: "brush.size", value: $brushSize, range: 0.01...0.3) { String(format: "%.0f", $0 * 100) }
+                editSlider("Hardness", key: "brush.hardness", value: $brushHardness, range: 0...1) { String(format: "%.0f", $0 * 100) }
                 if !(adjustment.brush?.strokes.isEmpty ?? true) {
                     Button("Clear Strokes") {
                         clearBrushStrokes(at: index)
@@ -4899,8 +5431,8 @@ struct DevelopView: View {
                 .labelsHidden()
 
                 if adjustment.patch?.shape == .free {
-                    editSlider("Feather", value: patchFeatherBinding, range: PhotoEditRenderer.patchMinimumFeather...1) { String(format: "%.0f", $0 * 100) }
-                    editSlider("Opacity", value: patchOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                    editSlider("Feather", key: "patch.feather", value: patchFeatherBinding, range: PhotoEditRenderer.patchMinimumFeather...1) { String(format: "%.0f", $0 * 100) }
+                    editSlider("Opacity", key: "patch.opacity", value: patchOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
                     if adjustment.patch?.points.isEmpty ?? true {
                         Text("Drag on the photo to draw the patch outline.")
                             .font(.custom("Figtree", size: 11))
@@ -4924,9 +5456,9 @@ struct DevelopView: View {
                     // brushSize/brushHardness) read when a NEW stroke is
                     // committed — nudging them never reshapes strokes
                     // already painted, same reasoning as the Brush tool.
-                    editSlider("Brush Size", value: $patchBrushSize, range: 0.02...0.3) { String(format: "%.0f", $0 * 100) }
-                    editSlider("Feather", value: $patchBrushFeather, range: PhotoEditRenderer.patchMinimumFeather...1) { String(format: "%.0f", $0 * 100) }
-                    editSlider("Opacity", value: patchOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                    editSlider("Brush Size", key: "patchBrush.size", value: $patchBrushSize, range: 0.02...0.3) { String(format: "%.0f", $0 * 100) }
+                    editSlider("Feather", key: "patchBrush.feather", value: $patchBrushFeather, range: PhotoEditRenderer.patchMinimumFeather...1) { String(format: "%.0f", $0 * 100) }
+                    editSlider("Opacity", key: "patchBrush.opacity", value: patchOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
                     Text("⌥-click to set the clone source, then drag on the photo to paint.")
                         .font(.custom("Figtree", size: 11))
                         .foregroundColor(AppColors.muted)
@@ -4946,17 +5478,17 @@ struct DevelopView: View {
             if adjustment.type != .patch {
                 Divider()
 
-                editSlider("Exposure", value: localAdjustmentBinding(\.exposure), range: -3...3) { String(format: "%+.2f", $0) }
-                editSlider("Contrast", value: localAdjustmentBinding(\.contrast), range: -1...1)
-                editSlider("Highlights", value: localAdjustmentBinding(\.highlights), range: -1...1)
-                editSlider("Shadows", value: localAdjustmentBinding(\.shadows), range: -1...1)
-                editSlider("Whites", value: localAdjustmentBinding(\.whites), range: -1...1)
-                editSlider("Blacks", value: localAdjustmentBinding(\.blacks), range: -1...1)
-                editSlider("Temperature", value: localAdjustmentBinding(\.temperature), range: -1...1)
-                editSlider("Tint", value: localAdjustmentBinding(\.tint), range: -1...1)
-                editSlider("Saturation", value: localAdjustmentBinding(\.saturation), range: -1...1)
-                editSlider("Vibrance", value: localAdjustmentBinding(\.vibrance), range: -1...1)
-                editSlider("Sharpness", value: localAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
+                editSlider("Exposure", key: "mask.exposure", value: localAdjustmentBinding(\.exposure), range: -3...3, step: 0.05) { String(format: "%+.2f", $0) }
+                editSlider("Contrast", key: "mask.contrast", value: localAdjustmentBinding(\.contrast), range: -1...1)
+                editSlider("Highlights", key: "mask.highlights", value: localAdjustmentBinding(\.highlights), range: -1...1)
+                editSlider("Shadows", key: "mask.shadows", value: localAdjustmentBinding(\.shadows), range: -1...1)
+                editSlider("Whites", key: "mask.whites", value: localAdjustmentBinding(\.whites), range: -1...1)
+                editSlider("Blacks", key: "mask.blacks", value: localAdjustmentBinding(\.blacks), range: -1...1)
+                editSlider("Temperature", key: "mask.temperature", value: localAdjustmentBinding(\.temperature), range: -1...1)
+                editSlider("Tint", key: "mask.tint", value: localAdjustmentBinding(\.tint), range: -1...1)
+                editSlider("Saturation", key: "mask.saturation", value: localAdjustmentBinding(\.saturation), range: -1...1)
+                editSlider("Vibrance", key: "mask.vibrance", value: localAdjustmentBinding(\.vibrance), range: -1...1)
+                editSlider("Sharpness", key: "mask.sharpness", value: localAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
             }
         }
     }
@@ -4987,7 +5519,7 @@ struct DevelopView: View {
                         .font(.custom("Figtree", size: 11))
                         .foregroundColor(AppColors.muted)
                 } else {
-                    editSlider("Feather", value: selectionFeatherBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                    editSlider("Feather", key: "selection.feather", value: selectionFeatherBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
                 }
 
                 // .fixedSize() on each label — three icon+text buttons in a
@@ -5048,6 +5580,368 @@ struct DevelopView: View {
             get: { activeSelection?.feather ?? 0 },
             set: { activeSelection?.feather = $0 }
         )
+    }
+
+    // Lightroom's "remove this" in two explicit steps rather than one
+    // magic button: FIND the people (so what is about to be erased is
+    // visible on the canvas first — an erase is expensive and picking the
+    // wrong subject is the likeliest way to waste that), then ERASE.
+    //
+    // If a Selection outline is already active, the search is confined to
+    // it. That is the answer to the usual case — "remove the people in the
+    // BACKGROUND, keep the one I photographed" — without needing a
+    // per-person picker: rope off the area, then find people inside it.
+    private var removeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Remove")
+
+            panelActionButton("Select People", systemImage: "person.crop.rectangle") {
+                findPeople()
+            }
+            .disabled(isFindingPeople || isRemoving || selectedURL == nil)
+            .opacity((isFindingPeople || isRemoving || selectedURL == nil) ? 0.4 : 1)
+
+            // The manual half: Vision only knows people, and plenty of what
+            // anyone wants gone (a bin, a sign, a cable, a stranger too
+            // small to register as a person) isn't one. Painting also
+            // stacks WITH a found mask rather than replacing it, so the
+            // usual flow — find the people, then brush in the two things
+            // Vision missed — is one Erase, not two.
+            panelActionButton(isRemoveBrushActive ? "Brush (painting)" : "Brush", systemImage: "paintbrush") {
+                toggleRemoveBrush()
+            }
+            .disabled(isFindingPeople || isRemoving || selectedURL == nil)
+            .opacity((isFindingPeople || isRemoving || selectedURL == nil) ? 0.4 : 1)
+
+            if isRemoveBrushActive {
+                editSlider("Brush Size", key: "removeBrush.size", value: $removalBrushSize, range: 0.01...0.3) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                Text("Paint over what should go. [ and ] resize the brush.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if isFindingPeople {
+                Text("Looking for people…")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+            } else if hasRemovalArea {
+                Text(removalMask == nil
+                     ? "Painted area ready. Erase fills it from the surrounding photo."
+                     : (activeSelection == nil
+                        ? "People found. Erase fills the area from the surrounding photo."
+                        : "People inside the selection. Erase fills from the surrounding photo."))
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                panelActionButton("Erase (Instant)", systemImage: "eraser") {
+                    eraseMaskedArea(useAI: false)
+                }
+                .disabled(isRemoving)
+                .opacity(isRemoving ? 0.4 : 1)
+
+                // Same mask, same resulting ImageLayer — the only difference
+                // is what invents the missing pixels. Kept as a separate
+                // button rather than a mode toggle because the two have
+                // completely different costs: instant is a second, AI is
+                // thirty diffusion steps.
+                //
+                // The gear sits beside it rather than inside a Settings screen
+                // because the prompt only makes sense next to the thing it
+                // controls — and it stays closed by default, since the whole
+                // point is that the tool is one button.
+                HStack(spacing: 6) {
+                    panelActionButton("AI Remove", systemImage: "wand.and.stars") {
+                        eraseMaskedArea(useAI: true)
+                    }
+                    Button {
+                        showsAIPromptEditor.toggle()
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 12))
+                            .foregroundColor(showsAIPromptEditor ? AppColors.ink : AppColors.muted)
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help("What AI Remove should put in place of what you erased")
+                }
+                .disabled(isRemoving)
+                .opacity(isRemoving ? 0.4 : 1)
+
+                if showsAIPromptEditor {
+                    aiPromptEditor
+                }
+
+                panelActionButton("Clear Selection", systemImage: "xmark.circle") {
+                    clearRemovalMask()
+                }
+                .disabled(isRemoving)
+                .opacity(isRemoving ? 0.4 : 1)
+            } else if !isRemoveBrushActive {
+                Text("Finds everyone in the photo — or only inside an active Selection. Brush paints any area by hand.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if isRemoving {
+                Text(aiEraseProgress.map { "Erasing with AI… \(Int($0 * 100))%" } ?? "Erasing…")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+            }
+
+            if let removeErrorMessage {
+                Text(removeErrorMessage)
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // The prompt AI Remove runs with. Hidden behind the gear because the tool
+    // is meant to be one button: brush, click, done. It is here for the case
+    // the model guesses wrong about what belongs behind the thing that was
+    // removed, and naming it ("a wooden terrace", "sand") fixes it.
+    private var aiPromptEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Describe what should be there instead")
+                .font(.custom("Figtree", size: 11))
+                .foregroundColor(AppColors.muted)
+
+            TextEditor(text: $aiRemovePrompt)
+                .font(.custom("Figtree", size: 11))
+                .scrollContentBackground(.hidden)
+                .background(AppColors.panelAlt)
+                .frame(height: 54)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1)
+                )
+
+            // The patch is generated, not copied, so its tone lands a hair off
+            // the photo's and a hard edge shows as a rectangle. This is how
+            // far it fades out — as a fraction of the repaired area, so the
+            // setting means the same thing on a small object and a large one.
+            editSlider("Edge Feather", key: "aiRemove.feather",
+                       value: $aiRemoveFeather, range: 0...1) {
+                String(format: "%.0f", $0 * 100)
+            }
+
+            HStack(spacing: 8) {
+                Button("Reset") {
+                    aiRemovePrompt = SDInpaintPipeline.defaultPrompt
+                    aiRemoveFeather = SDInpaintPipeline.defaultFeather
+                }
+                .buttonStyle(.plain)
+                .font(.custom("Figtree", size: 11))
+                .foregroundColor(AppColors.muted)
+                .disabled(aiRemovePrompt == SDInpaintPipeline.defaultPrompt
+                          && aiRemoveFeather == SDInpaintPipeline.defaultFeather)
+                .opacity(aiRemovePrompt == SDInpaintPipeline.defaultPrompt
+                         && aiRemoveFeather == SDInpaintPipeline.defaultFeather ? 0.4 : 1)
+
+                Spacer(minLength: 0)
+            }
+
+            // Worth saying plainly: this model reads a prompt as a list of
+            // things to DEPICT, not as an instruction. "Remove the object and
+            // match the lighting" makes it paint signs and stock textures —
+            // measured, not guessed.
+            Text("Name what belongs there, like \"a wooden terrace\" — not an instruction like \"remove the object\".")
+                .font(.custom("Figtree", size: 10))
+                .foregroundColor(AppColors.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 2)
+    }
+
+    // MARK: Remove (Vision + inpainting) actions
+
+    // Either half of the tool counts: a Vision mask, painted strokes, or
+    // both at once (they are unioned at Erase time).
+    private var hasRemovalArea: Bool {
+        removalMask != nil || !removalStrokes.isEmpty
+    }
+
+    private func clearRemovalMask() {
+        removalMask = nil
+        removalOverlay = nil
+        removalStrokes = []
+        activeRemovalStrokePoints = []
+    }
+
+    // Turning the brush on takes over the canvas the same way picking a
+    // mask or the Selection tool does — those overlays share one hit area,
+    // so leaving another one active would mean two tools fighting over the
+    // same drag.
+    private func toggleRemoveBrush() {
+        isRemoveBrushActive.toggle()
+        guard isRemoveBrushActive else {
+            activeRemovalStrokePoints = []
+            return
+        }
+        selectedLocalAdjustmentID = nil
+        activeSelection = nil
+        activeSelectionDrawPoints = []
+        selectedLayerID = nil
+        isCropping = false
+    }
+
+    private func paintRemovalBrush(at location: CGPoint, frame: CGRect) {
+        guard let unit = unitPoint(from: location, frame: frame) else {
+            return
+        }
+        // Same minimum-spacing filter as paintBrush — see its doc comment.
+        if let last = activeRemovalStrokePoints.last {
+            let dx = unit.x - last.x, dy = unit.y - last.y
+            if (dx * dx + dy * dy) < 0.0001 {
+                return
+            }
+        }
+        activeRemovalStrokePoints.append(unit)
+    }
+
+    private func commitRemovalStroke() {
+        defer { activeRemovalStrokePoints = [] }
+        guard activeRemovalStrokePoints.count > 1 else {
+            return
+        }
+        // hardness 1: this is a SELECTION, not a soft adjustment — a feathered
+        // edge would fall under the mask threshold and quietly shrink what
+        // gets erased. The pipeline grows and softens the hole itself.
+        removalStrokes.append(BrushStroke(
+            points: activeRemovalStrokePoints,
+            size: removalBrushSize,
+            hardness: 1,
+            isErase: false
+        ))
+    }
+
+    // Runs on the FULL, PRE-CROP render — not the cropped one a Cut/Copy
+    // works from — because that is the space compositeLayers interprets an
+    // ImageLayer's coordinates in, and the erase's output is an
+    // ImageLayer. Using the cropped render here would land every repair at
+    // the wrong place on any photo that has a crop.
+    private func findPeople() {
+        guard let fullBaseImage, let selectedURL else {
+            return
+        }
+        isFindingPeople = true
+        let settingsSnapshot = settings
+        let photoAtActionTime = selectedURL
+        let confineTo = activeSelection
+
+        developRenderQueue.async(qos: .userInitiated) {
+            let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
+            var mask = SubjectMasker.personMask(for: full)
+
+            if let mask_ = mask, let confineTo, !(confineTo.shape == .free && confineTo.points.count < 3) {
+                let shape = PhotoEditRenderer.selectionMask(confineTo, extent: full.extent)
+                mask = mask_.applyingFilter("CIMultiplyBlendMode", parameters: [
+                    kCIInputBackgroundImageKey: shape
+                ]).cropped(to: full.extent)
+            }
+
+            let overlay = mask.flatMap {
+                InpaintPipeline.overlayImage(for: $0, context: briefEditsCIContext)
+            }
+
+            DispatchQueue.main.async {
+                isFindingPeople = false
+                guard selectedURL == photoAtActionTime else {
+                    return
+                }
+                removalMask = mask
+                removalOverlay = overlay
+            }
+        }
+    }
+
+    // `useAI` picks which filler runs; everything either side of it — the
+    // union of the Vision mask and the painted strokes, the guard against the
+    // client moving on mid-run, the ImageLayer that comes out — is shared, so
+    // the two buttons stay genuinely interchangeable.
+    private func eraseMaskedArea(useAI: Bool) {
+        guard hasRemovalArea, let fullBaseImage, let selectedURL else {
+            return
+        }
+        isRemoving = true
+        removeErrorMessage = nil
+        aiEraseProgress = useAI ? 0 : nil
+        let settingsSnapshot = settings
+        let photoAtActionTime = selectedURL
+        let visionMask = removalMask
+        let strokes = removalStrokes
+        let prompt = aiRemovePrompt
+        let feather = aiRemoveFeather
+
+        developRenderQueue.async(qos: .userInitiated) {
+            let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
+
+            // Union, so "find the people, then brush in what Vision missed"
+            // is a single erase. Maximum (not addition) keeps the mask a
+            // clean 0...1 decision where the two overlap.
+            var mask = visionMask
+            if !strokes.isEmpty {
+                let painted = PhotoEditRenderer.strokeMask(strokes, extent: full.extent)
+                mask = mask.map {
+                    $0.applyingFilter("CIMaximumCompositing", parameters: [
+                        kCIInputBackgroundImageKey: painted
+                    ]).cropped(to: full.extent)
+                } ?? painted
+            }
+            guard let mask else {
+                DispatchQueue.main.async { isRemoving = false }
+                return
+            }
+            let removal: InpaintPipeline.Removal?
+            if useAI {
+                do {
+                    removal = try InpaintPipeline.aiRemoval(
+                        mask: mask, from: full, context: briefEditsCIContext,
+                        prompt: prompt, feather: feather,
+                        progress: { done, total in
+                            DispatchQueue.main.async {
+                                aiEraseProgress = Double(done) / Double(max(total, 1))
+                            }
+                        }
+                    )
+                } catch {
+                    DispatchQueue.main.async {
+                        isRemoving = false
+                        aiEraseProgress = nil
+                        removeErrorMessage = error.localizedDescription
+                    }
+                    return
+                }
+            } else {
+                removal = InpaintPipeline.removal(mask: mask, from: full, context: briefEditsCIContext)
+            }
+
+            DispatchQueue.main.async {
+                isRemoving = false
+                aiEraseProgress = nil
+                // Same guard as performSelectionExtraction: the repair is
+                // pixels belonging to ONE photo, so it is dropped rather
+                // than misapplied if the client moved on while it ran.
+                guard let removal, selectedURL == photoAtActionTime else {
+                    clearRemovalMask()
+                    return
+                }
+                let layer = ImageLayer(
+                    name: nextLayerName("Removed"), imageData: removal.pngData,
+                    x: removal.boundsUnit.minX, y: removal.boundsUnit.minY,
+                    width: removal.boundsUnit.width, height: removal.boundsUnit.height
+                )
+                settings.layers.append(layer)
+                clearRemovalMask()
+                activeSelection = nil
+                isRemoveBrushActive = false
+            }
+        }
     }
 
     // MARK: Layers
@@ -5158,7 +6052,7 @@ struct DevelopView: View {
                 .buttonStyle(ShowHeaderButtonStyle())
             }
 
-            editSlider("Opacity", value: layerOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+            editSlider("Opacity", key: "layer.opacity", value: layerOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
 
             Picker("Blend Mode", selection: layerBlendModeBinding) {
                 ForEach(LayerBlendMode.allCases, id: \.self) { mode in
@@ -5337,28 +6231,196 @@ struct DevelopView: View {
         )
     }
 
+    // One slider row: name on the left, live value on the right, track
+    // below. Two things beyond the obvious:
+    //
+    // `key` — the identity used for arrow-key arming (see
+    // SliderNudgeRegistry) and for drawing the "armed" highlight. Defaults
+    // to the title, which is unique for the global Light/Color/Detail
+    // sliders, but the mask/patch/brush/layer panels reuse names
+    // ("Exposure", "Feather", "Opacity", "Brush Size" all appear more than
+    // once), so those call sites pass an explicit namespaced key. Two
+    // sliders sharing a key would fight over the same registry entry AND
+    // both light up as selected.
+    //
+    // `step` — how far ONE arrow press moves it. Defaults to 0.01, which is
+    // exactly one unit on the 0...100 scale nearly every slider here
+    // displays (value * 100); the two that don't display that way
+    // (Exposure in EV, Straighten in degrees) pass their own.
+    //
+    // Clicking the NAME arms the slider and shows the card; starting a
+    // normal drag arms it too but stays silent (onEditingChanged) — the
+    // card is an answer to "what did I just click", and firing it on every
+    // drag would make it noise.
+    // `trackGradient` — when a slider's direction has a COLOR meaning
+    // (the whole Color section: blue↔amber, green↔magenta, gray↔saturated),
+    // pass the gradient and the row draws a Lightroom-style colored track
+    // instead of the platform's gray one. Everything else about the row is
+    // identical either way; see GradientTrackSlider for why it can't just
+    // be a background behind the real Slider.
     private func editSlider(
         _ title: String,
+        key: String? = nil,
         value: Binding<Double>,
         range: ClosedRange<Double>,
+        step: Double = 0.01,
+        trackGradient: LinearGradient? = nil,
         format: @escaping (Double) -> String = { String(format: "%+.0f", $0 * 100) }
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let sliderKey = key ?? title
+        let isSelected = selectedSliderKey == sliderKey
+
+        // Deliberately re-registered on EVERY body pass rather than in
+        // .onAppear — see SliderNudgeRegistry for why the freshest binding
+        // matters and why this can't invalidate the view.
+        sliderRegistry.register(sliderKey) { increase, multiplier in
+            let delta = step * multiplier * (increase ? 1 : -1)
+            // Snapped back onto the step's own grid after every press, the
+            // way Lightroom's arrows land on whole increments. Two reasons
+            // beyond tidiness: repeated adds accumulate binary-float dust
+            // (ten +0.05 presses from -0.5 landed on -1.1e-16, which the
+            // readout rendered as a baffling "-0" and which isNeutral —
+            // an exact == 0 comparison — would have counted as "this photo
+            // is edited" forever), and a value left mid-grid by a mouse
+            // drag would otherwise keep every later arrow press off-grid
+            // too.
+            let raw = value.wrappedValue + delta
+            let snapped = step > 0 ? (raw / step).rounded() * step : raw
+            value.wrappedValue = min(max(snapped, range.lowerBound), range.upperBound)
+        }
+
+        return VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title)
-                    .font(.custom("Figtree", size: 12).weight(.medium))
-                    .foregroundColor(AppColors.ink)
+                Button {
+                    selectSlider(sliderKey, title: title)
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(title)
+                            .font(.custom("Figtree", size: 12).weight(.medium))
+                            .foregroundColor(isSelected ? AppColors.hoverInk : AppColors.ink)
+
+                        if isSelected {
+                            Image(systemName: "arrow.left.and.right")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(accentColor)
+                        }
+                    }
+                    // Without this the Button only hits on the glyphs
+                    // themselves and the first click often lands on nothing
+                    // — the same missing-contentShape bug already fixed on
+                    // maskAddButton/EditToolButtonStyle/AspectRatioButtonStyle,
+                    // see BRIEFSHOW_DEVELOP_NOTES.md.
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Click to control \(title) with the ← / → keys")
 
                 Spacer()
 
                 Text(format(value.wrappedValue))
                     .font(.custom("Figtree", size: 11))
-                    .foregroundColor(AppColors.muted)
+                    .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
                     .monospacedDigit()
             }
 
-            Slider(value: value, in: range)
+            if let trackGradient {
+                GradientTrackSlider(value: value, range: range, gradient: trackGradient) { editing in
+                    if editing, selectedSliderKey != sliderKey {
+                        selectedSliderKey = sliderKey
+                    }
+                }
+            } else {
+                Slider(value: value, in: range) { editing in
+                    if editing, selectedSliderKey != sliderKey {
+                        selectedSliderKey = sliderKey
+                    }
+                }
+            }
         }
+        // padding(6) → highlight → padding(-6): the selected row's tint/
+        // border bleeds 6pt outward past the row's own content, but the
+        // negative padding hands the ORIGINAL footprint back to the
+        // enclosing VStack, so arming a slider never shifts the panel's
+        // layout by a pixel.
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected ? accentColor.opacity(0.14) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isSelected ? accentColor.opacity(0.55) : Color.clear, lineWidth: 1)
+        )
+        .padding(-6)
+        .animation(.easeInOut(duration: 0.18), value: isSelected)
+    }
+
+    // Arm `key` for the ← / → keys and pop the card that says so. Any
+    // previously-scheduled dismissal is cancelled first so clicking a
+    // second slider gives the new card its own full dwell time instead of
+    // inheriting the leftover of the old one's.
+    private func selectSlider(_ key: String, title: String) {
+        sliderToastDismissWork?.cancel()
+
+        withAnimation(.easeOut(duration: 0.25)) {
+            selectedSliderKey = key
+            sliderToast = SliderSelectionToast(title: title)
+        }
+
+        let work = DispatchWorkItem {
+            withAnimation(.easeIn(duration: 0.3)) {
+                sliderToast = nil
+            }
+        }
+        sliderToastDismissWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.8, execute: work)
+    }
+
+    private func clearSelectedSlider() {
+        sliderToastDismissWork?.cancel()
+        withAnimation(.easeIn(duration: 0.2)) {
+            selectedSliderKey = nil
+            sliderToast = nil
+        }
+    }
+
+    // Called by the key monitor for a bare (or Shift-held) ← / →. Shift
+    // multiplies the step by 5, matching Lightroom's own "arrow for fine,
+    // Shift+arrow for coarse" pairing. Returns false when nothing is armed
+    // or the armed slider isn't currently on screen, so the caller can let
+    // the keypress through untouched.
+    private func nudgeSelectedSlider(increase: Bool, coarse: Bool) -> Bool {
+        guard let key = selectedSliderKey else {
+            return false
+        }
+        return sliderRegistry.nudge(key, increase: increase, multiplier: coarse ? 5 : 1)
+    }
+
+    // The card itself — sits over the bottom of the preview, never over the
+    // panel, so it can't cover the slider the user just clicked. Purely
+    // informational, so it takes no hits (see centerPreview's
+    // allowsHitTesting) and the photo underneath stays fully interactive.
+    private func sliderToastCard(_ toast: SliderSelectionToast) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("\(toast.title) selected")
+                .font(.custom("Figtree", size: 12.5).weight(.semibold))
+                .foregroundColor(AppColors.ink)
+
+            Text("Press ← to lower, → to raise  ·  hold ⇧ for bigger steps")
+                .font(.custom("Figtree", size: 11))
+                .foregroundColor(AppColors.muted)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(AppColors.panel)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(accentColor.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.28), radius: 10, y: 3)
     }
 
     // Copy the current photo's full settings into an in-memory clipboard
@@ -5532,6 +6594,7 @@ struct DevelopView: View {
         }
 
         selectedURL = url
+        resetZoom()
         isCropping = false
         dragStartCrop = nil
         showOriginal = false
@@ -5561,6 +6624,12 @@ struct DevelopView: View {
         activeSelection = nil
         activeSelectionDrawPoints = []
         selectedLayerID = nil
+        // A Remove mask describes PIXELS of the previous photo — the one
+        // piece of ephemeral state here that would be actively dangerous
+        // to keep (erasing "the people" at coordinates taken from a
+        // different image).
+        clearRemovalMask()
+        isRemoveBrushActive = false
         // Undo/redo history is per-photo, like Lightroom's own — a
         // previous photo's undo stack describing edits to a DIFFERENT
         // image has no meaning here.
@@ -5679,6 +6748,7 @@ struct DevelopView: View {
         }
         if categories.contains(.detail) {
             result.sharpness = source.sharpness
+            result.texture = source.texture
             result.clarity = source.clarity
             result.dehaze = source.dehaze
             result.softGlow = source.softGlow
@@ -6359,6 +7429,82 @@ struct DevelopView: View {
 }
 
 // MARK: - Small tool button style (rotate/crop icon buttons)
+
+// A slider whose TRACK is a color gradient instead of the platform's plain
+// gray bar — Lightroom's own Color panel look, where Temperature reads
+// blue→amber and Tint green→magenta right on the control, so the direction
+// each slider pushes the photo is visible before you touch it.
+//
+// It has to be hand-drawn: macOS SwiftUI's Slider paints its own opaque
+// track and offers no hook to replace it, and nothing behind it shows
+// through. So this reimplements just enough of a slider — a capsule track,
+// a round thumb, and a drag/click gesture — while keeping the SAME
+// Binding<Double>/range/onEditingChanged contract as the real thing, so
+// editSlider can swap one for the other and everything built on top (the
+// arrow-key registry, the armed highlight, the value readout) keeps
+// working unchanged.
+//
+// DragGesture(minimumDistance: 0) rather than a drag-only gesture: it makes
+// a plain CLICK anywhere on the track jump the thumb there, which is what
+// the platform slider does and what the hand-drawn one would otherwise
+// lose.
+private struct GradientTrackSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let gradient: LinearGradient
+    var onEditingChanged: (Bool) -> Void = { _ in }
+
+    private let trackHeight: CGFloat = 6
+    private let thumbSize: CGFloat = 16
+    private let rowHeight: CGFloat = 20
+
+    var body: some View {
+        GeometryReader { proxy in
+            // The thumb's LEADING edge travels across (width - thumbSize),
+            // so its CENTER stays inside the track at both ends instead of
+            // hanging half-off — hence every conversion below goes through
+            // `usable` and offsets by half a thumb.
+            let usable = max(proxy.size.width - thumbSize, 1)
+            let span = range.upperBound - range.lowerBound
+            let fraction = span > 0 ? (value - range.lowerBound) / span : 0
+            let clamped = min(max(fraction, 0), 1)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(gradient)
+                    .frame(height: trackHeight)
+                    .overlay(
+                        Capsule()
+                            .stroke(AppColors.ink.opacity(0.18), lineWidth: 0.5)
+                    )
+
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: thumbSize, height: thumbSize)
+                    .overlay(
+                        Circle()
+                            .stroke(AppColors.ink.opacity(0.25), lineWidth: 0.5)
+                    )
+                    .shadow(color: Color.black.opacity(0.25), radius: 1.5, y: 0.5)
+                    .offset(x: usable * CGFloat(clamped))
+            }
+            .frame(width: proxy.size.width, height: rowHeight)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        onEditingChanged(true)
+                        let x = min(max(drag.location.x - thumbSize / 2, 0), usable)
+                        value = range.lowerBound + Double(x / usable) * span
+                    }
+                    .onEnded { _ in
+                        onEditingChanged(false)
+                    }
+            )
+        }
+        .frame(height: rowHeight)
+    }
+}
 
 private struct EditToolButtonStyle: ButtonStyle {
     var isActive: Bool = false

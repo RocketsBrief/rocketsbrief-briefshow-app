@@ -1,12 +1,42 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 14. avgust 2026 (veče).
+Beleška za nastavak rada. Poslednja izmena: 25. avgust 2026.
 
 **⚠️ Za sledeću sesiju koja dodaje bilo kakav novi `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` monitor** — DVA obavezna pravila, oba naučena kroz prave incidente u produkciji:
 1. UVEK proveriti `event.isARepeat` i vratiti `event` (ne progutati) kad je true, OSIM ako je namerno drugačije. Stavka #15 ispod dokumentuje prvi incident (app zamrznut, `kill -9` morao) kad je ovo izostavljeno.
 2. UVEK ograničiti monitor na SVOJ prozor (`guard NSApp.keyWindow?.title == "<taj prozor>" else { return event }`, prva linija u handleru). Local NSEvent monitori su APP-WIDE, ne po-prozoru — bez ove provere, monitor registrovan u JEDNOM prozoru (npr. ShowGrid) i dalje prima i OBRAĐUJE tastere dok je NEKI DRUGI prozor (npr. Develop) fokusiran, često sa netačnim/praznim kontekstom (npr. "ništa nije selektovano, pa primeni na CEO folder"). Stavka #18 dokumentuje pravi incident (ceo Desktop folder rekurzivno kopiran u sebe, DVA puta, `kill -9` morao oba puta) kad je ovo izostavljeno na ShowGrid-ovom monitoru dok je Develop-ov (koji JESTE imao ovu proveru) bio ispravan primer.
 
 ## TL;DR — gde smo stali
+
+**25. avgust 2026 — SD inpainting je U APP-I i radi.** „AI Remove" stoji pored
+„Erase (Instant)" u Remove sekciji, ~13 s po brisanju na M2, sve na uređaju.
+Detalji su u KORACIMA 3–5 pri dnu; ukratko, i tri od pet nalaza su bile MOJE
+greške koje su izgledale kao mane modela:
+
+1. **Swift pipeline** (`DevelopSDInpaint.swift`) — DDIM + DPM-Solver++, 9-kanalni
+   concat, VAE encode/decode. SD menja samo `ExemplarInpainter.fill()`; ceo okvir
+   oko rupe (maska, region, pakovanje u `ImageLayer`) je već postojao i deli se.
+2. **Region nikad manji od 512 izvornih piksela.** Uveličan (mutan) kontekst je
+   terao model da izmišlja — crno-bela krckava rešetka. Ovo je bio pravi uzrok
+   „lošeg prompta" iz prve dijagnoze, koja je bila pogrešna.
+3. **„trailing" raspored koraka umesto „leading".** Stari je kretao ispod vrha
+   skale (t=958 umesto 999), pa je sa malo koraka model dobijao laž o jačini
+   šuma. Uz DPM-Solver++ to je spustilo 30 koraka na 12 → **30,2 s → 13,4 s**.
+4. **Tone match na prstenu oko rupe.** Zakrpa je bila tamnija; dekoder
+   rekonstruiše i poznate piksele, pa se pomak MERI umesto da se pogađa.
+5. **Prompt je promenljiv** (zupčanik pored dugmeta), plus „Edge Feather"
+   slajder. CLIP čita prompt kao spisak stvari koje treba naslikati, ne kao
+   instrukciju — zato podrazumevani IMENUJE šta treba da bude tu.
+
+Usput dodat i **zoom u Develop-u** (`Cmd +` / `Cmd -` / `Cmd 0` + povlačenje za
+pomeranje), kog ranije uopšte nije bilo.
+
+**Ostalo pre nego što ovo može da se proda**: skidanje težina na prvo
+korišćenje, palettizacija na 6 bita, Licenses ekran + EULA (Attachment A iz
+OpenRAIL), i tehnički dug iz tačke C dole (`ImageLayer.imageData` je i dalje u
+`UserDefaults`).
+
+---
 
 **Sve dosad zatraženo je gotovo.** Korisnik je tražio tri stvari u istoj
 sesiji: **10) Brush cursor preview** — gotovo. **11) Patch (clone/heal)
@@ -286,6 +316,45 @@ UI testira bez `cliclick`-a. Ograničenja/trikovi koje treba znati:
   drugih app-i/prozora (bitno ako je nešto osetljivo trenutno na ekranu,
   kao što je bio slučaj ovog puta sa WhatsApp pozivom koji je već bio
   aktivan pre bilo kakve moje akcije).
+
+**Dopuna (24. avgust 2026) — NAJNOVIJE, čitaj ovo prvo**: urađene dve nove
+stavke, obe vizuelno potvrđene uživo u app-i na pravoj RAW fotki (za razliku
+od prethodne sesije, koja je ostala nepotvrđena):
+- **#31 (1) Texture slajder** — nov dvosmerni (-100...+100) slajder u
+  Detail & Effects, između Sharpness i Clarity. Minus = glatka, "mlađa"
+  koža (frekventna separacija + edge-guard maska, tako da oči/usne/kosa
+  ostaju oštre — prva verzija je bila običan blur i izgledala je kao da je
+  fotka van fokusa, ispravljeno); plus = izrazito naglašena tekstura kože/
+  kose/tkanine.
+- **#31 (2) Klik na ime slajdera pa strelice** — Lightroom obrazac: klik na
+  naziv slajdera ga "naoruža" (red se obeleži, izađe kartica "<Ime>
+  selected / Press ← to lower, → to raise · hold ⇧ for bigger steps"), pa
+  ← / → menjaju baš taj slajder (⇧ = 5× veći korak, Escape razoružava).
+  Radi na SVAKOM slajderu u Develop-u, uključujući mask/patch/layer panele.
+
+- **#32 Color sekcija sa pravim gradijentnim trakama** (Lightroom-style):
+  Temperature plava→ćilibar, Tint zelena→magenta, Saturation siva→duga,
+  Vibrance ista duga blaže. Zahtevalo je custom `GradientTrackSlider` (native
+  `Slider` ne da da mu se zameni traka). Usput popravljen float-dust bug:
+  strelice sad snap-uju na mrežu koraka (ranije je 10 pritisaka umelo da
+  ostavi -1.1e-16, tj. „-0" u prikazu i fotku zauvek „editovanu").
+
+- **#33 "Remove" alat** — Select People (Vision) + Erase (Criminisi
+  inpainting, naš kod, bez modela i bez licencnih problema), rezultat je
+  `ImageLayer` pa je undo-able. Usput popravljena DVA prava bug-a: maska je
+  tiho bila prazna zbog beskonačnog extent-a iz `CIColorMatrix` sa bias-om,
+  i **Release build je do sad UVEK padao** (crash Swift optimizatora na
+  generičkoj `NSHostingView` podklasi) — sad prolazi.
+
+- **#34 Remove Brush** — ručno crveno bojenje maske pored Select People;
+  potezi se sabiraju sa Vision maskom. Korisnik je ocenio da kvalitet
+  brisanja „nije nesto ali moze da ostane" kao instant opcija — dalji skok
+  traži model, vidi **„Plan — šta dalje"** sekciju (AI korak 2, redosled
+  ostalih funkcija, tehnički dug).
+
+**I dalje NEPOTVRĐENO od korisnika** (iz ranijih sesija, nezavisno od ovoga):
+#24 (boje u Synchronize dijalogu), #29 (vinjeta + crop), #30 (Crop/Rotate
+dugmad na prvi klik).
 
 ## Vizuelna provera u pokrenutoj app-i (10. avgust 2026)
 
@@ -2465,6 +2534,640 @@ slideshow/export koji BriefShow već pravi.
     treba da proveri Crop/Rotate Left/Rotate Right/aspect-ratio dugmad
     posebno na SVEŽE otvorenom Develop-u (ili posle promene fotke), pre
     bilo kog drugog klika u panelu.
+
+31. **Texture slajder (dvosmerni) + Lightroom-style "klikni ime slajdera pa
+    ga pomeraj strelicama"** — 24. avgust 2026. Dva zahteva u istoj sesiji,
+    oba urađena i OBA vizuelno potvrđena uživo u pravoj app-i na pravoj RAW
+    fotki (`C4S_5740.NEF`).
+
+    **(1) Texture** — nov global slajder u Detail & Effects, između
+    Sharpness i Clarity, opseg **-1...+1** (jedini dvosmerni u toj sekciji;
+    prikazuje se kao -100...+100). Radi na SREDNJEM frekventnom pojasu —
+    finije od Clarity (koji je large-radius midtone "punch"), grublje od
+    Sharpness (koji dira samo ivice); taj pojas je upravo ono što oko čita
+    kao "tekstura kože/tkanine/kose".
+    - **Pozitivno**: `CIUnsharpMask`, radius `longEdge * 0.006` (klampovan
+      2...40), intensity `texture * 1.1`. Na +100 pore/pege/pramenovi kose/
+      drvo u pozadini izrazito iskaču — tačno "mnogo izraženija koža" iz
+      zahteva.
+    - **Negativno**: frekventna separacija sa **edge-guard maskom**, NE
+      običan blur. Prva verzija JE bila običan blur (flat siva maska, isti
+      trik kao Soft Glow) — i na -100 je izgledala kao da je fotka VAN
+      FOKUSA (oči, trepavice i kosa su omekšale zajedno sa porama), što je
+      uhvaćeno tek vizuelnim testom u app-i, ne matematikom. Ispravljeno:
+      `|original - blurred|` (CIDifferenceBlendMode) je tačno taj srednji
+      pojas, pa pojačan ×10 i klampovan na 0...1 postaje mapa "ovde ima
+      prave strukture" (ravna koža ~0, trepavica/ivica usne ~1); invertovan
+      i skaliran sa |texture| (max 0.9) daje per-piksel masku koja ravne
+      površine glača jako, a ivice praktično ne dira. Blur radius je
+      `longEdge * 0.003` (klampovan 1.5...24).
+    - **Bitno o CIBlendWithMask**: čita RGB NIVO maske, ne alfu — zato flat
+      `CIImage(color:)` maska radi kao opacity dial (Soft Glow i Patch
+      Opacity već se oslanjaju na to). Empirijski potvrđeno standalone
+      skriptom ovom sesijom, pošto nova maska zavisi od istog ponašanja.
+    - **Provera**: standalone skripta (sintetička "koža": ravna polja + fini
+      šum + jedna tvrda ivica) meri lokalni "grain" i visinu ivice po
+      vrednostima -1...+1 — grain raste monotono (-1: 0.020, 0: 0.038, +1:
+      0.080) dok visina ivice ostaje ista (0.2999 → 0.3035), tj. efekat
+      stvarno pogađa samo fini pojas. Zatim standalone render PRAVOG NEF-a
+      kroz `CIRAWFilter` na 1600px (identično preview putanji) sa
+      -100/-50/0/+100 i vizuelni pregled izrezanog lica — i na kraju isto
+      to potvrđeno UŽIVO u app-i (klik na Texture → strelice do -100 →
+      koža glatka, oči/usne/kosa oštre; ranije snimljen +100 iz iste
+      sesije jasno drugačiji). Codable round-trip potvrđen preko restarta
+      app-e (texture +100 preživeo gašenje/paljenje).
+    - Dodato i u `mergedSyncSettings` (kategorija Detail & Effects) i u
+      `isNeutral`; Codable ključ dodat u ručno pisani `init(from:)` (isti
+      "stariji build nema ovo polje" obrazac kao svi ostali).
+
+    **(2) Klik na ime slajdera → strelice ga pomeraju** (Lightroom-ov
+    obrazac). Klik na NAZIV bilo kog slajdera u Develop-u ga "naoruža":
+    red se blago obeleži (tint + border + ↔ ikonica) i preko dna preview-a
+    izađe kartica **"<Ime> selected / Press ← to lower, → to raise · hold ⇧
+    for bigger steps"** (fade+scale ulaz, sama nestaje posle 2.8s). Onda
+    ← / → pomeraju TAJ slajder: **plain strelica = 1 korak, ⇧+strelica =
+    5 koraka**. Korak je 0.01 (tj. 1 jedinica na 0-100 skali koju skoro svi
+    slajderi prikazuju); Exposure koristi 0.05 EV, Straighten 0.1°.
+    Povlačenje slajdera mišem ga takođe naoružava, ali ĆUTKE (bez kartice)
+    — kartica je odgovor na "šta sam ovo kliknuo", a na svaki drag bi bila
+    buka. **Escape** razoružava.
+
+    **Arhitektura (i zašto baš tako)**: nudge ne može da se razreši iz
+    samog ključa — svaki `editSlider` je napravljen sa SVOJIM Binding-om
+    (`$settings.exposure` za globalne, ali computed get/set za maske, patch
+    i layer opacity), i ne postoji jedan keypath koji ih sve dohvata. Zato
+    svaki slajder REGISTRUJE closure nad svojim binding-om u novu klasu
+    `SliderNudgeRegistry` (obična klasa, NAMERNO ne ObservableObject — da
+    upis u nju tokom body prolaza ne može da invalidira view iz kog je
+    upisan), a key monitor samo pronađe closure po ključu i pozove ga.
+    Registracija ide na SVAKOM body prolazu (ne u `.onAppear`), da closure
+    uvek drži binding iz poslednjeg render-a. Ključ je podrazumevano naslov
+    slajdera, ali maske/patch/brush/layer paneli ponavljaju imena
+    ("Exposure", "Feather", "Opacity", "Brush Size" postoje više puta), pa
+    ta pozivna mesta prosleđuju eksplicitan namespace-ovan ključ
+    (`mask.exposure`, `patch.feather`, `layer.opacity`, ...) — dva slajdera
+    sa istim ključem bi se otimala oko istog registry unosa I oba bi se
+    upalila kao selektovana.
+
+    **Strelice u key monitoru** (`installEditingKeyMonitor`, isti jedan
+    monitor kao Cmd+C/X/V, `[`/`]`, Backspace): repeat je NAMERNO dozvoljen
+    (držanje strelice da vrednost klizi je cela poenta, i svaki pritisak je
+    jedno klampovano sabiranje — ne može da se gomila kao onaj Cmd+V bug iz
+    #15). Tri zaštite da strelice ostanu netaknute svuda drugde: ništa nije
+    naoružano → propusti; field editor (npr. preset-name text field) ima
+    fokus → propusti (`(NSApp.keyWindow?.firstResponder as? NSTextView)?
+    .isFieldEditor`), tako da strelice i dalje pomeraju kursor u tekstu; i
+    `nudgeSelectedSlider` vraća false kad naoružani slajder trenutno nije
+    na ekranu, umesto da proguta taster bez efekta.
+
+    **Layout detalj**: selektovani red koristi `.padding(6)` → highlight →
+    `.padding(-6)`, pa tint/border ispadne 6pt van reda a okolni VStack
+    dobije NEPROMENJEN footprint — naoružavanje slajdera ne pomera panel ni
+    za piksel.
+
+    **Provera (uživo, mišem/tastaturom preko AX automatizacije)**: klik na
+    "Exposure" → kartica se pojavila, red se obeležio; strelica desno
+    pomerila +0.05 po pritisku; ⇧+strelica tačno +0.25 (0.41 → 0.66); klik
+    na "Texture" (čak i kad je red van vidljivog dela panela) → kartica
+    "Texture selected"; 20×⇧← spustilo Texture tačno na -100 (i klampovalo
+    se tamo kroz preostalih 20 pritisaka); Escape pa 5×⇧→ nije promenilo
+    NIŠTA (razoružavanje potvrđeno); na kraju 6×⇧→ + 2×→ vratilo Exposure
+    tačno na +0.26 — obe veličine koraka potvrđene istim testom. Build čist,
+    app 0% CPU u mirovanju.
+
+    **Napomena o test okruženju**: AX `entire contents of window` je usred
+    sesije počeo da vraća 0 elemenata (poznata flakiness iz ranijih beleški)
+    — zaobiđeno ručnom rekurzivnom `UI elements of` šetnjom po stablu, koja
+    je radila pouzdano do kraja. Ako se ponovi, to je gotovo rešenje, ne
+    treba gubiti vreme.
+
+32. **Color sekcija dobila prave Lightroom-style gradijentne trake** — 24.
+    avgust 2026, isti dan kao #31. Zahtev: „jel moze ovaj deo color da dobije
+    stvarni color slidebar kao lightroom".
+
+    **Zašto custom kontrola**: macOS SwiftUI `Slider` sam crta svoju
+    neprozirnu sivu traku i NEMA hook da se ona zameni — gradijent iza njega
+    se ne vidi. Zato nov `GradientTrackSlider` (capsule traka + okrugli
+    thumb + `DragGesture(minimumDistance: 0)`), koji drži ISTI
+    `Binding<Double>`/`range`/`onEditingChanged` ugovor kao pravi Slider, pa
+    ga `editSlider` samo zameni kroz nov `trackGradient:` parametar — sve
+    izgrađeno iznad (registry za strelice, highlight naoružanog reda, prikaz
+    vrednosti) radi nepromenjeno. `minimumDistance: 0` je bitan: bez njega bi
+    se izgubio običan KLIK bilo gde na traci (skok thumb-a tamo), koji
+    platformski slider ima.
+
+    **Gradijenti** (svi kao `static let` na `DevelopView`):
+    - Temperature: plava → skoro-neutralna → ćilibar
+    - Tint: zelena → skoro-neutralna → magenta
+    - Saturation: siva → pun hue sweep (hue ide do 0.85, ne ceo krug, da oba
+      kraja ne budu crvena; saturacija raste sa pozicijom, pa je levi kraj
+      stvarno siv — tačno ono što -100 radi fotki)
+    - Vibrance: isti sweep sa nižim plafonom (0.62), pošto Vibrance i jeste
+      blaža verzija Saturation-a
+    Temperature/Tint NAMERNO imaju srednju neutralnu tačku — direktna
+    interpolacija plava→ćilibar prolazi kroz blatnjavo zeleno i stavila bi
+    lažni „ovde je zeleno" signal tačno na nulu slajdera.
+
+    **Usput popravljeno (pravi bug, uhvaćen tokom testa)**: strelice sad
+    SNAP-uju vrednost na sopstvenu mrežu koraka posle svakog pritiska (kao
+    Lightroom). Bez toga se float dust akumulirao — deset +0.05 pritisaka sa
+    -0.5 je završilo na -1.1e-16, što je readout prikazivao kao zbunjujuće
+    „-0", a `isNeutral` (poređenje `== 0`) bi tu fotku zauvek smatrao
+    editovanom. Potvrđeno posle fiksa čitanjem SAMOG `UserDefaults` zapisa:
+    texture i temperature su sad tačno `0`.
+
+    **Provera (uživo u app-i)**: gradijenti vizuelno potvrđeni na sve četiri
+    trake u pravom panelu. Pošto AX klik ne radi na gesture-based view-ovima,
+    drag je testiran pravim CGEvent mouse drag-om ograničenim na Develop
+    prozor (skripta odbija tačku van njega I van desnog panela — poučeno
+    incidentom sa `cliclick`-om iz ranijih beleški): drag na Temperature dao
+    +59, drag skroz desno tačno +100, skroz levo tačno -100, thumb ostaje ceo
+    unutar trake na oba kraja, i red se pritom tiho naoruža (bez kartice,
+    kako je i projektovano u #31).
+
+    **Napomena o testnoj fotki i persistenciji**: tokom testiranja je app u
+    jednom trenutku ugašen sa `osascript quit` pa `pkill` posle samo 2s —
+    izgleda da je to preseklo `UserDefaults` flush, pa se posle restarta
+    učitalo STARIJE stanje (Exposure se vratio na 0.184 umesto 0.26 koliko je
+    bilo upisano, Texture na -50 usred rampe). Nije bug u app-i, ali je
+    dobra pouka: `PhotoEditStore` piše kroz `renderNow()`, pa nasilno gašenje
+    može da izgubi poslednje sekunde izmena. Sledeći put gasiti samo
+    `osascript quit` i sačekati da proces stvarno nestane.
+
+33. **"Remove" — selektuj ljude (Vision) i obriši ih (inpainting), korak 1
+    od AI plana** — 24. avgust 2026. Korisnik je pitao kako da dobije
+    Lightroom-ov Generative Remove; dogovoren je trostepeni plan (pun
+    razgovor u sažetku ispod), i ovo je **korak 1: bez ijednog modela, 100%
+    naš kod, nula licencnih problema**.
+
+    **Kontekst odluke (bitno za korak 2/3)**: Lightroom-ov Generative Remove
+    NE radi na Macu — radi u Adobe cloud-u, na Firefly modelu treniranom na
+    licenciranom sadržaju, sa indemnifikacijom. Za nas, pošto se app
+    PRODAJE, presudna je licenca *težina* modela i porekla podataka za
+    trening (npr. Places2 dataset je „research only", pa čist Apache kod ne
+    pomaže ako su težine trenirane na njemu). Zato: korak 1 sad (ovo), korak
+    2 = generativni erase preko cloud provajdera sa komercijalnim uslovima
+    kao plaćena opcija, korak 3 = on-device model (Kandinsky Apache-2.0 ili
+    SD-inpainting pod OpenRAIL) tek ako korisnici traže offline.
+
+    **Nov fajl `DevelopInpaint.swift`** (~870 linija), namerno van
+    `Develop.swift` i pisan kao čiste funkcije nad baferima, da može da se
+    testira standalone skriptom bez GUI-ja. Dve polovine:
+
+    - **`SubjectMasker`** — `VNGeneratePersonSegmentationRequest`
+      (`.accurate`), pokrenut na smanjenoj kopiji (1600px), maska skalirana
+      nazad na pun extent. Vision je jedina polovina koju Apple daje
+      besplatno — **javnog API-ja za popunjavanje NEMA** (Clean Up u Photos
+      app-u je zatvoren), otud druga polovina. Maska se još i dilatira
+      (~0.25% duže ivice) jer Vision seče osobu tesno i ostavlja rub njene
+      boje koji bi inpainting posle razmazao nazad kao duh.
+    - **`ExemplarInpainter`** — Criminisi (2004) implementiran iz rada.
+      **Licencna odluka, ne NIH**: GIMP-ov resynthesizer je GPL (ne sme u
+      zatvoren komercijalni app), a PatchMatch — na kome počiva većina
+      modernog content-aware fill koda — je pod Adobe patentima koji traju
+      do kraja dekade. Criminisi (prioritetni redosled + windowed
+      exhaustive search) prethodi obojici. Prioritet = confidence × data
+      term; data term (izofota · normala fronta) je ono što nosi ivice
+      preko rupe umesto da ih razmaže.
+
+    **Kako se uklapa u postojeći model**: rezultat je **`ImageLayer`** —
+    popravljeni region kao PNG sa alfom po rupi, položen preko originala.
+    Zato ostaje non-destructive i undo-able bez ijednog novog koncepta u
+    render pipeline-u. Bitno: sve se računa na **PRE-CROP** renderu
+    (`applyCrop: false`), jer `compositeLayers` tumači layer koordinate u
+    tom prostoru — cropovan render bi svaku popravku smestio na pogrešno
+    mesto na fotki koja ima crop.
+
+    **Dve optimizacije bez kojih ovo nije upotrebljivo**:
+    - summed-area tabela za „je li ceo kandidat-patch pravi original" —
+      4 lookupa umesto do 81 čitanja po kandidatu (bilo je preko pola cene
+      pretrage). Izvor su isključivo ORIGINALNI pikseli, nikad već
+      sintetizovani (Criminisijeva definicija, sprečava da fill kompoznuje
+      sopstvenu izmišljenu teksturu).
+    - plafon na broj piksela rupe (45k): radno uvećanje se smanjuje dok
+      rupa ne stane. Bez toga osoba preko pola kadra traje minutima.
+
+    **Dva prava bug-a uhvaćena testom**:
+    - **`CIColorMatrix` sa bias-om vraća BESKONAČAN extent** (filter čiji
+      izlaz za transparent black nije nula). Posledica: `mask.extent.origin`
+      postaje -inf, translacija NaN, i maska se tiho renderuje kao potpuno
+      prazna slika — `createCGImage` vraća nil bez ijedne greške. Isto važi
+      za `CIColorControls` sa brightness-om. Popravka: `.cropped(to:)` odmah
+      posle takvog filtera. **Ovo je obrazac za pamćenje** — verovatno
+      postoji i drugde u fajlu.
+    - **Swift 6.3.3 optimizator PUCA** (hard crash kompajlera, ne
+      dijagnostika) pri inline-ovanju u sintetizovani `deinit` generičke
+      `NSHostingView` podklase — što znači da je **svaki Release build ove
+      app-e do sad padao**, a Debug (koji taj pass ne pokreće) prolazio, pa
+      je ostalo neprimećeno. Popravljeno tako što je `ClickThroughHostingView`
+      prestao da bude generički (`NSHostingView<DevelopView>`) — koristi se
+      samo sa `DevelopView` ionako. **Release build sad prolazi.**
+
+    **Provera**: (1) sintetički test (pruge + zrno + beli blok koji se
+    briše): rupa potpuno popunjena, nijedan piksel objekta nije preživeo,
+    ton se poklapa sa okolinom, pruge se nastavljaju preko rupe — 0.24 s;
+    (2) standalone render pravog NEF-a: maska je čista silueta, osoba
+    nestala, drveni stubovi/jedra/ležaljke rekonstruisani — maska 0.46 s,
+    inpaint 1.95 s na 1800px; (3) **uživo u app-i (Release build)**: Select
+    People → crveni overlay preko osobe → Erase → osoba nestala iz preview-a,
+    layer „Removed 1" dodat, maska očišćena; Cmd+Z uredno vraća.
+
+    **Ograničenja koja treba znati**:
+    - `VNGeneratePersonSegmentationRequest` hvata istaknute ljude; sitna
+      figura u pozadini ume da padne ispod praga. Ako se to pokaže kao
+      problem u praksi, `VNGenerateForegroundInstanceMaskRequest` (macOS 14+)
+      daje instance-po-instancu i klik-na-objekat izbor.
+    - Veliko uklanjanje (osoba preko pola kadra) vraća vidljivo „pločast"
+      rezultat u sredini — inherentno za exemplar fill; mali objekti u
+      pozadini, što je i bio traženi slučaj, izgledaju čisto.
+    - **Debug build je `-Onone`**, pa je erase tamo i do ~30× sporiji nego u
+      Release-u. Testirati brzinu isključivo na Release buildu.
+    - **I dalje otvoreno**: `ImageLayer.imageData` ide u `UserDefaults`.
+      Za Cut/Paste je prolazilo, ali sa Remove layerima ovo treba preseliti
+      u fajlove u Application Support pre nego što se funkcija koristi
+      ozbiljno.
+
+34. **Remove Brush — ručno bojenje maske (crveno, providno), pored Select
+    People** — 24. avgust 2026, isti dan kao #33. Korisnik: „jel mogu ja da
+    oznacim recimo da paintujem red transparent color i da krenem remove?".
+
+    Novo dugme **Brush** u Remove sekciji + slider za veličinu + `[` / `]`.
+    Prevlačenje po fotki boji crveno-providno; Erase radi nad tim. Potezi se
+    **sabiraju (union, CIMaximumCompositing) sa Vision maskom** ako je ona
+    već nađena — pa je tok „nađi ljude, dokreči šta je Vision promašio" JEDAN
+    erase, ne dva. Vision zna samo ljude, a većina onoga što se briše (kanta,
+    tabla, kabl, figura premala da se registruje kao osoba) to nije — otud
+    ručna polovina.
+
+    **Implementacija je ponovna upotreba, ne duplikat**: potezi su obični
+    `BrushStroke` (isti tip kao Brush maska), a maska se pravi novim
+    `PhotoEditRenderer.strokeMask(_:extent:)` omotačem oko već postojećeg
+    privatnog `brushMask` — nema drugog stamping koda. Dok se slika, crvena
+    boja na ekranu je običan vektorski `Path` (isti trik kao
+    `brushPaintOverlay`) — CIImage maska se pravi tek na Erase, jer
+    re-render maske po tački prevlačenja ne može da isprati miš.
+    `hardness: 1` namerno: ovo je SELEKCIJA, a feather bi pao ispod praga
+    maske i tiho smanjio ono što se briše (pipeline sam dilatira i omekšava
+    rupu).
+
+    Potezi žive u PRE-CROP unit prostoru kao i Vision maska, brišu se pri
+    promeni fotke, i `Clear Selection` čisti oboje.
+
+    **Provera**: uživo, pravim CGEvent drag-om preko platna (Release build) —
+    tri poteza nacrtana crveno, panel prešao u „Painted area ready", Erase
+    aktivan. Sam erase nije ponovo meren (isti kod kao #33).
+
+    **Korisnikova ocena kvaliteta**: „nije dobar ovaj remove tool ali moze da
+    ostane" — ostaje kao besplatna instant opcija. Ovo je očekivano i NIJE
+    stvar podešavanja: exemplar inpainting radi dobro samo za male objekte na
+    jednoličnoj pozadini (pesak, zid, nebo, trava), a sve sa strukturom daje
+    pločanje. Skok u kvalitetu traži model — vidi plan ispod.
+
+## Plan — šta dalje (dogovoreno 24. avgusta 2026, nije još počelo)
+
+**ODLUKA (25. avgust 2026): idemo na SD inpainting NA UREĐAJU, ne na cloud
+sa kreditima.** Razlog je poslovni, ne tehnički — korisnik je izričit: ljudi
+već plaćaju Lightroom mesečno, pa hoće da i BriefShow plaćaju **ravnom
+mesečnom pretplatom**, bez kredita i naplate po upotrebi. Model na uređaju
+to omogućava (nula troška po brisanju), a usput daje dva argumenta koje
+Lightroom NEMA: **radi bez interneta** i **fotke ne napuštaju mašinu**
+(Adobe-ov Generative Remove ide u njihov cloud).
+
+Izabran **SD inpainting (CreativeML OpenRAIL-M)**, ne Kandinsky 2.2
+(Apache 2.0), iako je Kandinskyjeva licenca čistija:
+- veličina: ~0.6–1 GB (palettized) naspram ~3–4 GB za Kandinskyjev
+  dvostepeni prior+MOVQ,
+- Applov zvanični Core ML paket i konverzioni alati ciljaju BAŠ Stable
+  Diffusion — za Kandinsky bi konverzija bila poseban projekat,
+- ogroman korpus poznate prakse za removal (konvencije maske, prazan/
+  negativan prompt, blendovanje).
+Kandinsky ostaje rezerva ako se OpenRAIL obaveze pokažu kao problem.
+
+**Šta OpenRAIL traži od nas (provereno u tekstu licence, ne iz sećanja)**:
+komercijalna upotreba je izričito dozvoljena, „no-charge, royalty-free",
+bez tantijema i BEZ ograničenja broja korisnika; licencodavac ne polaže
+prava na generisane rezultate; nije copyleft (naš Swift kod ostaje naš).
+Tri obaveze, sve tehnički trivijalne:
+1. priložiti punu kopiju licence svakome ko dobije model (fajl pored
+   skinutih težina + „Licenses / Acknowledgements" ekran u app-i, uklapa se
+   uz postojeći Disclaimer u footeru),
+2. **preneti Attachment A (ograničenja upotrebe) u naš EULA** — naši
+   korisnici moraju biti vezani istim zabranama,
+3. sačuvati obaveštenja o autorstvu i označiti model kao izmenjen ako ga
+   ikad doradimo (fine-tune).
+Same zabrane (kršenje zakona, šteta po maloletnike, dezinformacije, PII radi
+štete, kleveta, automatsko odlučivanje o pravima, diskriminacija, medicinski
+saveti, pravosuđe) ne dodiruju nijednu funkciju foto-editora.
+**EULA tekst za proizvod koji se prodaje treba da pogleda pravnik** — ovde je
+dat oblik, ne pravno mišljenje.
+
+**REZULTAT PROTOTIPA (25. avgust 2026) — kvalitet potvrđen, idemo dalje.**
+SD 1.5 inpainting pušten van app-e (Python/diffusers, MPS, fp16) na PRAVOJ
+korisnikovoj fotki `C4S_5740.NEF`, sa maskom iz našeg Vision koda:
+- **Sitna figura u pozadini (ciljni slučaj)**: čovek na ležaljci nestao bez
+  ijednog vidljivog traga — SD je izmislio praznu ležaljku i nastavak
+  terase koji se ne razlikuje od prave fotografije. Ovo je Lightroom klasa.
+- **Teški slučaj (osoba preko pola kadra)**: drveni stubovi, jedra, patos i
+  staklena ograda rekonstruisani ubedljivo; ima artefakata u sredini, ali
+  neuporedivo bolje od exemplar rezultata (koji je tu davao pločanje).
+- Recept koji radi za UKLANJANJE (a ne za kreativno domišljanje): prompt
+  opisuje POZADINU („empty background, seamless continuation, no people"),
+  negative prompt gura protiv dodavanja („person, people, human, face,
+  text, watermark"), 30 koraka, guidance 7.5, maska dilatirana pre i
+  blurovana pri vraćanju nazad.
+- **Brzina: ~48 s po brisanju na 512×512** — ali to je PyTorch/MPS, ne Core
+  ML. Očekivanje posle konverzije na ANE + palettizacije je bitno bolje;
+  ovo je i glavni razlog zašto konverzija mora da se uradi kako treba.
+- Model se skida sa `stable-diffusion-v1-5/stable-diffusion-inpainting`
+  (originalni `runwayml` repo je povučen; ovo je zvanično ogledalo).
+  Napomena: težine su u `.bin` formatu, ne `.safetensors`.
+
+**KORAK 2 URAĐEN — Core ML konverzija PROŠLA (25. avgust 2026).** Ovo je bio
+najveći nepoznati rizik i sad je zatvoren:
+- Applov konverter čita `pipe.unet.config.in_channels`, pa **9-kanalni
+  inpainting UNet konvertuje sam od sebe**, bez ikakve posebne obrade.
+  Potvrđeno na izlazu: `sample [2, 9, 64, 64]` (bazni SD ima 4 kanala).
+- Konvertovana sva četiri modela, fp16, u ~10 minuta:
+  TextEncoder 235 MB, **Unet 1.6 GB**, VAEDecoder 95 MB, VAEEncoder 65 MB
+  (~2 GB ukupno; sa `--quantize-nbits 6` očekivano ~700–900 MB, što je
+  veličina koju treba ciljati za skidanje).
+- **Dve prepreke u alatima** (za sledeći put, da se ne gubi vreme):
+  `coremltools` vuče `pytest` i `scipy` koji nisu u njegovim zavisnostima;
+  i `torch2coreml.py` na vrhu importuje `diffusionkit` (Argmax), koji treba
+  SAMO za SD3/MMDiT put — import se obavija u try/except i konverzija radi.
+- Komanda:
+  `python -m python_coreml_stable_diffusion.torch2coreml --convert-unet
+   --convert-vae-decoder --convert-vae-encoder --convert-text-encoder
+   --model-version stable-diffusion-v1-5/stable-diffusion-inpainting
+   --bundle-resources-for-swift-cli -o <out>`
+
+**ŠTA JOŠ NEDOSTAJE (i to je sledeća sesija)**: Applov Swift paket
+`StableDiffusion` **NEMA inpainting** — proveren ceo `swift/StableDiffusion/
+pipeline/`, nijedan fajl ne pominje mask/inpaint. Ima Encoder (img2img),
+Decoder, scheduler-e i UNet omotač, pa je posao ograničen i jasan: nova
+pipeline klasa koja (1) VAE-enkoduje maskiranu sliku u latente, (2) smanji
+masku na 64×64, (3) spoji `[latent(4) + mask(1) + maskedLatent(4)] = 9`
+kanala kao ulaz UNet-a, (4) ostatak petlje denoise-a ostavi kako jeste.
+Procena ~200 linija Swift-a plus testiranje.
+
+**Redosled posla za SD**:
+1. **Prototip van app-e** (ovo prvo): pustiti SD inpainting na PRAVIM
+   korisnikovim fotkama sa našom Vision maskom i uporediti sa postojećim
+   exemplar rezultatom — da se kvalitet vidi PRE nego što se uloži u Core ML
+   integraciju.
+2. Konverzija u Core ML (Applov `python_coreml_stable_diffusion`),
+   palettizacija radi veličine.
+3. Swift inference pipeline — Applov paket dokumentuje image-to-image, ali
+   NE i inpainting, pa pipeline treba proširiti (inpainting UNet ima 9
+   ulaznih kanala umesto 4).
+4. Skidanje težina na prvo korišćenje (mreža je već dozvoljena u
+   entitlements-u), u Application Support, sa prikazom napretka.
+5. „Erase (AI)" kao drugo dugme pored postojećeg „Erase (Instant)"; oba
+   vraćaju isti `ImageLayer`, pa se render pipeline ne menja.
+6. Licenses ekran + EULA odeljak.
+
+**A) AI generative remove (Lightroom-parity), korak 2 od plana iz #33.**
+Cilj: zadržati postojeći Remove kao besplatnu „instant" opciju i dodati
+DRUGO dugme koje daje pravi generativni rezultat. Pošto se app prodaje,
+oblik rešenja je cloud (isto kao Lightroom, čiji Generative Remove radi u
+Adobe cloud-u, ne na Macu). Redosled poslova:
+1. **`RemovalProvider` protokol** sa dve implementacije — postojeći
+   `LocalExemplarProvider` i nov `CloudGenerativeProvider`. UI dobija dva
+   dugmeta: „Erase (Instant)" i „Erase (AI)". Rezultat je u OBA slučaja isti
+   `ImageLayer`, pa se ništa u render pipeline-u ne menja.
+2. **Šalje se samo isečak oko maske** (1024–1536px) + maska, nikad ceo 45MP
+   RAW — jeftinije, brže, i manje podataka napušta mašinu.
+3. **Prototip sa dev ključem iz lokalnog config fajla** (bez proxy-ja i bez
+   naplate) samo da se VIDI kvalitet na pravim fotkama pre nego što se uloži
+   u infrastrukturu. Ovo je prvi konkretan korak.
+4. **Tek posle toga**: sopstveni tanki proxy (Cloudflare Worker ili mali
+   server) koji drži API ključ, autentikuje korisnika preko postojećeg
+   RocketsBrief naloga (`RocketsBriefAccount.swift`) i meri kredite.
+   **API ključ NIKAD ne sme u app** — iz Mac binarija se vadi za minute.
+5. **Krediti/naplata**: van Mac App Store-a Stripe/Paddle; unutar MAS-a Apple
+   traži IAP za digitalni sadržaj.
+6. **Privatnost**: fotke napuštaju mašinu — treba eksplicitan opt-in prvi
+   put, rečenica u privacy policy, i izbor provajdera koji NE trenira na
+   korisničkim podacima.
+7. **Fallback**: bez interneta ili na grešku, tiho ponuditi instant erase.
+
+Kandidati za provajdera (proveriti aktuelne uslove i cene pre integracije):
+Adobe Firefly Services (najjača pravna priča, indemnifikacija, najteži
+onboarding), Black Forest Labs FLUX Fill API (vrh kvaliteta, direktan API —
+napomena: `dev` TEŽINE su nekomercijalne, ali hostovani API jeste za
+komercijalnu upotrebu), Stability API (ima namenski erase/inpaint endpoint,
+jeftino). Agregatori (fal.ai, Replicate) su najbrži za integraciju ALI se
+preko njih nasleđuje licenca samog modela — ToS agregatora ne pere
+nekomercijalni model.
+
+**B) Redosled ostalih funkcija (moj predlog, korisnik bira kad dođe red)**:
+1. **HSL / Color Mixer** — 8 traka boja × Hue/Saturation/Luminance.
+   Najveći vidljivi skok za portrete (ton kože kroz narandžastu) i pejzaže;
+   uklapa se uz Color sekciju iz #32.
+2. **Tone Curve** — prava kriva sa prevlačivim tačkama, RGB + po kanalu.
+   Motor već postoji (`CIToneCurve` se koristi za Whites/Blacks), posao je
+   UI.
+3. **Noise Reduction + Sharpening masking/detail** — bitno za RAW na višem
+   ISO, malo posla.
+4. **Pipeta za White Balance + Auto Tone** — sitno, a deluje vrlo
+   Lightroom-ski.
+5. **Export presets** — veličina, kvalitet, output sharpening, watermark,
+   imenovanje.
+
+**C) Tehnički dug koji treba pre nego što Remove uđe u ozbiljnu upotrebu**:
+`ImageLayer.imageData` i dalje ide u `UserDefaults`. Sa Remove layerima to
+su megabajti po potezu — preseliti pikselski sadržaj u fajlove u Application
+Support i u settings ostaviti samo ime fajla (uz migraciju postojećih
+layera).
+
+## KORAK 3 URAĐEN — Swift pipeline radi, ali je prompt iz recepta PAO (25. avgust 2026)
+
+**Kod je napisan i dokazan; ono što NE radi je recept iz beleške iznad.**
+
+**Šta je dodato:**
+- `BriefShow/DevelopSDInpaint.swift` (~520 linija) — DDIM scheduler, seeded
+  gaussian, 9-kanalni concat, VAE encode/decode, `InpaintPipeline.aiRemoval()`.
+- `Develop.swift` — dugme **„Erase (AI)"** pored preimenovanog
+  **„Erase (Instant)"**, sa procentom napretka i porukom o grešci.
+- `CoreMLModels/clip_tokenize.py` + `dump_prompt_embeds.swift` — jednokratni
+  alati koji peku CLIP embeddinge fiksnog prompta u `sd_prompt_embeds.bin`
+  (231 KB).
+- U `DevelopInpaint.swift` su `maskBoundingBox`, `makeBuffers` i `package`
+  prestali da budu `private` — SD put koristi ISTI okvir.
+
+**Ključna arhitektonska stvar koju beleška iznad nije primetila**: `removal()`
+je već radio ceo posao oko rupe (grow maske, bounding box, region, pakovanje u
+alpha-cut `ImageLayer`). SD menja SAMO `ExemplarInpainter.fill()`. Zato
+`eraseMaskedArea()`, render pipeline i layeri nisu ni dirnuti, a oba dugmeta
+vraćaju isti `ImageLayer`.
+
+**Text encoder NE ide u app.** Prompt je fiksan, pa se embeddinzi peku jednom.
+Ušteda: 235 MB skidanja i ~150 linija BPE tokenizera u Swiftu. (Ako prompt
+mora da postane promenljiv — vidi nalaz ispod — ova odluka pada.)
+
+**BRZINA (M2, Release, 512×512, 30 koraka):**
+- **~12–14 s po brisanju** kad su modeli topli (0.4 s/korak) — naspram 48 s u
+  PyTorch/MPS prototipu, dakle **3,5× brže**.
+- **Prvo učitavanje UNet-a košta ~45 s** (ANE kompilacija). Jednom po
+  pokretanju app-e — treba ga raditi unapred, ne na prvi klik na Erase.
+- `.cpuAndNeuralEngine` je ~4× brže od `.cpuAndGPU` (1,5 s/korak) uprkos tome
+  što je model konvertovan sa `ORIGINAL` attention. Ostaje ANE.
+
+**GLAVNI NALAZ — kriva je bila REZOLUCIJA REGIONA, ne prompt.**
+`squareRegion` je uzimao 2× najduže ivice maske, pa je za sitne objekte davao
+region od ~300 px koji se onda **uveličavao** na 512. Model je time dobio mutnu,
+bezdetaljnu verziju fotke — a tada SD prestaje da nastavlja scenu i počinje da
+izmišlja: crno-bela krckava rešetka, natpisi, amblemi. Ispravka je jedna linija:
+**region nikad manji od 512 izvornih piksela**, pa se kontekst nikad ne uveličava.
+
+Posle te ispravke recept iz beleške radi **savršeno**: sitna figura u vratima
+nestaje bez traga (kroz vrata se vidi nastavak brda i zelenila usklađen sa
+pogledom levo i desno), a zakrpa na drvenom stubu je nevidljiva. To je Lightroom
+klasa i ciljni slučaj iz prošle sesije.
+
+*(Ranije u ovoj sesiji je u ovu belešku bio upisan zaključak da SD traži
+konkretan prompt sa subjektom. To je bilo pogrešno — bio je artefakt mutnog
+uveličanog konteksta. Prompt iz recepta je ispravan; ostavljam ovo zapisano da
+se ista dijagnoza ne ponovi.)*
+
+**Šta prompt IPAK određuje** (i zašto polje postoji): CLIP nema pojam
+instrukcije. Prompt se čita kao **spisak stvari koje treba naslikati**, ne kao
+naredba. Testirano na pravoj fotki: „Remove the selected object from the image
+and seamlessly reconstruct the area behind it. Match the surrounding
+background, textures, lighting, colors, shadows…" (54 tokena, staje u 77, ništa
+se ne seče) daje **crnu tablu sa izmišljenim slovima**, a u drugom pokušaju
+kamenje i šumu — jer CLIP „textures, lighting, colors, shadows" tretira kao
+subjekte. Zato podrazumevani prompt IMENUJE ONO ŠTO TREBA DA BUDE TU
+(„empty background, seamless continuation, no people"), a tekst pored polja to
+kaže korisniku.
+
+**UI kako je dogovoreno i urađeno (25. avgust 2026):**
+- dugme se zove **„AI Remove"**, stoji pored „Erase (Instant)";
+- korisnik samo brushom označi i klikne — prompt radi u pozadini, nevidljiv;
+- **zupčanik** pored dugmeta otvara polje sa tim tekstom: može da se obriše,
+  prepiše, i vrati na podrazumevani dugmetom „Reset";
+- prompt se čuva app-wide (`@AppStorage "develop.aiRemove.prompt"`), ne po
+  fotki — to je podešavanje alata, a ne deo obrade slike.
+
+**Posledica po veličinu skidanja**: promenljiv prompt znači da TextEncoder
+(235 MB) MORA da se skine, pa ušteda iz prethodne odluke pada. Ostaje ono što
+vredi: upečeni blob i dalje pokriva podrazumevani prompt, pa se TextEncoder
+**učitava u RAM samo ako je korisnik zaista promenio tekst**.
+`DevelopCLIPTokenizer.swift` (~130 linija) je port `clip_tokenize.py`; oba
+čitaju isti `vocab.json`/`merges.txt` iz bundle-a pa ne mogu da odlutaju.
+
+**Provere koje su prošle**: Swift i Python tokenizer daju **identične ID-jeve**
+za svih 5 test-stringova (uključujući unicode i prazan string); živa
+TextEncoder putanja i upečeni blob daju **bajt-identičan** rezultat za
+podrazumevani prompt (`BRIEFSHOW_SD_NOBLOB=1`).
+
+**Dijagnostika koja je ostala u kodu** (env varijable, ništa se ne isporučuje
+uključeno): `BRIEFSHOW_SD_DEBUG=1` (statistika svakog stadijuma + dump celog
+512 kadra u `$TMPDIR`), `=roundtrip` (samo VAE), `=full` (text2img kroz istu
+petlju), `BRIEFSHOW_SD_GUIDANCE`, `BRIEFSHOW_SD_STEPS`, `BRIEFSHOW_SD_UNET=gpu`,
+`BRIEFSHOW_SD_EMBEDS=zero`. Difuzija tiho greši — pogrešan znak ili razmera i
+dalje daju NEKU sliku — pa je ovo jedini jeftin način da se ispravan pipeline
+razlikuje od uverljivo pokvarenog.
+
+**Modeli se za sada čitaju sa dev putanje** `~/Desktop/BriefShow/CoreMLModels/
+SD15-Inpainting` (drugi izbor); prvi je `Application Support/BriefShow/
+CoreMLModels/`, gde će ih skidanje na prvo korišćenje spustiti. Skidanje,
+palettizacija na 6 bita (~600 MB umesto 1,76 GB bez TextEncoder-a), Licenses
+ekran i EULA su i dalje neurađeni — koraci 4 i 6 iz redosleda gore.
+
+## KORAK 4 — feather na rubu zakrpe i 2,25× ubrzanje (25. avgust 2026)
+
+**1) Vidljiv rub zakrpe.** Korisnik je uklonio sunce sa ilustracije: uklanjanje
+odlično, ali se rub patcha video. Uzrok: `package()` je pravio alpha ivicu sa
+`grow` 2 px pa `blur` 3 px — u 512 baferu to je ~3 px prelaza. Exemplar putanji
+je dovoljno (kopira PRAVE piksele iz iste fotke, pa se ivice ionako poklapaju),
+ali SD regeneriše područje i promaši ton za dlaku, a tvrda ivica to pretvori u
+vidljiv pravougaonik.
+
+Urađeno: `package()` je dobio `growRadius`/`blurRadius` (default 2/3, exemplar
+netaknut), blur se sad radi **dvaput** (jedan box blur je linearna rampa sa
+vidljivim prelomom na oba kraja, dva daju glatku krivu), a SD put ima
+**„Edge Feather" slajder** u zupčaniku, `@AppStorage`, default 0.35.
+
+Bitno: rampa mora da ide UNUTRA u rupu. Napolju je zakrpa fotka preko same
+sebe, pa tamo blend ne radi ništa — zato mali `grow` uz široki `blur`, a ne
+skaliranje oba. Maksimum je vezan za veličinu rupe (`holeEdge / 5`, jer se
+blurra dvaput): sa fiksnim maksimumom je feather 1.0 davao **solid 0 px**, tj.
+ceo patch poluprovidan i uklonjeni objekat bi se vratio kao duh. Izmereno sad:
+feather 0.0 → rampa 22 % površine, 0.35 → 161 %, 1.0 → 1489 % uz očuvan pun
+centar.
+
+**2) Brzina: 30,2 s → 13,4 s po brisanju** (isto brisanje, iste okolnosti).
+Dve izmene, i **prva je bila prava**:
+
+- **Raspored koraka: „leading" → „trailing".** Stari raspored (`i*1000/steps + 1`)
+  KREĆE ISPOD vrha skale — na 30 koraka od t=958, na 15 od t=925 — dok je latent
+  koji mu dajemo čist standardni normal, koji pripada t=999. Modelu se kaže da
+  je šum blaži nego što jeste, i sa malo koraka to ne može da nadoknadi:
+  rezultat se raspadne u istu crno-belu krckavu rešetku. Zato je DDIM na 15
+  koraka padao. `trailing` uvek kreće od 999.
+- **Solver: DDIM → DPM-Solver++ (2M).** Radi u log-SNR promenljivoj
+  lambda = log(alpha/sigma), gde je ODE polulinearan pa se alpha/sigma deo
+  integrali tačno; drugi red koristi prethodnu x0 procenu. Prvi korak i
+  poslednji su prvog reda (`lower_order_final` — poslednji pada na sigma = 0,
+  gde bi drugi red delio beskonačnim lambda razmakom).
+
+Rezultat: **12 koraka** je novi default, provereno čisto i na 8, pa ovo ostavlja
+margine umesto da sedi na ivici. Regresija: text2img „a photograph of a cat
+sitting on a wooden table" na 12 koraka daje **oštriju** mačku nego stari DDIM
+na 30 — solver je time potvrđen i na opštem slučaju, ne samo na uklanjanju gde
+kontekst dominira. `BRIEFSHOW_SD_SOLVER=ddim` vraća stari solver za poređenje.
+
+**3) Predučitavanje.** `SDInpaintPipeline.warmUp()` se zove iz Develop-ovog
+`.onAppear`. UNet je ~18 s ANE kompilacije; sad se to plaća kad se Develop
+otvori, a ne na prvi klik na AI Remove.
+
+**Zaostalo**: krckava rešetka je ista pojava iz KORAKA 3 — nedovoljno
+konvergiran denoise. Sad znamo dva uzroka: uveličan (mutan) kontekst i loš
+raspored koraka. Ako se ikad ponovo pojavi, prvo proveriti ta dva.
+
+## KORAK 5 — tamniji patch i zoom u Develop-u (25. avgust 2026)
+
+**1) Zakrpa je bila tamnija od okoline.** Korisnik je uklonio sunce sa
+ilustracije: rub je posle feathera bio u redu, ali se cela zakrpa videla kao
+tamniji pravougaonik. Prvo je provereno da NIJE alpha: `package()`
+premultiplikuje, a `makeCGImage` koristi `premultipliedLast` — slažu se, i
+neslaganje bi ionako davalo tamni oreol na ivici, a ne ravnomerno tamnije polje.
+
+Pravi uzrok: VAE round-trip i sampler svaki pomere ton za dlaku. Ispravka ne
+pogađa nego **meri**: dekoder rekonstruiše i POZNATE piksele u prstenu oko
+rupe, gde tačan odgovor već imamo, pa poređenje njegovog prstena sa pravim daje
+tačan pojedinačni gain i offset po kanalu. Novi `SDInpaintPipeline.toneMatch()`.
+
+- Prsten je pojas od 48 px oko bounding box-a rupe, ne ceo kadar — nebo tri
+  stotine piksela dalje nije ton koji zakrpa treba da pogodi.
+- Traži se bar 1000 piksela, inače identitet (ispod toga je prsten uglavnom
+  rupa i korekcija bi bila šum).
+- Gain je stegnut na 0.85–1.18: pomak je u suštini bias, a odnos kontrasta
+  meren na skoro ravnom prstenu je mali broj podeljen malim brojem. Offset radi
+  glavni posao.
+- Izmereno na pravoj fotki: `x0.978 +12.7  x1.021 +2.8  x1.044 -0.7` (skala
+  0–255) — dakle osetno posvetljenje i topliji pomak.
+- A/B sa feather-om na NULI: bez korekcije se zakrpa jasno vidi kao svetliji
+  pravougaonik sa tvrdom ivicom; sa korekcijom nestaje potpuno. Feather i tone
+  match rešavaju DVE različite stvari i trebaju oba.
+- `BRIEFSHOW_SD_TONEMATCH=off` isključuje radi poređenja. Dijagnostički
+  `everywhere` put namerno NE korigujeoutput — tamo se baš gleda sirovi pomak.
+
+**2) Zoom u Develop-u — nije postojao uopšte.** Dodato:
+- `Cmd +` / `Cmd -` uvećavaju/smanjuju po koraku (×1.25, opseg 1–8, gde je 1
+  „uklopi u prozor"), `Cmd 0` vraća na uklapanje. I „=" i „+" se hvataju, jer
+  isti fizički taster prijavljuje „=" bez shifta i „+" sa njim.
+- Zoom i pan žive u `fittedImageFrame`, pa ih SVAKI overlay koji odatle računa
+  poziciju na ekranu — crop, maske, layeri, Remove brush — prati sam od sebe.
+- Povlačenje pomera sliku, ali SAMO kad je uvećano i kad nijedan alat ne drži
+  platno; svaki alat ispod polaže pravo na isti drag, pa bi pan sloj iznad njih
+  tiho pokvario crtanje, crop i pomeranje maski.
+- Pan je stegnut i pri povlačenju, ne samo pri iscrtavanju — inače bi offset
+  pobegao preko ivice pa povratak ne bi radio dok se ne odmota zaostatak.
+- Slika se kliperuje ZA SEBE, a ne kliperovanjem celog ZStack-a: crop drške
+  stoje tačno na ivici slike i clip na nivou kontejnera bi ih odsekao.
+- Zoom se resetuje pri promeni fotke.
 
 ## Vezano
 

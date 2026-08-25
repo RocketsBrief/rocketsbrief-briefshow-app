@@ -8,13 +8,89 @@ Beleška za nastavak rada. Poslednja izmena: 25. avgust 2026.
 
 ## TL;DR — gde smo stali
 
-### GDE SMO STALI — 25. avgust 2026, veče
+### GDE SMO STALI — 26. avgust 2026, kraj sesije
 
-Nastavlja se sa **„Select People in Background"**, pa **Layers kartica**, pa
-**AI sinhronizacija**. Sve troje je dogovoreno i razrađeno u „Plan" sekciji
-niže; ništa od toga nije počelo.
+**Sve iz ove sesije je commit-ovano na granu `briefshow-develop`. NIJE
+pushovano** — to je prvo za sledeći put, ako se tako želi.
 
-Gotovo i pushovano danas: SD inpainting (KORAK 3–5), LaMa (KORAK 6), merenja
+**Stanje**: build čist, nema poznatih otvorenih bagova. Radna app je i dalje
+`BriefShow/build_dd/Build/Products/Release/BriefShow.app`.
+
+**⚠️ Skoro ništa iz ove sesije nije VIZUELNO potvrđeno u pokrenutoj app-i** —
+sve je provereno build-om i skriptama (i to temeljno: 17/17 za connected
+components, 64 000 + 480 000 za crop, 16/16 za bipolarne slajdere), ali sam
+izgled trake sa alatima, kartice za export, plave selekcije i Add/Erase
+prekidača niko još nije video na ekranu. To je prva stvar za sledeću sesiju.
+
+**Prva sledeća stvar posle toga**, iz starog dogovorenog plana koji i dalje
+stoji nedirnut: **Layers kartica**, pa **AI sinhronizacija** (A: kopiranje
+zakrpe / B: ponovno pokretanje), pa **`SyncCategory` za layere i AI
+uklanjanja**. Vidi „Plan — dogovoreno 25. avgusta".
+
+**Tri nalaza iz ove sesije koje NE treba ponovo istraživati** (svaki je
+mereno, ne pretpostavljeno — detalji u odgovarajućim KORACIMA):
+1. Vision ne vidi male ljude u pozadini; tiling to ne rešava nego pogoršava
+   (halucinira ljude na praznom pesku). KORAK 9.
+2. LaMa na 1024 je gora nego na 512, i sa FP16 i sa FP32. Trenirana je na 512.
+   4096 je nemoguće na 9 GB RAM-a. KORAK 19.
+3. Instrukcijski prompt („Remove the selected object…") je merljivo gori od
+   postojećeg default-a — CLIP ga čita kao spisak imenica. KORAK 18.
+
+Urađeno u ovoj sesiji, hronološki (pun opis u KORACIMA pri dnu):
+
+- **KORAK 9 — „Select People in Background"** iz dogovorenog plana. Gotovo,
+  matematika provereno skriptom (17/17). **Korisnik ga je probao i nije radilo
+  na plažnoj RAW fotki** — izmereno, uzrok NIJE u ovom kodu nego u Vision-u;
+  ceo dokaz je u KORAKU 9 dole i vredi ga pročitati pre bilo kakvog pokušaja
+  da se ovo „popravi".
+- **KORAK 10 — kartica za AI Clean Up** — napravljena pa **VRAĆENA na
+  korisnikov zahtev iste sesije**. Ne pravi je ponovo bez izričitog traženja;
+  vidi KORAK 10 dole za šta je bilo i šta je iz nje vredelo.
+- **KORAK 12 — sidebar**: otvoren folder dobija otvorenu ikonicu (ručno
+  nacrtan `OpenFolderShape`, SF Symbols nema takav glif), podfolderi uvučeni
+  14 → 24 pt.
+- **KORAK 13 — crop se vuče i sa sredina ivica**, ne samo sa uglova.
+  Provereno skriptom: 64 000 poređenja da se ponašanje uglova NIJE promenilo,
+  480 000 fuzz slučajeva u granicama.
+- **KORAK 14 — Space + miš = ručica** za pomeranje po zumiranoj fotki, radi i
+  dok je alat aktivan.
+- **KORAK 15 — sidebar poravnanje** (korisnik prijavio da je zbunjujuće):
+  `DisclosureGroup` izbačen, folderi na istom nivou se sad zaista poravnavaju.
+- **KORAK 16 — „Quick AI Clean Up" katastrofa na velikoj površini**
+  (korisnik prijavio): reprodukovano i izmereno, granica nađena, dodato
+  upozorenje u panel. Nije bug u kodu.
+- **KORAK 21 — sređivanje po korisnikovom spisku**: „Select Area" → „AI
+  Selection", progres u traci, četkica kreće od 2, slajder ispod trake, Sync i
+  Export All uz filmstrip + kartica za format, objašnjenje zašto je Clean Up
+  ugašen, i **popravljen „tin tin tin" beep na Space**. Vidi KORAK 21.
+- **KORAK 20 — SD granica ISPRAVLJENA** (500 px je bilo pogrešno, izvedeno iz
+  jedne tačke), Add/Erase za Select Area, plava selekcija, traka sa alatima
+  iznad slike. Vidi KORAK 20.
+- **KORAK 19 — LaMa na 1024 rekonvertovan i ODBAČEN** (mereno dvaput, FP16 i
+  FP32), plus granice po modelu na dugmadima. Vidi KORAK 19.
+- **KORAK 18 — univerzalan prompt IZMEREN** i polje za prompt sklonjeno; plus
+  „Select People in Background" uklonjeno, „Brush" → „Select Area",
+  selekcija bela umesto crvene. Vidi KORAK 18.
+- **KORAK 17 — Develop preview je bio mutniji od Quick Look-a** (korisnik
+  prijavio, sa side-by-side slikom): uzrok nađen (1600 px + draft demosaic),
+  dodat „refine" prolaz koji čim se editovanje smiri prikaže ORIGINAL u punoj
+  rezoluciji.
+- **KORAK 11 — svi slajderi kreću od sredine** (korisnikov novi zahtev):
+  nov `EditTrackSlider` sa punjenjem od NULE (ne od levog kraja) i crticom na
+  sredini, plus Clarity/Dehaze/Vignette su sad **-1…1** umesto 0…1, sa pravom
+  negativnom polovinom u renderu. Matematika provereno skriptom (16/16),
+  **nije vizuelno potvrđeno.**
+
+**Zašto ništa nije vizuelno potvrđeno**: app se pokreće (proces živ, build
+čist), ali otvara SAMO 0×0 prozor — nema šta da se slika dok se ne otvori
+folder sa fotkama, a to traži pravi miš. `osascript`/System Events je pukao
+na timeout. Ovo je prva stvar za sledeću sesiju: otvoriti folder rukom i
+proći kroz sva tri.
+
+Ostaje iz plana: **Layers kartica**, **AI sinhronizacija** (A: kopiranje
+zakrpe / B: ponovno pokretanje), **`SyncCategory` za layere i AI uklanjanja**.
+
+Ranije pushovano: SD inpainting (KORAK 3–5), LaMa (KORAK 6), merenja
 za pakovanje v8.0 (KORAK 7), export sa opcijama (KORAK 8).
 
 Radna app: `BriefShow/build_dd/Build/Products/Release/BriefShow.app`.
@@ -3382,3 +3458,663 @@ detail/masks; layeri i AI uklanjanja nisu sinhronizabilni uopšte.
   (ne poseban `.app`, ne poseban proizvod — nema "BriefEdits" brendiranje,
   samo "Develop" unutar BriefShow-a), standalone je (ne dira grid ni
   slideshow), podržava i RAW.
+
+## KORAK 9 — „Select People in Background" (26. avgust 2026)
+
+Dogovoreni dizajn iz „Dizajn — Select People in Background" sekcije gore,
+sproveden bez ijednog novog Vision API-ja.
+
+**Gde je kod**: `SubjectMasker.backgroundBlobs` (čista funkcija nad bajtovima)
+i `SubjectMasker.backgroundPeople` (Core Image omotač), oba u
+`DevelopInpaint.swift`. U GUI-ju: novo dugme „Select People in Background"
+odmah ispod „Select People", zove `findPeople(backgroundOnly: true)`.
+
+**Kako radi**, u tri koraka:
+1. Vision-ova maska svih ljudi se renderuje u mali probe bafer (768 px duža
+   ivica) — identitet mrlje preživljava smanjenje, detalj ivice je nebitan za
+   pitanje „koja je ovo mrlja".
+2. 8-povezano označavanje komponenti sa eksplicitnim stekom (rekurzija bi
+   pukla na milionskoj mrlji). Najveća mrlja = subjekat. Zadrži sve ostale
+   koje su **ispod 35 %** površine najveće i imaju bar `w*h/60000` piksela
+   (ispod toga je Vision-ov šum na ivici, ne čovek).
+3. Rezultat se NE koristi kao maska nego kao **selektor**: uveća se nazad,
+   otvrdne (isti contrast 4 / brightness −0,2 kao `grown`) i pomnoži preko
+   pune Vision maske — tako zadržani ljudi imaju Vision-ovu oštru konturu, a
+   ne stepenastu od 768 px.
+
+**Redosled sa Selection alatom je bitan i namerno je ovakav**: razdvajanje na
+mrlje ide PRE preseka sa aktivnom selekcijom. Obrnuto bi značilo da korisnik
+koji zaokruži strance promoviše najvećeg stranca u „subjekta" i time poštedi
+baš onoga koga je hteo da ukloni.
+
+**Kad nema nikoga iza**: `backgroundPeople` vraća `nil` (a ne praznu masku),
+pa panel ispiše poruku umesto da tiho ne uradi ništa. Poruka takođe govori
+poznato ograničenje: ko stoji priljubljen uz subjekta spaja se u istu mrlju i
+biće preskočen — za to ostaje Brush. Nova stanja: `removeNotice`,
+`foundBackgroundOnly`.
+
+**Provereno skriptom, 17/17** (`backgroundBlobs` + ceo Core Image put):
+zadržava tačno dve male mrlje, odbacuje subjekta, odbacuje srednju (0,56 od
+najveće), odbacuje 2-px šum, dijagonalni dodir spaja u jednu mrlju, jedna
+sama mrlja → `nil`, dva jednaka subjekta → `nil`, mrlja na samoj ivici bafera
+ostaje cela, i — najvažnije za Core Image — **nema Y-flipa** kroz
+`context.render(toBitmap:)` → `CIImage(cgImage:)` round-trip, extent
+sačuvan.
+
+Usput uhvaćena greška u samom TESTU (ne u kodu): prvi „mrlja na ivici" slučaj
+je stavio ćošak na (0,0) a subjekta na (10,10) — piksel (9,9) i (10,10) su
+dijagonalni susedi, pa ih je 8-povezanost spojila u jednu mrlju i test je pao
+tražeći dve. Kod je bio u pravu.
+
+## KORAK 10 — kartica sa quick action dugmadima za AI Clean Up — NAPRAVLJENA PA VRAĆENA (26. avgust 2026)
+
+> **STATUS: ovoga NEMA u kodu.** Korisnik ju je tražio usred sesije, video je,
+> i istog dana rekao „vrati na prošli build, da ne bude taj fix hair open eyes".
+> Vraćeno je TAČNO ovo i ništa drugo — zupčanik i `aiPromptEditor` su nazad,
+> „AI Clean Up" opet briše odmah na klik, `CleanUpIntent` i
+> `neutralNegativePrompt` su obrisani, `DevelopSDInpaint.swift` je bajt-u-bajt
+> isti kao pre. KORACI 9 i 11 su ostali. Ovo se čuva zapisano zbog nalaza o
+> negative prompt-u ispod, koji važi bez obzira na kartu — i da se ne pravi
+> ponovo bez izričitog traženja.
+
+Traženo je bilo: kad se brushem pređe preko očiju / ljudi u pozadini / bilo
+čega i klikne se Clean Up, da izađe mala kartica sa ponuđenim quick action
+dugmadima i praznim poljem za sopstveni opis.
+
+**Suština zašto ovo ima smisla, a nije samo meni**: SD inpainting NIJE brisač
+— on iznova naslika šta god je pod maskom, po promptu. „Preslikaj zatvorene
+oči u otvorene" je bukvalno ista operacija kao „preslikaj stranca u praznu
+plažu"; menjaju se samo dva stringa. Zato je `CleanUpIntent` (nov enum na dnu
+`DevelopSDInpaint.swift`) mali spisak parova prompt/negative prompt, a ne
+grananje u pipeline-u.
+
+Četiri intent-a: **Remove from the Photo** (postojeći `defaultPrompt` —
+identičan string namerno, jer je to jedini prompt sa unapred izračunatim CLIP
+embedding-ima u app-i, pa se preskače učitavanje text encoder-a), **Open
+Eyes**, **Fix Hair**, **Remove Glare**.
+
+**Negative prompt je morao da postane promenljiv, i to je pravi nalaz ovde**:
+dotad je svaki poziv išao sa `defaultNegativePrompt` = „person, people, human,
+face, text, watermark". To je tačno za brisanje čoveka, a **direktno se bije**
+sa „Open Eyes" — tražiš lice i istovremeno guraš protiv lica. Zato svaki
+intent nosi svoj negative, a slobodan tekst dobija nov, tanak
+`neutralNegativePrompt` = „blurry, deformed, distorted, text, watermark".
+`eraseMaskedArea` sad prima `prompt:` i `negativePrompt:` (LaMa put ih
+ignoriše — nema text encoder uopšte — pa nose default vrednosti).
+
+**Šta je uklonjeno**: zupčanik pored dugmeta i `aiPromptEditor` iza njega.
+Kartica ih zamenjuje u celini (Edge Feather slajder je prešao u karticu).
+Slobodno polje je nov `@AppStorage("develop.cleanUp.customPrompt")` sa
+**praznim** defaultom — stari ključ `develop.aiRemove.prompt` je namerno
+ostavljen netaknut, ne migriran: njegova vrednost je kod skoro svakoga baš
+default prompt, a prepisati ga u novo polje bi poništilo poentu (polje je
+„nijedno od četiri dugmeta nije ono što sam mislio", a ne podešavanje).
+
+Klik na dugme prvo zatvara karticu pa pokreće brisanje (`runCleanUp`) — 13
+sekundi sa otvorenim menijem alternativa ispod poziva na drugi klik, a drugi
+klik bi zakačio drugo brisanje.
+
+**Nikad nije vizuelno potvrđeno** — vraćeno je pre nego što je iko video kako
+Open Eyes / Fix Hair / Remove Glare stvarno izgledaju na fotki.
+
+**Šta iz ovoga i dalje važi**: nalaz o negative prompt-u gore nije vezan za
+karticu. Ako se ikad bude radilo bilo šta osim brisanja kroz SD, fiksni
+`defaultNegativePrompt` je zamka koja čeka — i `aiRemoval` već prima
+`negativePrompt:` kao parametar, samo ga Develop uvek ostavlja na default-u.
+
+## KORAK 11 — svi slajderi kreću od sredine (26. avgust 2026)
+
+Korisnik: „u Lightroom-u svi slajderi kreću od sredine, a nama samo Texture —
+neka svi krenu od sredine kao nula, levo minus desno plus."
+
+Dva odvojena posla, oba urađena:
+
+**(a) Kako slajder IZGLEDA.** SwiftUI-jev `Slider` puni traku od LEVOG kraja
+do palca, pa netaknuta Exposure na nuli stoji na sredini i izgleda
+polu-primenjeno — nema vizuelne razlike između „0" i „negde u sredini
+opsega". Nov `EditTrackSlider` sidri punjenje na NULI i širi ga na obe strane,
+plus crtica na mestu nule (viša od trake, pa se vidi i kad punjenje pređe
+preko nje). Sidro se **izvodi, ne podešava**: to je gde god 0 padne unutar
+opsega — sredina za −1…1 kontrole, krajnja levo za stvarno jednosmerne
+(Sharpness, veličine četkica, opacity, Quality), tako da oba tipa dobiju
+tačno ponašanje iz iste komponente. Ista crtica dodata i u
+`GradientTrackSlider` (Temperature/Tint/Saturation/Vibrance — njihova
+gradijentna traka nema gde da primi punjenje, pa je crtica jedino što može da
+kaže gde je nula).
+
+**Usput popravljeno nešto što je bilo pokvareno od ranije**: ručno crtane
+kontrole su nevidljive accessibility stablu, a `AXIncrement`/`AXDecrement` na
+slajderima je JEDINI pouzdan način da se panel vozi skriptom (klik na slajder
+ne radi — stavka #19). `GradientTrackSlider` je to izgubio kad je uveden.
+Sad oba slajdera imaju `.accessibilityAdjustableAction`, pa je AX testiranje
+vraćeno — i na četiri gradijentna, gde ga nije ni bilo.
+
+**(b) Šta slajder RADI.** U „Detail & Effects" sekciji je Texture bio jedini
+sa −1…1; Clarity, Dehaze, Vignette su bili 0…1. Sad su sva tri **−1…1**, sa
+stvarnom negativnom polovinom:
+
+- **Clarity** — pozitivno je i dalje `CIUnsharpMask`. Negativno NE ide kroz
+  isti filter: `intensity` nije dokumentovan za negativne vrednosti. Umesto
+  toga „smanji lokalni kontrast" je mešanje ka zamućenoj kopiji na ISTOM
+  radijusu, što je tačan inverz onoga što unsharp dodaje na tom radijusu
+  (pozitivno: baza + k × detalj; negativno: baza − k × detalj = mix(baza,
+  blur, k)). Deli radijus namerno, da −40 poništava ono što je +40 uradio, a
+  ne da mekša na nekoj drugoj skali. Ovim je zatvoren ranije zapisan dug
+  („Positive only for now… deferred").
+- **Dehaze** — ovde nije trebalo ništa novo osim skinuti `> 0`: **svaki
+  postojeći koeficijent se već ispravno okreće** pod negativnim d (kontrast i
+  zasićenje padnu ispod 1, a kriva podiže crnu tačku umesto da je gnječi) —
+  što je bukvalno ono što magla radi fotki. Leva polovina sad DODAJE
+  atmosferu umesto da bude mrtav hod.
+- **Vignette** — pozitivno tamni uglove, negativno ih posvetljuje (kao
+  Lightroom-ov post-crop vignette). Obe polovine dele isti gradijent i
+  razlikuju se samo u blend-u, a oba blenda su birana tako da **centar ostane
+  netaknut na svakoj jačini** (multiply sa belim ne menja ništa, screen sa
+  crnim ne menja ništa), pa efekat raste od uglova ka unutra umesto da
+  zamagli ceo kadar.
+
+**Nije dirano, i zašto**: Sharpness (u Lightroom-u je 0–150, jednosmeran) i
+Soft Glow (negativan „glow" ne znači ništa), plus sve veličine/opacity/feather/
+Quality — tamo bi „nula u sredini" bila besmislica. Ako je korisnik mislio
+bukvalno na SVE, ovo je mesto za razgovor.
+
+**Provereno skriptom, 16/16** (iste CI lančiće prepisane 1:1 iz
+`PhotoEditRenderer.render`): vignette +0,8 tamni ugao a −0,8 posvetljava,
+oba ostavljaju centar netaknut (220 vs 220), i pomeraju ugao za uporedive
+iznose (88 vs 87 — da se ne desi da je jedna strana mrtva); dehaze +1 diže
+kontrast i gnječi tamnu stranu, −1 spušta kontrast i PODIŽE crnu (69 vs 40 —
+magla diže crne); clarity +1 diže lokalni kontrast na ivici (230 vs 180), −1
+ga spušta (142 vs 180), ne dira ravne površine, i **ne menja ukupnu svetlinu**
+(128,40 vs 128,42 — „mekšanje" koje usput potamni fotku je bug koji se lako
+sakrije iza uverljivog rezultata); i sve tri su tačan no-op na nuli.
+
+## KORAK 9, dopuna — zašto „Select People in Background" ne radi na plaži (26. avgust 2026)
+
+Korisnik je probao na `~/Desktop/RAW Tests Images/C4S_7792.NEF` (porodica od
+troje na plaži, iza njih kupači, suncobrani i šetalište) — ništa nije
+selektovano. Izmereno umesto nagađano, i **uzrok nije u connected-components
+kodu**:
+
+```
+probe 768x512, belih 51602 (13,12% kadra)
+mrlja  0  površina 51602  (100,0% od najveće)  box x193..581 y69..406
+mrlja  1..n — NEMA IH
+```
+
+Vision je našao **tačno jednu mrlju — porodicu**. Nijednog čoveka u pozadini.
+`backgroundBlobs` je zато ispravno vratio `nil`. Ljudi u pozadini su ~55–75 px
+u kadru od 5176 px.
+
+**Četiri stvari isprobane da se to popravi, sve odbačene, sa brojevima:**
+
+1. **Veći `maxWorkingEdge`** (1600 → 2400 → 3600 → puna rezolucija): **nema
+   nikakvog efekta.** Maska je UVEK 2016×1512 i uvek 13,1 % bela — Apple-ov
+   model ima fiksnu ulaznu rezoluciju i sam smanjuje šta god mu daš. Znači
+   `maxWorkingEdge` u `personMask` ne utiče na to koga Vision vidi (i dalje
+   ima smisla zbog memorije, ali ne zbog detekcije).
+2. **Tiling segmentera 3×3** (preklapanje 12 %, 1,2 s): našao je tačno **dve
+   sitne tačke** dodatno — jedan čovek na šetalištu i jedan lažni pozitiv na
+   pesku. Ostali i dalje promašeni.
+3. **Finiji tiling 4×4 / 6×6 / 8×8**: **aktivno gore.** Bela površina skoči sa
+   13 % na 20–31 %, jer segmenter na pločici bez ijednog čoveka **halucinira** —
+   na isečku čistog peska označio je 33,6 % površine kao „čovek". Model nije
+   treniran da kaže „ovde nema nikoga".
+4. **`VNDetectHumanRectangles` po pločicama, pa segmentacija oko svake kutije**
+   (klasičan detect-then-segment): na celom kadru nađe tačno 3 osobe (porodicu);
+   po pločicama 4×4 nađe 13 kutija koje su sve **fragmenti iste porodice**, koje
+   se posle spajanja pretvore u „6 osoba". Rezultat: tatina donja polovina
+   proglašena „pozadinom" i bila bi obrisana. Slika dokaza je bila napravljena i
+   pogledana.
+
+**Zaključak**: `VNGeneratePersonSegmentationRequest` je model za osobu u prvom
+planu (portret/FaceTime), ne za popis svih ljudi u sceni. Za ovu fotku plafon je
+Apple-ov, ne naš. **Ne pokušavati ponovo tiling** — dokazano pravi lažne
+pozitive na praznim površinama, a to bi u ovoj app-i značilo brisanje peska
+tamo gde nema nikoga.
+
+Jedino što je promenjeno u app-i je **poruka**, da bude iskrena o oba uzroka
+(spojene mrlje ILI presitni ljudi) umesto da pominje samo spajanje.
+
+Šta bi stvarno rešilo ovo, ako se ikad bude vredelo: sopstveni detektor malih
+osoba (npr. YOLO-tip mreže konvertovana u Core ML, kao što je već urađeno za
+LaMa u `Tools/convert_lama.py`), pa segmentacija oko svake njegove kutije.
+To je novi model u pakovanju, ne podešavanje postojećeg.
+
+## KORAK 12 — sidebar: otvorena ikonica i dublje uvlačenje (26. avgust 2026)
+
+Korisnikov zahtev: kad je folder otvoren da ikonica bude otvorena, i da se ono
+što je u folderu gurne još desno da se lepše vidi.
+
+**Ikonica**: SF Symbols **nema** otvoren folder — proveravano programski, postoje
+`folder` i `folder.fill` i ništa između (`folder.open`, `folder.fill.open`,
+`open.folder`, `folder.badge.open` — sve ne postoje). Zato nov `OpenFolderShape`
+(`ContentView.swift`), ručno nacrtan: tabbed zadnja ploča + prednji poklopac
+pomeren udesno po dnu.
+
+**Zašto DVA odvojena popunjena podputa sa pravim prozirnim razmakom** između
+njih, a ne jedan oblik sa svetlijom linijom: red u sidebar-u iscrtava
+selection/hover pozadinu ispod ikonice, pa bi „razmak" nacrtan bojom pozadine
+postao vidljiva pruga čim se ta pozadina pojavi.
+
+Oblik je biran vizuelno — nacrtano je 4+4 varijante, renderovano u PNG i
+pogledano, uključujući i render na PRAVOJ veličini (2×, 14 pt) da se proveri da
+razmak preživi rasterizaciju. Prve dve serije nisu čitale kao otvoren folder
+(bez razmaka se zadnja ploča i poklopac stope u jedan oblik).
+
+Obe ikonice su u `frame(width: 14)` — nisu iste širine, pa bi bez toga ime
+foldera skakalo levo-desno pri otvaranju.
+
+**Uvlačenje**: `CGFloat(depth) * 14` → `* 24`.
+
+## KORAK 13 — crop se vuče i sa sredina ivica (26. avgust 2026)
+
+Korisnikov zahtev: „mogu da vučem i sa donje sredine da uvećavam i smanjujem, a
+ne samo rubovima [uglovima]".
+
+`CropHandle` je dobio `.top/.bottom/.left/.right` uz četiri ugla, i predikate
+`movesLeftEdge`/`movesRightEdge`/`movesTopEdge`/`movesBottomEdge` — cela
+`resizeCrop` je prepisana da radi **po osama** umesto po `switch`-u nad uglovima.
+Ivične hvataljke su kapsule DUŽ svoje ivice (26×7 / 7×26), ne tačkice: oblik
+kaže kuda se kreće pre nego što se dodirne. Hit-area je najmanje 22×22 da se
+tanka hvataljka može uhvatiti bez ciljanja piksela.
+
+**Jedina prava zamka u ovome**, i bila bi tihi bag: kod zaključane razmere,
+ugao bira „koja osa je dala veću kutiju". Ivična hvataljka to NE SME da koristi
+— vuče se samo jedna osa, pa bi „uzmi veću kutiju" **ignorisalo vuču kad god
+ona SMANJUJE crop** (netaknuta osa uvek implicira veću kutiju). Zato kod ivica
+vučena osa vodi, a druga je prati iz razmere. Test to eksplicitno proverava u
+oba smera.
+
+Na osi koju ivična hvataljka ne vuče, rast je **simetričan oko centra** (samo
+kod zaključane razmere; u Free ta osa se ne menja uopšte i formula se svede na
+staru vrednost).
+
+**Provereno skriptom:**
+- **64 000 poređenja** starog (samo-uglovi) i novog koda na uglovima, u Free i
+  pod tri različite zaključane razmere — **bit-identično**, dakle stara
+  ponašanja uglova nisu dirnuta.
+- **480 000 fuzz slučajeva** (svih 8 hvataljki × 3 režima razmere × nasumične
+  vuče do ±1,5): nikad van granica slike, nikad ispod minimuma 0,05.
+- Ciljani testovi: suprotna ivica stoji, upravna osa netaknuta u Free, vuča
+  preko suprotne strane se zaustavlja na minimumu (ne izvrće crop), razmera
+  održana na 1e-6 u oba smera, centriranost pri zaključanoj razmeri.
+
+## KORAK 14 — Space + miš = ručica (26. avgust 2026)
+
+Korisnikov zahtev: kad je zumirano i hoće da se kreće po slici, da drži Space i
+mišem ide gore-dole.
+
+Postojeći pan sloj postoji, ali je isključen čim BILO KOJI alat drži platno
+(`!isCropping, !isRemoveBrushActive, selectedAdjustmentIndex == nil, ...`) — što
+je tačno naopako za slučaj kome pomeranje i treba: brisanje mrlje na 4× zumu,
+gde vuča pripada četkici.
+
+Nov sloj se pojavljuje samo dok je Space pritisnut, i stoji **POSLE svih
+overlay-a alata u ZStack-u** — ZStack daje vuču POSLEDNJEM pogledu koji je
+traži, pa bi sloj pre njih bio zaklonjen baš kad je potreban. Kursor postaje
+otvorena šaka (`NSCursor.openHand`, push/pop po hover-u).
+
+Nov `spaceKeyMonitor` (odvojen od `editingKeyMonitor`, jer taj gleda samo
+`.keyDown` a ovde je poenta znati kad taster ode GORE). **Oba obavezna pravila
+iz zaglavlja ovog fajla su ispoštovana**: provera prozora je prva linija, a
+`isARepeat` se propušta netaknut — držanje Space-a je bukvalno slučaj koji pravi
+buru repeat-ova, a stavka #15 je šta se desi kad se takav proguta i obradi.
+
+Tri guarda da Space ne bude ukraden gde ne treba: `firstResponder` je field
+editor (kucanje imena preseta) → propusti; `zoomLevel == 1` → propusti (nema šta
+da se pomera, Space zadrži AppKit-ovo značenje); i `isSpaceHeld` se čisti u
+`resetZoom()` i pri skidanju monitora, da zaglavljeno „Space je dole" ne ostavi
+nevidljiv sloj koji guta svaku vuču.
+
+## KORAK 15 — sidebar: folderi na istom nivou se nisu poravnavali (26. avgust 2026)
+
+Korisnik posle KORAKA 12: „ovo je zbunjujuće, ovi folderi isto treba da budu sa
+leve strane jer nisu otvoreni".
+
+**Uzrok**: SwiftUI-jev `DisclosureGroup` uvlači SVOJ label, a običan red ne.
+Folder koji IMA podfoldere se zato crtao ~27 pt desnije od svog rođenog brata
+koji ih nema — dva reda na istom nivou, nacrtana na dva različita nivoa, što se
+čita kao ugnježdenost koje nema.
+
+**Popravka**: `DisclosureGroup` je izbačen iz stabla u korist ručnog
+`VStack { red; if otvoren { deca } }`. Trougao je sad **kolona u samom redu**,
+prisutna na SVAKOM redu bez obzira da li taj red ima trougao — prazna kod
+foldera koji se ne otvara. Tako se svi rođeni braća poravnaju, isto kao u
+Finder-ovom sidebar-u.
+
+Trougao je **samo dekoracija** (`allowsHitTesting(false)`): red već ceo
+otvara/zatvara na klik, pa bi zaseban gest na trouglu bio samo način da se ta
+dva razidju.
+
+Usput: deca root-a su sad na `depth: 1` umesto `depth: 0`. Dok je
+`DisclosureGroup` slučajno davao uvlačenje, root („esti") i njegova deca su
+delili isti depth i to se nije videlo; bez njega bi se poravnali u ravnu listu
+i izgubila bi se informacija da su deca UNUTAR root-a.
+
+## KORAK 16 — zašto „Quick AI Clean Up" ponekad napravi belu mrlju (26. avgust 2026)
+
+Korisnik: „ovo je quick removal kataklizma… jel to LaMa?" — sa slikom velike
+bele mrlje preko mora.
+
+Da, „Quick AI Clean Up" je LaMa. **Reprodukovano na korisnikovoj fotki**
+(`C4S_7792.NEF`) sa pet maski različitih veličina, kroz PRAVI
+`InpaintPipeline.quickAIRemoval`, i rezultati pogledani kao slike:
+
+| maska (px) | umanjenje u 512 bafer | rezultat |
+|---|---|---|
+| 388×190 | 1,5× | čisto, suncobran i ljudi nestali |
+| 828×379 | 3,2× | čisto, horizont i more sačuvani |
+| **1553×690** | **6,1×** | **katastrofa — celo more i horizont zamenjeni razmazom peska** |
+| 2692×2138 | 6,8× | isto tako loše |
+
+**Uzrok nije integracija nego fiksni 512 bafer.** `squareRegion` daje modelu
+region **dvostruko veći od rupe**, pa se kod rupe od 1550 px u 512 gura 3100 px
+fotke. Struktura koju bi model morao da nastavi — horizont, linija obale — je
+uništena umanjenjem PRE nego što je model uopšte vidi, pa on nastavi
+dominantnu teksturu okoline (pesak, ili kod korisnika presvetlo nebo → bela
+mrlja).
+
+Provereno da NIJE nešto drugo: `toneMatch` ima gain tvrdo klampovan na
+0,85–1,18 i traži bar 1000 piksela prstena, pa ne može da razvali sliku u belo;
+maska/normalizacija su ispravne jer iste te funkcije na manjim maskama daju
+čist rezultat.
+
+**Šta je urađeno sad**: panel upozori kad je površina prevelika za Quick (prag
+1000 px najduže stranice — sredina između izmerenih 828 „radi" i 1553 „ne
+radi") i uputi na AI Clean Up.
+
+**Prava popravka, ako se bude radila**: LaMa je potpuno konvoluciona i primila
+bi bilo koju veličinu — 512 je zakucano u KONVERZIJI
+(`LaMaInpaintPipeline.imageSide`, komentar u fajlu to već označava kao „mesto
+gde bi sledeća verzija jeftino postala bolja"). Rekonverzija na 1024 preko
+`Tools/convert_lama.py` bi umanjenje kod problematične veličine spustila sa
+6,1× na 3,0× — ispod granice na kojoj je 828 px slučaj još bio čist. Težine su
+iste, pa se veličina app-e ne menja; menja se vreme po prolazu i memorija.
+
+## KORAK 17 — preview je bio mutniji od Quick Look-a (26. avgust 2026)
+
+Korisnik je poslao dve slike jedne pored druge — istu `C4S_7891.NEF` u Develop-u
+i u Quick Look-u — i pitao zašto je u Develop-u lošija. Bio je u pravu, i
+razlog je bio u kodu, ne u utisku.
+
+**Uzrok, dva koja se sabiraju**, oba u `loadPreviewBaseImage`:
+1. preview se dekodira na **1600 px** duže ivice, a preview površina na Retina
+   ekranu je ~3000 fizičkih piksela — dakle slika se razvlači oko **2×**;
+2. `isDraftModeEnabled = true` — draft demosaic je sam po sebi mekši.
+
+Oboje je birano namerno, da bi RAW mogao da se re-renderuje na ~20 ms takt dok
+se vuče slajder (vidi komentar u toj funkciji i stavku o „choppy slider on
+RAW"). To je ispravan izbor ZA vuču, i pogrešan za fotku koja stoji.
+
+**Rešeno dvostepenim preview-om**, kao što Lightroom radi sa svojim draft i
+standard preview-ima:
+- brzi put ostaje netaknut i dalje nosi svaku promenu dok se vuče;
+- nov `refinedRenderNow()` renderuje iz **`fullBaseImage`** — istog netaknutog
+  dekoda pune rezolucije iz kog ide i export — i zameni sliku 0,35 s posle
+  poslednje promene.
+
+Korisnik je eksplicitno tražio da to bude **original** („mora da bude
+original!"), pa nema nikakvog kapiranja rezolucije: prva verzija je bila
+ograničena na 3400 px i to je uklonjeno. Ništa se dodatno ne dekodira — koristi
+se ono što je već učitano.
+
+**Zašto je ovo `scheduleRefinedRender` DEBOUNCE, a `scheduleRender` THROTTLE**:
+throttle gore postoji da bi se videli međukadrovi tokom vuče; ovde je poenta
+tačno suprotna — jedini trenutak kad se isplati skup render je kad se ništa nije
+promenilo neko vreme. Slajder vučen deset sekundi košta tačno jedan refine.
+
+**Generacija se NE povećava** u refine-u. On je zamena za ono što je brzi put
+poslednje proizveo, a ne novo stanje — nosi generaciju pod kojom je zakazan i
+baca se ako se išta u međuvremenu promenilo. To je ono što sprečava da spor
+oštar render sleti preko novijeg brzog.
+
+**Deli `developRenderQueue`** sa exportom, brisanjima i selection extraction-om,
+i to nije slučajno: svi oni renderuju kroz ISTU `CIRAWFilter` instancu, a
+`PhotoEditRenderer.render` gura Exposure/Temperature/Tint u nju. Jedan serijski
+red je ono što sprečava da dva posla pišu u taj filter istovremeno.
+
+Usput izmereno na `C4S_7891.NEF` (M2): pun dekod na 5176 px u punom kvalitetu
+je ~0,05 s sa hladnim filterom i praktično 0 sa toplim — demosaic nikad i nije
+bio skup deo. Skup deo je ceo filter lanac (krive, maske, layeri) na 5176 px po
+KADRU tokom vuče, što je i dalje razlog da brzi put ostane.
+
+## KORAK 18 — univerzalan prompt: izmereno, pa polje sklonjeno (26. avgust 2026)
+
+Korisnik je tražio da AI Clean Up radi bez ikakvog kucanja — jedan univerzalan
+prompt za bilo šta (ljudi, mladež, komarac) — i predložio konkretan tekst:
+
+> „Remove the selected object from the image and seamlessly reconstruct the area
+> behind it. Match the surrounding background, textures, lighting, colors,
+> shadows, perspective, and details so the edited area looks completely natural
+> and untouched. Do not alter any other part of the image."
+
+**Testirano na pravoj fotki** (`C4S_7792.NEF`), kroz pravi
+`InpaintPipeline.aiRemoval`, tri prompta × dva slučaja, slike pogledane:
+
+| prompt | mali objekat na pesku | velika maska preko obale |
+|---|---|---|
+| A — postojeći default | savršeno, nevidljivo | naslikao NOVE ljude |
+| B — korisnikov instrukcijski | savršeno, nevidljivo | **naslikao smeđu stenu sa zelenim biljem** |
+| C — objektno-neutralan | savršeno, nevidljivo | naslikao tamnu apstraktnu formu |
+
+**Dva zaključka, oba korisna:**
+1. **Na malim uklanjanjima prompt uopšte nije bitan** — sva tri daju identičan,
+   nevidljiv rezultat. Za mladež ili komarca je rasprava o promptu bespredmetna.
+2. **Instrukcijski prompt nije bolji, nego merljivo gori** kad model MORA nešto
+   da izmisli. Ovo je isto ono što je izmereno kod `defaultPrompt` (vidi njen
+   doc komentar): CLIP nema pojam instrukcije, čita spisak imenica i naslika ih.
+   „textures, lighting, colors, shadows, perspective, details" je za CLIP spisak
+   stvari, a ne opis zadatka — i dobije se stena sa biljem.
+
+**Šta je urađeno**: polje za prompt i zupčanik su UKLONJENI. AI Clean Up je sad
+jedno dugme koje uvek radi sa `defaultPrompt`. To je tačno ono što je korisnik
+hteo („da klijent ne mora da piše ništa") — samo sa promptom koji je izmeren da
+radi. Edge Feather slajder je izašao iz zupčanika u sam panel.
+
+**LaMa NE MOŽE da dobije prompt**, ni ovaj ni bilo koji. Nije stvar podešavanja:
+LaMa je čisto konvoluciona mreža sa TAČNO DVA ulaza, `image` i `mask` (vidi
+`LaMaInpaintPipeline.fill` — `MLDictionaryFeatureProvider` sa ta dva ključa).
+Nema text encoder, nema cross-attention, nema gde da primi tekst. Zato i jeste
+sekunda umesto trinaest.
+
+**Ostale izmene iz istog zahteva:**
+- „Select People in Background" dugme uklonjeno (KORAK 9 kod i dalje stoji u
+  `SubjectMasker`, samo se više ne poziva — vidi dopunu KORAKA 9 zašto na
+  plažnim fotkama ionako nije mogao da nađe nikoga).
+- „Brush" → **„Select Area"**, i „Brush Size" → „Area Size". Ono što taj alat
+  pravi jeste selekcija koja se briše, a ne potez četkice koji menja piksele —
+  svaka druga četkica u ovoj app-i radi ovo drugo.
+- Selekcija je sad **bela umesto crvene**, i u nađenoj masci
+  (`InpaintPipeline.overlayImage`) i u ručno slikanoj (`removalPaintOverlay`).
+  Crveno na fotki čita kao upozorenje, a na toplom kadru (koža, pesak, zalazak)
+  je i najteže vidljivo. Ista boja na oba mesta jer to i jeste JEDNA maska koja
+  se briše u jednom potezu.
+
+## KORAK 19 — LaMa na 1024: rekonvertovano, izmereno, odbačeno (26. avgust 2026)
+
+Korisnik je tražio rekonverziju LaMa na 4096, pa posle merenja pristao da
+ostane 512 uz granice po modelu.
+
+### 4096 nije izvodljivo na ovoj mašini
+
+Mašina ima **9 GB RAM-a**. PyTorch forward pass, mereno:
+
+| strana | vreme | ishod |
+|---|---|---|
+| 512 | 4,2 s | ok |
+| 1024 | 134 s | ok |
+| **2048** | — | **OOM, kernel ubio proces (exit 137)** |
+| 4096 | — | 4× preko toga |
+
+LaMa koristi Fourier konvolucije nad punim feature mapama, pa memorija raste
+linearno s brojem piksela; 4096 je 64× od 512.
+
+### 1024 je rekonvertovan — dvaput, i oba puta gori od 512
+
+**Prvi pokušaj, FP16** (isti `compute_precision` kao postojeći 512 model):
+
+- brzina: **1,30 s po prolazu** naspram **0,33 s** na 512 (konstantno, ulaz je
+  fiksne veličine; hladan prvi poziv 3,3 s naspram 2,1 s)
+- rezultat: **gori na sva tri slučaja** — mali objekat dobio vidljivu bledu
+  kockastu mrlju (na 512 nevidljivo), srednja maska obrisala more u belu
+  izmaglicu (na 512 tačno)
+
+**Provera konverzije prema PyTorch-u je otkrila zašto**, i to je nalaz koji
+vredi zapamtiti:
+
+| model | max razlika | srednja |
+|---|---|---|
+| 512 FP16 | 0,026 | 0,0004 |
+| **1024 FP16** | **1,000** | **0,055** |
+| 1024 FP32 | 0,0001 | 0,00000 |
+
+Na 1024 FP16 model **nije veran** originalu. FFC slojevi rade FFT nad punim
+prostorom, a vrednosti u FFT-u rastu s brojem uzoraka — na 1024² izlaze iz
+FP16 opsega i prelivaju se. Otud kockaste mrlje. Na 512 se to ne dešava.
+
+**Drugi pokušaj, FP32** (fajl 196 MB umesto 99 MB, 1,52 s po prolazu):
+numerika je sad egzaktna, ali je rezultat **i dalje gori od 512** — mali
+objekat ostavlja blagu mrlju, srednja maska i dalje ispere more.
+
+**Zaključak: ostaje 512.** Ne zato što je konverzija loša, nego zato što je
+LaMa TRENIRANA na 512. Potpuno je konvoluciona pa se POKREĆE na bilo kojoj
+veličini, ali joj je naučeno receptivno polje vezano za tu skalu — na 1024
+svaka struktura joj je na duplo manjoj relativnoj skali nego što je učila.
+FP32 test je to i dokazao: kad se numerika iskuluči kao uzrok, razlika ostaje.
+
+Konvertovani modeli su ostavljeni u `~/Desktop/BriefShow/CoreMLModels/LaMa/`
+(`LaMa-1024.mlpackage`, `LaMa-1024-fp32.mlpackage` + kompajlirani `.mlmodelc`,
+oko 400 MB ukupno) — nisu u git-u, mogu se obrisati.
+
+**Usput je odbačena i besplatna alternativa**: smanjivanje konteksta oko rupe
+(`squareRegion` multiplier 2,0 → 1,6 → 1,3 → 1,1, tj. umanjenje sa 6,1× na
+3,3×) **ne popravlja ništa** — sva četiri i dalje obrišu more. Znači problem
+nije odnos rupe i konteksta.
+
+### Granice po modelu na dugmadima
+
+Isti test (tri maske, ista fotka) pušten kroz OBA modela:
+
+| rupa | LaMa (Quick) | SD (AI Clean Up) |
+|---|---|---|
+| ~150 px | nevidljivo | nevidljivo |
+| ~830 px | **tačno**, more i horizont sačuvani | **izmislio gomilu ljudi** |
+| ~1550 px | obrisao more u razmaz | izmislio plažu sa suncobranima |
+
+**Ovo je obrnulo raniju pretpostavku.** Panel je do sada pisao „AI Clean Up
+handles this size better" — netačno: generativni model odustaje RANIJE, jer
+njegov način propadanja nije gubitak detalja nego izmišljanje objekata.
+
+Zato `RemovalEngine` sad nosi `maximumAreaPixels`: **1000 px** za Quick
+(između 830 koje radi i 1550 koje ne radi) i **500 px** za AI Clean Up (između
+150 i 830). Preko granice se dugme TOG modela gasi, sa objašnjenjem ispod
+zašto baš on ne može — a ne zajedničko upozorenje, jer se i razlozi razlikuju.
+
+**Selekcija se NE ograničava, samo dugmad.** Ista naslikana površina hrani oba
+modela i Selection alat, pa bi kapiranje četkice oduzelo posao koji drugi
+model — ili kasniji manji prolaz — i dalje može da odradi.
+
+## KORAK 20 — SD granica je pogrešno postavljena, pa ispravljena (26. avgust 2026)
+
+Korisnik je pitao zašto je AI Clean Up ograničen na 500 px i može li više. Bio
+je u pravu da posumnja — **500 je bilo izvedeno iz JEDNE tačke** (maska od 830
+px koja je izmislila ljude), i ta tačka je slučajno bila na najtežem mestu u
+kadru, uz obalu. Generalizovano na sve, što nije smelo.
+
+**Pravo merenje**: pet veličina × dve vrste okoline, ista fotka, slike
+pogledane.
+
+| rupa | ravan pesak | uz obalu (horizont, ljudi, suncobrani u blizini) |
+|---|---|---|
+| 300 px | čisto | čisto |
+| 600 px | čisto | **izmislio bele suncobrane** |
+| 900 px | čisto | izmislio tamnu nadstrešnicu |
+| 1200 px | čisto | izmislio suncobrane i strukturu na vodi |
+| 1600 px | **čisto** | redovi suncobrana |
+
+**Zaključak: SD granica nije veličina nego OKOLINA.** Na ravnoj podlozi je čist
+i na 1600 px; blizu strukture počne da izmišlja već od 600 px. Fiksna granica
+u pikselima bi blokirala gomilu slučajeva koji savršeno rade.
+
+**Pokušan i odbačen detektor strukture**: gruba varijacija prstena oko rupe
+(24×24 probe, samo obod). Brojevi se **preklapaju tačno tamo gde se rezultati
+razilaze** — ravan pesak 42–54, obala 44–79; na 600 px ravan daje 43,1 (čisto)
+a obala 48,6 (izmislio). Nema praga koji ih razdvaja, pa nije uveden.
+
+**Zato dva različita mehanizma, ne dva broja:**
+- **Quick (LaMa)** pada na VELIČINU, predvidivo i bez obzira na okolinu →
+  `blockingAreaPixels = 1000`, dugme se stvarno gasi.
+- **AI Clean Up (SD)** pada na SADRŽAJ → `blockingAreaPixels = nil`, samo
+  `cautionAreaPixels = 600` koja ispiše upozorenje i objasni razliku između
+  ravne podloge i strukture. Dugme ostaje živo.
+
+### Ostale izmene iz istog zahteva
+
+- **Add / Erase za Select Area.** `BrushStroke.isErase` i `strokeMask` su to
+  već podržavali — nedostajao je samo način da se takav potez napravi. Dodat
+  segment Add/Erase, i hover prsten je isprekidan dok je Erase aktivan.
+  **Bitno**: `eraseMaskedArea` je prepravljen tako da se prvo SABERU dodaci sa
+  Vision maskom, pa se tek onda ODUZMU brisanja. Da su oba tipa poteza prošla
+  kroz `strokeMask` zajedno, brisanje ne bi moglo da dohvati Vision masku — a
+  to je tačno ono što čovek hoće kad „Select People" zahvati rame koje ne
+  treba. Potezi brisanja se grade kao POZITIVNA maska pa invertuju, jer
+  `strokeMask` kreće od crnog i skup samih erase poteza bi vratio crno.
+- **Selekcija je plava** (51,140,255) umesto bele, na oba mesta — i nađena
+  maska i ručno slikana. Crveno (prvo) čita kao upozorenje; belo (drugo) se
+  gubi na pesku i nebu. Plava je jedina boja od koje ove fotke nisu sačinjene.
+- **Traka sa alatima iznad slike.** Panel ostaje isti i dalje drži slajdere i
+  liste; ono u čemu je bio loš je bio JEDINI način da se DOĐE do alata — Crop
+  pod „Crop & Rotate", Patch pod „Masks", Select Area pod „Remove", svaki iza
+  različite količine skrolovanja. Sad su u jednom redu, uvek na istom mestu,
+  i svaki svetli dok je aktivan. Dva Clean Up dugmeta su tu takođe, ali su
+  živa samo kad ima šta da se briše i kad veličina prolazi granicu tog modela.
+
+## KORAK 21 — spisak sitnih ispravki na traci i oko nje (26. avgust 2026)
+
+Sve iz jedne korisnikove poruke, sa slikama.
+
+**Space je pravio „tin tin tin".** Pravi bag, i vredi zapamtiti mehanizam:
+`spaceKeyMonitor` je vraćao `event` kad `zoomLevel == 1` (ideja je bila „nema
+šta da se pomera, pusti Space da znači šta AppKit-u znači"). Ali bare Space
+tada nema nikoga u responder lancu, a **AppKit na neobrađen taster odgovara
+sistemskim beep-om** — pa je držanje Space-a davalo niz beep-ova. Sad se Space
+guta uvek dok je Develop ključan i fokus nije u tekst polju; `isSpaceHeld` se i
+dalje pali samo kad ima šta da se pomera. Repeat se takođe guta (ranije je
+propuštan, što je bio isti izvor beep-a na svaki repeat).
+
+**„Select Area" → „AI Selection"** svuda (traka, panel, poruke).
+
+**Četkica kreće od 2, ne od 6.** `removalBrushSize` 0.06 → 0.02. Na 6 je
+najmanje što se moglo označiti već bilo veće od većine onoga za šta alat i
+postoji (mladež, insekt, kabl), pa je svaka upotreba počinjala vučenjem
+slajdera nadole.
+
+**Redosled u traci je promenjen u tok posla**: Crop · Selection · Patch │ **AI
+Selection · Select People · Quick Clean Up · AI Clean Up**. Ranije su dve
+stvari koje PRAVE selekciju bile na jednom kraju, a dve koje je TROŠE na
+drugom — čitalo se kao četiri nepovezana dugmeta. Korisnik je tražio baš to,
+da alat za označavanje stoji levo od Clean Up-ova.
+
+**Progres brisanja je i u traci**, ne samo u panelu — brisanje traje trinaest
+sekundi, a oko je već na dugmetu koje ga je pokrenulo.
+
+**Ugašen Clean Up sada kaže zašto.** Nova `cleanUpUnavailableReason(_:)` vraća
+jednu rečenicu ili `nil`: nema otvorene fotke / već se briše / **ništa nije
+selektovano** / **površina je prevelika za taj model**. Ide i kao `.help`
+tooltip na samom dugmetu (jedini način da razlog dođe do pokazivača koji je
+upravo pokušao klik) i kao red ispod trake kad ništa nije selektovano.
+
+**Slajder veličine je ispod trake** (`toolStripDetail`), zajedno sa oznakom da
+li se trenutno dodaje ili briše. Veličina pripada pored alata koji je menja, a
+ne četiri sekcije niže u panelu.
+
+**Sync i Export All su uz filmstrip, skroz desno.** Oba rade nad selekcijom
+napravljenom baš tu, a do sada su se dohvatali samo skrolovanjem panela dalje
+od thumbnail-a nad kojima rade.
+
+**Export All otvara karticu** (format JPEG/PNG/TIFF + Quality kad je lossy).
+Piše u ISTE `@AppStorage` vrednosti koje panel-ov picker koristi, pa su to
+jedno podešavanje sa dva mesta pristupa, a ne dva koja se mogu razići. I
+panel-ovo „Export All Edited" sad otvara istu karticu. Sam Save panel se
+pokreće tek `DispatchQueue.main.async` posle zatvaranja sheet-a — dva modala
+koja se trkaju su način da Save panel završi IZA sheet-a.

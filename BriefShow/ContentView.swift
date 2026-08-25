@@ -23371,7 +23371,7 @@ private struct FolderTreeSidebar: View {
                     row(for: rootNode, depth: 0)
 
                     ForEach(rootNode.children ?? [], id: \.id) { node in
-                        folderDisclosure(for: node, depth: 0)
+                        folderDisclosure(for: node, depth: 1)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -23397,19 +23397,20 @@ private struct FolderTreeSidebar: View {
     // the exact same indentation as its siblings, with nothing to show
     // which folders were actually inside which — see row(for:depth:).
     private func folderDisclosure(for node: FolderNode, depth: Int) -> AnyView {
-        if let children = node.children {
-            return AnyView(
-                DisclosureGroup(isExpanded: expandedBinding(for: node.url)) {
+        guard let children = node.children else {
+            return AnyView(row(for: node, depth: depth))
+        }
+        return AnyView(
+            VStack(alignment: .leading, spacing: 2) {
+                row(for: node, depth: depth)
+
+                if expandedURLs.contains(node.url) {
                     ForEach(children, id: \.id) { child in
                         folderDisclosure(for: child, depth: depth + 1)
                     }
-                } label: {
-                    row(for: node, depth: depth)
                 }
-            )
-        } else {
-            return AnyView(row(for: node, depth: depth))
-        }
+            }
+        )
     }
 
     private func expandedBinding(for url: URL) -> Binding<Bool> {
@@ -23486,6 +23487,47 @@ private struct FolderTreeSidebar: View {
         )
     }
 
+// An open folder, hand-drawn because SF Symbols has no such glyph — there is
+// `folder` and `folder.fill` and nothing between them, on any macOS version.
+// Two filled subpaths with a real transparent GAP between them, rather than
+// one shape with a lighter line through it: the sidebar row paints a
+// selection/hover fill behind this, and a "gap" drawn in the background
+// colour would turn into a visible stripe the moment that fill appears.
+//
+// Proportions are matched to folder.fill at the same point size so the two
+// read as the same weight when half the tree is open and half is closed.
+private struct OpenFolderShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        func at(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + fx * rect.width, y: rect.minY + fy * rect.height)
+        }
+
+        var path = Path()
+
+        // Back panel: the tabbed folder body, cut off where the front flap
+        // takes over.
+        path.move(to: at(0.00, 0.48))
+        path.addLine(to: at(0.00, 0.22))
+        path.addQuadCurve(to: at(0.09, 0.13), control: at(0.00, 0.13))
+        path.addLine(to: at(0.31, 0.13))
+        path.addLine(to: at(0.41, 0.27))
+        path.addLine(to: at(0.75, 0.27))
+        path.addQuadCurve(to: at(0.84, 0.36), control: at(0.84, 0.27))
+        path.addLine(to: at(0.84, 0.48))
+        path.closeSubpath()
+
+        // Front flap: same width, slid right along the bottom, which is what
+        // reads as "tilted forward and open" rather than "a folder".
+        path.move(to: at(0.00, 0.55))
+        path.addLine(to: at(0.84, 0.55))
+        path.addLine(to: at(0.96, 0.88))
+        path.addLine(to: at(0.12, 0.88))
+        path.closeSubpath()
+
+        return path
+    }
+}
+
     // `depth` is how many folders deep this row sits below the top-level
     // list — 0 for Applications/Desktop/Documents/... themselves, 1 for
     // what's directly inside one of them, and so on. Indenting the
@@ -23496,6 +23538,10 @@ private struct FolderTreeSidebar: View {
     private func row(for node: FolderNode, depth: Int) -> some View {
         let isSelected = selectedURL == node.url
         let isHovered = hoveredURL == node.url
+        // Only a folder that HAS children can be open; a leaf sitting in
+        // expandedURLs (which can happen, since a plain tap inserts before
+        // the children are known) must still draw as closed.
+        let isExpanded = node.children != nil && expandedURLs.contains(node.url)
         let colorLabel = folderColors[node.url.standardizedFileURL.path] ?? .none
 
         return HStack(spacing: 8) {
@@ -23506,12 +23552,51 @@ private struct FolderTreeSidebar: View {
             // pill from getting visibly narrower the deeper something is
             // nested.
             if depth > 0 {
-                Color.clear.frame(width: CGFloat(depth) * 14)
+                Color.clear.frame(width: CGFloat(depth) * 24)
             }
 
-            Image(systemName: "folder.fill")
-                .font(.system(size: 12))
-                .foregroundColor(isSelected ? AppColors.hoverInk : AppColors.muted.opacity(0.8))
+            // The triangle's own column, present on EVERY row whether or not
+            // that row has a triangle. This is the whole reason the tree
+            // stopped using DisclosureGroup: SwiftUI indents a
+            // DisclosureGroup's label but not a plain row, so a folder with
+            // subfolders sat ~27pt further right than its own sibling with
+            // none — two rows at the same level, drawn at two different
+            // levels, which read as nesting that wasn't there. Reserving the
+            // column here lines every sibling up, the way Finder's sidebar
+            // does, and leaves the gap empty for folders that can't open.
+            Group {
+                if node.children != nil, node.url != rootNode.url {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(AppColors.muted.opacity(0.8))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(width: 10)
+            // Decoration, not a second hit target: the row's own tap already
+            // opens and closes it (see onTapGesture below), and a gesture
+            // here would only add a way for the two to disagree.
+            .allowsHitTesting(false)
+
+            // Open folders get an open folder, the way Finder's own sidebar
+            // does — the disclosure triangle already says "expanded", but it
+            // sits far to the left of the name and is easy to miss when
+            // several levels are open at once. Fixed-width frame on BOTH
+            // icons so a folder's name doesn't shift sideways as it opens:
+            // the two glyphs are not the same width.
+            Group {
+                if isExpanded {
+                    OpenFolderShape()
+                        .frame(width: 13, height: 11)
+                } else {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 12))
+                }
+            }
+            .frame(width: 14, alignment: .leading)
+            .foregroundColor(isSelected ? AppColors.hoverInk : AppColors.muted.opacity(0.8))
 
             Text(node.name)
                 .font(.custom("Figtree", size: 13).weight(isSelected ? .semibold : .regular))

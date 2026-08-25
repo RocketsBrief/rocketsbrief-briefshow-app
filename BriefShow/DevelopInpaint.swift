@@ -130,6 +130,233 @@ enum SubjectMasker {
             // to itself reports an unbounded extent unless cropped back.
             .cropped(to: extent)
     }
+
+    // MARK: Background people only
+
+    // `VNGeneratePersonSegmentationRequest` returns ONE mask covering
+    // everybody, with no notion of separate people — so "remove the
+    // strangers behind us, keep us" cannot be asked of Vision directly, on
+    // any macOS version. What it CAN be asked of is the mask's own shape:
+    // split the white area into connected blobs and the couple in front is
+    // one big blob while the strangers down the beach are several small
+    // ones.
+    //
+    // Two people standing shoulder to shoulder merge into a single blob.
+    // That is a FEATURE here, not the usual connected-components caveat:
+    // the pair in front is exactly the thing that must survive as one
+    // subject. The same merging is the limitation when it happens the
+    // other way round — a stranger standing right against the subject
+    // joins their blob and gets kept — which is what the Brush is for and
+    // what the panel tells the user.
+
+    // A blob counts as background when its area is below this share of the
+    // largest blob's. 0.35 rather than something tighter because
+    // perspective does most of the work already: a person ten metres back
+    // covers a QUARTER of the pixels of one at three metres, so anything
+    // in that band is comfortably separated, while a value near 1 would
+    // start eating the subject's own second person.
+    static let backgroundBlobShare: Double = 0.35
+
+    // Vision's mask has occasional single-pixel speckle along a hard edge;
+    // below this many probe pixels a blob is that, not a person. Scaled to
+    // the probe buffer so it means the same thing regardless of probe size.
+    private static func minimumBlobPixels(width: Int, height: Int) -> Int {
+        max(3, (width * height) / 60_000)
+    }
+
+    // The pure half, so it can be exercised without Vision, Core Image or a
+    // GUI: 8-connected labelling of `bytes` (>127 is "person"), returning a
+    // buffer with only the background blobs left white — or nil when every
+    // blob belongs to the main subject, which is the "nobody else is in
+    // this photo" answer the caller has to show as a message rather than an
+    // empty mask.
+    static func backgroundBlobs(
+        mask bytes: [UInt8], width: Int, height: Int,
+        share: Double = backgroundBlobShare
+    ) -> [UInt8]? {
+        let count = width * height
+        guard width > 0, height > 0, bytes.count == count else {
+            return nil
+        }
+
+        // -1 = not yet visited, -2 = background pixel, >= 0 = blob index.
+        var labels = [Int32](repeating: -1, count: count)
+        var areas: [Int] = []
+        // One explicit stack, reused across blobs: recursion here would be
+        // a stack overflow on any real photo (a blob can be a million
+        // pixels), and a per-blob allocation would be the only cost that
+        // scaled with the number of people.
+        var stack: [Int] = []
+        stack.reserveCapacity(1024)
+
+        for start in 0..<count {
+            if labels[start] != -1 {
+                continue
+            }
+            guard bytes[start] > 127 else {
+                labels[start] = -2
+                continue
+            }
+
+            let label = Int32(areas.count)
+            var area = 0
+            labels[start] = label
+            stack.removeAll(keepingCapacity: true)
+            stack.append(start)
+
+            while let index = stack.popLast() {
+                area += 1
+                let x = index % width
+                let y = index / width
+                let minDX = x > 0 ? -1 : 0
+                let maxDX = x < width - 1 ? 1 : 0
+                let minDY = y > 0 ? -1 : 0
+                let maxDY = y < height - 1 ? 1 : 0
+                for dy in minDY...maxDY {
+                    for dx in minDX...maxDX where !(dx == 0 && dy == 0) {
+                        let neighbour = index + dy * width + dx
+                        guard labels[neighbour] == -1 else {
+                            continue
+                        }
+                        if bytes[neighbour] > 127 {
+                            labels[neighbour] = label
+                            stack.append(neighbour)
+                        } else {
+                            labels[neighbour] = -2
+                        }
+                    }
+                }
+            }
+            areas.append(area)
+        }
+
+        guard let largest = areas.max(), largest > 0 else {
+            return nil
+        }
+        let ceiling = Double(largest) * share
+        let floor = minimumBlobPixels(width: width, height: height)
+        // The largest blob itself is never background even if the share
+        // arithmetic would let it through (it can, at share >= 1), because
+        // "everything except the subject" is the whole point.
+        let largestIndex = areas.firstIndex(of: largest) ?? -1
+        var keep = [Bool](repeating: false, count: areas.count)
+        var kept = 0
+        for (index, area) in areas.enumerated()
+        where index != largestIndex && area >= floor && Double(area) <= ceiling {
+            keep[index] = true
+            kept += 1
+        }
+        guard kept > 0 else {
+            return nil
+        }
+
+        var out = [UInt8](repeating: 0, count: count)
+        for index in 0..<count {
+            let label = labels[index]
+            if label >= 0, keep[Int(label)] {
+                out[index] = 255
+            }
+        }
+        return out
+    }
+
+    // The Core Image wrapper around `backgroundBlobs`. The labelling runs on
+    // a small probe copy (a blob's identity survives downscaling; its edge
+    // detail is irrelevant to which blob it is) and the result is used as a
+    // SELECTOR multiplied back over the full-resolution mask, so the people
+    // that survive keep Vision's own sharp outline rather than a 768px
+    // stair-stepped one.
+    static func backgroundPeople(
+        in mask: CIImage, extent: CGRect, context: CIContext,
+        probeEdge: CGFloat = 768, share: Double = backgroundBlobShare
+    ) -> CIImage? {
+        guard extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite else {
+            return nil
+        }
+        let scale = min(probeEdge / extent.width, probeEdge / extent.height, 1)
+        let probeWidth = max(Int((extent.width * scale).rounded()), 1)
+        let probeHeight = max(Int((extent.height * scale).rounded()), 1)
+
+        var bytes = [UInt8](repeating: 0, count: probeWidth * probeHeight)
+        let scaled = mask
+            .transformed(by: CGAffineTransform(
+                translationX: -extent.origin.x, y: -extent.origin.y
+            ))
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let probeRect = CGRect(x: 0, y: 0, width: probeWidth, height: probeHeight)
+        bytes.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else {
+                return
+            }
+            context.render(
+                scaled, toBitmap: base, rowBytes: probeWidth,
+                bounds: probeRect, format: .R8, colorSpace: nil
+            )
+        }
+
+        guard let selected = backgroundBlobs(
+            mask: bytes, width: probeWidth, height: probeHeight, share: share
+        ) else {
+            return nil
+        }
+        guard let selectorCG = makeGrayscaleImage(selected, width: probeWidth, height: probeHeight) else {
+            return nil
+        }
+
+        // Rows out of `context.render(toBitmap:)` are top-down and
+        // CIImage(cgImage:) reads them back the same way round, so the
+        // probe survives the round trip without a Y flip. Hardened after
+        // the upscale for the same reason `grown` hardens: the selector
+        // answers "is this pixel one of the kept people?", and a bilinear
+        // ramp there would multiply the mask's own edge down below the
+        // 0.5 threshold every consumer uses.
+        var selector = CIImage(cgImage: selectorCG)
+        selector = selector.transformed(by: CGAffineTransform(
+            scaleX: extent.width / CGFloat(probeWidth),
+            y: extent.height / CGFloat(probeHeight)
+        ))
+        selector = selector.transformed(by: CGAffineTransform(
+            translationX: extent.origin.x - selector.extent.origin.x,
+            y: extent.origin.y - selector.extent.origin.y
+        ))
+        selector = selector
+            .applyingFilter("CIColorControls", parameters: [
+                kCIInputContrastKey: 4.0,
+                kCIInputBrightnessKey: -0.2
+            ])
+            .cropped(to: extent)
+
+        return mask
+            .applyingFilter("CIMultiplyBlendMode", parameters: [
+                kCIInputBackgroundImageKey: selector
+            ])
+            .cropped(to: extent)
+    }
+
+    // RGBA rather than a one-component grey image on purpose: every mask in
+    // this app is read at its RGB level (CIMultiplyBlendMode and
+    // CIBlendWithMask both do), and an opaque alpha keeps the multiply from
+    // knocking the result out entirely.
+    private static func makeGrayscaleImage(_ values: [UInt8], width: Int, height: Int) -> CGImage? {
+        var rgba = [UInt8](repeating: 255, count: width * height * 4)
+        for index in 0..<(width * height) {
+            let value = values[index]
+            rgba[index * 4] = value
+            rgba[index * 4 + 1] = value
+            rgba[index * 4 + 2] = value
+        }
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData) else {
+            return nil
+        }
+        return CGImage(
+            width: width, height: height,
+            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false,
+            intent: .defaultIntent
+        )
+    }
 }
 
 // MARK: - Exemplar-based inpainting
@@ -1014,13 +1241,20 @@ enum InpaintPipeline {
             )
         }
 
+        // Blue, matching the hand-painted overlay in Develop.swift. Red — what
+        // this started as — reads as a warning on a photo rather than "this is
+        // what is selected", and on the warm frames this tool is actually used
+        // on (skin, sand, sunset) both red and white are the hardest things to
+        // pick out. Blue is the one hue those photos are largely made without.
+        // Bytes are premultiplied, hence each channel scaled by alpha.
+        let colour = (r: 51, g: 140, b: 255)
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
         for index in 0..<(width * height) {
             let alpha = Int(maskBytes[index]) * 45 / 100
             let base = index * 4
-            rgba[base] = UInt8(230 * alpha / 255)
-            rgba[base + 1] = UInt8(60 * alpha / 255)
-            rgba[base + 2] = UInt8(60 * alpha / 255)
+            rgba[base] = UInt8(colour.r * alpha / 255)
+            rgba[base + 1] = UInt8(colour.g * alpha / 255)
+            rgba[base + 2] = UInt8(colour.b * alpha / 255)
             rgba[base + 3] = UInt8(alpha)
         }
 

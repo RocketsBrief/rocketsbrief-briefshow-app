@@ -2291,6 +2291,25 @@ private let filmstripThumbnailCacheLimit = 400
 // the ring and nothing else.
 final class BrushCursorPosition: ObservableObject {
     @Published var location: CGPoint?
+
+    /// Whether a stroke is being painted right now. Lives here rather than in
+    /// @State on DevelopView, and that is the whole point of it being here.
+    ///
+    /// It was @State, flipped true on the first drag event of every stroke, on
+    /// the reasoning that twice per stroke is cheap. It is not: a @State write
+    /// invalidates DevelopView.body, and that body is the image, the panel, the
+    /// filmstrip, the histogram and the toolbar — including removalAreaPixels,
+    /// which is O(painted points x erase dabs) and is read several times a
+    /// pass. So every stroke began with a full rebuild of the whole screen,
+    /// one that got heavier the more had already been painted. That is exactly
+    /// the "it still lags sometimes, mostly when I start" that was reported
+    /// after the earlier per-point fix.
+    ///
+    /// The only thing that reads it is the cursor ring, which observes this
+    /// object already — so moving it here takes the count of body passes during
+    /// a stroke from one to ZERO. Nothing outside the ring redraws until the
+    /// mouse comes up and commitRemovalStroke() writes the finished stroke.
+    @Published var isStrokeInProgress: Bool = false
 }
 
 // The ring that follows the cursor. Hit testing is off: the hover events and
@@ -2301,11 +2320,14 @@ private struct BrushCursorRing: View {
     let diameter: CGFloat
     let color: Color
     let isDashed: Bool
-    let isSuppressed: Bool
 
     var body: some View {
         Group {
-            if let location = cursor.location, !isSuppressed {
+            // Hidden while painting: the stroke being drawn already shows the
+            // brush at its true width, and a ring on top of it only doubles
+            // the line. Read off the observed object rather than passed in, so
+            // that setting it does not touch the parent's body.
+            if let location = cursor.location, !cursor.isStrokeInProgress {
                 Circle()
                     .stroke(
                         color,
@@ -2753,10 +2775,6 @@ struct DevelopView: View {
     @State private var isRemoveBrushErasing = false
     @State private var removalStrokes: [BrushStroke] = []
     @State private var activeRemovalStroke = ActiveStrokePoints()
-    // Only whether a stroke is in progress, not its points — flips twice per
-    // stroke instead of once per drag event, which is cheap enough to stay
-    // @State and is all the cursor ring needs to know to hide itself.
-    @State private var isPaintingRemovalStroke = false
     // 0.02, not the 0.06 this shipped with: at 6 the smallest thing anyone
     // could select was already bigger than most of what this tool is for (a
     // mole, an insect, a cable), and every use started by dragging the size
@@ -5782,8 +5800,7 @@ struct DevelopView: View {
                 cursor: removalBrushCursor,
                 diameter: brushDiameter,
                 color: isRemoveBrushErasing ? Color.white.opacity(0.95) : ink.opacity(0.9),
-                isDashed: isRemoveBrushErasing,
-                isSuppressed: isPaintingRemovalStroke
+                isDashed: isRemoveBrushErasing
             )
             .frame(width: containerSize.width, height: containerSize.height)
 
@@ -5813,14 +5830,14 @@ struct DevelopView: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
-                            if !isPaintingRemovalStroke {
-                                isPaintingRemovalStroke = true
+                            if !removalBrushCursor.isStrokeInProgress {
+                                removalBrushCursor.isStrokeInProgress = true
                             }
                             removalBrushCursor.location = value.location
                             paintRemovalBrush(at: value.location, frame: frame, imageFrame: imageFrame)
                         }
                         .onEnded { _ in
-                            isPaintingRemovalStroke = false
+                            removalBrushCursor.isStrokeInProgress = false
                             commitRemovalStroke()
                         }
                 )
@@ -9171,6 +9188,12 @@ private struct EditTrackSlider: View {
     private let thumbSize: CGFloat = 16
     private let rowHeight: CGFloat = 20
 
+    // Eight intervals, so seven marks. Chosen so the CENTRE falls on one of
+    // them: every bipolar slider in this panel has its zero at the middle, and
+    // a tick spacing that straddled it would put the zero marker between two
+    // marks and make the track look mis-drawn.
+    private let tickIntervals = 8
+
     var body: some View {
         GeometryReader { proxy in
             // The thumb's LEADING edge travels across (width - thumbSize),
@@ -9212,6 +9235,29 @@ private struct EditTrackSlider: View {
                     .fill(accent)
                     .frame(width: abs(thumbX - zeroX), height: trackHeight)
                     .offset(x: min(thumbX, zeroX) + thumbSize / 2)
+
+                // Lightroom's tick marks, on request. They do the one thing a
+                // bare track cannot: give the thumb something to be measured
+                // against, so "a bit more" becomes a distance you can see
+                // rather than a number you have to read off the end of the row.
+                //
+                // Interior only — a tick sitting on the capsule's rounded end
+                // reads as a chip out of the track, not as a mark. Drawn AFTER
+                // the fill so they stay visible along the whole track the way
+                // Lightroom's do, instead of being swallowed by it as soon as
+                // the slider is pushed away from zero.
+                ForEach(1..<tickIntervals, id: \.self) { index in
+                    let fraction = CGFloat(index) / CGFloat(tickIntervals)
+                    // The centre tick is skipped on a bipolar slider: the zero
+                    // marker above is already there and is deliberately taller,
+                    // and two marks in one place would flatten that difference.
+                    if !(isBipolar && abs(fraction - CGFloat(zeroFraction)) < 0.001) {
+                        Rectangle()
+                            .fill(AppColors.ink.opacity(0.22))
+                            .frame(width: 1, height: trackHeight - 2)
+                            .offset(x: usable * fraction + thumbSize / 2 - 0.5)
+                    }
+                }
 
                 Circle()
                     .fill(Color.white)
@@ -9264,6 +9310,11 @@ private struct GradientTrackSlider: View {
     private let thumbSize: CGFloat = 16
     private let rowHeight: CGFloat = 20
 
+    // Same spacing as EditTrackSlider's, and it has to be the same: these
+    // sliders sit in one column with those, and two tick rhythms down one
+    // panel would read as a mistake rather than as a distinction.
+    private let tickIntervals = 8
+
     var body: some View {
         GeometryReader { proxy in
             // The thumb's LEADING edge travels across (width - thumbSize),
@@ -9291,11 +9342,27 @@ private struct GradientTrackSlider: View {
                 // fill to say so — so the notch that marks zero is the only
                 // thing that can, and it is the same notch the plain sliders
                 // draw in EditTrackSlider.
-                if zeroFraction > 0.001, zeroFraction < 0.999 {
+                let isBipolar = zeroFraction > 0.001 && zeroFraction < 0.999
+                if isBipolar {
                     Rectangle()
                         .fill(AppColors.ink.opacity(0.35))
                         .frame(width: 1, height: trackHeight + 6)
                         .offset(x: usable * CGFloat(zeroFraction) + thumbSize / 2 - 0.5)
+                }
+
+                // The same tick marks the plain sliders got. A little stronger
+                // here than the 0.22 used there, because these run over a
+                // colour gradient rather than a flat track and the lighter
+                // stops (the yellow end of Temperature) would otherwise swallow
+                // them.
+                ForEach(1..<tickIntervals, id: \.self) { index in
+                    let tickFraction = CGFloat(index) / CGFloat(tickIntervals)
+                    if !(isBipolar && abs(tickFraction - CGFloat(zeroFraction)) < 0.001) {
+                        Rectangle()
+                            .fill(AppColors.ink.opacity(0.28))
+                            .frame(width: 1, height: trackHeight - 2)
+                            .offset(x: usable * tickFraction + thumbSize / 2 - 0.5)
+                    }
                 }
 
                 Circle()

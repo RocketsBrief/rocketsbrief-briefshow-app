@@ -27,13 +27,17 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | | |
 |---|---|
 | 34 | **Četkica više ne izlazi van slike** (stavka 1 iz prethodne sesije) + zašto `searchRadius` nije uzrok bele mrlje |
-| 35 | **Import direktno sa kamere preko USB-a** — nova funkcija, na korisnikov zahtev |
+| 35 | **Import direktno sa kamere preko USB-a** — nova funkcija, na korisnikov zahtev. Nije vezan za Nikon |
+| 36 | **Painting više NE osvežava ništa** — nula prolaza kroz `body` tokom poteza, umesto jednog na svaki početak |
+| 37 | **Crtice na slajderima**, kao u Lightroom-u |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
 Build je čist i app se pokreće, ali **ništa iz ove sesije nije viđeno uživo**:
 
 - KORAK 34 — odsecanje poteza na okvir slike
+- KORAK 36 — da se lag pri paintovanju zaista više ne oseti
+- KORAK 37 — kako crtice izgledaju na ekranu
 - KORAK 35 — **cela funkcija za kameru nije probana ni sa jednom kamerom.**
   Z 6 nije bio povezan dok je rađeno (`ICDeviceBrowser` prijavio 0 uređaja u
   probnom binarnom fajlu). Sve je pisano po SDK zaglavljima, koja SU čitana, i
@@ -5057,3 +5061,123 @@ pojavi u sidebar-u i da li se prozor sam otvori.
 Ako se ne pojavi, redom: (1) da li je USB režim kamere MTP/PTP, (2) da li je
 `Image Capture.app` vidi — ako ni ona ne vidi, nije do BriefShow-a, (3) da li je
 macOS tražio dozvolu za pristup uređaju.
+
+
+## KORAK 35, dopuna — kamera NIJE vezana za Nikon (30. avgust 2026)
+
+Korisnikovo pitanje: „ali ne samo za Nikon Z 6, neko koristi Canon — hoće li i to
+da prepozna?"
+
+Hoće. U kodu nema nijedne linije koja pominje proizvođača — Nikon se pojavljuje
+samo u komentarima, kao primer na kom je pisano.
+
+`ICDeviceBrowser` sa maskom `camera | local` prijavljuje **svaku** kameru koju
+macOS ume da vidi, jer ne govori ni Nikonov ni Canonov protokol nego **PTP/MTP**,
+standard koji poštuju sva tela: Canon, Sony, Fujifilm, Panasonic, Olympus,
+Leica, i čitači kartica.
+
+Praktično pravilo za proveru, bez ijedne izmene u kodu: **ako uređaj vidi
+`Image Capture.app`, videće ga i BriefShow** — obe app-e gledaju kroz isti
+framework. Ako ga ni Image Capture ne vidi, problem je u USB režimu kamere ili
+u kablu, ne u BriefShow-u.
+
+Jedina razlika koja se u praksi javlja je da neka tela (češće Canon) nude i režim
+„mass storage", u kom se kartica montira kao disk. I taj slučaj je pokriven:
+ImageCaptureCore prijavljuje i takve uređaje kao `ICCameraDevice`.
+
+## KORAK 36 — painting više ne osvežava ništa dok traje (30. avgust 2026)
+
+Korisnik, posle KORAKA 25/29: „danas smo popravili da kada kliknemo na AI selection
+da laguje i posle nije lagovalo… ali nije baš da nije lagovalo, ipak se oseti da
+lagne neki put. Kada paintujemo, tada samo da bude paint, da se baš ništa ne
+rezonuje — tek kada drag završi može da se izrezonuje to što je paintovano."
+
+### Šta je ostalo posle prethodne popravke
+
+Prethodna sesija je izmestila i poziciju kursora i tačke poteza u observable
+objekte koje roditelj drži ali ne posmatra. Ostala je **jedna** stvar:
+
+```swift
+@State private var isPaintingRemovalStroke = false
+```
+
+sa komentarom koji je sam sebe opravdao: „flips twice per stroke instead of once
+per drag event, which is cheap enough to stay @State".
+
+**Nije jeftino.** Upis u `@State` poništava `DevelopView.body`, a to telo je
+slika, panel, filmstrip, histogram i traka sa alatima. Znači **svaki potez je
+počinjao punim ponovnim gradnjom celog ekrana** — tačno u trenutku kad se povuče
+prva tačka, što je tačno ono „lagne kad krenem" iz prijave.
+
+### Zašto je taj jedan prolaz skuplji nego što zvuči
+
+U telu se čita `removalAreaPixels`, koji je **ugnežđena petlja**: za svaku dodatu
+tačku prolazi kroz sve „erase" dabove (`erasedDabs.contains(where:)`). Čita se sa
+tri mesta (`removalAreaFits` dvaput, `removalAreaWarrantsCaution` jednom), i nema
+keširanja — računa se iznova na svako čitanje.
+
+Zato lag **raste sa količinom već naslikanog**, što se poklapa sa „neki put" iz
+prijave: na praznoj fotki se ne oseti, posle više poteza se oseti.
+
+### Popravka
+
+`isPaintingRemovalStroke` je preseljen u `BrushCursorPosition` kao
+`isStrokeInProgress`. Jedini koji ga čita je prsten kursora, a on taj objekat
+**već posmatra** — pa ga sad čita odande umesto da mu se prosleđuje.
+
+Rezultat: **nula prolaza kroz `DevelopView.body` tokom poteza.** Provereno
+čitanjem cele drag putanje, redom:
+
+| upis u `onChanged` | gde živi | poništava `body`? |
+|---|---|---|
+| `removalBrushCursor.isStrokeInProgress` | `@Published` na klasi koju roditelj drži kao `@State` | ne |
+| `removalBrushCursor.location` | isto | ne |
+| `activeRemovalStroke.points.append` | isto | ne |
+
+Ključno je da roditelj te objekte drži kao `@State` (referenca), **ne** kao
+`@ObservedObject` — pa `objectWillChange` stiže samo do `BrushCursorRing`-a i
+`ActiveStrokeLayer`-a, a ne do `DevelopView`-a.
+
+Na `onEnded` `commitRemovalStroke()` upisuje u `removalStrokes` (`@State`) → jedan
+prolaz, i to je tačno „tek kada drag završi" iz zahteva.
+
+### Šta NIJE dirano, i zašto
+
+Razmišljano je da se potez u toku izvuče iz zajedničkog `compositingGroup()` sa
+već potvrđenim potezima, da njegovo precrtavanje ne bi ponovo komponovalo i njih.
+**Odbačeno**: grupa postoji zato što se svaki potez crta neproziran pa se tek
+grupa spusti na 45%. Da je potez u toku svoja grupa, tamo gde pređe preko već
+naslikanog videla bi se tamnija mrlja koja nestane čim se pusti miš — što je
+tačno onaj kvar koji je ta grupa i uvedena da reši.
+
+### ⚠️ Neizmereno
+
+Broj prolaza kroz `body` je izveden **čitanjem koda** (tabela gore), ne brojačem
+u pokrenutoj app-i — nema načina da se potez odvuče bez pravog miša. To da se lag
+više ne oseti mora da potvrdi korisnik.
+
+## KORAK 37 — crtice na slajderima (30. avgust 2026)
+
+Korisnikov zahtev, sa slikom Lightroom-ovog Basic panela.
+
+Dodato u **oba** slajdera, jer stoje u jednoj koloni i dva različita ritma crtica
+niz isti panel čitaju se kao greška, ne kao razlika:
+
+- `EditTrackSlider` — obični (Exposure, Contrast, Highlights, …)
+- `GradientTrackSlider` — Temperature, Tint, Saturation, Vibrance
+
+**8 intervala, dakle 7 crtica.** Broj je biran tako da **sredina padne na crticu**:
+svaki bipolarni slajder u ovom panelu ima nulu na sredini, a razmak koji bi je
+preskočio ostavio bi oznaku nule između dve crtice i traka bi izgledala pogrešno
+nacrtano.
+
+Sitnice koje su namerne:
+
+- **samo unutrašnje crtice.** Crtica na zaobljenom kraju kapsule čita se kao
+  odlomljen komad trake, ne kao oznaka.
+- **crtaju se POSLE ispune**, pa ostaju vidljive celom dužinom trake kao u
+  Lightroom-u, umesto da ih ispuna proguta čim se slajder odmakne od nule.
+- **centralna crtica se preskače na bipolarnom slajderu.** Oznaka nule je već tu i
+  namerno je viša; dve oznake na istom mestu bi tu razliku poništile.
+- na gradijentnoj traci crtice su malo jače (0,28 prema 0,22), jer bi ih svetliji
+  krajevi gradijenta (žuti kraj Temperature) inače progutali.

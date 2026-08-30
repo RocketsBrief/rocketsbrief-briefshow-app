@@ -21087,6 +21087,23 @@ struct PhotoShowSheet: View {
     @State private var rootFolderNode: FolderNode?
     @State private var selectedFolderURL: URL?
 
+    // Cameras plugged into the Mac over USB. The browser is a singleton
+    // started once at launch (see .onAppear below) rather than owned here, so
+    // it keeps watching across every window this view is torn down and rebuilt
+    // in — a camera switched on while the client is in Develop still gets
+    // noticed.
+    @ObservedObject private var cameraBrowser = CameraBrowser.shared
+
+    // Which camera the import window is open on, if any. Set either by
+    // clicking the camera in the sidebar or, for a camera that is newly
+    // connected, by the app itself — see onReceive below.
+    @State private var importingCamera: ConnectedCamera?
+
+    // Cameras that have already opened the import window once in this run, so
+    // dismissing it does not have it immediately reopen itself while the
+    // camera is still plugged in.
+    @State private var camerasAlreadyOffered: Set<String> = []
+
     // Same footer links (RocketsBrief / Support / Fund Mission /
     // Disclaimer) that used to live on the now-retired Welcome screen —
     // kept reachable from the bottom of ShowGrid since it's the app's
@@ -21152,23 +21169,35 @@ struct PhotoShowSheet: View {
 
             HStack(spacing: 0) {
                 if let rootFolderNode {
-                    FolderTreeSidebar(
-                        rootNode: rootFolderNode,
-                        selectedURL: $selectedFolderURL,
-                        isPasteAvailable: !pasteboardFileURLs().isEmpty,
-                        onSetClipboard: { urls, isCut in
-                            clipboardURLs = urls
-                            clipboardIsCut = isCut
-                        },
-                        onPasteIntoFolder: { node in
-                            pasteClipboard(into: node.url)
-                        },
-                        onNewFolder: { node in
-                            createNewFolder(in: node.url)
-                        },
-                        onTrashFolder: requestTrashFolder
-                    )
-                        .frame(width: 260)
+                    VStack(spacing: 0) {
+                        // Connected cameras sit ABOVE the folder tree, the way
+                        // Lightroom's import Source panel puts Devices above
+                        // Files: a camera is a place photos come from that the
+                        // folder tree cannot show, because a camera in PTP mode
+                        // never mounts as a volume.
+                        if !cameraBrowser.cameras.isEmpty {
+                            cameraSourcesSection
+                            Divider()
+                        }
+
+                        FolderTreeSidebar(
+                            rootNode: rootFolderNode,
+                            selectedURL: $selectedFolderURL,
+                            isPasteAvailable: !pasteboardFileURLs().isEmpty,
+                            onSetClipboard: { urls, isCut in
+                                clipboardURLs = urls
+                                clipboardIsCut = isCut
+                            },
+                            onPasteIntoFolder: { node in
+                                pasteClipboard(into: node.url)
+                            },
+                            onNewFolder: { node in
+                                createNewFolder(in: node.url)
+                            },
+                            onTrashFolder: requestTrashFolder
+                        )
+                    }
+                    .frame(width: 260)
 
                     Divider()
                 }
@@ -21343,6 +21372,75 @@ struct PhotoShowSheet: View {
             guard let newValue else { return }
             loadImages(inFolder: newValue)
         }
+        .onAppear { CameraBrowser.shared.start() }
+        // A camera that is switched on opens the import window by itself —
+        // that is the behaviour being matched, and it is the whole point: plug
+        // in, switch on, the card is on screen. Watching lastConnectedCamera
+        // rather than the cameras array is what keeps a camera that was
+        // ALREADY attached when the app launched from doing it, since that one
+        // is not a thing the client just did.
+        .onReceive(cameraBrowser.$lastConnectedCamera) { camera in
+            guard let camera, importingCamera == nil else { return }
+            guard !camerasAlreadyOffered.contains(camera.id) else { return }
+            camerasAlreadyOffered.insert(camera.id)
+            importingCamera = camera
+        }
+        .sheet(item: $importingCamera) { camera in
+            CameraImportView(
+                camera: camera,
+                initialDestination: selectedFolderURL,
+                onImported: { folder in
+                    // The imported folder becomes the open folder, so the
+                    // photos are simply on screen when the window closes.
+                    // refreshFolderTree first, since the folder usually did not
+                    // exist when the tree was last built.
+                    refreshFolderTree()
+                    selectedFolderURL = folder
+                },
+                onClose: { importingCamera = nil })
+        }
+    }
+
+    // MARK: Cameras
+
+    private var cameraSourcesSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("DEVICES")
+                .font(.custom("Figtree", size: 11).weight(.bold))
+                .tracking(1.1)
+                .foregroundColor(AppColors.muted.opacity(0.7))
+                .padding(.horizontal, 18)
+                .padding(.top, 20)
+                .padding(.bottom, 10)
+
+            ForEach(cameraBrowser.cameras) { camera in
+                Button {
+                    importingCamera = camera
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 11))
+                        Text(camera.name)
+                            .font(.custom("Figtree", size: 12).weight(.medium))
+                            .lineLimit(1)
+                        Spacer()
+                        Text("Import")
+                            .font(.custom("Figtree", size: 10).weight(.semibold))
+                            .foregroundColor(AppColors.muted)
+                    }
+                    .foregroundColor(AppColors.ink)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(AppColors.panelAlt))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 10)
+            }
+        }
+        .padding(.bottom, 14)
     }
 
     // MARK: Header

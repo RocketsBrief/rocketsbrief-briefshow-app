@@ -8,6 +8,41 @@ Beleška za nastavak rada. Poslednja izmena: 25. avgust 2026.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 30. avgust 2026, druga sesija
+
+**⚠️ PRVO PROČITATI: HIPOTEZA (c) IZ PRETHODNE SESIJE JE NEMOGUĆA.**
+Ne trošiti vreme na `searchRadius`. Dokaz je u KORAKU 34 dole, meren `grep`-om,
+ne rezonovan.
+
+Ukratko: `Quick AI Clean Up` = `InpaintPipeline.quickAIRemoval` → **samo LaMa na
+fiksnih 512**. `searchRadius`, `maxWorkingEdge` i `maxHolePixels` žive u
+`ExemplarInpainter` / `InpaintPipeline.removal`, a **taj poziv ne postoji nigde
+u app-i**. Dakle KORAK 31 nije podigao nikakvu „Quick radnu površinu" — podigao
+je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
+
+**Korisnik je odlučio da granica ostaje 2200.** Nije vraćana.
+
+#### Urađeno u ovoj sesiji
+
+| | |
+|---|---|
+| 34 | **Četkica više ne izlazi van slike** (stavka 1 iz prethodne sesije) + zašto `searchRadius` nije uzrok bele mrlje |
+| 35 | **Import direktno sa kamere preko USB-a** — nova funkcija, na korisnikov zahtev |
+
+#### ⚠️ NEPROVERENO NA EKRANU
+
+Build je čist i app se pokreće, ali **ništa iz ove sesije nije viđeno uživo**:
+
+- KORAK 34 — odsecanje poteza na okvir slike
+- KORAK 35 — **cela funkcija za kameru nije probana ni sa jednom kamerom.**
+  Z 6 nije bio povezan dok je rađeno (`ICDeviceBrowser` prijavio 0 uređaja u
+  probnom binarnom fajlu). Sve je pisano po SDK zaglavljima, koja SU čitana, i
+  svaki potpis je proveren probnim prevođenjem — ali prvi pravi test je: uključiti
+  kameru i videti da li se pojavi.
+
+Ostaje i dalje neprovereno iz prethodne sesije: ivice na dugmadima i popravka
+gumice iz KORAKA 33.
+
 ### GDE SMO STALI — 30. avgust 2026, kraj sesije
 
 **Sve iz ove sesije je commit-ovano. NIJE pushovano** — to je prvo za sledeći put, ako
@@ -4837,3 +4872,188 @@ lozinku. Svi moji „0×0" pokušaji kroz celu sesiju bili su app koja čeka pri
 **Pravilo za sledeću sesiju: 0×0 prozor NIJE kvar — to je ekran za prijavu. Sačekati da
 korisnik uđe, i ne gasiti app sa `kill -9` posle toga, jer sledeće pokretanje traži
 lozinku ponovo.**
+
+
+## KORAK 34 — četkica ostaje na slici, i zašto `searchRadius` nije bio uzrok (30. avgust 2026)
+
+### Prvo ono što obara plan iz prethodne sesije
+
+Prethodna sesija je ostavila hipotezu (c) kao prvu stvar za probati: da je bela
+mrlja od `Quick Clean Up`-a nastala zato što je `ExemplarInpainter.fill` ostao na
+`searchRadius: Int = 80` dok je `maxWorkingEdge` u KORAKU 31 podignut 1100 → 2200,
+pa inpainter efektivno pretražuje upola manje slike.
+
+**To ne može biti uzrok, jer taj kod se nikad ne izvršava.**
+
+```
+$ grep -rn "InpaintPipeline.removal" --include="*.swift" .
+(ništa)
+```
+
+UI zove tačno dve stvari (`Develop.swift:7272` i `:7275`):
+
+- `InpaintPipeline.quickAIRemoval` → `LaMaInpaintPipeline.shared.fill` na
+  **fiksnih 512** (`LaMaInpaintPipeline.imageSide = 512`)
+- `InpaintPipeline.aiRemoval` → SD, takođe 512
+
+`ExemplarInpainter` — sa `searchRadius`, `maxWorkingEdge` i `maxHolePixels` — visi
+ispod `InpaintPipeline.removal`, koji niko ne poziva. To je mrtav kod.
+
+Iz toga slede tri stvari:
+
+1. **`maxWorkingEdge` 1100 → 2200 i `maxHolePixels` 45 000 → 180 000 iz KORAKA 31
+   nisu promenili baš ništa.** Menjan je mrtav kod.
+2. **`DevelopLaMaInpaint.swift` je diran tačno jednom, pri nastanku** (`git log`
+   nad tim fajlom vraća samo `2f96e09`). Način na koji Quick računa rezultat se
+   od tada nije promenio ni jednom linijom.
+3. Jedino što je KORAK 31 stvarno promenio za Quick je granica
+   `blockingAreaPixels` `.quick`: **1000 → 2200**. Obrazloženje upisano u komentar
+   („That cap is now 1600, so the region is scaled down a third less") poziva se
+   na `maxWorkingEdge` — konstantu koju Quick ne koristi.
+
+### Time pada i sumnja koju je prethodna sesija ostavila otvorenom
+
+Pitanje je glasilo: „ako je uzrok samo sunce, zašto se nije javljalo pre KORAKA 31?"
+
+Odgovor: **kod male površine se ništa i nije promenilo.** Granica se ne tiče male
+površine, a računica je bajt-identična onoj od pre KORAKA 31. Bela mrlja na maloj
+površini nije regresija — to je **KORAK 16**, koji je istu stvar već opisao 26.
+avgusta: LaMa nastavlja dominantnu teksturu okoline, a kad je okolina prežarena
+(sunce, prežaren pesak, nebo), ta tekstura JESTE belina. KORAK 16 to i piše
+doslovno: „ili kod korisnika presvetlo nebo → bela mrlja".
+
+Kod velike površine granica jeste bila zaštita i jeste uklonjena. **Korisnik je
+odlučio da 2200 ostaje** — zapisano da se ne vraća po inerciji.
+
+Prava popravka za belu mrlju nije nijedan broj u `Develop.swift` nego veći ulaz
+u sam model, što je KORAK 19 već izmerio i odbacio na 1024.
+
+### Sad ono što je zaista popravljeno
+
+Potez „AI Selection" četkice crtao se i preko sive margine pored fotografije.
+Dva odvojena kvara, oba popravljena:
+
+**Crtanje.** Prekrivač je bio odsečen na `containerSize` (KORAK 24), što je oblast
+PREGLEDA. Fotografija je unutar pregleda uokvirena sivim, pa je potez i dalje mogao
+da izađe na tu marginu. Sad se odseca na `fitted` — okvir same slike — presečen sa
+kontejnerom. Presek je bitan: pri „fit" je slika manja od pregleda, zumirano je
+veća, i potez mora da stane na ono što je uže na svakoj ivici.
+
+Za to je dodat `PreviewClipShape`, jer `.clipped()` seče na SOPSTVENE granice viewa,
+a ovde treba seći na pravougaonik zadat u koordinatama roditelja.
+
+**Bojenje.** `unitPoint(from:frame:)` klampuje na 0…1, pa se tačka iz margine
+lepila na ivicu slike — tvrda linija selekcije niz bok kadra koju niko nije nacrtao.
+Sad se tačka van slike **odbacuje**, ne klampuje.
+
+Odbacivanje je bezbedno i vredi zapisati zašto: potez se crta kao niz pravih
+segmenata između susednih zapamćenih tačaka, a **segment između dve tačke unutar
+pravougaonika ostaje unutar njega**. Znači potez koji izađe sa slike i vrati se ne
+može da ostavi geometriju napolju — linija samo preseče, što bi uradila i da je
+miš tuda prošao po slici.
+
+Isto odsecanje dobio je i renderovani `removalOverlay` (maska iz „Select People").
+
+**Nije dirano:** `paintBrush` i `paintPatchStroke` imaju isti oblik greške (isti
+`unitPoint`, isto klampovanje). Prijavljena je bila samo AI selection četkica, pa
+je samo ona i menjana.
+
+## KORAK 35 — import direktno sa kamere preko USB-a (30. avgust 2026)
+
+Korisnikov zahtev, sa slikom Lightroom-ovog Import prozora: „povezao sam Z 6 sa
+USB-om i Lightroom odmah vidi slike — može li isto u BriefShow-u, da se pojavi ceo
+folder kamere spreman za import na mac?"
+
+### Zašto ImageCaptureCore, a ne traženje mountovanog diska
+
+Nikon Z 6 u podrazumevanom USB režimu je **MTP/PTP uređaj — ne montira se kao
+disk.** U Finder-u ga nema, `/Volumes` ga ne vidi, i nikakvo prolaženje kroz
+fajl-sistem ga ne bi našlo. `ImageCaptureCore` je framework koji govori PTP i koji
+koriste i Image Capture.app i Lightroom. Zato ide preko njega.
+
+### Šta je napravljeno
+
+Dva nova fajla. Projekat koristi `PBXFileSystemSynchronizedRootGroup`, pa se novi
+`.swift` fajl pokupi sam — `project.pbxproj` nije trebalo dirati.
+
+**`CameraImport.swift`** — sloj prema kameri:
+
+- `CameraBrowser` — jedan `ICDeviceBrowser` za celu app, pokrenut jednom.
+  Maska je `camera | local`, pa se ne prijavljuju deljene i Bonjour kamere sa
+  drugih Mac-ova na mreži.
+- `CameraImportSession` — otvara sesiju na jednoj kameri, čita `mediaFiles`,
+  vuče sličice i kopira izabrano.
+
+**`CameraImportView.swift`** — sam prozor, isti trodelni raspored kao Lightroom-ov
+(izvor levo, mreža sličica u sredini, odredište desno), u paleti ShowGrid-a.
+
+**Ukopčano u ShowGrid** (`ContentView.swift`): sekcija „DEVICES" iznad stabla
+foldera, i prozor koji se **sam otvori kad se kamera upali**.
+
+### Odluke koje nisu očigledne, i zašto
+
+**Sličice se traže najviše 6 odjednom.** ImageCaptureCore rado primi zahtev za
+svaki fajl na kartici odjednom, a to su na punoj kartici hiljade PTP razmena koje
+posle izgladnjuju samo preuzimanje.
+
+**Preuzimanje ide jedan po jedan fajl.** Paralelno sa jedne kamere nije brže —
+jedan USB endpoint, jedan čitač iza njega — a progres postaje besmislen i
+delimičan neuspeh mnogo teži za prijavu.
+
+**`.overwrite` je `false`.** ImageCaptureCore tad sam pravi jedinstveno ime
+(`DSC_0001-1.NEF`) umesto da pregazi fajl. To je bezbedna strana odluke koju
+korisnik ne može da poništi.
+
+**„Delete from camera after import" je podrazumevano isključeno** i ispod njega
+piše da nema undo. To je jedina nepovratna stvar u tom prozoru, a kartica nije
+kanta.
+
+**Dnevni podfolder se imenuje po danu kad su fotke SNIMLJENE, ne po današnjem
+danu.** Kartica uvezena ujutru posle svadbe pripada danu svadbe — to je i jedini
+razlog da se uopšte grupiše po datumu.
+
+**Sesija se zatvara na `onDisappear`.** Kamera ostavljena sa otvorenom sesijom
+ostaje zaključana za ovu app, i na većini tela to znači da korisnik ne može da
+koristi sopstvenu kameru dok BriefShow ne izađe.
+
+### ⚠️ Mina nađena usput, i zašto bi bila gadna
+
+```
+@property (nonatomic, readwrite, assign, nullable) id <ICDeviceDelegate> delegate;
+```
+
+**`assign`, ne `weak`.** Dealociran `CameraImportSession` ostavljen u tom polju je
+viseći pokazivač, i prvi sledeći callback ruši app. A taj callback je tipično
+**iskopčavanje kamere, minutima pošto je prozor zatvoren** — što ga čini otprilike
+najtežim padom za povezivanje sa uzrokom.
+
+Rešeno u `deinit`, ne samo u `close()`, jer `close()` ide iz `onDisappear` i nije
+zagarantovan na svakom putu kojim objekat može da nestane. Uslovljeno identitetom:
+ponovno otvaranje prozora za istu kameru pravi NOVU sesiju koja je već preuzela to
+polje, pa bi slepo brisanje ućutkalo nju umesto ove.
+
+### Entitlement
+
+Dodat `com.apple.security.device.usb`. **Bez njega sandboxovana app ne dobija
+nijedan rezultat od `ICDeviceBrowser`-a — browser se pokrene, ne prijavi ništa, i
+nikad ne javi grešku.** Provereno da je ušao u potpisanu app
+(`codesign -d --entitlements -`).
+
+### Šta JESTE provereno
+
+- svaki potpis iz ImageCaptureCore-a proveren probnim prevođenjem uz SDK zaglavlja,
+  ne po sećanju (imena `ICDownloadOption` konstanti su iznenađenje: `.overwrite` i
+  `.deleteAfterSuccessfulDownload`, ne ono što se očekuje)
+- `ICDeviceBrowser` se pokreće čisto u zasebnom binarnom fajlu
+- build čist, app se pokreće, nema izveštaja o padu
+- entitlement u potpisanoj app-i
+
+### ⚠️ Šta NIJE provereno
+
+**Ništa sa pravom kamerom.** Z 6 nije bio povezan (`ICDeviceBrowser` prijavio 0
+uređaja). Prvi test je: povezati kablom, upaliti, i videti da li se „DEVICES"
+pojavi u sidebar-u i da li se prozor sam otvori.
+
+Ako se ne pojavi, redom: (1) da li je USB režim kamere MTP/PTP, (2) da li je
+`Image Capture.app` vidi — ako ni ona ne vidi, nije do BriefShow-a, (3) da li je
+macOS tražio dozvolu za pristup uređaju.

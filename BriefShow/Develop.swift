@@ -2378,6 +2378,20 @@ private struct ActiveStrokeLayer: View {
     }
 }
 
+// Clips to a rectangle fixed in the PARENT's coordinate space, which is what
+// `.clipped()` cannot do — it always clips to the view's own bounds.
+//
+// Every tool overlay is framed to the preview container and draws against the
+// FULL pre-crop image rect, so `.clipped()` bounds it to the PREVIEW. But the
+// preview is bigger than the photo whenever the photo is letterboxed inside
+// it, and a brush stroke could still run out over the grey margin beside the
+// picture. The photo's own on-screen rect is what a stroke has to stop at, so
+// that rect is passed in and clipped to directly.
+private struct PreviewClipShape: Shape {
+    let rect: CGRect
+    func path(in _: CGRect) -> Path { Path(rect) }
+}
+
 // The Develop panel's tabs. Every section listed here already existed; the
 // tabs only decide which of them are mounted at once. Layers gets its own tab
 // because it is a section you work IN rather than glance at, and it used to
@@ -3954,7 +3968,7 @@ struct DevelopView: View {
                         // drawing.
                         Group {
                             if isRemoveBrushActive {
-                                removalPaintOverlay(frame: fullImageFrame(from: fitted), containerSize: proxy.size)
+                                removalPaintOverlay(frame: fullImageFrame(from: fitted), imageFrame: fitted, containerSize: proxy.size)
                             } else if let index = selectedAdjustmentIndex {
                                 localAdjustmentOverlay(settings.localAdjustments[index], frame: fullImageFrame(from: fitted))
                             } else if let activeSelection {
@@ -4013,8 +4027,15 @@ struct DevelopView: View {
                                 .frame(width: fullFrame.width, height: fullFrame.height)
                                 .position(x: fullFrame.midX, y: fullFrame.midY)
                         }
+                        // Clipped to the photo rather than to the preview, for
+                        // the reason spelled out on removalPaintOverlay's own
+                        // clip: this mask is drawn against the full pre-crop
+                        // frame, so under a crop it genuinely covers area that
+                        // is off the picture, and the preview's letterbox
+                        // margin is not part of the picture either.
                         .frame(width: proxy.size.width, height: proxy.size.height)
-                        .clipped()
+                        .clipShape(PreviewClipShape(
+                            rect: fitted.intersection(CGRect(origin: .zero, size: proxy.size))))
                         .allowsHitTesting(false)
                     }
                 } else if isLoadingPreview {
@@ -5682,7 +5703,7 @@ struct DevelopView: View {
     // image so they must be drawn against `frame`, but the part of it the
     // client can actually see and click is bounded by `containerSize` — and
     // zoomed in, `frame` is several times larger than the container.
-    private func removalPaintOverlay(frame: CGRect, containerSize: CGSize) -> some View {
+    private func removalPaintOverlay(frame: CGRect, imageFrame: CGRect, containerSize: CGSize) -> some View {
         let longEdge = max(frame.width, frame.height)
         let brushDiameter = max(removalBrushSize * longEdge, 2)
         // Rose, matching InpaintPipeline.overlayImage — painting by hand and
@@ -5738,13 +5759,21 @@ struct DevelopView: View {
             }
             .compositingGroup()
             .opacity(0.45)
-            // Clipped to the preview, the same way the rendered removalOverlay
-            // two blocks down already is and for the same reason: `frame` is
-            // the full pre-crop image, which zoomed in (or under a tight crop)
-            // extends well past the preview area, and unclipped strokes were
-            // painted straight over the panel beside it.
+            // Clipped to the PHOTO, not to the preview. `frame` is the full
+            // pre-crop image, which zoomed in (or under a tight crop) extends
+            // well past the preview area, and unclipped strokes were painted
+            // straight over the panel beside it. Clipping to the preview fixed
+            // that but left the other half of it: the photo is letterboxed
+            // inside the preview, so a stroke could still be painted over the
+            // grey margin next to the picture. `imageFrame` IS the picture.
+            //
+            // Intersected with the container because the two bounds are not
+            // nested in a fixed order: at fit the photo is smaller than the
+            // preview, zoomed in it is larger, and the stroke has to stop at
+            // whichever is tighter on each edge.
             .frame(width: containerSize.width, height: containerSize.height)
-            .clipped()
+            .clipShape(PreviewClipShape(
+                rect: imageFrame.intersection(CGRect(origin: .zero, size: containerSize))))
             .allowsHitTesting(false)
 
             // Dashed while erasing, so which of the two the next drag will do
@@ -5788,7 +5817,7 @@ struct DevelopView: View {
                                 isPaintingRemovalStroke = true
                             }
                             removalBrushCursor.location = value.location
-                            paintRemovalBrush(at: value.location, frame: frame)
+                            paintRemovalBrush(at: value.location, frame: frame, imageFrame: imageFrame)
                         }
                         .onEnded { _ in
                             isPaintingRemovalStroke = false
@@ -7024,8 +7053,23 @@ struct DevelopView: View {
         isCropping = false
     }
 
-    private func paintRemovalBrush(at location: CGPoint, frame: CGRect) {
-        guard let unit = unitPoint(from: location, frame: frame) else {
+    // `frame` is the full pre-crop image (the space stroke points are stored
+    // in); `imageFrame` is the part of it actually on screen — the photo. They
+    // differ whenever a crop is set, and the photo is letterboxed inside the
+    // preview either way.
+    private func paintRemovalBrush(at location: CGPoint, frame: CGRect, imageFrame: CGRect) {
+        // Points outside the picture are DROPPED, not clamped. unitPoint()
+        // clamps into 0...1, so a drag that wandered into the grey margin used
+        // to pile points onto the photo's edge — a hard line of selection down
+        // the side of the frame that nobody painted.
+        //
+        // Dropping is safe, and that is worth stating: the stroke is drawn as
+        // straight segments between consecutive stored points, and a segment
+        // between two points inside a rectangle stays inside it. So a drag that
+        // leaves the photo and comes back cannot put geometry outside it — the
+        // line simply cuts across, which is what it would have done anyway had
+        // the mouse travelled that way inside the frame.
+        guard imageFrame.contains(location), let unit = unitPoint(from: location, frame: frame) else {
             return
         }
         // Same minimum-spacing filter as paintBrush — see its doc comment.

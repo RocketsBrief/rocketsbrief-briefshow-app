@@ -8,5 +8,10 @@
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- Cameras connected over USB, read through ImageCaptureCore. A
+         sandboxed app gets no ICDeviceBrowser results at all without this:
+         the browser starts, reports nothing, and never errors. -->
+    <key>com.apple.security.device.usb</key>
+    <true/>
 </dict>
 </plist>

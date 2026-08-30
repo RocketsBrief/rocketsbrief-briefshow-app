@@ -2,8 +2,11 @@
 //  Develop.swift
 //  BriefShow
 //
-//  "Develop" — a standalone, Lightroom-style non-destructive photo editor,
-//  opened from ShowGrid's own "Develop" header button (see ContentView.swift).
+//  "LumenoLab" — a standalone, Lightroom-style non-destructive photo editor,
+//  opened from ShowGrid's own "LumenoLab" header button (see ContentView.swift).
+//  Everything in here is still named Develop: the window was renamed, the code
+//  was not, and chasing the rename through nine thousand lines would be a large
+//  diff that changes no behaviour.
 //  Deliberately kept separate from PhotoShowSheet (ShowGrid's grid/loupe/
 //  rating screen) and from the Kousei/Kirigami/Origami slideshow pipeline —
 //  editing a photo here never touches the original file on disk and never
@@ -2152,6 +2155,21 @@ private final class ClickThroughHostingView: NSHostingView<DevelopView> {
 final class DevelopWindowController {
     static let shared = DevelopWindowController()
 
+    /// The window's title, and — much more importantly — the string BOTH local
+    /// key monitors match on to decide whether a keystroke is theirs.
+    ///
+    /// A constant rather than three copies of a literal, because those monitors
+    /// are APP-WIDE: a monitor whose guard no longer matches its own window
+    /// keeps receiving and ACTING ON keys while a different window is focused,
+    /// with whatever context it happens to hold. That is not hypothetical — see
+    /// the note at the top of BRIEFSHOW_DEVELOP_NOTES.md, where exactly that
+    /// recursively copied the whole Desktop folder into itself, twice.
+    ///
+    /// So renaming the window is a one-line change here and cannot silently
+    /// leave a guard behind.
+    static let windowTitle = "LumenoLab"
+
+
     private var windowController: NSWindowController?
 
     private init() {}
@@ -2169,7 +2187,7 @@ final class DevelopWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Develop"
+        window.title = Self.windowTitle
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
@@ -3041,7 +3059,7 @@ struct DevelopView: View {
             return
         }
         editingKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard NSApp.keyWindow?.title == "Develop" else {
+            guard NSApp.keyWindow?.title == DevelopWindowController.windowTitle else {
                 return event
             }
             // Masked down to JUST the modifiers these shortcuts actually
@@ -3164,7 +3182,7 @@ struct DevelopView: View {
             return
         }
         spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
-            guard NSApp.keyWindow?.title == "Develop" else {
+            guard NSApp.keyWindow?.title == DevelopWindowController.windowTitle else {
                 return event
             }
             guard event.keyCode == 49 else {          // space

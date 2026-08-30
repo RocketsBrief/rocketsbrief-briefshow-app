@@ -35,6 +35,7 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | 40 | **Generative sada radi kao LaMa** — LaMa prvo popuni, SD samo doteruje. Izmereno; usput i 2× brže |
 | 41 | **BELA MRLJA — UZROK NAĐEN I POPRAVLJEN.** `toneMatch` je dizao svaki piksel rupe za +39 kad je okolina prežarena |
 | 42 | **Klik na sličicu se više ne čeka** — dva tap gesture-a su terala SwiftUI da odloži selekciju |
+| 43 | **Slideshow → BriefShow, Develop → LumenoLab** sa ručno nacrtanom ikonicom (čaša + presečeno sunce) |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
@@ -5694,3 +5695,77 @@ selektuje.
 
 Sam osećaj klika i to da dupli klik i dalje otvara Develop. Logika je merena,
 gesture nije — za to treba miš.
+
+
+## KORAK 43 — Slideshow → BriefShow, Develop → LumenoLab (31. avgust 2026)
+
+Korisnikov zahtev: dugme „Slideshow" da se zove **BriefShow** i to **fontom
+wordmark-a**, a „Develop" da postane **LumenoLab** sa ikonicom „lab čašica sa
+mehurićima i sunce iza, presečeno".
+
+### Nov fajl `Marks.swift`
+
+**`BriefShowWordmark(size:)`** — dvotonski wordmark kao jedan view. Veliki u
+zaglavlju ShowGrid-a i mali u dugmetu su sada **isti** mark, ne dve kopije istih
+Text-ova. Trekovanje se skalira sa veličinom (−1,7 pri 20 pt, srazmerno niže),
+jer je Unbounded Black široko pismo i bez toga se mala kopija raspadne u nešto
+što liči na rođaka wordmark-a, a ne na njega.
+
+Wordmark postavlja svoje dve boje, pa **ne prima hover tint** koji ostala
+dugmad u zaglavlju primaju. To je cena toga što je brend-znak; hover skaliranje i
+dalje odgovara na pokazivač, pa dugme nije nemo.
+
+**`LumenoLabMark`** — ručno nacrtana, jer je SF Symbols nema: na macOS 13 nema
+čašicu uopšte, a nijedna verzija nema čašicu sa suncem presečenim iza nje. Isti
+razlog zbog kog je i `OpenFolderShape` ručno crtan (KORAK 12).
+
+Sve je na mreži 100×100 i skalira se na dati okvir, pa jedan opis služi i za
+15 pt u dugmetu i za bilo šta veće kasnije.
+
+### Tri stvari koje su nađene tek gledanjem, ne čitanjem koda
+
+Ikonica je renderovana headless (`ImageRenderer`) i **pogledana** — na 240 pt da
+se sudi crtež i na pravih 15 pt da se vidi preživljava li veličinu na kojoj se
+isporučuje. Tri kvara su izašla tek tako:
+
+1. **Mehurići kao prstenovi ne rade.** Rupa u prstenu je na 15 pt ispod jedne
+   tačke, pa se na nekima zatvori a na nekima ne — što izgleda kao greška u
+   crtežu, ne kao mehurići. Sada su svi manji od polovine debljine poteza, pa se
+   svi popune u pune tačke.
+2. **Usna čašice je sekla sunce bez razmaka.** Silueta koja se izbija iz sunca
+   sada uključuje i usnu (nacrtanu pa zadebljanu), jer dve tamne linije koje se
+   ukrštaju na ovoj veličini čitaju kao jedna debela mrlja.
+3. **Presečen zrak izgleda kao trunka prašine, ne kao zrak.** Presečen KRUG i
+   dalje čita kao krug koji se nastavlja iza nečega — to je i poenta znaka — ali
+   prav potez odsečen sa oba kraja ne čita kao ništa. Zato se zrak crta **ceo
+   ili nikako**, po tome da li ijedna od šest tačaka duž njega pada u siluetu
+   čašice. Testira se ista silueta koju koristi i maska, pa se to dvoje ne može
+   raziđati oko toga gde je čašica.
+
+### ⚠️ Mina koja je nađena usput: naslov prozora je NOSIV
+
+`window.title = "Develop"` nije bio samo naslov. Dva `NSEvent` monitora se po
+njemu ograničavaju:
+
+```swift
+guard NSApp.keyWindow?.title == "Develop" else { return event }
+```
+
+To je pravilo #2 sa vrha ovog dokumenta. **Preimenovanje naslova bez ta dva
+guard-a ostavilo bi app-wide monitore da primaju i OBRAĐUJU tastere dok je
+fokusiran drugi prozor** — tačno ono što je jednom već rekurzivno kopiralo ceo
+Desktop folder u sebe, dvaput.
+
+Zato naslov sada dolazi iz **jedne konstante**,
+`DevelopWindowController.windowTitle`, koju čitaju i prozor i oba guard-a.
+Preimenovanje je od sada izmena na jednom mestu i ne može tiho da ostavi guard
+iza sebe.
+
+**Kod se i dalje zove Develop** — preimenovan je prozor, ne kod. Provlačenje
+imena kroz devet hiljada linija bio bi velik diff koji ne menja ponašanje.
+
+### ⚠️ Neprovereno
+
+Dugmad su renderovana istim fontom, veličinom, razmakom i okvirom koje
+`ShowHeaderButtonLabel` koristi, pa je ono što je gledano ono što ide na ekran —
+ali u pokrenutoj app-i ih još niko nije video.

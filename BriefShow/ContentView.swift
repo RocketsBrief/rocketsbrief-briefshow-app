@@ -21479,17 +21479,7 @@ struct PhotoShowSheet: View {
                 // itself and never gets squeezed into wrapping ("Show"
                 // breaking onto its own line) now that the header shares
                 // this row with the folder tree next to it.
-                HStack(spacing: 0) {
-                    Text("Brief")
-                        .font(.custom("Unbounded", size: 20).weight(.black))
-                        .tracking(-1.7)
-                        .foregroundColor(AppColors.wordmarkBright)
-
-                    Text("Show")
-                        .font(.custom("Unbounded", size: 20).weight(.black))
-                        .tracking(-1.7)
-                        .foregroundColor(AppColors.inkSecondary)
-                }
+                BriefShowWordmark(size: 20)
                 .onHover { hovering in
                     withAnimation(.linear(duration: 0.12)) {
                         isShortcutsHovered = hovering
@@ -21511,12 +21501,22 @@ struct PhotoShowSheet: View {
 
             Spacer()
 
+            // Named BriefShow rather than Slideshow, and set in the app's own
+            // wordmark rather than the button font: this is the button that
+            // opens BriefShow itself, so it carries the name of the thing it
+            // opens. The two-tone mark is shared with the header's big one
+            // (see BriefShowWordmark) so the small copy cannot drift from it.
+            //
+            // The wordmark sets its own two colours, which means it does not
+            // take the hover tint the other header buttons do. That is the
+            // trade for it being the brand mark; the hover scale still answers
+            // the pointer, so the button is not silent.
             Button {
                 BriefShowWindowController.shared.open(initialPhotoURLs: photoURLs)
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "film")
-                    Text("Slideshow")
+                    BriefShowWordmark(size: 13)
                 }
             }
             .buttonStyle(ShowHeaderButtonStyle())
@@ -21534,8 +21534,12 @@ struct PhotoShowSheet: View {
                 )
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "slider.horizontal.3")
-                    Text("Develop")
+                    // Hand-drawn: SF Symbols has no flask at all on macOS 13,
+                    // and none of its versions has one with a sun cut in
+                    // behind it. See LumenoLabMark.
+                    LumenoLabMark()
+                        .frame(width: 15, height: 15)
+                    Text("LumenoLab")
                 }
             }
             .buttonStyle(ShowHeaderButtonStyle())

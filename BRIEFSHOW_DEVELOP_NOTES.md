@@ -33,6 +33,7 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | 38 | **Generative nije radio kad su tragovi razdvojeni** — nije limit, nego prazan region. Sad jedno uklanjanje PO GRUPI tragova |
 | 39 | **SD ne može da se podesi da briše kao LaMa** — izmereno, 5 guidance × 4 prompta, sve izmišlja. Harness ostaje u `Tools/` |
 | 40 | **Generative sada radi kao LaMa** — LaMa prvo popuni, SD samo doteruje. Izmereno; usput i 2× brže |
+| 41 | **BELA MRLJA — UZROK NAĐEN I POPRAVLJEN.** `toneMatch` je dizao svaki piksel rupe za +39 kad je okolina prežarena |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
@@ -5539,3 +5540,91 @@ razlog da se uklanjanje odbije.
 
 Sve gore je mereno kroz `Tools/run-inpaint-sweep.py` na pravoj fotki i slike su
 gledane — ali **niko još nije pritisnuo dugme u pokrenutoj app-i.**
+
+
+## KORAK 41 — bela mrlja: uzrok konačno nađen, i nije veličina (31. avgust 2026)
+
+Korisnik posle KORAKA 40: „radi super ali… drugi put kad sam selektovao i krenuo
+da brišem AI generative dobio sam ovu belu mrlju, a nisam toliko bio selektovao
+area-e." Uz dva pitanja:
+
+1. da li se area vrati na nulu kad posao završi
+2. da li da spustimo LaMinu granicu na 1800 da se ovo izbegne
+
+### Pitanje 1: area SE vraća na nulu
+
+Provereno u kodu, ne pretpostavljeno. `removalAreaPixels` čita **tačno tri**
+stvari — `removalStrokes`, `removalMask`, `removalMaskUnitBox` — i
+`clearRemovalMask()` prazni sva tri. Kad su prazni, `briefShowRemovalJobs` vrati
+praznu listu i mera je `nil`, dakle nula. Nije tu problem.
+
+### Pitanje 2: NE, granica ne bi pomogla — i evo zašto
+
+Maske koje su u ovom koraku napravile belu mrlju bile su **310×137 px** i
+**310×137 px**. To je daleko ispod svake granice o kojoj se razmišljalo. Spuštanje
+na 1800 ne bi promenilo ništa, jer **veličina nikad i nije bila uzrok.**
+
+### Pravi uzrok: `toneMatch`
+
+`InpaintPipeline.toneMatch` meri koliko je model promašio ton, poredeći svoju
+verziju prstena oko rupe sa pravim prstenom, pa razliku primenjuje na piksele
+rupe kao `gain × vrednost + offset`.
+
+Izmereno na `C4S_7891`, ista fotka, tri mesta:
+
+| mesto | pojačanje (R/G/B) | offset | rezultat |
+|---|---|---|---|
+| normalno (0,06 / 0,33) | 0,989 / 0,986 / 0,998 | +3,2 / +4,2 / +1,5 | čisto |
+| pesak (0,30 / 0,70) | 0,944 / 0,949 / 0,947 | +11,9 / +10,9 / +10,4 | čisto |
+| **prežareno (0,04 / 0,36)** | **0,850 / 0,850 / 0,850** | **+39,3 / +39,3 / +39,4** | **BELA MRLJA** |
+
+**Sva tri kanala zakucana tačno na 0,850** — donju granicu clamp-a — sa offsetom
+od +39. To nije slučajnost nego potpis kvara.
+
+**Zašto:** tamo gde je fotografija prežarena, pravi pikseli su prikucani uz 255 i
+**nemaju skoro nikakvu varijansu**, dok model svoju verziju istog prstena i dalje
+crta sa prelivima. Pošten odnos je onda daleko ispod poda (izmereno: **0,475**).
+Clamp ga podigne na 0,85, a onda **offset mora da nadoknadi razliku** — i offset
+od +39 podigne svaki srednji ton u zakrpi ka belom. **To JESTE bela mrlja.**
+
+### Popravka
+
+Dostizanje **donje** granice se više ne zaokružuje nego se čita kao signal da
+prsten uopšte nije merljiv, i korekcija se **napušta** — koriste se modelovi
+pikseli kakvi jesu. Nema šta da se spasava: prave vrednosti nikad nisu ni
+upisane u fajl.
+
+Samo donja granica; gornja (model izgladio više nego stvarnost) nije opasna.
+Odluka je globalna za sva tri kanala, jer bi identitet po kanalu pomerio balans
+boja.
+
+### Provereno posle popravke
+
+| mesto | izmereni odnos | šta se desilo |
+|---|---|---|
+| 0,04 / 0,36 | 0,475 | **napušteno** |
+| 0,16 / 0,34 | 0,824 | **napušteno** |
+| 0,06 / 0,33 | 0,989 | primenjeno, **brojevi identični ranijim** |
+| 0,30 / 0,70 | 0,944 | primenjeno, **brojevi identični ranijim** |
+
+Zdravi slučajevi su nepromenjeni do cifre. Slike: suncobran je vratio pruge i
+boju, more je vratilo ton, beli preliv je bitno smanjen.
+
+Hibridna putanja iz KORAKA 40 dobija dvostruko: LaMina korekcija se napusti, a
+SD-ova sopstvena onda legne čisto (1,00 / 1,03 / 1,04, offseti od +2,7 do −8,6),
+jer polazi od nepokvarene podloge.
+
+### Šta OSTAJE, i to pošteno
+
+Ostaje blaga meka perjanica tamo gde je uklonjena figura bila uz prežarenu
+pozadinu. To je KORAK 16 — LaMa nastavlja dominantnu teksturu okoline, a kad je
+okolina bela, nastavlja belo. To nije popravljeno i ne popravlja se granicom;
+popravlja se samo većim ulazom u model (KORAK 19 to izmerio i odbacio na 1024).
+
+**Razlika je u redu veličine:** ranije je cela zakrpa odlazila u belo, sada
+ostaje mek trag na ivici.
+
+### ⚠️ Neprovereno
+
+Sve gore je kroz `Tools/run-inpaint-sweep.py`, sa gledanim slikama. U pokrenutoj
+app-i još niko nije pritisnuo dugme.

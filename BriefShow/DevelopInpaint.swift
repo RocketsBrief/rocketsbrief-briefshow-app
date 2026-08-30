@@ -950,7 +950,34 @@ enum InpaintPipeline {
             // the real work; the gain only trims what is left.
             var gain = 1.0
             if varianceModel > 4, varianceReal > 4 {
-                gain = min(max(varianceReal.squareRoot() / varianceModel.squareRoot(), 0.85), 1.18)
+                let measured = varianceReal.squareRoot() / varianceModel.squareRoot()
+                // Hitting the BOTTOM of that clamp is not a near miss to be
+                // rounded off — it is the signature of a ring that cannot be
+                // measured at all, and applying the fit anyway is what put a
+                // white patch on a sunlit beach.
+                //
+                // Measured on C4S_7891 (numbers in KORAK 41): a healthy ring
+                // fits at gain 0.94-1.00 with an offset of +1 to +12. Over
+                // blown highlights all three channels pin at exactly 0.850
+                // with an offset of +39. The reason is physical: where the
+                // photo is clipped, the real pixels are pegged near 255 and
+                // have almost NO variance, while the model's version of the
+                // same ring still has gradation — so the honest ratio is far
+                // below the floor. Clamping it up leaves the offset to make up
+                // the difference, and an offset that large lifts every
+                // mid-tone in the patch toward white. That IS the white patch.
+                //
+                // There is nothing to recover here: the true values were never
+                // written to the file. So the correction is abandoned rather
+                // than approximated, and the model's own pixels are used as-is.
+                guard measured >= 0.85 else {
+                    if SDInpaintPipeline.isDebugging {
+                        print(String(format: "  [sd] tone match ABANDONED — ring is clipped (channel %d fits at x%.3f)",
+                                     channel, measured))
+                    }
+                    return identity
+                }
+                gain = min(measured, 1.18)
             }
             result[channel] = (gain: Float(gain), offset: Float(meanReal - gain * meanModel))
         }

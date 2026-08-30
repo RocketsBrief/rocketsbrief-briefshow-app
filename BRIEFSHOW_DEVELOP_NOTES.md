@@ -34,6 +34,7 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | 39 | **SD ne može da se podesi da briše kao LaMa** — izmereno, 5 guidance × 4 prompta, sve izmišlja. Harness ostaje u `Tools/` |
 | 40 | **Generative sada radi kao LaMa** — LaMa prvo popuni, SD samo doteruje. Izmereno; usput i 2× brže |
 | 41 | **BELA MRLJA — UZROK NAĐEN I POPRAVLJEN.** `toneMatch` je dizao svaki piksel rupe za +39 kad je okolina prežarena |
+| 42 | **Klik na sličicu se više ne čeka** — dva tap gesture-a su terala SwiftUI da odloži selekciju |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
@@ -5628,3 +5629,68 @@ ostaje mek trag na ivici.
 
 Sve gore je kroz `Tools/run-inpaint-sweep.py`, sa gledanim slikama. U pokrenutoj
 app-i još niko nije pritisnuo dugme.
+
+
+## KORAK 42 — klik na sličicu u ShowGrid-u se više ne čeka (31. avgust 2026)
+
+Korisnik: „kada hoću da kliknem na jednu sliku dobijem lag, ne klikne se odmah
+već delay nekih možda 0,2 sekunde. Je l' može bez delay-a, da se odmah označi?"
+
+### Uzrok je bio zapisan u samom kodu
+
+Na sličici su stajala **dva** tap gesture-a:
+
+```swift
+.onTapGesture(count: 2) { DevelopWindowController.shared.open(...) }
+.onTapGesture { handleSelectTap(url) }
+```
+
+i komentar iznad njih je već opisivao posledicu, ne shvatajući je kao kvar:
+
+> „a single click waits briefly to see if a second one follows before firing
+> handleSelectTap"
+
+To i jeste tih 0,2 sekunde. **Nije selekcija bila spora — app je odbijala da se
+opredeli.** SwiftUI ta dva gesture-a ume da razdvoji jedino tako što jednostruki
+klik zadrži dok ne vidi da li stiže drugi.
+
+### Popravka
+
+Ostao je **jedan** gesture. Klik selektuje **odmah**, uvek, a dupli klik se
+utvrđuje naknadno, po vremenu proteklom od prethodnog klika — što je tačno kako
+se Finder ponaša i zašto je selekcija u njemu trenutna.
+
+Otvaranje na drugi klik pošto je prvi već selektovao **nije sukob**: fotografija
+koju Develop otvori je ona koja je upravo selektovana.
+
+Sitnice koje su namerne:
+
+- **Cmd-klik nikad nije dupli klik.** Njime se gradi višestruka selekcija, a dva
+  Cmd-klika na istu fotku znače „dodaj pa skloni" — čitati to kao zahtev za
+  Develop značilo bi raditi protiv korisnika.
+- **Prag je `NSEvent.doubleClickInterval`**, dakle brzina koju je korisnik
+  stvarno podesio u System Settings, a ne broj izabran ovde.
+- Posle duplog klika se pamćenje briše, pa treći klik u brzom nizu počinje nov
+  par umesto da opet otvara Develop.
+- Selekcija se dešava na **obe** polovine duplog klika, namerno: to je ono što
+  prvi klik čini trenutnim, a drugi samo ponovo selektuje već selektovano.
+
+### Provereno
+
+`Tools/run-double-click-test.py` — **9/9**. Vadi pravu `briefShowIsDoubleClick`
+iz `ContentView.swift` po tekstu, pa test ne može tiho da zastari.
+
+Pokriveno: prvi klik u sesiji, ista fotka unutar i izvan intervala, dve različite
+fotke ma koliko brzo (neko brzo bira, ne traži Develop), tačno na granici
+intervala, nulti razmak, **sat koji ide unazad** (NTP ili buđenje iz sna) i
+poštovanje korisnikovog podešenog intervala.
+
+Plus svojstvo koje se tiče baš prijavljenog kvara: **prvi klik ne može da bude
+dupli ni pri jednom rasporedu vremena** (10 000 slučajeva), pa odluka nema kako
+da odloži prvi klik — jedina grana koja mu je dostupna je ona koja samo
+selektuje.
+
+### ⚠️ Neprovereno
+
+Sam osećaj klika i to da dupli klik i dalje otvara Develop. Logika je merena,
+gesture nije — za to treba miš.

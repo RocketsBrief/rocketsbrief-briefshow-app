@@ -21018,6 +21018,28 @@ final class BriefShowWindowController {
 // slideshow-creation flow: browse an entire photo batch on one page, mark
 // favorites, and inspect one or up to five selected photos at a larger
 // size — similar in spirit to Adobe Bridge's review workflow.
+// Is this click the second half of a double click?
+//
+// Pulled out as a free function with no view state in it so it can be driven by
+// Tools/run-double-click-test.py, which is the only way this gets proved: a
+// double click cannot be scripted against the window (osascript already failed
+// on this app once — see the notes).
+//
+// `interval` is NSEvent.doubleClickInterval, the speed the client actually set
+// in System Settings, rather than a number picked here.
+func briefShowIsDoubleClick(
+    previous: (url: URL, at: Date)?,
+    url: URL,
+    at now: Date,
+    interval: TimeInterval
+) -> Bool {
+    guard let previous, previous.url == url else { return false }
+    let gap = now.timeIntervalSince(previous.at)
+    // A negative gap means the clock moved backwards under us. Not a double
+    // click, and not a crash either.
+    return gap >= 0 && gap <= interval
+}
+
 struct PhotoShowSheet: View {
     let onClose: () -> Void
     let initialPhotoURLs: [URL]
@@ -21079,6 +21101,10 @@ struct PhotoShowSheet: View {
     // (where nothing should ever be deleted) — see isPasteboardOurCut.
     @State private var clipboardURLs: [URL] = []
     @State private var clipboardIsCut = false
+
+    // The last thumbnail click, so the next one can tell whether it is the
+    // second half of a double click — see handleSelectTap.
+    @State private var lastPhotoClick: (url: URL, at: Date)?
 
     // Left-hand folder tree, rooted at the client's Desktop — this is
     // ShowGrid's now-primary way of loading photos (picking a folder loads
@@ -21931,15 +21957,22 @@ struct PhotoShowSheet: View {
             )
             .shadow(color: isSelected ? selectionBorderColor.opacity(0.35) : .clear, radius: isSelected ? 10 : 0)
             .contentShape(Rectangle())
-            // Double-tap gesture attached BEFORE the single-tap one below —
-            // that ordering is what lets SwiftUI tell the two apart (a
-            // single click waits briefly to see if a second one follows
-            // before firing handleSelectTap). Opens straight into Develop
-            // on this exact photo, same window/call DevelopWindowController
-            // already uses for the header's own "Develop" button.
-            .onTapGesture(count: 2) {
-                DevelopWindowController.shared.open(photoURLs: photoURLs, initialSelection: url)
-            }
+            // ONE tap gesture, and that is the point.
+            //
+            // There used to be two — a count-2 gesture for "open in Develop"
+            // above a count-1 gesture for "select" — and SwiftUI can only tell
+            // those apart by making the single click WAIT to see whether a
+            // second one follows. The client felt it exactly: "kada hoću da
+            // kliknem na jednu sliku dobijem lag, ne klikne se odmah već delay
+            // nekih možda 0.2 sekunde". That delay was not a slow selection, it
+            // was the app declining to commit to one.
+            //
+            // Now the click selects IMMEDIATELY, every time, and the double
+            // click is worked out afterwards from the time since the previous
+            // one — which is how Finder behaves and why selecting there is
+            // instant. Opening on the second click after already selecting on
+            // the first is not a conflict: the photo Develop opens is the one
+            // that just got selected.
             .onTapGesture {
                 handleSelectTap(url)
             }
@@ -22257,12 +22290,32 @@ struct PhotoShowSheet: View {
     // making a plain click on an already-selected photo silently fall into
     // the Cmd-click (toggle-out) branch instead of replacing the selection.
     private func handleSelectTap(_ url: URL) {
+        let now = Date()
         let isCommandDown = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
 
+        // Cmd-click is never a double click. It is how a multi-selection is
+        // built up, and two Cmd-clicks on one photo mean "add it, then take it
+        // back off" — reading that as a request to open Develop would fight
+        // the client rather than help.
+        let isDouble = !isCommandDown && briefShowIsDoubleClick(
+            previous: lastPhotoClick, url: url, at: now,
+            interval: NSEvent.doubleClickInterval)
+
+        // Cleared after a double, so a third click starts a fresh pair instead
+        // of opening Develop again on every click of a fast run.
+        lastPhotoClick = isDouble ? nil : (url, now)
+
+        // Selection happens on BOTH halves of a double click, deliberately: it
+        // is what makes the first click feel instant, and the second one only
+        // re-selects what is already selected.
         if isCommandDown {
             toggleSelection(url)
         } else {
             replaceSelection(with: [url])
+        }
+
+        if isDouble {
+            DevelopWindowController.shared.open(photoURLs: photoURLs, initialSelection: url)
         }
     }
 

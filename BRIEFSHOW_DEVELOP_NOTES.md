@@ -31,6 +31,7 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | 36 | **Painting više NE osvežava ništa** — nula prolaza kroz `body` tokom poteza, umesto jednog na svaki početak |
 | 37 | **Crtice na slajderima**, kao u Lightroom-u |
 | 38 | **Generative nije radio kad su tragovi razdvojeni** — nije limit, nego prazan region. Sad jedno uklanjanje PO GRUPI tragova |
+| 39 | **SD ne može da se podesi da briše kao LaMa** — izmereno, 5 guidance × 4 prompta, sve izmišlja. Harness ostaje u `Tools/` |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
@@ -5309,3 +5310,122 @@ bi dokazivao most nego samo velikodušan domet.
 Rezultat na pravoj fotki. Matematika grupisanja jeste izmerena, ali da li
 Generative sad zaista vrati dva čista popravka na toj plažnoj slici — to još
 niko nije video.
+
+
+## KORAK 39 — „neka SD radi kao LaMa": izmereno, i ne može (30-31. avgust 2026)
+
+Prijava sa dve slike, rezultat i original: na plažnoj fotki Generative je uklonio
+ljude ali je **na njihovo mesto izmislio objekte**. Zahtev:
+
+> „bitno je da AI generative SD model radi kao LaMa — LaMa kada selektira lepo
+> obriše ljude ili objekte, samo što je LaMi taj limit da ne može celu areu da
+> selektuje, a na SD nema limita malog. Bitno mi je da SD radi isto kao LaMa."
+
+**Odgovor je: ne može, i to nije stvar podešavanja.** Izmereno, ne rezonovano.
+
+### Kako je mereno
+
+Napravljen je headless harness — `Tools/run-inpaint-sweep.py` +
+`Tools/inpaint-sweep.swift` — koji **prevodi app-ove PRAVE** `DevelopInpaint`,
+`DevelopSDInpaint`, `DevelopLaMaInpaint` i `DevelopCLIPTokenizer` i pušta pravi
+`InpaintPipeline` na pravu fotku, bez GUI-ja. Rezultat se komponuje nazad na
+fotografiju tačno kako to radi slaganje layera u app-i i piše kao PNG isečen oko
+popravke.
+
+Postoji jer **oba modela greše TIHO.** SD naročito: vrati samouverenu, lepo
+osvetljenu sliku pogrešne stvari, i nikakvo čitanje koda ne kaže koje. Jedini
+pošten test je pustiti pa pogledati, a kroz app to traži miš, folder, prijavu i
+trinaest sekundi po pokušaju.
+
+Fotka: **`C4S_7891.NEF`** (5176×3448), maska **828×431 px** preko grupe ljudi uz
+liniju mora sa leve strane — dakle „preko strukture", najteži slučaj.
+
+### Rezultat 1 — guidance nije poluga
+
+| guidance | šta je naslikao |
+|---|---|
+| 1,0 | bele kutije sa crnim šarama (apstraktno smeće) |
+| 2,0 | tamna metalna masa |
+| 3,5 | **smeđi kamen** |
+| 5,0 | **smeđi kamen** |
+| 7,5 (isporučeno) | **smeđi kamen** |
+
+Guidance 1,0 je vredan zasebne napomene: tamo je klasifikator-slobodno vođenje
+**isključeno po definiciji** (`uncond + 1,0 × (cond − uncond)` = `cond`), pa
+negativni prompt ne radi ništa. Zato je najgori, a ne najbezopasniji.
+
+### Rezultat 2 — ni prompt nije poluga, i ovo je najjasniji nalaz
+
+Sve na guidance 5,0, ista maska:
+
+| prompt | šta je naslikao |
+|---|---|
+| isporučeni default | smeđi kamen |
+| **prazan** | **AUTOMOBIL (SUV)** |
+| `"sand"` | **razbijen kamion** |
+| `"smooth empty sand, calm sea, nothing"` | taman kamen |
+
+Prazan prompt daje auto. To je kraj rasprave o promptu: nije u pitanju loš izbor
+reči nego to **šta model jeste**. SD 1.5 Inpainting je obučen da SINTETIŠE
+sadržaj u rupu; rupa od 828 px mu je dovoljno velika da odluči da tu nešto
+pripada, i onda tu nešto i naslika.
+
+### Rezultat 3 — LaMa na istoj maski: čisto
+
+Ista fotka, ista maska, `quickAIRemoval`: ljudi uklonjeni, pesak i more
+nastavljeni, **ništa izmišljeno**. 2,4 s prema 14 s.
+
+### Rezultat 4 — gde je LaMa stvarna granica (izmereno danas)
+
+Iste koordinate, maska se širi:
+
+| maska | rezultat |
+|---|---|
+| 414 px | čisto |
+| 828 px | čisto |
+| 1242 px | čisto — more i linija obale uverljivo nastavljeni |
+| 1656 px | **meko** — obala nestaje u glatak preliv |
+| 2070 px | mekše, ceo levi deo je bledi preliv |
+
+**Ključna razlika u NAČINU kvarenja, i ona odlučuje sve:**
+
+> **LaMa se kvari u MEKOĆU. SD se kvari u AUTOMOBIL.**
+
+Meka mrlja je nešto što korisnik vidi i sam prosudi. Izmišljen kamion nije.
+
+### Rezultat 5 — smanjenje konteksta ne pomaže
+
+Probano jer je bila jedina poluga koja ne traži rekonverziju modela: odnos
+regiona prema rupi 1,6 → 1,3 → 1,1 pri maski od 2070 px. Sve tri daju isti bledi
+preliv. Odbačeno; **u kod nije ušlo ništa od ovoga.**
+
+### Šta je iz ovoga urađeno u kodu
+
+**Ništa u SD receptu.** Nijedna izmerena varijanta nije bolja od isporučene, pa
+menjati bilo šta „za svaki slučaj" značilo bi zameniti izmereno stanje
+neizmerenim. Harness JESTE ušao u `Tools/`, da se ovo više ne dokazuje ispočetka.
+
+### Šta ovo znači za korisnikov konkretni slučaj
+
+Njegovi tragovi na toj fotki su bili **sitni i razdvojeni**. Posle KORAKA 38
+granica se meri **po grupi tragova**, a ne po njihovom zajedničkom okviru — pa
+`Quick` na toj istoj slici **više nije siv**, i on je alat koji tu radi.
+
+### ⚠️ Otvoreno pitanje za korisnika, ne za sledeću sesiju da odluči sama
+
+Kapije su, mereno prema težini kvara, **naopako postavljene**:
+
+- `Quick` (kvari se u mekoću) — **tvrdo blokiran** iznad 2200 px
+- `Generative` (kvari se u automobil) — **nije blokiran nikad**, samo upozorenje
+  iznad 600 px
+
+Tvrdi blok pripada onome koji pravi auto. Ali blok na `Quick`-u je uveden na
+IZRIČIT zahtev korisnika (KORAK 20), a on je 30.08 rekao i da granica od 2200
+ostaje — pa se ovde ništa ne dira bez njegove odluke.
+
+### Ako se ikad bude htelo da SD zaista briše
+
+Jedini put koji ova arhitektura dopušta nije podešavanje nego **davanje SD-u
+gotovog početka**: prvo LaMa popuni rupu, pa SD odradi mali broj koraka niske
+jačine samo kao doterivanje teksture. Tada SD nema šta da izmisli jer rupe više
+nema. Nije probano; nije mala izmena.

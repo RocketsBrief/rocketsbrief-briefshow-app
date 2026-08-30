@@ -2383,6 +2383,148 @@ func briefShowStrokePath(_ points: [CGPoint], frame: CGRect) -> Path {
     }
 }
 
+// Every dab that an erase stroke takes away, in unit space.
+func briefShowEraseDabs(_ strokes: [BrushStroke]) -> [CGRect] {
+    strokes.filter(\.isErase).flatMap { stroke -> [CGRect] in
+        let radius = stroke.size / 2
+        return stroke.points.map {
+            CGRect(x: $0.x - radius, y: $0.y - radius, width: stroke.size, height: stroke.size)
+        }
+    }
+}
+
+// The unit-space box a stroke covers, brush width included, ignoring any part
+// of it that has since been erased. nil for a stroke with nothing left.
+//
+// A point is dropped once an erase dab covers its CENTRE, rather than when it
+// is fully contained: an erase pass is made of overlapping dabs, and asking for
+// full containment would let a point survive between two of them and hold the
+// whole box open. That rule was already load-bearing when the size gate was the
+// only thing measuring this — see the report that erasing made the area grow.
+func briefShowStrokeBox(_ stroke: BrushStroke, erasedBy erasures: [CGRect] = []) -> CGRect? {
+    let radius = stroke.size / 2
+    var box: CGRect?
+    for point in stroke.points where !erasures.contains(where: { $0.contains(point) }) {
+        let dab = CGRect(x: point.x - radius, y: point.y - radius,
+                         width: stroke.size, height: stroke.size)
+        box = box?.union(dab) ?? dab
+    }
+    return box
+}
+
+// Splits what has been painted into SEPARATE groups of marks — one per cluster
+// of strokes that sit near each other.
+//
+// This is a bug fix, not a refinement. Both models work inside a SQUARE region
+// centred on the mask's overall bounding box, with the side capped at the
+// photo's short edge (see squareRegion). Paint one mark at the far left and
+// another at the far right of a landscape photo and that box spans nearly the
+// full width, so the square lands in the MIDDLE of the frame — and contains
+// neither mark. makeBuffers then counts zero hole pixels, returns nil, and the
+// caller quietly wiped the paint and did nothing at all. Reported exactly that
+// way: "kada kliknem na AI generative ništa se ne desi, samo izbriše paint".
+//
+// Splitting is also the sharper answer, which is why it beats simply widening
+// the region: every mark gets its own 512 buffer over its own small piece of
+// the photo, instead of all of them sharing one squashed over the whole frame.
+// A region big enough to cover both marks would work and come back as mush.
+//
+// Boxes are inflated by a brush width before being compared, so marks that
+// belong to the same object — dabs laid side by side, a hand and what it holds —
+// stay in ONE group rather than being cut into pieces the model then has to
+// blend back together across a seam.
+//
+// Returns the ORIGINAL strokes, grouped. The erase filtering decides only where
+// each stroke still is, not what gets handed to the model — the mask subtracts
+// erasures for real, in Core Image, where it can do it with soft edges.
+func briefShowStrokeClusters(_ strokes: [BrushStroke], erasedBy erasures: [CGRect] = []) -> [[BrushStroke]] {
+    var clusters: [(box: CGRect, reach: CGRect, strokes: [BrushStroke])] = []
+    for stroke in strokes where !stroke.isErase {
+        guard let box = briefShowStrokeBox(stroke, erasedBy: erasures) else { continue }
+        clusters.append((box, box.insetBy(dx: -stroke.size, dy: -stroke.size), [stroke]))
+    }
+
+    // Merged to a fixed point rather than in a single pass: merging grows a
+    // box, and a grown box can reach a cluster the smaller one could not.
+    // Three marks in a row whose ends only meet through the middle one have to
+    // come out as a single group, not as two — and the bridging mark is not
+    // necessarily the one painted second.
+    var didMerge = true
+    while didMerge {
+        didMerge = false
+        search: for i in 0..<clusters.count {
+            for j in (i + 1)..<clusters.count where clusters[i].reach.intersects(clusters[j].reach) {
+                clusters[i].box = clusters[i].box.union(clusters[j].box)
+                clusters[i].reach = clusters[i].reach.union(clusters[j].reach)
+                clusters[i].strokes.append(contentsOf: clusters[j].strokes)
+                clusters.remove(at: j)
+                didMerge = true
+                break search
+            }
+        }
+    }
+    return clusters.map(\.strokes)
+}
+
+// One repair the model will be asked to do.
+struct BriefShowRemovalJob {
+    var usesVisionMask: Bool
+    var strokes: [BrushStroke]
+    // Unit space. CGRect.null when there is nothing measurable — a Vision mask
+    // whose bounding box could not be read — so it contributes nothing to a
+    // size decision rather than pretending to a size it does not have.
+    var box: CGRect
+}
+
+// The complete list of repairs one press of a Clean Up button will perform.
+//
+// Shared by eraseMaskedArea and by the size gate on the buttons, and that
+// sharing is the point: the gate used to measure the union of EVERYTHING
+// painted, which is why two small marks at opposite edges of the frame switched
+// Quick off even though neither one is anywhere near its limit. What the model
+// actually has to swallow is the biggest single job, so that is what has to be
+// measured — and the only way to keep the two from drifting apart is for both
+// to read the same list.
+func briefShowRemovalJobs(
+    strokes: [BrushStroke],
+    hasVisionMask: Bool,
+    visionBox: CGRect?
+) -> [BriefShowRemovalJob] {
+    let erasures = briefShowEraseDabs(strokes)
+    var clusters = briefShowStrokeClusters(strokes, erasedBy: erasures)
+
+    var jobs: [BriefShowRemovalJob] = []
+    if hasVisionMask {
+        // Marks painted ON the Vision mask belong to the object it found —
+        // someone touching up a shoulder "Select People" missed is not asking
+        // for a second repair right next to the first.
+        var job = BriefShowRemovalJob(
+            usesVisionMask: true, strokes: [], box: visionBox ?? .null)
+        if let visionBox {
+            var separate: [[BrushStroke]] = []
+            for cluster in clusters {
+                let box = cluster.compactMap { briefShowStrokeBox($0, erasedBy: erasures) }
+                    .reduce(nil) { (union: CGRect?, next) in union?.union(next) ?? next }
+                if let box, box.intersects(visionBox) {
+                    job.strokes.append(contentsOf: cluster)
+                    job.box = job.box.union(box)
+                } else {
+                    separate.append(cluster)
+                }
+            }
+            clusters = separate
+        }
+        jobs.append(job)
+    }
+
+    for cluster in clusters {
+        let box = cluster.compactMap { briefShowStrokeBox($0, erasedBy: erasures) }
+            .reduce(nil) { (union: CGRect?, next) in union?.union(next) ?? next }
+        jobs.append(BriefShowRemovalJob(usesVisionMask: false, strokes: cluster, box: box ?? .null))
+    }
+    return jobs
+}
+
 // Draws only the stroke in progress. Hit testing off — the drag belongs to the
 // parent's own hit area, which is what feeds this.
 private struct ActiveStrokeLayer: View {
@@ -6958,9 +7100,16 @@ struct DevelopView: View {
         removalMask != nil || !removalStrokes.isEmpty
     }
 
-    // How big, in the photo's own pixels, the longest side of what is about
-    // to be erased is. Both halves of the tool count: the Vision mask's
-    // measured box and the painted strokes' own extent.
+    // How big, in the photo's own pixels, the longest side of the BIGGEST
+    // single repair is.
+    //
+    // The biggest single repair, not the extent of everything painted, and the
+    // difference is the whole point of this having been rewritten: one press
+    // now performs one repair per group of marks (see briefShowRemovalJobs), so
+    // two small marks at opposite edges of the frame are two small jobs. The
+    // old measurement unioned them into a box spanning the entire photo and
+    // switched Quick off over it — a limit reported against work that was never
+    // going to be done in one piece.
     private var removalAreaPixels: CGFloat? {
         guard let fullBaseImage else {
             return nil
@@ -6970,52 +7119,16 @@ struct DevelopView: View {
             return nil
         }
 
-        var union: CGRect?
-        if let removalMaskUnitBox {
-            union = removalMaskUnitBox
-        }
+        let boxes = briefShowRemovalJobs(
+            strokes: removalStrokes,
+            hasVisionMask: removalMask != nil,
+            visionBox: removalMaskUnitBox
+        ).map(\.box).filter { !$0.isNull }
 
-        // Every dab that is being TAKEN AWAY. Collected first, because the
-        // additions below have to be measured against it.
-        //
-        // This loop used to not exist, and the one below unioned every stroke
-        // in `removalStrokes` regardless of `isErase`. So painting with Erase
-        // made this box BIGGER — the exact opposite of what erasing does — and
-        // once the area had tripped the Quick limit, no amount of rubbing it
-        // out could bring the button back. Reported precisely: "he counts when
-        // the brush is put on, but does not subtract when it is erased".
-        let erasedDabs: [CGRect] = removalStrokes.filter { $0.isErase }.flatMap { stroke in
-            stroke.points.map { point in
-                let radius = stroke.size / 2
-                return CGRect(x: point.x - radius, y: point.y - radius,
-                              width: stroke.size, height: stroke.size)
-            }
-        }
-
-        // Strokes are already in unit space; their box needs no rendering,
-        // just the brush's own radius added around the points.
-        //
-        // An added point is skipped once an erase dab covers its centre, so
-        // rubbing out the ends of a long stroke really does shrink the box
-        // rather than leaving it spanning ground that is no longer selected.
-        // Centre-in-dab rather than full-overlap on purpose: an erase pass is
-        // made of overlapping dabs, and asking for full containment would let
-        // a point survive between two of them and hold the whole box open.
-        for stroke in removalStrokes where !stroke.isErase {
-            for point in stroke.points {
-                if erasedDabs.contains(where: { $0.contains(point) }) {
-                    continue
-                }
-                let radius = stroke.size / 2
-                let dab = CGRect(x: point.x - radius, y: point.y - radius,
-                                 width: stroke.size, height: stroke.size)
-                union = union?.union(dab) ?? dab
-            }
-        }
-        guard let union else {
+        guard !boxes.isEmpty else {
             return nil
         }
-        return max(union.width * extent.width, union.height * extent.height)
+        return boxes.map { max($0.width * extent.width, $0.height * extent.height) }.max()
     }
 
     // Measured, not guessed, on the user's own beach RAW (5176px wide):
@@ -7278,35 +7391,52 @@ struct DevelopView: View {
         let settingsSnapshot = settings
         let photoAtActionTime = selectedURL
         let visionMask = removalMask
+        let visionBox = removalMaskUnitBox
         let strokes = removalStrokes
         let feather = aiRemoveFeather
 
         developRenderQueue.async(qos: .userInitiated) {
             let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
 
-            // Add first, take away second — and the order is the whole point.
-            // strokeMask already handles erase strokes internally, but only
-            // against the OTHER painted strokes; running the two kinds through
-            // it together would leave an erase unable to touch the Vision
-            // mask, which is exactly what someone erasing means to do when
-            // "Select People" grabbed a shoulder it shouldn't have.
-            //
-            // So the additions are unioned with the Vision mask (maximum, not
-            // addition, so the overlap stays a clean 0...1 decision), and the
-            // erasures are then subtracted from that whole thing.
-            let additions = strokes.filter { !$0.isErase }
             let erasures = strokes.filter { $0.isErase }
 
-            var mask = visionMask
-            if !additions.isEmpty {
-                let painted = PhotoEditRenderer.strokeMask(additions, extent: full.extent)
-                mask = mask.map {
-                    $0.applyingFilter("CIMaximumCompositing", parameters: [
-                        kCIInputBackgroundImageKey: painted
-                    ]).cropped(to: full.extent)
-                } ?? painted
-            }
-            if let current = mask, !erasures.isEmpty {
+            // ONE REMOVAL PER GROUP OF MARKS, not one removal for everything
+            // painted at once. See briefShowStrokeClusters for why: a single
+            // mask spanning two far-apart marks puts the model's square working
+            // region in the empty middle of the frame and repairs nothing.
+            //
+            // The same call backs the size gate on the buttons, so what gets
+            // measured there and what gets repaired here cannot drift apart.
+            let jobs = briefShowRemovalJobs(
+                strokes: strokes, hasVisionMask: visionMask != nil, visionBox: visionBox)
+
+            // Builds the mask for ONE job. Same add-then-subtract order the
+            // single-mask version used, and the order is still the whole point:
+            // strokeMask handles erase strokes only against the other painted
+            // strokes, so running both kinds through it together would leave an
+            // erase unable to touch the Vision mask — which is exactly what
+            // someone erasing means to do when "Select People" grabbed a
+            // shoulder it should not have.
+            //
+            // Every job subtracts ALL the erasures, not just nearby ones: an
+            // erase stroke that falls outside this job's marks simply removes
+            // nothing from it, so there is no need to work out which is which.
+            func maskForJob(_ job: BriefShowRemovalJob) -> CIImage? {
+                var mask: CIImage? = job.usesVisionMask ? visionMask : nil
+                if !job.strokes.isEmpty {
+                    let painted = PhotoEditRenderer.strokeMask(job.strokes, extent: full.extent)
+                    mask = mask.map {
+                        $0.applyingFilter("CIMaximumCompositing", parameters: [
+                            kCIInputBackgroundImageKey: painted
+                        ]).cropped(to: full.extent)
+                    } ?? painted
+                }
+                guard let current = mask else {
+                    return nil
+                }
+                guard !erasures.isEmpty else {
+                    return current
+                }
                 // Built as a POSITIVE mask (isErase cleared) and then
                 // inverted, because strokeMask starts from black: a set of
                 // erase-only strokes handed to it would multiply black by
@@ -7318,38 +7448,51 @@ struct DevelopView: View {
                     extent: full.extent
                 )
                 let keep = cut.applyingFilter("CIColorInvert").cropped(to: full.extent)
-                mask = current.applyingFilter("CIMultiplyBlendMode", parameters: [
+                return current.applyingFilter("CIMultiplyBlendMode", parameters: [
                     kCIInputBackgroundImageKey: keep
                 ]).cropped(to: full.extent)
             }
-            guard let mask else {
-                DispatchQueue.main.async { isRemoving = false }
-                return
-            }
-            let removal: InpaintPipeline.Removal?
-            do {
-                switch engine {
-                case .quick:
-                    removal = try InpaintPipeline.quickAIRemoval(
-                        mask: mask, from: full, context: briefEditsCIContext, feather: feather)
-                case .generative:
-                    removal = try InpaintPipeline.aiRemoval(
-                        mask: mask, from: full, context: briefEditsCIContext,
-                        prompt: SDInpaintPipeline.defaultPrompt, feather: feather,
-                        progress: { done, total in
-                            DispatchQueue.main.async {
-                                aiEraseProgress = Double(done) / Double(max(total, 1))
+
+            var removals: [InpaintPipeline.Removal] = []
+            var failure: String?
+
+            for (index, job) in jobs.enumerated() {
+                guard let jobMask = maskForJob(job) else {
+                    continue
+                }
+                do {
+                    let removal: InpaintPipeline.Removal?
+                    switch engine {
+                    case .quick:
+                        removal = try InpaintPipeline.quickAIRemoval(
+                            mask: jobMask, from: full, context: briefEditsCIContext, feather: feather)
+                    case .generative:
+                        removal = try InpaintPipeline.aiRemoval(
+                            mask: jobMask, from: full, context: briefEditsCIContext,
+                            prompt: SDInpaintPipeline.defaultPrompt, feather: feather,
+                            progress: { done, total in
+                                // Counted across ALL the jobs, not restarted
+                                // for each one: three marks used to mean the
+                                // bar running 0-100 three times, which reads as
+                                // the app going round in circles.
+                                let within = Double(done) / Double(max(total, 1))
+                                let overall = (Double(index) + within) / Double(max(jobs.count, 1))
+                                DispatchQueue.main.async {
+                                    aiEraseProgress = overall
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
+                    if let removal {
+                        removals.append(removal)
+                    }
+                } catch {
+                    // Stop, but keep what already worked: two marks out of
+                    // three repaired is worth having, and redoing the third is
+                    // a smaller job than redoing all of them.
+                    failure = error.localizedDescription
+                    break
                 }
-            } catch {
-                DispatchQueue.main.async {
-                    isRemoving = false
-                    aiEraseProgress = nil
-                    removeErrorMessage = error.localizedDescription
-                }
-                return
             }
 
             DispatchQueue.main.async {
@@ -7358,16 +7501,38 @@ struct DevelopView: View {
                 // Same guard as performSelectionExtraction: the repair is
                 // pixels belonging to ONE photo, so it is dropped rather
                 // than misapplied if the client moved on while it ran.
-                guard let removal, selectedURL == photoAtActionTime else {
+                guard selectedURL == photoAtActionTime else {
                     clearRemovalMask()
                     return
                 }
-                let layer = ImageLayer(
-                    name: nextLayerName("Removed"), imageData: removal.pngData,
-                    x: removal.boundsUnit.minX, y: removal.boundsUnit.minY,
-                    width: removal.boundsUnit.width, height: removal.boundsUnit.height
-                )
-                settings.layers.append(layer)
+
+                if let failure {
+                    removeErrorMessage = failure
+                }
+
+                guard !removals.isEmpty else {
+                    // THE PAINT STAYS. It used to be wiped here, which is how a
+                    // removal that quietly produced nothing looked from the
+                    // outside: click, the selection vanishes, the photo is
+                    // unchanged, and nothing says why. Keeping it means the
+                    // client can adjust and try again instead of painting the
+                    // whole thing over.
+                    if failure == nil {
+                        removeErrorMessage = "Nothing was repaired. Try painting over the marks again, a little more generously."
+                    }
+                    return
+                }
+
+                // One layer per removal, appended in turn so each gets its own
+                // number from nextLayerName — and so each can be undone or
+                // hidden on its own, which is the point of splitting them.
+                for removal in removals {
+                    settings.layers.append(ImageLayer(
+                        name: nextLayerName("Removed"), imageData: removal.pngData,
+                        x: removal.boundsUnit.minX, y: removal.boundsUnit.minY,
+                        width: removal.boundsUnit.width, height: removal.boundsUnit.height
+                    ))
+                }
                 clearRemovalMask()
                 activeSelection = nil
                 // The brush deliberately STAYS ON. It used to switch itself off

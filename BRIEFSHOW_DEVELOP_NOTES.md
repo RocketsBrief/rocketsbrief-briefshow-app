@@ -30,14 +30,23 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | 35 | **Import direktno sa kamere preko USB-a** — nova funkcija, na korisnikov zahtev. Nije vezan za Nikon |
 | 36 | **Painting više NE osvežava ništa** — nula prolaza kroz `body` tokom poteza, umesto jednog na svaki početak |
 | 37 | **Crtice na slajderima**, kao u Lightroom-u |
+| 38 | **Generative nije radio kad su tragovi razdvojeni** — nije limit, nego prazan region. Sad jedno uklanjanje PO GRUPI tragova |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
 Build je čist i app se pokreće, ali **ništa iz ove sesije nije viđeno uživo**:
 
-- KORAK 34 — odsecanje poteza na okvir slike
-- KORAK 36 — da se lag pri paintovanju zaista više ne oseti
-- KORAK 37 — kako crtice izgledaju na ekranu
+- KORAK 38 — da razdvojeni tragovi sad zaista prođu kroz Generative, i da se
+  `Quick` više ne gasi zbog njih (matematika grupisanja JESTE proverena, 18/18,
+  `Tools/run-stroke-cluster-test.py` — ali rezultat na fotki nije viđen)
+
+**Potvrđeno uživo (korisnik, svojim rečima), 30.08 uveče:**
+
+- „paint jeste mnogo bolje" — KORAK 36
+- „crtcice na slidebarovima jesu bravo" — KORAK 37
+- „cetkica ne izlazi isto dobro" — KORAK 34
+
+Ostaje neprovereno iz ranijih sesija:
 - KORAK 35 — **cela funkcija za kameru nije probana ni sa jednom kamerom.**
   Z 6 nije bio povezan dok je rađeno (`ICDeviceBrowser` prijavio 0 uređaja u
   probnom binarnom fajlu). Sve je pisano po SDK zaglavljima, koja SU čitana, i
@@ -5181,3 +5190,122 @@ Sitnice koje su namerne:
   namerno je viša; dve oznake na istom mestu bi tu razliku poništile.
 - na gradijentnoj traci crtice su malo jače (0,28 prema 0,22), jer bi ih svetliji
   krajevi gradijenta (žuti kraj Temperature) inače progutali.
+
+
+## KORAK 38 — „Generative ne radi ništa, samo izbriše paint" (30. avgust 2026)
+
+Prijava sa slikom: na plažnoj fotki naslikana su **dva odvojena traga** — jedan
+uz levu ivicu kadra, jedan uz desnu. `Quick Clean Up` ugašen, `Generative Clean
+Up` upaljen. Klik na Generative: **ništa se ne desi, samo nestane paint.** Bez
+poruke o grešci.
+
+Korisnikova pretpostavka: „pa me navelo da mislim da SD model isto ima area
+limit? ako ima digni ga!"
+
+**Nema ga.** `blockingAreaPixels` za `.generative` je `nil` — nijedna veličina ga
+ne blokira. Uzrok je drugi, i gori.
+
+### Uzrok
+
+`aiRemoval` ne baca grešku nego **vraća `nil`**, a pozivalac je na `nil` radio
+ovo:
+
+```swift
+guard let removal, selectedURL == photoAtActionTime else {
+    clearRemovalMask()      // ← obriše paint
+    return                  // ← i ne kaže ništa
+}
+```
+
+`nil` dolazi iz `makeBuffers`:
+
+```swift
+guard holePixels > 0, holePixels < width * height else { return nil }
+```
+
+**U radnom regionu nije bilo nijednog piksela maske.** Zašto — `squareRegion`
+centrira **kvadrat** na sredinu ukupnog okvira maske, sa stranicom ograničenom na
+kraću ivicu fotografije:
+
+```swift
+let limit = min(extent.width, extent.height)
+let side = min(max(max(maskBox.width, maskBox.height) * 1.6, 512), limit)
+```
+
+Sa dva traga na suprotnim ivicama, `maskBox` je širok skoro celu fotografiju, pa
+je njegova **sredina prazna sredina kadra**. Na 3:2 fotki kvadrat sa stranicom =
+visina pokriva samo srednjih ~67% širine — i **oba traga ostaju izvan njega**.
+
+Za 6000×4000 i tragove na x≈300 i x≈5700: `side` = 4000, centar x = 3000,
+region x od 1000 do 5000. Levi trag na 300 — napolju. Desni na 5700 — napolju.
+Rupa: nula piksela. `nil`.
+
+Isti kvar postoji i u `Quick` putanji (koristi isti `squareRegion`), samo se tamo
+ne stigne do njega jer ga granica veličine ugasi ranije. To objašnjava i zašto je
+`Quick` na toj slici bio siv.
+
+### Popravka — ne dizanje granice nego jedno uklanjanje PO GRUPI tragova
+
+Dizanje bilo čega ovde ne pomaže: region koji bi pokrio oba traga jeste moguć, ali
+bi u 512 bafer ugurao celu fotografiju i vratio kašu. Ispravno je **razdvojiti
+poslove**.
+
+`briefShowRemovalJobs` grupiše naslikano u zasebna uklanjanja: potezi čiji se
+okviri (naduvani za jednu širinu četkice) dodiruju idu zajedno, ostali odvojeno.
+Svako uklanjanje dobija **svoj** 512 bafer nad **svojim** malim delom fotke.
+
+To je uz to i **oštrije**, što je drugi dobitak: umesto da svi tragovi dele jedan
+region razvučen preko celog kadra, svaki dobija region veličine sebe. Direktno
+pomaže staroj primedbi da je generative mutan.
+
+Spajanje ide **do fiksne tačke, ne u jednom prolazu**: spajanje uvećava okvir, a
+uvećan okvir može da dohvati grupu koju manji nije mogao. Tri traga u nizu čiji
+se krajevi sreću samo preko srednjeg moraju da izađu kao JEDNO uklanjanje — i
+srednji nije nužno onaj naslikan drugi. To je test koji je pao pri pisanju (i bio
+je pogrešno postavljen prvi put, pa je ispravljen — vidi dole).
+
+### Druga posledica, koja je morala da se popravi zajedno
+
+`removalAreaPixels` je merio **uniju svega naslikanog**. Posle ove izmene to je
+pogrešna mera: model nikad ne dobija sve odjednom, nego najveći pojedinačni
+posao. Zbog stare mere je `Quick` na korisnikovoj slici bio siv iako su **oba
+traga sitna** i svaki bi prošao bez problema.
+
+Sad i kapija i samo uklanjanje čitaju **istu** listu poslova
+(`briefShowRemovalJobs`), pa ne mogu da se raziđu oko toga šta će se raditi.
+
+### I treća stvar: više nikad tiho
+
+- **paint OSTAJE kad ništa nije popravljeno.** Ranije se brisao, pa je neuspeh
+  spolja izgledao ovako: klik, selekcija nestane, fotka ista, i ništa ne kaže
+  zašto. Sad se može doraditi i probati ponovo, umesto ponovnog crtanja svega.
+- ako ništa nije vraćeno, ispiše se poruka umesto ćutanja
+- ako jedan posao pukne, **ostali se zadržavaju** — dva popravljena od tri vrede
+  više nego nijedan
+- progres se broji **preko svih poslova**, ne iznova za svaki; tri traga su
+  ranije značila da traka tri puta pređe 0-100, što izgleda kao vrćenje u krug
+
+### Provereno
+
+`Tools/run-stroke-cluster-test.py` — **18/18**. Vadi PRAVE funkcije iz
+`Develop.swift` po tekstu (ne kopiju), pa test ne može tiho da zastari; ako se
+funkcija preimenuje, skripta pukne glasno.
+
+Pokriveno: prijavljeni slučaj (dva traga na ivicama → dva posla, i **oba okvira
+mala**, što je ono što vraća `Quick`), spajanje dodirnih tragova, tranzitivnost
+preko srednjeg traga (sa srednjim naslikanim POSLEDNJIM), nezavisnost od
+redosleda crtanja (200 permutacija), da gumica **smanjuje** izmereni posao,
+da brisanje sredine lanca deli lanac na dva, Vision maska kao svoj posao, i
+2000 nasumičnih slučajeva da nijedan potez ne nestane i ne udvoji se.
+
+**⚠️ Jedan test je pao pri pisanju i bio je POGREŠAN test, ne kod:** postavio sam
+tragove na 0,30 / 0,40 / 0,50 sa četkicom 0,02, čiji domet je ±0,03 — razmak 0,10
+je veći od toga, pa se s pravom nisu spojili. Ispravljeno na 0,30 / 0,35 / 0,40,
+uz drugi test koji potvrđuje da se krajevi sami NE dodiruju — inače prvi test ne
+bi dokazivao most nego samo velikodušan domet.
+
+### ⚠️ Neprovereno
+
+Rezultat na pravoj fotki. Matematika grupisanja jeste izmerena, ali da li
+Generative sad zaista vrati dva čista popravka na toj plažnoj slici — to još
+niko nije video.

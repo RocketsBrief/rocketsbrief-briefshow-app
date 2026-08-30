@@ -2543,6 +2543,202 @@ func briefShowRemovalJobs(
     return jobs
 }
 
+// Turns unit-space points into a CLOSED screen-space polygon. A free function
+// for the same reason briefShowStrokePath is one: the outline being dragged and
+// the outline once committed have to be drawn by the SAME code, or the shape
+// would visibly jump the moment the mouse comes up.
+func briefShowClosedPolygonPath(_ points: [CGPoint]) -> Path {
+    Path { path in
+        guard let first = points.first else {
+            return
+        }
+        path.move(to: first)
+        for point in points.dropFirst() {
+            path.addLine(to: point)
+        }
+        path.closeSubpath()
+    }
+}
+
+// Draws the free-hand outline being dragged right now — the Patch tool's and
+// the Selection tool's, which are the same job twice.
+//
+// Exists for exactly the reason ActiveStrokeLayer does, and was added later
+// because those two tools were left behind when the brush was fixed: their
+// points lived in @State on DevelopView and were appended to on every drag
+// event, so drawing one lasso invalidated the whole editor — image, panel,
+// filmstrip, histogram — dozens of times a second. Reported as "kada kliknem na
+// patch laguje, nije smooth".
+//
+// The hint text is INSIDE this view rather than beside it in the parent. Putting
+// the "no points yet" condition in the parent's body would put the invalidation
+// straight back, which is the thing this exists to avoid.
+private struct ActiveOutlineLayer: View {
+    @ObservedObject var outline: ActiveStrokePoints
+    let frame: CGRect
+    let color: Color
+    let hint: String
+
+    var body: some View {
+        Group {
+            if outline.points.count > 1 {
+                briefShowClosedPolygonPath(outline.points.map {
+                    CGPoint(x: frame.minX + $0.x * frame.width,
+                            y: frame.minY + $0.y * frame.height)
+                })
+                .stroke(color.opacity(0.9), style: StrokeStyle(lineWidth: 1.0, dash: [5, 3]))
+            } else {
+                Text(hint)
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .foregroundColor(.white)
+                    .padding(6)
+                    .background(Color.black.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .position(x: frame.midX, y: frame.midY)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+// What a painting tool's cursor is doing right now: the stroke being dragged,
+// where the brush ring sits, and — for the clone stamp — where the ⌥-held
+// "source will land here" ring sits.
+//
+// All three in ONE object because the overlays' conditions read them together
+// ("brush ring, but only if no source ring and no stroke"), and a condition
+// split across two observables would have to be evaluated in the parent, which
+// is exactly the invalidation this exists to remove. Shared by the Brush and
+// the Patch stamp; the Brush simply never sets `sourceHover`.
+final class ToolCursor: ObservableObject {
+    @Published var stroke: [CGPoint] = []
+    @Published var brushHover: CGPoint?
+    @Published var sourceHover: CGPoint?
+}
+
+// Draws the clone-stamp's live feedback. Same reason as ActiveStrokeLayer: this
+// used to be four `if let` branches on @State in DevelopView's own body, read on
+// every hover event and every drag event, so moving the mouse across the photo
+// rebuilt the image, the panel, the filmstrip and the histogram — before any
+// painting had even started.
+private struct PatchStampLayer: View {
+    @ObservedObject var cursor: ToolCursor
+    let frame: CGRect
+    let diameter: CGFloat
+    let color: Color
+    let sourceOffset: CGSize?
+
+    var body: some View {
+        ZStack {
+            if cursor.stroke.count > 1 {
+                Path { path in
+                    let scaled = cursor.stroke.map {
+                        CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
+                    }
+                    path.move(to: scaled[0])
+                    for point in scaled.dropFirst() {
+                        path.addLine(to: point)
+                    }
+                }
+                .stroke(color.opacity(0.8),
+                        style: StrokeStyle(lineWidth: diameter, lineCap: .round, lineJoin: .round))
+            }
+
+            // While actively painting, a second yellow "twin cursor" tracks
+            // where content is being sampled FROM (last painted point plus
+            // this stroke's fixed offset) — the same live feedback a real
+            // clone stamp gives, so the user sees what's about to land
+            // before it does.
+            if let last = cursor.stroke.last, let sourceOffset {
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.yellow)
+                    .shadow(radius: 1)
+                    .position(x: frame.minX + (last.x + sourceOffset.width) * frame.width,
+                              y: frame.minY + (last.y + sourceOffset.height) * frame.height)
+            }
+
+            // "Source will land here if you ⌥-click now" — only while ⌥ is
+            // held and nothing is mid-paint.
+            if let source = cursor.sourceHover, cursor.stroke.isEmpty {
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.yellow.opacity(0.7))
+                    .shadow(radius: 1)
+                    .position(source)
+            }
+
+            // Cursor-size ring — the brush diameter before painting. Hidden
+            // the instant ⌥ is held (the source ring above takes over) or a
+            // stroke is in progress (the stroke already shows its true width).
+            if let hover = cursor.brushHover, cursor.sourceHover == nil, cursor.stroke.isEmpty {
+                Circle()
+                    .stroke(color.opacity(0.9), lineWidth: 1.5)
+                    .frame(width: diameter, height: diameter)
+                    .position(hover)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+// The ⌥-held source ring on its own, for the legacy Square/Circle patch
+// overlay, which has no stroke and no brush ring to go with it.
+private struct PatchSourceRing: View {
+    @ObservedObject var cursor: ToolCursor
+
+    var body: some View {
+        Group {
+            if let source = cursor.sourceHover {
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.yellow.opacity(0.7))
+                    .shadow(radius: 1)
+                    .position(source)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+// The Brush tool's live feedback: the stroke being painted and the size ring.
+// Same story as PatchStampLayer — both were left on @State when the Remove
+// brush was moved off it, and both were reported as lag in their turn.
+private struct BrushStrokeLayer: View {
+    @ObservedObject var cursor: ToolCursor
+    let frame: CGRect
+    let diameter: CGFloat
+    let color: Color
+    let eraseColor: Color
+    let isErasing: Bool
+
+    var body: some View {
+        ZStack {
+            if cursor.stroke.count > 1 {
+                Path { path in
+                    let scaled = cursor.stroke.map {
+                        CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
+                    }
+                    path.move(to: scaled[0])
+                    for point in scaled.dropFirst() {
+                        path.addLine(to: point)
+                    }
+                }
+                .stroke((isErasing ? eraseColor : color).opacity(0.55),
+                        style: StrokeStyle(lineWidth: diameter, lineCap: .round, lineJoin: .round))
+            }
+
+            if let hover = cursor.brushHover, cursor.stroke.isEmpty {
+                Circle()
+                    .stroke((isErasing ? eraseColor : color).opacity(0.9), lineWidth: 1.5)
+                    .frame(width: diameter, height: diameter)
+                    .position(hover)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 // Draws only the stroke in progress. Hit testing off — the drag belongs to the
 // parent's own hit area, which is what feeds this.
 private struct ActiveStrokeLayer: View {
@@ -2770,7 +2966,8 @@ struct DevelopView: View {
     // mouse-up (see commitBrushStroke), not stored anywhere persisted
     // before that so a canceled/interrupted drag never leaves a partial
     // stroke behind.
-    @State private var activeBrushStrokePoints: [CGPoint] = []
+    // Held, not observed — see BrushStrokeLayer.
+    @State private var brushCursor = ToolCursor()
     // Tool state for the NEXT brush stroke — not per-adjustment, since it's
     // meant to persist as the user paints multiple strokes into the same
     // mask (each committed BrushStroke still keeps its own copy, see its
@@ -2784,7 +2981,7 @@ struct DevelopView: View {
     // the surface. Cleared on hover-exit and while a stroke is actively
     // being painted (the in-progress stroke's own preview already shows
     // where the brush is in that case).
-    @State private var brushHoverLocation: CGPoint?
+
     // Drag-start snapshots for the radial/graduated on-canvas handles —
     // same pattern as dragStartCrop: captured on the first onChanged of a
     // drag, cleared on onEnded, so each drag computes its delta against a
@@ -2794,18 +2991,19 @@ struct DevelopView: View {
     @State private var patchDragStart: PatchGeometry?
     // Points of an in-progress Free-shape patch outline (unit space), live
     // while the user is drawing it — same "don't touch the real model until
-    // mouse-up" reasoning as activeBrushStrokePoints, so a canceled/
+    // mouse-up" reasoning as brushCursor.stroke, so a canceled/
     // interrupted drag never leaves a stray half-drawn outline behind.
-    @State private var activePatchDrawPoints: [CGPoint] = []
+    // Held, not observed — see ActiveOutlineLayer.
+    @State private var activePatchDrawPoints = ActiveStrokePoints()
     // Live mouse position (frame/view space) while hovering a patch's
     // canvas with ⌥ held — purely a "this is where the source will land if
     // you click now" preview ring, nil whenever the mouse isn't over the
-    // canvas OR ⌥ isn't currently held. Mirrors brushHoverLocation's
+    // canvas OR ⌥ isn't currently held. Mirrors brushCursor.brushHover's
     // pattern/reasoning.
-    @State private var patchSourceHoverLocation: CGPoint?
+
 
     // Circle-mode Patch (clone-stamp brush) state — same "don't touch the
-    // real model until mouse-up" pattern as activeBrushStrokePoints/
+    // real model until mouse-up" pattern as brushCursor.stroke/
     // activePatchDrawPoints above. `pendingPatchSource` is the unit-space
     // point an ⌥-click just landed on, consumed (and cleared) by the FIRST
     // dab of the next painted stroke, which turns it into `patchStrokeOffset`
@@ -2816,15 +3014,16 @@ struct DevelopView: View {
     // stroke is committed (see commitPatchStroke) — exactly how brushSize/
     // brushHardness work for the Brush tool — so each already-painted
     // stroke keeps whatever size/feather was in effect when IT was drawn.
-    @State private var activePatchStrokePoints: [CGPoint] = []
+    // Held, not observed — see PatchStampLayer.
+    @State private var patchCursor = ToolCursor()
     @State private var pendingPatchSource: CGPoint?
     @State private var patchStrokeOffset: CGSize?
     @State private var patchBrushSize: Double = 0.08
     @State private var patchBrushFeather: Double = 0.35
     // Cursor-size ring preview while hovering (not dragging, not ⌥-held) —
-    // mirrors brushHoverLocation exactly, just a separate var since the two
+    // mirrors brushCursor.brushHover exactly, just a separate var since the two
     // tools' hover state can't be conflated (different rings/sizes).
-    @State private var patchBrushHoverLocation: CGPoint?
+
 
     // Selection tool (Cut/Copy/Deselect -> layer clipboard). `activeSelection`
     // nil = tool not in use; non-nil = its outline is shown/editable on
@@ -2833,7 +3032,8 @@ struct DevelopView: View {
     // modified ImageLayer.
     @State private var activeSelection: SelectionGeometry?
     @State private var selectionDragStart: SelectionGeometry?
-    @State private var activeSelectionDrawPoints: [CGPoint] = []
+    // Held, not observed — see ActiveOutlineLayer.
+    @State private var activeSelectionDrawPoints = ActiveStrokePoints()
     @State private var isExtractingSelection = false
 
     // The most recently Cut/Copy'd piece, in-memory only (like
@@ -3740,15 +3940,23 @@ struct DevelopView: View {
                 toggleCropMode()
             }
 
+            // Both of these start FREE-HAND, not as a circle.
+            //
+            // A circle was the old default on the reasoning that it needs no
+            // drawing before it does something. In use that is backwards: a
+            // circle lands in the middle of the photo over whatever happens to
+            // be there, and it has to be dragged, resized and usually swapped
+            // for free-hand anyway — so the "does something immediately" it
+            // buys is something nobody wanted. Reported as "kada kliknem na
+            // selection pojavi se neki krug na slici, ja bi da bude free
+            // selection". Both shapes are still there in the panel.
             toolButton("Selection", systemImage: "lasso", isActive: activeSelection != nil) {
-                // Same default the Selection section offers first, and the
-                // one that needs no drawing before it does anything.
-                addSelection(shape: .circle)
+                addSelection(shape: .free)
             }
 
             toolButton("Patch", systemImage: "bandage",
                        isActive: selectedAdjustmentIndex.map { settings.localAdjustments[$0].type == .patch } ?? false) {
-                addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .circle))
+                addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .free))
             }
 
             toolStripDivider
@@ -4853,62 +5061,12 @@ struct DevelopView: View {
         let brushDiameter = max(patchBrushSize * max(frame.width, frame.height), 2)
 
         return ZStack {
-            if activePatchStrokePoints.count > 1 {
-                Path { path in
-                    let scaled = activePatchStrokePoints.map {
-                        CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
-                    }
-                    path.move(to: scaled[0])
-                    for point in scaled.dropFirst() {
-                        path.addLine(to: point)
-                    }
-                }
-                .stroke(accentColor.opacity(0.8), style: StrokeStyle(lineWidth: brushDiameter, lineCap: .round, lineJoin: .round))
-                .allowsHitTesting(false)
-            }
-
-            // While actively painting, a second yellow "twin cursor" tracks
-            // where content is being sampled FROM (last painted point plus
-            // this stroke's fixed offset) — the same live feedback a real
-            // clone stamp gives, so the user sees what's about to land
-            // before it does.
-            if let last = activePatchStrokePoints.last, let offset = patchStrokeOffset {
-                let sourcePoint = CGPoint(
-                    x: frame.minX + (last.x + offset.width) * frame.width,
-                    y: frame.minY + (last.y + offset.height) * frame.height
-                )
-                Image(systemName: "viewfinder")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(.yellow)
-                    .shadow(radius: 1)
-                    .position(sourcePoint)
-                    .allowsHitTesting(false)
-            }
-
-            // "Source will land here if you ⌥-click now" preview — only
-            // while ⌥ is held and nothing's mid-paint, same reasoning as
-            // the legacy patchCanvasClickArea's identical preview below.
-            if let patchSourceHoverLocation, activePatchStrokePoints.isEmpty {
-                Image(systemName: "viewfinder")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.yellow.opacity(0.7))
-                    .shadow(radius: 1)
-                    .position(patchSourceHoverLocation)
-                    .allowsHitTesting(false)
-            }
-
-            // Cursor-size ring — shows the brush diameter before painting.
-            // Hidden the instant ⌥ is held (the source-preview ring above
-            // takes over) or a stroke is actively in progress (the stroke
-            // itself already shows the true width). Mirrors
-            // brushPaintOverlay's identical ring.
-            if let patchBrushHoverLocation, patchSourceHoverLocation == nil, activePatchStrokePoints.isEmpty {
-                Circle()
-                    .stroke(accentColor.opacity(0.9), lineWidth: 1.5)
-                    .frame(width: brushDiameter, height: brushDiameter)
-                    .position(patchBrushHoverLocation)
-                    .allowsHitTesting(false)
-            }
+            // Always mounted, drawing nothing when there is nothing to draw.
+            // Every branch that used to live here read @State and so ran in
+            // DevelopView's own body on each hover and drag event.
+            PatchStampLayer(
+                cursor: patchCursor, frame: frame, diameter: brushDiameter,
+                color: accentColor, sourceOffset: patchStrokeOffset)
 
             Color.clear
                 .contentShape(Rectangle())
@@ -4918,15 +5076,15 @@ struct DevelopView: View {
                     switch phase {
                     case .active(let location):
                         if NSEvent.modifierFlags.contains(.option) {
-                            patchSourceHoverLocation = location
-                            patchBrushHoverLocation = nil
+                            patchCursor.sourceHover = location
+                            patchCursor.brushHover = nil
                         } else {
-                            patchBrushHoverLocation = location
-                            patchSourceHoverLocation = nil
+                            patchCursor.brushHover = location
+                            patchCursor.sourceHover = nil
                         }
                     case .ended:
-                        patchSourceHoverLocation = nil
-                        patchBrushHoverLocation = nil
+                        patchCursor.sourceHover = nil
+                        patchCursor.brushHover = nil
                     }
                 }
                 .gesture(
@@ -4935,23 +5093,23 @@ struct DevelopView: View {
                             // Nothing painted yet in THIS gesture and ⌥ is
                             // held: this drag is setting the source, not
                             // painting — just track the preview ring,
-                            // don't touch activePatchStrokePoints. Once a
+                            // don't touch patchCursor.stroke. Once a
                             // point HAS been recorded, ⌥ being pressed
                             // transiently mid-stroke can never flip modes
                             // (a real clone stamp never reinterprets an
                             // in-progress stroke either).
-                            if activePatchStrokePoints.isEmpty && NSEvent.modifierFlags.contains(.option) {
-                                patchSourceHoverLocation = value.location
+                            if patchCursor.stroke.isEmpty && NSEvent.modifierFlags.contains(.option) {
+                                patchCursor.sourceHover = value.location
                                 return
                             }
                             paintPatchStroke(at: value.location, frame: frame)
                         }
                         .onEnded { value in
-                            if activePatchStrokePoints.isEmpty {
+                            if patchCursor.stroke.isEmpty {
                                 if NSEvent.modifierFlags.contains(.option), let unit = unitPoint(from: value.location, frame: frame) {
                                     pendingPatchSource = unit
                                 }
-                                patchSourceHoverLocation = nil
+                                patchCursor.sourceHover = nil
                             } else {
                                 commitPatchStroke()
                             }
@@ -5071,9 +5229,9 @@ struct DevelopView: View {
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let location):
-                        patchSourceHoverLocation = NSEvent.modifierFlags.contains(.option) ? location : nil
+                        patchCursor.sourceHover = NSEvent.modifierFlags.contains(.option) ? location : nil
                     case .ended:
-                        patchSourceHoverLocation = nil
+                        patchCursor.sourceHover = nil
                     }
                 }
                 .gesture(
@@ -5084,20 +5242,18 @@ struct DevelopView: View {
                 )
 
             // "Source will land here if you click now" preview — only
-            // shown while ⌥ is actually held (patchSourceHoverLocation is
+            // shown while ⌥ is actually held (patchCursor.sourceHover is
             // nil otherwise), a cheap ring rather than a live pixel
             // preview of the source content itself (which would mean
             // re-rendering a cropped thumbnail on every hover event —
             // too much for interactive hover, same tradeoff the brush
             // cursor preview already made).
-            if let patchSourceHoverLocation {
-                Image(systemName: "viewfinder")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.yellow.opacity(0.7))
-                    .shadow(radius: 1)
-                    .position(patchSourceHoverLocation)
-                    .allowsHitTesting(false)
-            }
+            // Its own observing view rather than an `if let` here. Now that
+            // the hover position lives on an object this body does NOT
+            // observe, reading it here would show whatever it happened to
+            // hold when the body last ran — a ring frozen where the mouse
+            // used to be.
+            PatchSourceRing(cursor: patchCursor)
         }
     }
 
@@ -5259,16 +5415,7 @@ struct DevelopView: View {
     }
 
     private func closedPolygonPath(_ points: [CGPoint]) -> Path {
-        Path { path in
-            guard let first = points.first else {
-                return
-            }
-            path.move(to: first)
-            for point in points.dropFirst() {
-                path.addLine(to: point)
-            }
-            path.closeSubpath()
-        }
+        briefShowClosedPolygonPath(points)
     }
 
     // Shifts every drawn point AND centerX/Y by the same delta, unclamped
@@ -5303,22 +5450,12 @@ struct DevelopView: View {
     // the closed outline it will become on commit.
     private func patchFreeDrawOverlay(frame: CGRect) -> some View {
         ZStack {
-            if activePatchDrawPoints.count > 1 {
-                closedPolygonPath(activePatchDrawPoints.map {
-                    CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
-                })
-                .stroke(accentColor.opacity(0.9), style: StrokeStyle(lineWidth: 1.0, dash: [5, 3]))
-                .allowsHitTesting(false)
-            } else {
-                Text("Drag to draw the patch outline")
-                    .font(.custom("Figtree", size: 11).weight(.medium))
-                    .foregroundColor(.white)
-                    .padding(6)
-                    .background(Color.black.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .position(x: frame.midX, y: frame.midY)
-                    .allowsHitTesting(false)
-            }
+            // Always mounted, and it draws the hint itself when there is
+            // nothing yet: a condition here in the parent would put the
+            // per-point invalidation straight back.
+            ActiveOutlineLayer(
+                outline: activePatchDrawPoints, frame: frame,
+                color: accentColor, hint: "Drag to draw the patch outline")
 
             Color.clear
                 .contentShape(Rectangle())
@@ -5336,13 +5473,13 @@ struct DevelopView: View {
         guard let unit = unitPoint(from: location, frame: frame) else {
             return
         }
-        if let last = activePatchDrawPoints.last {
+        if let last = activePatchDrawPoints.points.last {
             let dx = unit.x - last.x, dy = unit.y - last.y
             if (dx * dx + dy * dy) < 0.0001 {
                 return
             }
         }
-        activePatchDrawPoints.append(unit)
+        activePatchDrawPoints.points.append(unit)
     }
 
     // Requires at least 3 points (a real polygon, not a line/dot) to commit
@@ -5352,14 +5489,14 @@ struct DevelopView: View {
     // handle and source marker both start from somewhere sensible on the
     // shape the user actually drew, not the (0.5, 0.5) default.
     private func commitPatchOutline() {
-        defer { activePatchDrawPoints = [] }
-        guard let index = selectedAdjustmentIndex, activePatchDrawPoints.count > 2 else {
+        defer { activePatchDrawPoints.points = [] }
+        guard let index = selectedAdjustmentIndex, activePatchDrawPoints.points.count > 2 else {
             return
         }
-        let count = Double(activePatchDrawPoints.count)
-        let centroidX = activePatchDrawPoints.reduce(0) { $0 + $1.x } / count
-        let centroidY = activePatchDrawPoints.reduce(0) { $0 + $1.y } / count
-        settings.localAdjustments[index].patch?.points = activePatchDrawPoints
+        let count = Double(activePatchDrawPoints.points.count)
+        let centroidX = activePatchDrawPoints.points.reduce(0) { $0 + $1.x } / count
+        let centroidY = activePatchDrawPoints.points.reduce(0) { $0 + $1.y } / count
+        settings.localAdjustments[index].patch?.points = activePatchDrawPoints.points
         settings.localAdjustments[index].patch?.centerX = centroidX
         settings.localAdjustments[index].patch?.centerY = centroidY
     }
@@ -5509,22 +5646,12 @@ struct DevelopView: View {
     // patchFreeDrawOverlay.
     private func selectionFreeDrawOverlay(frame: CGRect) -> some View {
         ZStack {
-            if activeSelectionDrawPoints.count > 1 {
-                closedPolygonPath(activeSelectionDrawPoints.map {
-                    CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
-                })
-                .stroke(accentColor.opacity(0.9), style: StrokeStyle(lineWidth: 1.0, dash: [5, 3]))
-                .allowsHitTesting(false)
-            } else {
-                Text("Drag to draw the selection outline")
-                    .font(.custom("Figtree", size: 11).weight(.medium))
-                    .foregroundColor(.white)
-                    .padding(6)
-                    .background(Color.black.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .position(x: frame.midX, y: frame.midY)
-                    .allowsHitTesting(false)
-            }
+            // Always mounted, and it draws the hint itself when there is
+            // nothing yet: a condition here in the parent would put the
+            // per-point invalidation straight back.
+            ActiveOutlineLayer(
+                outline: activeSelectionDrawPoints, frame: frame,
+                color: accentColor, hint: "Drag to draw the selection outline")
 
             Color.clear
                 .contentShape(Rectangle())
@@ -5542,24 +5669,24 @@ struct DevelopView: View {
         guard let unit = unitPoint(from: location, frame: frame) else {
             return
         }
-        if let last = activeSelectionDrawPoints.last {
+        if let last = activeSelectionDrawPoints.points.last {
             let dx = unit.x - last.x, dy = unit.y - last.y
             if (dx * dx + dy * dy) < 0.0001 {
                 return
             }
         }
-        activeSelectionDrawPoints.append(unit)
+        activeSelectionDrawPoints.points.append(unit)
     }
 
     private func commitSelectionOutline() {
-        defer { activeSelectionDrawPoints = [] }
-        guard activeSelectionDrawPoints.count > 2 else {
+        defer { activeSelectionDrawPoints.points = [] }
+        guard activeSelectionDrawPoints.points.count > 2 else {
             return
         }
-        let count = Double(activeSelectionDrawPoints.count)
-        let centroidX = activeSelectionDrawPoints.reduce(0) { $0 + $1.x } / count
-        let centroidY = activeSelectionDrawPoints.reduce(0) { $0 + $1.y } / count
-        activeSelection?.points = activeSelectionDrawPoints
+        let count = Double(activeSelectionDrawPoints.points.count)
+        let centroidX = activeSelectionDrawPoints.points.reduce(0) { $0 + $1.x } / count
+        let centroidY = activeSelectionDrawPoints.points.reduce(0) { $0 + $1.y } / count
+        activeSelection?.points = activeSelectionDrawPoints.points
         activeSelection?.centerX = centroidX
         activeSelection?.centerY = centroidY
     }
@@ -5754,7 +5881,7 @@ struct DevelopView: View {
     }
 
     // A transparent, full-frame hit area that records the drag as
-    // `activeBrushStrokePoints` (unit space) and shows a cheap, purely
+    // `brushCursor.stroke` (unit space) and shows a cheap, purely
     // vector Path preview of the in-progress stroke — no CIImage re-render
     // happens until mouse-up (see commitBrushStroke), both because
     // rebuilding the whole brush mask through Core Image on every drag
@@ -5773,39 +5900,11 @@ struct DevelopView: View {
         let brushDiameter = max(brushSize * max(frame.width, frame.height), 2)
 
         return ZStack {
-            if let brush {
-                brushMaskCanvas(brush, frame: frame)
-            }
-
-            if activeBrushStrokePoints.count > 1 {
-                Path { path in
-                    let scaled = activeBrushStrokePoints.map {
-                        CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
-                    }
-                    path.move(to: scaled[0])
-                    for point in scaled.dropFirst() {
-                        path.addLine(to: point)
-                    }
-                }
-                .stroke(
-                    brushIsErasing ? Color.red.opacity(0.7) : accentColor.opacity(0.8),
-                    style: StrokeStyle(lineWidth: brushDiameter, lineCap: .round, lineJoin: .round)
-                )
-                .allowsHitTesting(false)
-            }
-
-            // Cursor-size ring: shows exactly how big the next dab will be
-            // BEFORE the user commits to painting, tracking the mouse while
-            // it's merely hovering (not dragging) over the paint surface.
-            // Hidden during an active drag since the in-progress stroke
-            // above already shows the brush at its true width there.
-            if let hover = brushHoverLocation, activeBrushStrokePoints.isEmpty {
-                Circle()
-                    .stroke(brushIsErasing ? Color.red.opacity(0.9) : accentColor.opacity(0.9), lineWidth: 1.5)
-                    .frame(width: brushDiameter, height: brushDiameter)
-                    .position(hover)
-                    .allowsHitTesting(false)
-            }
+            // Always mounted; see BrushStrokeLayer. The stroke preview and the
+            // size ring both used to be `if let` on @State right here.
+            BrushStrokeLayer(
+                cursor: brushCursor, frame: frame, diameter: brushDiameter,
+                color: accentColor, eraseColor: .red, isErasing: brushIsErasing)
 
             Color.clear
                 .contentShape(Rectangle())
@@ -5814,15 +5913,15 @@ struct DevelopView: View {
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let location):
-                        brushHoverLocation = location
+                        brushCursor.brushHover = location
                     case .ended:
-                        brushHoverLocation = nil
+                        brushCursor.brushHover = nil
                     }
                 }
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
-                            brushHoverLocation = value.location
+                            brushCursor.brushHover = value.location
                             paintBrush(at: value.location, frame: frame)
                         }
                         .onEnded { _ in commitBrushStroke() }
@@ -6025,21 +6124,21 @@ struct DevelopView: View {
         // stored array (and the render-time dab interpolation built from
         // it, see PhotoEditRenderer.brushStrokeDabs) from ballooning on a
         // slow drag without visibly changing the painted line.
-        if let last = activeBrushStrokePoints.last {
+        if let last = brushCursor.stroke.last {
             let dx = unit.x - last.x, dy = unit.y - last.y
             if (dx * dx + dy * dy) < 0.0001 {
                 return
             }
         }
-        activeBrushStrokePoints.append(unit)
+        brushCursor.stroke.append(unit)
     }
 
     private func commitBrushStroke() {
-        defer { activeBrushStrokePoints = [] }
-        guard let index = selectedAdjustmentIndex, activeBrushStrokePoints.count > 1 else {
+        defer { brushCursor.stroke = [] }
+        guard let index = selectedAdjustmentIndex, brushCursor.stroke.count > 1 else {
             return
         }
-        let stroke = BrushStroke(points: activeBrushStrokePoints, size: brushSize, hardness: brushHardness, isErase: brushIsErasing)
+        let stroke = BrushStroke(points: brushCursor.stroke, size: brushSize, hardness: brushHardness, isErase: brushIsErasing)
         if settings.localAdjustments[index].brush == nil {
             settings.localAdjustments[index].brush = BrushMaskGeometry()
         }
@@ -6047,7 +6146,7 @@ struct DevelopView: View {
     }
 
     // Records one dab of an in-progress clone-stamp stroke. The FIRST dab
-    // of a fresh stroke (activePatchStrokePoints still empty) is where a
+    // of a fresh stroke (patchCursor.stroke still empty) is where a
     // pending ⌥-click source (if any) gets turned into this stroke's fixed
     // offset — see patchStrokeOffset's doc comment for why that offset then
     // carries over to later strokes too. If no source has EVER been set
@@ -6057,7 +6156,7 @@ struct DevelopView: View {
         guard let unit = unitPoint(from: location, frame: frame) else {
             return
         }
-        if activePatchStrokePoints.isEmpty {
+        if patchCursor.stroke.isEmpty {
             if let source = pendingPatchSource {
                 patchStrokeOffset = CGSize(width: source.x - unit.x, height: source.y - unit.y)
                 pendingPatchSource = nil
@@ -6066,13 +6165,13 @@ struct DevelopView: View {
                 return
             }
         }
-        if let last = activePatchStrokePoints.last {
+        if let last = patchCursor.stroke.last {
             let dx = unit.x - last.x, dy = unit.y - last.y
             if (dx * dx + dy * dy) < 0.0001 {
                 return
             }
         }
-        activePatchStrokePoints.append(unit)
+        patchCursor.stroke.append(unit)
     }
 
     // Unlike commitBrushStroke, a single-point "stroke" (a plain click, no
@@ -6080,12 +6179,12 @@ struct DevelopView: View {
     // (spot-heal a single blemish), and brushStrokeDabs already renders a
     // 1-point stroke correctly (see its own doc comment).
     private func commitPatchStroke() {
-        defer { activePatchStrokePoints = [] }
-        guard let index = selectedAdjustmentIndex, !activePatchStrokePoints.isEmpty, let offset = patchStrokeOffset else {
+        defer { patchCursor.stroke = [] }
+        guard let index = selectedAdjustmentIndex, !patchCursor.stroke.isEmpty, let offset = patchStrokeOffset else {
             return
         }
         let stroke = PatchStroke(
-            points: activePatchStrokePoints,
+            points: patchCursor.stroke,
             sourceOffsetX: offset.width, sourceOffsetY: offset.height,
             size: patchBrushSize,
             feather: max(patchBrushFeather, PhotoEditRenderer.patchMinimumFeather)
@@ -7196,7 +7295,7 @@ struct DevelopView: View {
         }
         selectedLocalAdjustmentID = nil
         activeSelection = nil
-        activeSelectionDrawPoints = []
+        activeSelectionDrawPoints.points = []
         selectedLayerID = nil
         isCropping = false
     }
@@ -8252,7 +8351,7 @@ struct DevelopView: View {
             cropIsAutoFitted = false
             selectedLocalAdjustmentID = nil
             activeSelection = nil
-            activeSelectionDrawPoints = []
+            activeSelectionDrawPoints.points = []
             selectedLayerID = nil
         }
         .opacity(settings.isNeutral ? 0.4 : 1)
@@ -8416,9 +8515,9 @@ struct DevelopView: View {
         // quietly resolving to nil, and always drop any in-progress brush
         // drag so it can never bleed onto the newly-selected photo.
         selectedLocalAdjustmentID = nil
-        activeBrushStrokePoints = []
-        activePatchDrawPoints = []
-        activePatchStrokePoints = []
+        brushCursor.stroke = []
+        activePatchDrawPoints.points = []
+        patchCursor.stroke = []
         pendingPatchSource = nil
         patchStrokeOffset = nil
         // Same reasoning as selectedLocalAdjustmentID above — a Selection
@@ -8427,7 +8526,7 @@ struct DevelopView: View {
         // alone: it's meant to survive a photo switch (that's the whole
         // point of "cut from one photo, paste onto another").
         activeSelection = nil
-        activeSelectionDrawPoints = []
+        activeSelectionDrawPoints.points = []
         selectedLayerID = nil
         // A Remove mask describes PIXELS of the previous photo — the one
         // piece of ephemeral state here that would be actively dangerous
@@ -8594,9 +8693,9 @@ struct DevelopView: View {
             activeSelection = nil
             selectedLayerID = nil
         }
-        activeBrushStrokePoints = []
-        activePatchDrawPoints = []
-        activePatchStrokePoints = []
+        brushCursor.stroke = []
+        activePatchDrawPoints.points = []
+        patchCursor.stroke = []
         pendingPatchSource = nil
         patchStrokeOffset = nil
     }
@@ -8645,7 +8744,7 @@ struct DevelopView: View {
     private func addSelection(shape: PatchShape) {
         activeSelection = SelectionGeometry(shape: shape)
         selectionDragStart = nil
-        activeSelectionDrawPoints = []
+        activeSelectionDrawPoints.points = []
         selectedLocalAdjustmentID = nil
         selectedLayerID = nil
         isCropping = false
@@ -8654,7 +8753,7 @@ struct DevelopView: View {
     private func deselectSelection() {
         activeSelection = nil
         selectionDragStart = nil
-        activeSelectionDrawPoints = []
+        activeSelectionDrawPoints.points = []
     }
 
     private func copySelection() {
@@ -8720,7 +8819,7 @@ struct DevelopView: View {
                 }
 
                 activeSelection = nil
-                activeSelectionDrawPoints = []
+                activeSelectionDrawPoints.points = []
             }
         }
     }

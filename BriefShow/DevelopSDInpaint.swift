@@ -205,6 +205,21 @@ struct DPMSolverMultistep {
         lambda = zip(alpha, sigma).map { Foundation.log($0) - Foundation.log($1) }
     }
 
+    /// The FORWARD process: a known clean latent, noised to where the schedule
+    /// is at `index`. `x_t = alpha_t * x_0 + sigma_t * noise`.
+    ///
+    /// This is what lets a run start partway down the schedule from a picture
+    /// that already exists, instead of at the top from pure noise. Diffusion
+    /// from noise is a generator; diffusion from an existing image with only
+    /// the last few steps left is a retoucher, because there is never enough
+    /// noise in it for the model to change its mind about what is there.
+    func noised(_ clean: [Float], noise: [Float], index: Int) -> [Float] {
+        let alphaNow = Float(alpha[index]), sigmaNow = Float(sigma[index])
+        var out = [Float](repeating: 0, count: clean.count)
+        for i in 0..<clean.count { out[i] = alphaNow * clean[i] + sigmaNow * noise[i] }
+        return out
+    }
+
     /// One step, from the sample at `timesteps[index]` to the next one.
     /// `noise` is the guided epsilon prediction.
     mutating func step(sample: [Float], noise: [Float], index: Int) -> [Float] {
@@ -366,6 +381,14 @@ final class SDInpaintPipeline {
     /// while SD regenerates the area and lands a hair off in tone — which a
     /// hard edge turns into a visible rectangle.
     static let defaultFeather = 0.35
+
+    /// How much of the schedule "Generative Clean Up" actually runs, over a
+    /// hole LaMa has already filled. nil would mean the old behaviour: start
+    /// from noise and let the model decide what belongs in the gap.
+    ///
+    /// Set from measurement — see KORAK 40 in BRIEFSHOW_DEVELOP_NOTES.md and
+    /// Tools/run-inpaint-sweep.py, which is how it was looked at.
+    static let defaultRefineStrength: Float? = 0.3
 
     // Loading the 1.6 GB UNet is ~18 seconds of Neural Engine compilation, so
     // the models are loaded once and kept. `warmUp()` moves that cost to the
@@ -566,12 +589,24 @@ final class SDInpaintPipeline {
     ///
     /// `buffers` must be exactly 512x512 — the caller cuts the region to that
     /// size, because the converted models have no flexible shapes.
+    /// - Parameter refineStrength: when set, the hole in `buffers` is taken to
+    ///   be ALREADY FILLED with a plausible picture (LaMa's, in practice), and
+    ///   only the last `refineStrength` of the schedule is run over it. 0.3
+    ///   means "skip the first 70% of denoising and start from that picture
+    ///   with 30% of the noise put back".
+    ///
+    ///   This is the one arrangement in which this model does not invent: at
+    ///   full strength it starts from pure noise, has to decide what belongs in
+    ///   a person-shaped gap, and — measured across five guidance values and
+    ///   four prompts, including an empty one — decides on a rock, a truck or a
+    ///   car. Starting from a filled image, there is nothing to decide.
     func fill(
         _ buffers: inout ExemplarInpainter.Buffers,
         prompt: String = defaultPrompt,
         negativePrompt: String = defaultNegativePrompt,
         steps: Int = defaultSteps,
         seed: UInt64 = 3,
+        refineStrength: Float? = nil,
         progress: ((Int, Int) -> Void)? = nil,
         shouldContinue: () -> Bool = { true }
     ) throws {
@@ -594,37 +629,51 @@ final class SDInpaintPipeline {
         // 1. The masked photo, in the [-1, 1] channel-first form the VAE wants,
         //    with the hole flattened to 0 (mid grey) exactly as diffusers does.
         let pixelCount = side * side
-        let encoderInput = try MLMultiArray(
-            shape: [1, 3, NSNumber(value: side), NSNumber(value: side)], dataType: .float16)
-        encoderInput.withUnsafeMutableBytes { raw, _ in
-            let destination = raw.bindMemory(to: Float16.self)
-            for index in 0..<pixelCount {
-                let hole = buffers.known[index] == 0
-                for channel in 0..<3 {
-                    let value = hole
-                        ? Float16(0)
-                        : Float16(Float(buffers.pixels[index * 4 + channel]) / 127.5 - 1)
-                    destination[channel * pixelCount + index] = value
+        let latentCount = Self.latentChannels * Self.latentSide * Self.latentSide
+
+        // `flattenHole: true` is the masked photo the UNet is CONDITIONED on,
+        // and it stays exactly as it was — grey in the hole, which is what this
+        // checkpoint was trained to receive. `false` is the same frame with
+        // whatever is already in the hole left alone, which is only used as a
+        // STARTING POINT for a refine. Keeping the conditioning in-distribution
+        // and changing only where the walk begins is the whole trick.
+        func encodeFrame(flattenHole: Bool) throws -> [Float] {
+            let encoderInput = try MLMultiArray(
+                shape: [1, 3, NSNumber(value: side), NSNumber(value: side)], dataType: .float16)
+            encoderInput.withUnsafeMutableBytes { raw, _ in
+                let destination = raw.bindMemory(to: Float16.self)
+                for index in 0..<pixelCount {
+                    let hole = flattenHole && buffers.known[index] == 0
+                    for channel in 0..<3 {
+                        let value = hole
+                            ? Float16(0)
+                            : Float16(Float(buffers.pixels[index * 4 + channel]) / 127.5 - 1)
+                        destination[channel * pixelCount + index] = value
+                    }
                 }
             }
+            let encoded = try vaeEncoder.prediction(from: MLDictionaryFeatureProvider(
+                dictionary: ["x": MLFeatureValue(multiArray: encoderInput)]))
+            guard let moments = encoded.featureValue(for: "latent")?.multiArrayValue else {
+                throw Failure.badOutput("VAE encoder gave no latent")
+            }
+            guard moments.count >= latentCount * 2 else {
+                throw Failure.badOutput("VAE encoder gave \(moments.count) values")
+            }
+            var latent = [Float](repeating: 0, count: latentCount)
+            moments.withUnsafeBufferPointer(ofType: Float.self) { source in
+                for index in 0..<latentCount { latent[index] = source[index] * Self.latentScale }
+            }
+            return latent
         }
-        let encoded = try vaeEncoder.prediction(from: MLDictionaryFeatureProvider(
-            dictionary: ["x": MLFeatureValue(multiArray: encoderInput)]))
-        guard let moments = encoded.featureValue(for: "latent")?.multiArrayValue else {
-            throw Failure.badOutput("VAE encoder gave no latent")
-        }
-        // 8 channels out: the first 4 are the gaussian's mean, the last 4 its
-        // log-variance. Taking the mean rather than sampling from it (which is
-        // what diffusers does by default) costs nothing — this VAE's variance
-        // is tiny — and keeps a seeded removal reproducible.
-        let latentCount = Self.latentChannels * Self.latentSide * Self.latentSide
-        guard moments.count >= latentCount * 2 else {
-            throw Failure.badOutput("VAE encoder gave \(moments.count) values")
-        }
-        var maskedLatent = [Float](repeating: 0, count: latentCount)
-        moments.withUnsafeBufferPointer(ofType: Float.self) { source in
-            for index in 0..<latentCount { maskedLatent[index] = source[index] * Self.latentScale }
-        }
+
+        var maskedLatent = try encodeFrame(flattenHole: true)
+        let startingLatent = refineStrength == nil ? nil : try encodeFrame(flattenHole: false)
+        // (8 channels come out of the encoder: the first 4 are the gaussian's
+        // mean, the last 4 its log-variance. encodeFrame takes the mean rather
+        // than sampling from it — which is what diffusers does by default —
+        // because this VAE's variance is tiny and it keeps a seeded removal
+        // reproducible.)
         Self.report("maskedLatent", maskedLatent)
 
         // 2. The mask at latent resolution. Max-pooled over each 8x8 block
@@ -678,6 +727,22 @@ final class SDInpaintPipeline {
         var solver = DPMSolverMultistep(steps: steps)
         let ddim = DDIMScheduler(steps: steps)
         let schedule = useDDIM ? ddim.timesteps : solver.timesteps
+
+        // Where on the schedule to begin. Zero — the top, pure noise — unless
+        // this is a refine, in which case the walk starts from the picture that
+        // is already in the hole with only the last stretch of noise put back.
+        //
+        // Only the DPM solver can do this; the DDIM path is a diagnostic
+        // fallback and is left alone rather than given a second, less-tested
+        // copy of the same arithmetic. A refine asked for while it is forced
+        // simply runs the full schedule, which is the old behaviour.
+        var startIndex = 0
+        if let refineStrength, let startingLatent, !useDDIM {
+            let clamped = min(max(refineStrength, 0.01), 1)
+            startIndex = min(max(schedule.count - Int((Float(schedule.count) * clamped).rounded()), 0),
+                             schedule.count - 1)
+            latents = solver.noised(startingLatent, noise: latents, index: startIndex)
+        }
         let cells = Self.latentSide * Self.latentSide
         let sample = try MLMultiArray(
             shape: [2, 9, NSNumber(value: Self.latentSide), NSNumber(value: Self.latentSide)],
@@ -689,9 +754,11 @@ final class SDInpaintPipeline {
             print("  [sd] sample strides \(sample.strides.map(\.intValue)) shape \(sample.shape.map(\.intValue))")
             print("  [sd] embeds strides \(conditioning.strides.map(\.intValue)) shape \(conditioning.shape.map(\.intValue))")
         }
-        for (index, timestep) in schedule.enumerated() {
+        for (index, timestep) in schedule.enumerated() where index >= startIndex {
             guard shouldContinue() else { return }
-            progress?(index, schedule.count)
+            // Counted over the steps that will ACTUALLY run, so a refine's bar
+            // fills once rather than jumping in at 70%.
+            progress?(index - startIndex, schedule.count - startIndex)
 
             // Both halves of the batch get the same 9 channels; only the text
             // embedding differs, which is what makes one pass uncond and the
@@ -775,7 +842,7 @@ final class SDInpaintPipeline {
             }
         }
         guard shouldContinue() else { return }
-        progress?(schedule.count, schedule.count)
+        progress?(schedule.count - startIndex, schedule.count - startIndex)
 
         // 4. Back to pixels.
         if Self.debugging {
@@ -869,6 +936,7 @@ extension InpaintPipeline {
         feather: Double = SDInpaintPipeline.defaultFeather,
         steps: Int = SDInpaintPipeline.defaultSteps,
         seed: UInt64 = 3,
+        refineStrength: Float? = SDInpaintPipeline.defaultRefineStrength,
         progress: ((Int, Int) -> Void)? = nil,
         shouldContinue: @escaping () -> Bool = { true }
     ) throws -> Removal? {
@@ -890,9 +958,41 @@ extension InpaintPipeline {
         }
 
         let originalKnown = buffers.known
+
+        // LaMa FIRST, then SD over the top of it.
+        //
+        // Both models work on this same 512 buffer over this same region, so
+        // this is one extra call and no new geometry. LaMa decides WHAT is in
+        // the hole — it copies real surroundings and invents nothing — and SD
+        // is then handed that picture and asked only to finish it, which is the
+        // one job it does without deciding a car belongs there.
+        //
+        // Note what is deliberately NOT consulted here: the size limit on the
+        // Quick button. That limit is a statement about Quick's OWN output,
+        // where a soft patch is all the client would get. As a base for a
+        // refine a soft fill is still the right content in the right place, and
+        // putting photographic texture back onto it is exactly what the second
+        // pass is for — so above that size this path keeps working while the
+        // Quick button is switched off.
+        if refineStrength != nil, LaMaInpaintPipeline.isAvailable {
+            do {
+                try LaMaInpaintPipeline.shared.fill(&buffers)
+            } catch {
+                // A missing or failing LaMa is not a reason to refuse the
+                // removal; without a starting picture this simply becomes the
+                // plain generative path it has always been.
+                return try aiRemoval(
+                    mask: mask, from: image, context: context, prompt: prompt,
+                    negativePrompt: negativePrompt, feather: feather, steps: steps,
+                    seed: seed, refineStrength: nil, progress: progress,
+                    shouldContinue: shouldContinue)
+            }
+        }
+
         try SDInpaintPipeline.shared.fill(
             &buffers, prompt: prompt, negativePrompt: negativePrompt,
-            steps: steps, seed: seed, progress: progress, shouldContinue: shouldContinue)
+            steps: steps, seed: seed, refineStrength: refineStrength,
+            progress: progress, shouldContinue: shouldContinue)
         guard shouldContinue() else { return nil }
 
         return package(

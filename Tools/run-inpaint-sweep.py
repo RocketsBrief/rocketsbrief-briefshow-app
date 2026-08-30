@@ -34,6 +34,8 @@ parser.add_argument("--out", default=None, help="where to write the PNGs")
 parser.add_argument("--lama", action="store_true", help="Quick Clean Up instead of SD")
 parser.add_argument("--sweep", default="7.5", help="guidance values, comma separated")
 parser.add_argument("--prompts", default="@default", help="prompts, | separated")
+parser.add_argument("--refine", default="@default",
+                    help="refine strengths over LaMa's fill, comma separated; 'off' for the old start-from-noise path")
 args = parser.parse_args()
 
 photo = pathlib.Path(args.photo).expanduser()
@@ -65,7 +67,7 @@ if build.returncode != 0:
     sys.exit(build.stderr[-4000:])
 
 out = pathlib.Path(args.out) if args.out else work / "out"
-env = dict(os.environ, SWEEP=args.sweep, PROMPTS=args.prompts)
+env = dict(os.environ, SWEEP=args.sweep, PROMPTS=args.prompts, REFINE=args.refine)
 env.setdefault("BRIEFSHOW_MODELS", str(root.parent / "CoreMLModels"))
 
 cmd = [str(work / "sweep"), str(photo), str(out),

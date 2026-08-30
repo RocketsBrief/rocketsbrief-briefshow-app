@@ -32,6 +32,7 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | 37 | **Crtice na slajderima**, kao u Lightroom-u |
 | 38 | **Generative nije radio kad su tragovi razdvojeni** — nije limit, nego prazan region. Sad jedno uklanjanje PO GRUPI tragova |
 | 39 | **SD ne može da se podesi da briše kao LaMa** — izmereno, 5 guidance × 4 prompta, sve izmišlja. Harness ostaje u `Tools/` |
+| 40 | **Generative sada radi kao LaMa** — LaMa prvo popuni, SD samo doteruje. Izmereno; usput i 2× brže |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
@@ -5429,3 +5430,112 @@ Jedini put koji ova arhitektura dopušta nije podešavanje nego **davanje SD-u
 gotovog početka**: prvo LaMa popuni rupu, pa SD odradi mali broj koraka niske
 jačine samo kao doterivanje teksture. Tada SD nema šta da izmisli jer rupe više
 nema. Nije probano; nije mala izmena.
+
+
+## KORAK 40 — Generative sada kreće od LaMe umesto od šuma (31. avgust 2026)
+
+Korisnikovo pitanje posle KORAKA 39: „misliš, kad kliknem AI generative tada LaMa
+da odradi neki posao a SD model da završi?"
+
+Da. I izmereno je da radi.
+
+### Šta je promenjeno
+
+`InpaintPipeline.aiRemoval` sada, pre SD-a, pusti `LaMaInpaintPipeline.fill` nad
+**istim** 512 baferom. Ništa se ne dodaje geometriji: oba modela ionako rade nad
+istim regionom (`squareRegion`) i istom veličinom (512), pa je ovo jedan poziv
+više.
+
+Zatim `SDInpaintPipeline.fill` dobija `refineStrength` i, umesto da krene od
+čistog šuma sa vrha rasporeda, kreće **od te slike** sa vraćenim delom šuma:
+
+```
+x_t = alpha[t] * x_0 + sigma[t] * noise
+```
+
+pa odradi samo rep rasporeda. Za to je `DPMSolverMultistep` dobio `noised(_:noise:index:)` — direktni (forward) proces.
+
+**Suština u jednoj rečenici:** difuzija od šuma je generator; difuzija od
+postojeće slike sa samo par preostalih koraka je retušer, jer u njoj nikad nema
+dovoljno šuma da se model predomisli šta je tu.
+
+**Uslovljavanje je ostalo netaknuto.** UNet i dalje dobija masku i *sivo-rupičastu*
+verziju kadra kao 9-kanalni ulaz — to je ono na čemu je checkpoint treniran.
+Menja se samo **odakle šetnja kreće**. Zato se radi DVA VAE encode-a: jedan sa
+spljoštenom rupom (za uslovljavanje), jedan bez (za polazište).
+
+### Izmereno — jačina doterivanja
+
+`C4S_7891.NEF`, maska 828×431 preko ljudi uz liniju mora:
+
+| | rezultat |
+|---|---|
+| SD sam (staro) | **smeđi kamen** |
+| LaMa sama | čisto |
+| LaMa + SD **0,2** | čisto |
+| LaMa + SD **0,3** | čisto |
+| LaMa + SD 0,45 | čisto, ali se pri dnu nazire bleda mrlja |
+| LaMa + SD 0,6 | **beži mrlja se vraća** — izmišljanje počinje ponovo |
+
+Isporučeno: **0,3** (`SDInpaintPipeline.defaultRefineStrength`). 0,45 je ivica.
+
+**Usput je i brže:** 6–10 s prema 14–15 s, jer se vrti samo 30% koraka.
+
+### Izmereno — korisnikovo pitanje „šta ako je površina veća od 2200?"
+
+Maska **2484 px**, dakle iznad granice na kojoj je `Quick` dugme ugašeno:
+
+| | rezultat |
+|---|---|
+| SD sam (staro) | **narandžasti sportski automobil na plaži**, i muškarčeva košulja pretvorena u belu majicu |
+| LaMa sama | meko levo, bez izmišljanja |
+| **LaMa + SD 0,3** | **isti sadržaj kao LaMa, malo više teksture, bez izmišljanja** |
+
+**Odgovor je dakle: LaMa i dalje odradi posao.** Granica od 2200 je ograničenje
+na *Quick DUGME*, a ne na sam model — to je izjava o tome šta bi klijent dobio
+kad bi Quick bio jedini prolaz. Kao PODLOGA za doterivanje meka popuna je i
+dalje pravi sadržaj na pravom mestu, pa iznad te veličine ovaj put i dalje radi
+dok je Quick ugašen. To je namerno i tako je zapisano u kodu.
+
+### Izmereno — korisnikov prompt
+
+Zahtev: „promeni prompt u SD modelu da bude samo `remove object and do not put
+anything on that place`".
+
+Probano, obe putanje, ista maska:
+
+| | rezultat |
+|---|---|
+| korisnikov prompt, **stari put** | **REKLAMNA TABLA SA IZMIŠLJENIM SLOVIMA** („RIEVE YOUT / EEAVER RHE / 100 IN / OPNORT") i figura sa crvenom kacigom |
+| isporučeni prompt, stari put | smeđi kamen |
+| korisnikov prompt + LaMa podloga 0,3 | čisto |
+| isporučeni prompt + LaMa podloga 0,3 | čisto |
+
+**Prompt NIJE promenjen**, i to je treći put da je isto izmereno (KORAK 3, KORAK
+18, sada ovo). CLIP nema pojam instrukcije ni negacije: „remove object and do not
+put anything on that place" doprinosi tokene *object*, *place*, *put*, *anything*
+**pozitivnom** uslovljavanju — doslovno traži da se tu nešto naslika, i dobije se
+tabla sa slovima.
+
+Ali to je sada uglavnom nevažno: **sa LaMa podlogom prompt jedva da išta menja**,
+jer model nema šta da odlučuje. Ono što je korisnik hteo dobija se arhitekturom,
+ne rečima.
+
+### Upozorenje u panelu usklađeno sa stvarnošću
+
+`cautionAreaPixels` za `.generative` bio je **600** („where inventing began").
+Izmišljanja više nema, pa je taj prag i tekst bili netačni. Sada je **1400**, a
+tekst govori o jedinom kvaru koji je ostao — mekoći — i predlaže da se veliko
+uklanjanje odradi u dva-tri prolaza.
+
+`Quick` granica od 2200 **nije dirana** (korisnikova odluka od 30.08).
+
+### Ako LaMa nije dostupna
+
+`aiRemoval` se tiho vrati na stari put (šum, ceo raspored). Nedostupna LaMa nije
+razlog da se uklanjanje odbije.
+
+### ⚠️ Neprovereno
+
+Sve gore je mereno kroz `Tools/run-inpaint-sweep.py` na pravoj fotki i slike su
+gledane — ali **niko još nije pritisnuo dugme u pokrenutoj app-i.**

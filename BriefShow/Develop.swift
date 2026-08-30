@@ -7365,7 +7365,13 @@ struct DevelopView: View {
         var cautionAreaPixels: CGFloat? {
             switch self {
             case .quick: return nil         // it is blocked before it needs a caution
-            case .generative: return 600    // where inventing began, over structure
+            // Was 600, "where inventing began, over structure". Inventing is
+            // no longer what happens: Generative now starts from Quick's fill
+            // and only finishes it (see SDInpaintPipeline.defaultRefineStrength),
+            // so it cannot decide a car belongs in the gap any more. What is
+            // left is the softness both models share once the area is large,
+            // measured on C4S_7891: clean at 1242px, soft from 1656px.
+            case .generative: return 1400
             }
         }
 
@@ -7374,7 +7380,7 @@ struct DevelopView: View {
             case .quick:
                 return "Quick works from a downscaled copy, and past about this size it smears a big region instead of rebuilding it. Paint a smaller area, or take this one out in a few passes."
             case .generative:
-                return "Over plain ground — sand, sky, a wall — AI Clean Up handles an area this size cleanly. Close to something structured, like a horizon or a row of parasols, it may invent objects instead of continuing the background."
+                return "An area this large comes back softer than the photo around it — there is not enough left nearby to rebuild it sharply. It will not invent anything, but taking it out in two or three smaller passes will look better."
             }
         }
     }

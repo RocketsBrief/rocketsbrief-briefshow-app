@@ -19,6 +19,8 @@
 //
 //   SWEEP=1.0,3.5,7.5   guidance values to try (SD only)
 //   PROMPTS=a|b|c       prompts to try, "@default" for the shipping one
+//   REFINE=0.3,1.0      how much of the schedule to run over LaMa's fill;
+//                       "off" is the old start-from-noise behaviour
 //
 // Each result is composited back onto the photo exactly the way the app's
 // layer compositing does and written as a PNG cropped to a window around the
@@ -92,19 +94,27 @@ let env = ProcessInfo.processInfo.environment
 let prompts = (env["PROMPTS"] ?? "@default").split(separator: "|", omittingEmptySubsequences: false).map(String.init)
 for guidance in (env["SWEEP"] ?? "7.5").split(separator: ",") {
     setenv("BRIEFSHOW_SD_GUIDANCE", String(guidance), 1)
+    for refine in (env["REFINE"] ?? "@default").split(separator: ",") {
     for (n, raw) in prompts.enumerated() {
         // A non-default prompt has to go through the live TextEncoder; the
         // baked blob only covers the shipping one.
         if raw != "@default" { setenv("BRIEFSHOW_SD_NOBLOB", "1", 1) }
         let prompt = raw == "@default" ? SDInpaintPipeline.defaultPrompt : raw
-        let label = "g\(guidance)-p\(n)"
+        let strength: Float? = refine == "@default"
+            ? SDInpaintPipeline.defaultRefineStrength
+            : (refine == "off" ? nil : Float(refine))
+        let label = "g\(guidance)-p\(n)-r\(refine)"
         let start = Date()
         do {
             if let r = try InpaintPipeline.aiRemoval(
-                mask: mask, from: image, context: context, prompt: prompt) {
-                print(String(format: "%@  %.1fs   \"%@\"", label, Date().timeIntervalSince(start), prompt))
+                mask: mask, from: image, context: context, prompt: prompt,
+                refineStrength: strength) {
+                print(String(format: "%@  %.1fs   refine %@", label,
+                             Date().timeIntervalSince(start),
+                             strength.map { String($0) } ?? "off"))
                 write(r, "sd-\(label)")
             } else { print("\(label): nil") }
         } catch { print("\(label): \(error)") }
+    }
     }
 }

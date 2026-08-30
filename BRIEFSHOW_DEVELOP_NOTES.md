@@ -65,10 +65,40 @@ dizanje je moguće istim putem — sve tri vrednosti zajedno — ali:
 SD ima fiksnih 512 ulaza i sintetiše piksele; LaMa radi na do 2200 i kopira prave.
 Jedini pravi izjednačivač: preklapajuće 512 pločice u nativnoj rezoluciji.
 
-**4) Neprovereno:** ivice na dugmadima i popravka gumice iz KORAKA 33 nisu viđene na
+**4) ⚠️ BELA MRLJA OD QUICK CLEAN UP — NOVO, PRIJAVLJENO 30.08 UVEČE.**
+
+Prijava: prvo uklanjanje prođe lepo, drugo prođe lepo, pa se izabere **manja** površina,
+dugme je bilo UPALJENO, i rezultat su bele mrlje na fotografiji. Slika u razgovoru:
+tri bele fleke preko peska i suncobrana.
+
+**Dve hipoteze, i nijedna nije proverena. Sledeća sesija prvo bira između njih.**
+
+**(a) Korisnikova:** Quick Clean Up se posle završetka ne resetuje nego nastavlja od
+prethodnog stanja. Ako je tako, greška je u tome što `eraseMaskedArea` renderuje
+`full = render(settingsSnapshot, on: fullBaseImage)` — a `settingsSnapshot` sadrži SVE
+ranije layere. Svako sledeće uklanjanje radi nad slikom koja već nosi prethodne zakrpe,
+pa se greške slažu jedna na drugu.
+
+**(b) Moja, i moram je navesti prvu jer sam je ja i napravio:** u KORAKU 31 sam podigao
+`blockingAreaPixels` sa 1000 na **2200**, uz `maxWorkingEdge` 1100 → 2200. Obrazloženje
+je bilo da se prag kvara pomera zajedno sa odnosom smanjenja regiona. **To je bilo
+rezonovanje, ne merenje.** Ranije izmereno: čisto na ~830px, razmazano na ~1550px. Ako
+prag nije porastao onoliko koliko sam pretpostavio, onda sada prolaze površine koje
+LaMa ne ume — i bela mrlja je tačno taj kvar, samo više nije blokiran.
+
+**Kako ih razdvojiti, jednim testom:** na SVEŽOJ fotki, bez ijednog prethodnog
+uklanjanja, označiti površinu slične veličine i pustiti Quick Clean Up.
+- pobeli → hipoteza (b), granica je predaleko podignuta; spustiti `blockingAreaPixels`
+  i izmeriti gde je stvarni prag pri `maxWorkingEdge = 2200`
+- prođe čisto → hipoteza (a), stanje se prenosi između uzastopnih uklanjanja
+
+**Ovo ima prednost nad stavkom 2 (dalje dizanje površine).** Nema smisla dizati granicu
+dok se ne zna gde je pravi prag — a moguće je da je treba spustiti.
+
+**5) Neprovereno:** ivice na dugmadima i popravka gumice iz KORAKA 33 nisu viđene na
 ekranu — build je čist, ali korisnik ih nije potvrdio.
 
-**5) Nestao preset „Probe 1"** sa testne fotke, verovatno zbog `kill -9` (vidi gore).
+**6) Nestao preset „Probe 1"** sa testne fotke, verovatno zbog `kill -9` (vidi gore).
 `C4S_7792.NEF` u `RAW Tests Images` nosi i gomilu „Removed" layera iz testiranja.
 
 ### GDE SMO STALI — 26. avgust 2026, kraj sesije

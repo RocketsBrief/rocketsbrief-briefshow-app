@@ -8,6 +8,13 @@ Beleška za nastavak rada. Poslednja izmena: 25. avgust 2026.
 
 ## TL;DR — gde smo stali
 
+### ⚠️ PRVO ZA SLEDEĆU SESIJU — preimenovanje u „Afterburn Studio"
+
+Dogovoreno 31.08, **nije počelo.** Plan i sve zamke su u odeljku
+„PLAN — preimenovanje u Afterburn Studio" na dnu dokumenta. **Pročitati ga pre
+nego što se dirne ijedan fajl** — u njemu su dve mine koje ruše app ako se
+promaše, i jedan bag koji već postoji i koji se tim poslom usput popravlja.
+
 ### GDE SMO STALI — 30. avgust 2026, druga sesija
 
 **⚠️ PRVO PROČITATI: HIPOTEZA (c) IZ PRETHODNE SESIJE JE NEMOGUĆA.**
@@ -36,6 +43,7 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | 41 | **BELA MRLJA — UZROK NAĐEN I POPRAVLJEN.** `toneMatch` je dizao svaki piksel rupe za +39 kad je okolina prežarena |
 | 42 | **Klik na sličicu se više ne čeka** — dva tap gesture-a su terala SwiftUI da odloži selekciju |
 | 43 | **Slideshow → BriefShow, Develop → LumenoLab** sa ručno nacrtanom ikonicom čašice |
+| 44 | **Patch i Selection kreću kao free**, i nijedan više ne laguje pri prevlačenju |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
@@ -5835,3 +5843,169 @@ Veliki wordmark iznad i dalje nosi identitet.
 
 `BriefShowWordmark` **ostaje** u `Marks.swift` — zaglavlje ga koristi, i time je
 veliki wordmark prestao da bude dva ručno postavljena `Text`-a.
+
+
+## KORAK 44 — Patch i Selection: free po difoltu, i bez laga (31. avgust 2026)
+
+Korisnik: „kada kliknem na patch circle se dobije i laguje, nije smooth. A kada
+kliknem na selection pojavi se neki krug na slici — ja bi da bude free selection
+i isto da ne laguje."
+
+### Oba alata sada kreću kao free-hand
+
+Krug je bio stari difolt, uz obrazloženje da „ne traži crtanje da bi nešto
+uradio". U upotrebi je to naopako: krug sleti nasred fotke preko onoga što se tu
+zatekne, pa se onda vuče, menja mu se veličina i najčešće se ionako prebaci na
+free — dakle ono što je taj difolt kupovao niko nije ni hteo. Oba oblika i dalje
+postoje u panelu.
+
+### Lag je bio isti kvar iz KORAKA 36, ostavljen na JOŠ ČETIRI mesta
+
+Kad je Remove četkica izmeštena sa `@State`, ostala su četiri alata koja to nisu:
+
+| alat | šta je bilo u `@State` |
+|---|---|
+| free-hand outline (Patch i Selection dele isti) | `activePatchDrawPoints`, `activeSelectionDrawPoints` |
+| clone-stamp potez (Patch, krug) | `activePatchStrokePoints` |
+| četkica (maske) | `activeBrushStrokePoints` |
+| **hover pozicije sva tri** | `brushHoverLocation`, `patchBrushHoverLocation`, `patchSourceHoverLocation` |
+
+**Hover je bio gori od prevlačenja.** Piše se na SVAKI pomeraj miša, i bez ijednog
+klika — pa je prosto prelazak mišem preko fotografije iznova gradio sliku, panel,
+filmstrip i histogram. To je najverovatnije ono „nije smooth" pre nego što se
+uopšte počne crtati.
+
+Sve troje sada piše u objekat koji roditelj **drži ali ne posmatra**, a crtanje
+je izmešteno u male poglede koji ga POSMATRAJU: `ActiveOutlineLayer`,
+`PatchStampLayer`, `BrushStrokeLayer`.
+
+**Tekst-podsetnik i svaki `if let` su otišli sa njima**, jer bi uslov ostavljen u
+telu roditelja vratio poništavanje nazad — ista zamka koju `ActiveStrokeLayer`
+već dokumentuje.
+
+### Bag koji je izašao iz same selidbe, a nije njome napravljen
+
+Zastareli Square/Circle patch overlay je čitao poziciju source-hover-a **direktno
+u telu**. Čim je ta pozicija prešla na objekat koji telo ne posmatra, čitanje na
+tom mestu bi prikazivalo prsten **zamrznut tamo gde je miš bio kad je telo
+poslednji put izvršeno**. Zato je i on dobio svoj posmatrački pogled
+(`PatchSourceRing`).
+
+To je opšte pravilo koje vredi zapisati: **kad se stanje izmesti sa `@State` na
+neposmatrani objekat, svako mesto koje ga je čitalo u telu mora da ode sa njim —
+inače ne dobiješ grešku pri prevođenju nego tiho zastarelu sliku.**
+
+### Sitno usput
+
+`closedPolygonPath` je sada slobodna funkcija `briefShowClosedPolygonPath`, iz
+istog razloga iz kog je to i `briefShowStrokePath`: outline koji se vuče i
+outline kad se potvrdi moraju da se crtaju ISTIM kodom, inače oblik vidno
+poskoči u trenutku kad se pusti miš.
+
+### ⚠️ Neprovereno
+
+Da li se sada zaista oseća glatko. Broj prolaza kroz `body` je izveden čitanjem
+svakog upisa u drag i hover putanjama, kao u KORAKU 36 — potez se ne može odvući
+bez pravog miša.
+
+## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)
+
+Korisnik: „promeni ime App-a u Afterburn Studio… kao i folder na desktopu
+`/Users/esti/Desktop/BriefShow` da se zove Afterburn Studio."
+
+Istraživanje je URAĐENO 31.08 i sve što sledi je provereno u kodu. Nije potrebno
+tražiti ispočetka.
+
+### ⚠️ MINA 1 — SD modeli se raspadnu ako se folder preimenuje bez ovoga
+
+Putanja do dev modela je **zakucana na dva mesta**:
+
+- `BriefShow/DevelopSDInpaint.swift:49` → `Desktop/BriefShow/CoreMLModels/<folder>`
+- `BriefShow/DevelopLaMaInpaint.swift:56` → `Desktop/BriefShow/CoreMLModels/LaMa/LaMa.mlmodelc`
+
+**LaMa preživljava** preimenovanje jer je upakovana u app (`Bundle.main`), pa joj
+je dev putanja samo rezerva. **SD NE preživljava** — 2 GB modela nisu u bundle-u,
+pa je ta putanja jedini način da ih nađe. Preimenovati folder bez ove izmene
+znači da „Generative Clean Up" prestaje da radi u celini.
+
+Uz to: `Tools/README.txt` tvrdi da postoji `BRIEFSHOW_MODELS` override — **u
+Swift kodu ga NEMA.** Dokument i kod se ne slažu. Preimenovanje je pravi trenutak
+da se taj override zaista doda, pa da sledeća selidba foldera ne bude izmena
+koda.
+
+### ⚠️ MINA 2 — naslovi prozora su nosivi, i JEDAN BAG VEĆ POSTOJI
+
+Tri prozora, tri `window.title`:
+
+| gde | naslov | koristi se kao guard? |
+|---|---|---|
+| `Develop.swift:2190` | `DevelopWindowController.windowTitle` = „LumenoLab" | DA — `Develop.swift:3262` i `:3385` |
+| `ContentView.swift:20906` (ShowGrid, glavni prozor) | `"BriefShow"` | DA — `ContentView.swift:22651` |
+| `ContentView.swift:20996` (BriefShow slideshow prozor) | `"BriefShow"` | ne, ali **nosi isti naslov** |
+
+**⚠️ TU JE BAG, I POSTOJI VEĆ SADA:** ShowGrid-ov monitor tastature se ograničava
+na `keyWindow?.title == "BriefShow"` — a **slideshow prozor ima ISTI naslov.**
+Znači dok je slideshow u fokusu, ShowGrid-ov monitor prolazi kroz guard i
+obrađuje tastere (Cmd+C/X/V, ocene, Space, Escape) sa ShowGrid-ovim kontekstom.
+
+To je tačno onaj razred incidenta koji pravilo #2 sa vrha ovog dokumenta
+opisuje, samo još neaktiviran. Komentar iznad tog guard-a opisuje raniji,
+ISPRAVLJENI slučaj i zato deluje kao da je stvar rešena — nije.
+
+**Preimenovanje je prilika da se to popravi kako treba:** dva različita naslova,
+oba iz imenovanih konstanti (kao `DevelopWindowController.windowTitle`), i guard
+koji čita konstantu a ne literal.
+
+### ⚠️ MINA 3 — šta se NE SME preimenovati, da korisnik ne izgubi podatke
+
+Ovo ostaje netaknuto, ma šta se promenilo na ekranu:
+
+- `PRODUCT_BUNDLE_IDENTIFIER = com.rocketsbrief.BriefShow`
+- `com.rocketsbrief.briefshow.rootFolderBookmark` — security-scoped bookmark za
+  pristup home folderu. Promeni ključ i korisnik ponovo dobija dijalog za dozvolu.
+- ključevi `PhotoLabelStore` (lajkovi i zvezdice), `FolderColorStore` (boje
+  foldera), `appTheme`
+
+Sve su to `UserDefaults` ključevi vezani za bundle identifier. Promena ijednog
+znači **tiho izgubljene ocene, lajkove i boje foldera** — bez greške, samo
+prazno.
+
+### Šta se MENJA
+
+1. **`PRODUCT_NAME`** u `project.pbxproj` (linije 330 i 361):
+   `"$(TARGET_NAME)"` → `"Afterburn Studio"`. Time se `.app` i izvršni fajl
+   preimenuju; `CFBundleName` prati `PRODUCT_NAME` pošto je
+   `GENERATE_INFOPLIST_FILE = YES`. Shema ostaje `BriefShow`, pa `xcodebuild
+   -scheme BriefShow` i dalje radi.
+   **Posledica:** izlazni put postaje `build_dd/.../Afterburn Studio.app` —
+   ispraviti svaku komandu koja ga otvara.
+2. **Wordmark** u `Marks.swift` — „Brief"+„Show" → „Afterburn"+„Studio". Pogled
+   preimenovati u nešto neutralno (`AppWordmark`), pošto više neće biti o
+   BriefShow-u.
+3. **Naslov glavnog prozora** (ShowGrid) → „Afterburn Studio", kroz konstantu, i
+   guard na `:22651` da čita tu konstantu.
+4. **Folder**: `mv /Users/esti/Desktop/BriefShow "/Users/esti/Desktop/Afterburn Studio"`
+   — **prvo ugasiti app**, koja se izvršava iz tog foldera. Premeštanje je u
+   okviru istog diska, pa je trenutno i `CoreMLModels` (4,4 GB) se ne kopira.
+5. **`Tools/README.txt`** i putanje u ovom dokumentu.
+
+### Šta OSTAJE „BriefShow"
+
+Ime **slideshow funkcije**. Korisnik je 31.08 izričito tražio dugme koje se zove
+BriefShow (KORAK 43) — to je ime dela app-e, ne app-e. Ostaju i:
+
+- dugme „BriefShow" u zaglavlju
+- naslov slideshow prozora (ali kao **svoja konstanta**, vidi MINU 2)
+- `BriefShowWindowController`, `BriefShowApp` i sva ostala imena u kodu —
+  preimenovanje kroz ~38 000 linija je velik diff koji ne menja ponašanje,
+  isto obrazloženje po kom je i Develop kod ostao „Develop" posle KORAKA 43
+
+### Redosled kojim ovo treba raditi
+
+1. dodati `BRIEFSHOW_MODELS` override i izmeniti obe zakucane putanje
+2. razdvojiti naslove prozora u konstante i popraviti guard (MINA 2)
+3. build + provera da SD i LaMa i dalje rade **pre** nego što se folder pomeri
+4. ugasiti app, `mv` foldera
+5. build iz nove putanje, provera da SD radi
+6. `PRODUCT_NAME`, wordmark, naslov glavnog prozora
+7. README i ovaj dokument

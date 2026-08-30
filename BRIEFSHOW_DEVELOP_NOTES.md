@@ -86,7 +86,30 @@ rezonovanje, ne merenje.** Ranije izmereno: čisto na ~830px, razmazano na ~1550
 prag nije porastao onoliko koliko sam pretpostavio, onda sada prolaze površine koje
 LaMa ne ume — i bela mrlja je tačno taj kvar, samo više nije blokiran.
 
-**Kako ih razdvojiti, jednim testom:** na SVEŽOJ fotki, bez ijednog prethodnog
+**NOV PODATAK (isto veče): bela mrlja nastaje i na MALOJ površini.** Slika u razgovoru:
+sitna oznaka preko osobe u pozadini, pored lica žene, na vrlo svetloj plažnoj fotki —
+i Quick Clean Up je vrati belu. To **obara hipotezu (b) kao glavnu**: nije stvar
+veličine, jer ova površina je daleko ispod svake granice.
+
+**(c) NOVA HIPOTEZA, I ONA JE SADA PRVA — i nju sam takođe ja napravio.**
+`ExemplarInpainter.fill` ima `searchRadius: Int = 80` — **fiksnih 80 piksela u RADNOM
+baferu**, nezavisno od njegove veličine. U KORAKU 31 sam `maxWorkingEdge` podigao
+1100 → 2200, dakle bafer je duplo veći u pikselima, **a prečnik pretrage je ostao isti**.
+Efektivno: inpainter sada pretražuje **upola manje sadržaja slike** nego pre.
+
+Na fotki gde je okolina rupe presvetla (nebo, prežareni pesak), a jedini pravi materijal
+za kopiranje je dalje od tih 80 piksela, jedino što nađe u dometu je belina — pa je i
+kopira. To objašnjava i zašto se javlja na maloj površini, i zašto se pojavilo tek
+posle KORAKA 31.
+
+**Prva stvar koju treba probati:** skalirati `searchRadius` zajedno sa
+`maxWorkingEdge` (bio je 80 pri 1100, dakle ~160 pri 2200), ili ga vezati za dimenziju
+bafera umesto da bude konstanta. Proveriti cenu — pretraga je kvadratna po prečniku,
+pa je 80 → 160 oko 4x posla po pikselu rupe, povrh već podignute rezolucije.
+
+**Ako to ne reši**, tek onda razdvajati (a) i (b) testom ispod.
+
+**Kako razdvojiti (a) i (b), jednim testom:** na SVEŽOJ fotki, bez ijednog prethodnog
 uklanjanja, označiti površinu slične veličine i pustiti Quick Clean Up.
 - pobeli → hipoteza (b), granica je predaleko podignuta; spustiti `blockingAreaPixels`
   i izmeriti gde je stvarni prag pri `maxWorkingEdge = 2200`

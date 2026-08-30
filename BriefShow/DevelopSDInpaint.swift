@@ -327,11 +327,28 @@ final class SDInpaintPipeline {
     /// describe the edit. Instruction-shaped text ("remove the selected object,
     /// match the lighting...") is read as a list of things to paint, and SD
     /// duly paints them -- measured, it produces signage and stock textures.
-    static let defaultPrompt = "empty background, seamless continuation, no people"
+    /// Tuned 30.08.2026, on the brief "make Generative Clean Up behave like
+    /// Quick Clean Up" — i.e. like LaMa, which continues the surrounding
+    /// texture and invents nothing.
+    ///
+    /// The one real defect in the previous value was the phrase "no people".
+    /// **CLIP has no negation.** The doc comment right above already says the
+    /// prompt is read as a list of things to paint, and by that same rule
+    /// "no people" contributes the token *people* to the POSITIVE conditioning
+    /// — it argues for the exact thing it looks like it forbids. Not-ness
+    /// belongs in the negative prompt, where classifier-free guidance can
+    /// actually push away from it, and it was already there.
+    ///
+    /// What is left names only substrate: a surface, its texture, and the fact
+    /// that it continues. No subject, nothing a scene could be built around.
+    static let defaultPrompt = "empty background, plain continuous surface, uniform texture, seamless continuation"
 
     /// Pushed AGAINST, not for. Keeps the model from filling a person-shaped
-    /// hole with another person, which is its first instinct.
-    static let defaultNegativePrompt = "person, people, human, face, text, watermark"
+    /// hole with another person, which is its first instinct — and now also
+    /// from filling it with any other *subject*, which is the second. The
+    /// nouns here are the ones a 512px inpaint actually reaches for when it
+    /// decides the hole should contain something.
+    static let defaultNegativePrompt = "person, people, human, face, body, animal, object, sign, text, letters, watermark, logo, ornament, duplicate"
 
     // 0.18215 is SD 1.5's VAE scaling constant; guidance 7.5 and 30 steps are
     // the prototype's recipe, confirmed on the user's own photos.
@@ -900,9 +917,31 @@ extension InpaintPipeline {
         // Never SMALLER than the 512 the models run at: a smaller window would
         // be upscaled into them, and the model would be reading a blurred,
         // detail-free version of the photo — which is exactly when SD stops
-        // continuing the scene and starts inventing. Twice the hole is the
-        // context ratio the prototype used; 512 is the floor.
-        let side = min(max(max(maskBox.width, maskBox.height) * 2, CGFloat(SDInpaintPipeline.imageSide)), limit).rounded()
+        // continuing the scene and starts inventing. 512 is the floor.
+        //
+        // The context ratio was the prototype's 2.0 and is now 1.6, to answer
+        // "the generative tool leaves a blurry patch and Quick does not".
+        //
+        // The blur is arithmetic, not a prompt or a model failing. This region
+        // is resampled INTO a fixed 512 buffer — the checkpoint was converted
+        // at that size and its input shape is not flexible — and the fill comes
+        // back out scaled up by however much it was scaled down. At 2.0 a
+        // 800px hole meant a 1600px region, so every synthesized pixel was
+        // stretched over 3.1 real ones. Quick has no such problem for two
+        // reasons: it works at up to maxWorkingEdge = 1100, not 512, and it
+        // COPIES real pixels out of the surrounding photo instead of
+        // synthesizing them, so what it puts back is as sharp as what it took.
+        //
+        // 1.6 spends the 512 on the hole rather than on context: the same
+        // 800px hole now stretches 2.5x instead of 3.1x. It is a real trade —
+        // less surrounding photo for the model to read is exactly the
+        // direction that makes SD invent — so it was moved partway, not to
+        // the 1.0 that would sharpen it most.
+        //
+        // The only way to remove the stretch entirely is to run the model over
+        // overlapping 512 tiles at native resolution. That is the real fix and
+        // a much bigger one; nothing here approaches it.
+        let side = min(max(max(maskBox.width, maskBox.height) * 1.6, CGFloat(SDInpaintPipeline.imageSide)), limit).rounded()
         let centre = CGPoint(x: maskBox.midX, y: maskBox.midY)
         var origin = CGPoint(x: centre.x - side / 2, y: centre.y - side / 2)
         origin.x = min(max(origin.x, extent.minX), extent.maxX - side)

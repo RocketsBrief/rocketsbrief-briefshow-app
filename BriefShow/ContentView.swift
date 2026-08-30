@@ -23777,6 +23777,18 @@ private struct ShowHeaderButtonLabel: View {
             .animation(.linear(duration: 0.1), value: isHovered)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
+            // Border added 30.08.2026, on the note that these read as bare text
+            // rather than as buttons — Slideshow, Develop, Add Photos, Select
+            // All, Deselect, Export All, Done and the rest. This is the shared
+            // header style, used in 37 places, so the outline lands on all of
+            // them at once and they match the tool strip, which already had it.
+            //
+            // Same shape and colour the tool strip uses (corner 6, border at
+            // 0.7) so the two rows read as one family rather than two.
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(AppColors.border.opacity(0.7), lineWidth: 1)
+            )
             .onHover { hovering in
                 isHovered = hovering
             }

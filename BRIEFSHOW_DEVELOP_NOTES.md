@@ -8,6 +8,69 @@ Beleška za nastavak rada. Poslednja izmena: 25. avgust 2026.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 30. avgust 2026, kraj sesije
+
+**Sve iz ove sesije je commit-ovano. NIJE pushovano** — to je prvo za sledeći put, ako
+se tako želi. Nepushovano stoji i `51c402b` od 26.08.
+
+**⚠️ PRAVILO ZA SVAKI BUDUĆI OVERLAY IZNAD SLIKE** (KORAK 24, mereno):
+`.clipped()` seče **crtanje, ne hit-testing.** Svaki view u `centerPreview` dimenzionisan
+po `fitted` ili `fullImageFrame` zumirano se prostire stotinama tačaka IZNAD pregleda i,
+pošto je `centerPreview` poslednje dete `VStack`-a, seda preko trake sa alatima i jede
+klikove — a dugmad ostaju upaljena i izgledaju normalno. Ili `.allowsHitTesting(false)`
+ako je ukrasan, ili ograniči na `containerSize`.
+
+**⚠️ 0×0 PROZOR NIJE KVAR — to je ekran za prijavu.** Sačekati da korisnik ukuca lozinku,
+i NE gasiti app sa `kill -9` posle toga, jer sledeće pokretanje traži lozinku ponovo.
+Cela ova sesija je to pogrešno čitala kao nestabilnost pri pokretanju (vidi KORAK 33).
+
+#### Urađeno u ovoj sesiji (KORACI 22-33)
+
+| | |
+|---|---|
+| 22 | **Layers kartica** — panel podeljen na Edit / Retouch / Layers, premeštanje layera prevlačenjem, spisak odozgo nadole |
+| 23 | **Filmstrip** — `LazyHStack`, serijski `.utility` red, keš na 400. Dekodirao je ceo folder odjednom |
+| 24 | **Zumirana traka nije primala klikove** — `.clipped()` ne seče hit-testing |
+| 25 | **Lag prstena kursora** — pozicija izašla iz `@State` na `DevelopView` |
+| 26 | Čišćenje **više ne izbacuje iz alata** |
+| 27 | Traka preimenovana: `[AI] Clean Up`, `Exit Clean Up`, `Generative Clean Up` |
+| 28 | Add/Erase i **Clear AI Area** u traci; undo je već postojao i radi (izmereno) |
+| 29 | Selekcija **roze** umesto plave; painting više ne poništava ceo prikaz |
+| 30 | Sve u **jednom redu**; nov SD prompt + regenerisan blob |
+| 31 | Quick radna površina **1000 → 2200**; SD kontekst 2.0 → 1.6; red ispod trake ukinut; progres u gornju traku |
+| 32 | **Clear All** u Layers zaglavlju |
+| 33 | **Gumica sada oduzima površinu**; ivice na svih 37 dugmadi zajedničkog stila |
+
+#### Potvrđeno uživo (korisnik, svojim rečima)
+
+- „sada je smooth" — lag pri pomeranju miša (KORAK 25)
+- „generative ai okay" — posle novog prompta (KORAK 30)
+
+#### ⚠️ OTVORENO ZA SLEDEĆU SESIJU
+
+**1) Brush AI selection ne sme da izađe van slike.** Potez se trenutno crta i preko
+letterbox margine pored fotografije — vidi sliku u razgovoru od 30.08. Potez je odsečen
+na oblast PREGLEDA (KORAK 24), ali ne na oblast SAME SLIKE. `unitPoint(from:frame:)`
+klampuje na 0...1, pa se tačke lepe na ivicu umesto da budu odbijene. Treba odsecanje na
+`fitted` (okvir slike), ne na `containerSize`.
+
+**2) Još veća AI selection površina za Quick Clean Up (LaMa).** Sada je 2200px
+(`blockingAreaPixels`), uz `maxWorkingEdge = 2200` i `maxHolePixels = 180 000`. Dalje
+dizanje je moguće istim putem — sve tri vrednosti zajedno — ali:
+- cena je **kvadratna i plaća se na SVAKOM uklanjanju**, ne samo na velikom
+- **brzina nije pouzdano izmerena** posle poslednjeg dizanja (dva merenja promašila).
+  Prvo izmeriti koliko sada traje, pa tek onda dizati.
+
+**3) Generative i dalje nije oštar kao Quick, i ne može biti sa ovom arhitekturom.**
+SD ima fiksnih 512 ulaza i sintetiše piksele; LaMa radi na do 2200 i kopira prave.
+Jedini pravi izjednačivač: preklapajuće 512 pločice u nativnoj rezoluciji.
+
+**4) Neprovereno:** ivice na dugmadima i popravka gumice iz KORAKA 33 nisu viđene na
+ekranu — build je čist, ali korisnik ih nije potvrdio.
+
+**5) Nestao preset „Probe 1"** sa testne fotke, verovatno zbog `kill -9` (vidi gore).
+`C4S_7792.NEF` u `RAW Tests Images` nosi i gomilu „Removed" layera iz testiranja.
+
 ### GDE SMO STALI — 26. avgust 2026, kraj sesije
 
 **Sve iz ove sesije je commit-ovano na granu `briefshow-develop`. NIJE
@@ -4118,3 +4181,591 @@ jedno podešavanje sa dva mesta pristupa, a ne dva koja se mogu razići. I
 panel-ovo „Export All Edited" sad otvara istu karticu. Sam Save panel se
 pokreće tek `DispatchQueue.main.async` posle zatvaranja sheet-a — dva modala
 koja se trkaju su način da Save panel završi IZA sheet-a.
+
+
+## KORAK 22 — Layers dobija svoju karticu (30. avgust 2026)
+
+Stavka **1** iz „Plan — dogovoreno 25. avgusta 2026": *„Layers kao u
+Photoshopu. Kartica koja može da se istakne, ili da postane vidljiva na klik.
+Trenutno je `layersSection` samo spisak u panelu."*
+
+### Šta je urađeno
+
+**1) Tri kartice umesto jednog skrola.** `adjustmentPanel` je bio `ScrollView`
+sa trinaest sekcija naslaganih jedna na drugu. Sada je traka sa karticama
+prikačena na vrh, a skrol prikazuje samo sekcije izabrane kartice:
+
+| kartica | sekcije |
+|---|---|
+| **Edit** | histogram, presets, crop & rotate, light, color, detail & effects |
+| **Retouch** | masks, selection, remove |
+| **Layers** | layers |
+
+Sekcije same nisu dirane — nijedna nije prepisana, samo se bira koje su
+montirane. `panelFooter` (Settings, Reset, Export) ide ispod sadržaja SVAKE
+kartice, jer to su radnje nad celom fotkom, ne nad karticom. Ostao je unutar
+skrola a ne prikačen za dno namerno: `exportActionsSection` nosi filmstrip i
+karticu za format, i prikačen bi pojeo panel na niskom prozoru.
+
+**2) Premeštanje layera prevlačenjem.** Svaki red ima grip ručicu
+(`line.3.horizontal`) i može da se prevuče na drugi red. Rađeno kao
+`DropDelegate`, ne `.onMove` — `.onMove` traži `List`, a panel je `VStack`
+unutar `ScrollView`, pa bi `List` prestilizovao svaki red i ugnezdio drugi
+skroler u postojeći.
+
+**3) Spisak se čita odozgo nadole.** `settings.layers` je odozdo nagore jer
+`compositeLayers` crta redom kroz niz; prikaz je obrnut, ali **samo prikaz** —
+svaka radnja i dalje ide preko `id`-a layera.
+
+### Mina koja je nađena usput, i zašto nije eksplodirala
+
+Nad `.keyboardShortcut("v", modifiers: .command)` na dugmetu „Paste as Layer"
+stajao je komentar da dugme MORA da ostane u stablu prikaza da bi Cmd+V radio.
+Da je to bilo tačno, premeštanje Layers-a iza kartice bi tiho ubilo paste.
+
+**Nije bilo tačno.** Cmd+V obrađuje zajednički local NSEvent monitor
+(`installEditingKeyMonitor`), koji ga hvata prvi i vraća `nil` — događaj nikad
+ne stigne do SwiftUI-jevog dispatch-a. A kad je `layerClipboard` prazan, dugme
+je `disabled`, pa ni tada modifikator ne radi ništa. **Taj `.keyboardShortcut`
+je već bio mrtav kod**, u obe grane. Ostavljen je (crta ⌘V oznaku uz naslov),
+ali je komentar prepisan da kaže istinu, jer bi sledeća sesija na osnovu starog
+zaključila pogrešno.
+
+Monitor živi na Develop prikazu, ne u sekciji, pa paste radi iz bilo koje
+kartice. Isto važi za Cmd+C/X, Cmd+Z, `[` / `]` i Backspace.
+
+**Jedina prava posledica kartica na prečice**: Return-potvrđuje-crop visi na
+crop „Done" dugmetu i bio je već ograničen na „samo dok to dugme postoji".
+Prelazak na drugu karticu usred cropovanja sada takođe demontira to dugme —
+isto pravilo, ne novo.
+
+### Provereno
+
+`python3 Tools/run-layer-reorder-test.py` — izvlači PRAVU
+`LayerDropDelegate.reorder(_:moving:onto:)` iz `Develop.swift` po tekstu, umota
+je u goli enum i pusti test nad njom. Ako se funkcija preimenuje ili pomeri,
+skripta pukne glasno umesto da tiho testira zastarelu kopiju.
+
+**10/10:**
+- premeštanje gore/dole za jedno mesto, i s kraja na kraj u oba smera
+- ispuštanje layera na samog sebe ne radi ništa i vraća `false`
+- `id` koji je nestao usred prevlačenja (layer obrisan) ne radi ništa
+- prazan spisak ne puca
+- **200 000 nasumičnih ispuštanja: nijedan layer se ne izgubi ni ne udvoji**
+- obrnut prikaz: prevlačenje najgornjeg reda na najdonji ga i prikazuje dole
+
+**Negativna provera urađena**: kad se `items.insert(moved, at: to)` promeni u
+`at: min(to + 1, ...)`, četiri provere padnu. Zanimljivo je koje NE padnu —
+fuzz od 200 000 i dalje prolazi, jer off-by-one i dalje daje permutaciju.
+Fuzz dokazuje „ništa se ne gubi", a konkretne provere dokazuju „na pravom je
+mestu"; trebaju obe.
+
+`xcodebuild -configuration Release` — **BUILD SUCCEEDED**.
+
+### Nije urađeno
+
+**Vizuelna provera.** Kartice, grip ručice, obrnut spisak — niko to nije video
+na ekranu. Isto važi za sve iz sesije od 26. avgusta.
+
+Preimenovanje layera dvoklikom nije dodato; nije bilo traženo.
+
+
+## KORAK 23 — filmstrip je dekodirao ceo folder odjednom (30. avgust 2026)
+
+Prijava: *„mnogo seca dok sam u Developed kao da je sve slike odjednom otvorio full
+size"* + zahtev za Lightroom ponašanje (otvorena fotka u punoj rezoluciji, ostale u
+thumbnail kvalitetu).
+
+**Lightroom ponašanje je već postojalo** i nije bilo u kvaru: `loadImages(for:)` na
+svaku promenu fotke postavi `fullBaseImage` i `previewBaseImage` na `nil`, pa se puna
+rezolucija drži samo za jednu fotku.
+
+Uzrok je bio filmstrip, tri sabrana dela:
+
+1. **`HStack`, ne `LazyHStack`.** Plain `HStack` u `ScrollView`-u montira SVAKO dete
+   odmah, pa je `.onAppear` opalio na svakoj fotki u folderu čim se Develop otvori.
+2. **Svaki taj `.onAppear` dekodira PUNU sliku.** `makeShowGridThumbnail` prosleđuje
+   `kCGImageSourceCreateThumbnailFromImageAlways: true` — dakle dekodiraj celu fotku pa
+   je smanji na 240px. Ne koristi ugrađeni EXIF thumbnail. Folder od 300 RAW-ova =
+   300 punih dekodiranja odjednom.
+3. **Na `.userInitiated`**, istom prioritetu kao render koji korisnik gleda.
+
+Popravljeno: `LazyHStack`; zaseban **serijski** red na `.utility`
+(`filmstripThumbnailQueue`); zaštita od duplog dekodiranja (`filmstripThumbnailsInFlight`
+— provera `== nil` je bila na main threadu PRE dispatch-a, pa su dva `.onAppear` mogla
+oba da prođu); i keš ograničen na 400 (`filmstripThumbnailCacheLimit`, izbacuje se
+najstariji, nikad otvorena fotka).
+
+`makeShowGridThumbnail` NIJE diran — deli ga ShowGrid.
+
+**Potvrdio korisnik uživo: „sada je smooth".**
+
+## KORAK 24 — dugmad u traci ne reaguju kad je slika zumirana (30. avgust 2026)
+
+Prijava, dvaput: *„kada zumiram sliku ai selection button doesn't work"*, pa
+*„cim zumiram nece ako odzumiram hoce"* za Quick Clean Up.
+
+**Ovo je prvi bug u istoriji ovog dokumenta koji je reprodukovan i dokazan skriptovanim
+upravljanjem pravom app-om**, ne čitanjem koda. Vredi zapisati kako, jer se isplatilo:
+dve moje ranije hipoteze (hit zona četkice; veličina selekcije) bile su POGREŠNE, i
+merenje ih je oborilo pre nego što su postale još jedna naslagana izmena.
+
+### Kako je mereno
+
+Privremeni `briefShowDiag` na **stderr** (ne `print` — stdout je pun-baferovan kad ide
+u fajl umesto u terminal, prvi pokušaj je dao 0 bajta), plus sintetički klikovi i
+tasteri preko `CGEvent`. Ključno: **`CGEvent.postToPid`**, ne System Events `keystroke`
+— `keystroke` ide aplikaciji u fokusu i prvi pokušaj je zumirao TERMINAL umesto app-e.
+Prozor se nalazi preko `CGWindowListCopyWindowInfo([.optionAll])`; restriktivni
+`.optionOnScreenOnly` je povremeno vraćao ništa za prozor koji se uredno slika.
+
+### Izmereno
+
+```
+zoom=1.95  quick=ENABLED   klik na Quick Clean Up ->  NEMA TAPPED
+zoom=1.00  quick=ENABLED   isti klik, isti piksel  ->  TAPPED
+geom zoom=1.95 container=1121x502 fitted=(-93,-239 1306x979) full=(-268,-262 1573x1048)
+```
+
+Dugme je **upaljeno u oba slučaja** — dakle nije logika, klik ne stiže.
+
+### Uzrok
+
+```swift
+Image(nsImage: displayedImage)
+    .frame(width: fitted.width, height: fitted.height)
+    .position(x: fitted.midX, y: fitted.midY)
+    .frame(width: proxy.size.width, height: proxy.size.height)
+    .clipped()
+```
+
+**`.clipped()` seče crtanje, ne hit-testing.** Zumirano se slika prostire od y=−239 do
+y=740 u kontejneru visokom 502, `centerPreview` je poslednje dete `VStack`-a pa je po
+z-redosledu iznad `toolStrip`-a, i njen nevidljivi hit region jede klikove na AI
+Selection / Quick Clean Up / AI Clean Up. Dugmad ostaju upaljena i izgledaju normalno —
+zato je ovo čitano kao „dugme ne radi".
+
+### Popravka
+
+1. `.allowsHitTesting(false)` na `Image` — ukrasna je, svaki gest živi u overlay-ima
+   iznad nje. Ne container-level clip: on bi obrisao crop ručice, zbog čega je clip i
+   bio stavljen samo na sliku.
+2. **Ista mina je bila u još šest hit zona** — `patchBrushOverlay`,
+   `patchCanvasClickArea`, `patchFreeDrawOverlay`, `selectionFreeDrawOverlay`,
+   `brushPaintOverlay`, `brushMaskCanvas` — sve dimenzionisane po `frame`. Ceo lanac
+   tool overlay-a (osim crop-a) umotan u `.frame(proxy.size).contentShape(Rectangle())
+   .clipped()`.
+
+### Potvrđeno merenjem, oba
+
+- Quick Clean Up na zoom 1.95: **`TAPPED zoom=1.953125`** (ranije ništa)
+- Sa Patch overlay-em aktivnim i zoom 1.95, klik na Selection: dugme se **upalilo**
+
+Usput popravljeno u `removalPaintOverlay`: naslikani potezi nisu bili odsečeni na
+oblast pregleda, pa su se zumirano crtali preko panela. Susedni `removalOverlay` jeste
+bio odsečen — i komentar iznad njega kaže tačno zašto.
+
+## KORAK 25 — lag pri pomeranju miša sa aktivnom četkicom (30. avgust 2026)
+
+Prijava: *„kao da pc ne moze da podnese toliko informacija, pomeram mis on laguje".*
+
+`removalBrushHoverLocation` je bio `@State` na `DevelopView`. Kursor se pomera 60-120
+puta u sekundi, i **svaki taj upis je poništavao ceo `DevelopView.body`** — sliku, sve
+sekcije panela, filmstrip, histogram — da bi pomerio jedan krug. Posao po pomeraju miša
+bio je srazmeran celom ekranu umesto krugu.
+
+Popravka: `BrushCursorPosition: ObservableObject` koji roditelj drži kao `@State` nad
+KLASOM (čuva referencu bez pretplate na `@Published`), a posmatra ga samo nov
+`BrushCursorRing`. Pomeraj miša sad precrtava prsten i ništa više. Traži `import Combine`.
+
+**Potvrdio korisnik uživo: „sada je smooth".**
+
+**Ostaje isti obrazac na `brushHoverLocation`** (četkica za maske) — nije dirano jer nije
+prijavljeno, ali je ista mina, i `activeRemovalStrokePoints` je i dalje `@State` pa
+samo CRTANJE i dalje poništava ceo body.
+
+
+## KORAK 26 — čišćenje više ne izbacuje iz alata (30. avgust 2026)
+
+Prijava: *„kada sam u AI Selection i kada kliknem Quick Clean ili AI Clean, on mi posle
+izbaci da moram opet da kliknem na AI Selection... umesto da ostane tu gde je."*
+
+Uzrok je bila jedna linija na kraju uspešnog brisanja u `eraseMaskedArea`:
+
+```swift
+settings.layers.append(layer)
+clearRemovalMask()
+activeSelection = nil
+isRemoveBrushActive = false   // <- ovo
+```
+
+Uklanjanje retko kad znači JEDNO uklanjanje — normalan oblik posla je namaži, očisti,
+namaži sledeće, očisti. Alat sad ostaje upaljen. `clearRemovalMask()` je iznad već
+ispraznio poteze, pa je preostalo stanje četkica naoružana nad čistim listom, što je
+tačno ono od čega sledeće uklanjanje kreće.
+
+Uz to `isRemoveBrushErasing = false`: brisanje IZ prazne selekcije ne radi ništa, pa bi
+ostanak u Erase režimu bio mrtav kursor.
+
+### Izlaz iz alata
+
+Korisnik je predložio dugme za izlaz **umesto** „Select People". Nije urađeno tako:
+„Select People" PRAVI selekciju i druga je polovina istog workflow-a, pa bi zamena
+uklonila funkciju da bi se dodala druga.
+
+Umesto toga, **„Done" je dodat u red ispod trake** — onaj koji ionako postoji samo dok
+je četkica upaljena (uz „Size" i „Adding to selection"). Izlaz se pojavljuje tačno kad
+ima iz čega da se izađe. „AI Selection" je i dalje toggle, kao i pre.
+
+### Provereno vožnjom prave app-e
+
+Isti skriptovani rig kao u KORAKU 24, na `C4S_7792.NEF`:
+- posle Quick Clean Up-a: **„AI Selection" i dalje istaknut**, red sa „Size" i dalje tu,
+  „Adding to selection" (ne Erasing), poruka „Nothing is selected yet" — čist list
+- klik na „Done": alat ugašen, red nestao, traka se vratila u normalu
+
+**⚠️ Napomena za sledeću sesiju o pokretanju app-e za testiranje:** `open Build/.../
+BriefShow.app` je više puta ostavljao SAMO 0×0 prozore (stanje opisano u TL;DR-u).
+`nohup ./BriefShow.app/Contents/MacOS/BriefShow &` je davao pravi prozor svaki put.
+Ako prozor ne postoji, to je prvo što treba probati, a ne dijagnostikovati app.
+
+
+## KORAK 27 — traka preimenovana po korisnikovom zahtevu (30. avgust 2026)
+
+Zahtev: ukloniti „Select People" iz trake i staviti „Exit AI Clean Up"; „AI Selection"
+preimenovati u „AI Clean Up", sa ikonicom od slova **AI** umesto četkice.
+
+Traka je sada:
+
+```
+Crop | Selection | Patch | [AI] AI Clean Up | ✕ Exit AI Clean Up | Quick Clean Up | Generative Clean Up
+```
+
+### Sudar imena, i kako je razrešen
+
+U traci je VEĆ postojalo dugme „AI Clean Up" — generativni (Stable Diffusion) engine,
+pored „Quick Clean Up" (LaMa). Preimenovanje alata bi dalo dva dugmeta istog imena u
+istom redu.
+
+Generativni je zato postao **„Generative Clean Up"**, i u traci i u
+`RemovalEngine.title`. To je uz to i tačnija reč: ~13s SD putanja naspram ~1s LaMa
+putanje pored nje. Ako se traži drugo ime, menja se na ta dva mesta.
+
+### Select People nije obrisan, premešten je
+
+Ostaje u `removeSection`, dakle u panelu pod karticom **Retouch**, i to mu je sada
+jedini ulaz. Nije obrisan jer PRAVI selekciju — zahtev je bio za izlaz iz alata, ne za
+gubitak ulaza u njega. Poruka „Nothing is selected yet…" sada upućuje tamo.
+
+### Sitnice iz istog zahvata
+
+- `toolButton` je dobio `textIcon:` parametar — crta slova gde bi išao SF Symbol,
+  uokvireno na istu širinu da red ostane na jednoj liniji. „AI" nema glif koji kaže
+  šta je.
+- **„Done" iz KORAKA 26 je uklonjen** — izlaz je sad u samoj traci, pa bi dva izlaza
+  bila dva imena za istu radnju.
+- „Exit AI Clean Up" je `disabled` a ne sakriven dok je alat ugašen: dugme koje se
+  pojavljuje i nestaje pomera sve ostale u traci u stranu, a taj red je mišićna memorija.
+- Panel prati traku: „AI Selection (painting)" → „AI Clean Up (painting)".
+
+Provereno u pokrenutoj app-i: sva četiri imena i AI ikonica stoje kako treba, alat
+aktivan, Exit upaljen, „Quick Clean Up" ugašen dok nema selekcije.
+
+
+## KORAK 28 — Clean Up traka: ime, Add/Erase, Clear AI Area, i undo (30. avgust 2026)
+
+Zahtev: ostaviti AI ikonicu a tekst skratiti na „Clean Up"; dodati history za Cmd+Z;
+dodati dugme koje uklanja sve markovano; i omogućiti da painting oduzima od već
+markovanog, „kao Lightroom".
+
+### Urađeno
+
+1. **`[AI] Clean Up`** — ikonica nosi „AI", tekst više ne ponavlja. Uz to
+   „Exit AI Clean Up" → **„Exit Clean Up"**, da se par slaže.
+2. **Add / Erase u redu ispod trake.** Kontrola je oduvek postojala u Retouch panelu;
+   preseljena je i ovde jer se painting dešava ovde, a niko ne skroluje panel usred
+   poteza. Erase oduzima od već markovanog, uključujući i ono što je našao Select
+   People — što je tačno traženo Lightroom ponašanje.
+3. **„Clear AI Area"** — briše SVE oznake (poteze i Select People masku) bez diranja
+   fotografije. Red se prikazuje i kad je četkica ugašena a selekcija postoji
+   (`hasRemovalArea` je dodat u uslov), inače Select People maska ne bi imala gde da
+   se odbaci osim kroz panel.
+4. **Undo NIJE trebalo praviti — već je postojao i radi.**
+
+### Zašto je „Clear", ne „Clean"
+
+Tri dugmeta u traci iznad kažu „Clean Up" i svako od njih MENJA fotografiju. Ovo samo
+odbacuje oznaku. Ime na jedno slovo od ta tri čitalo bi se kao četvrti način da se
+nešto obriše.
+
+### Undo — izmereno, pošto sam prvo pogrešno zaključio da ne radi
+
+Prva tri Cmd+Z-a nisu uradila ništa i zaključio sam da history ne postoji za ovu
+putanju. **Bilo je pogrešno.** `NSApp.keyWindow` je `nil` dok app nije aktivna, pa
+`installEditingKeyMonitor` odbija događaj na prvoj liniji — tasteri poslati preko
+`postToPid` stižu procesu, ali monitor ih ne prihvata. Isti Cmd+= tada takođe nije
+radio, i to je bio trag.
+
+Sa aktivnom app-om, kontrolisano merenje spiska layera:
+
+```
+pre ciscenja  -> posle ciscenja : 0.77%   (novi "Removed" red)
+posle ciscenja -> posle Cmd+Z   : 0.77%   (vraceno)
+pre ciscenja  -> posle Cmd+Z    : 0.00%   piksel u piksel isto
+```
+
+`eraseMaskedArea` dodaje `ImageLayer` u `settings.layers`; `.onChange(of: settings)`
+gura snimak na `undoStack` posle 0.5s mirovanja. Ništa nije trebalo dodati.
+
+**⚠️ Pravilo za skriptovano testiranje:** pre slanja bilo kog tastera aktivirati app
+(`set frontmost`) I kliknuti u prozor. Inače taster tiho ne radi ništa, i to izgleda
+kao kvar u funkciji koja se testira. Isto važi za klikove na dugmad — prvi „Clear AI
+Area" klik je promašio iz istog razloga.
+
+### Zatečeno stanje na testnoj fotki
+
+`C4S_7792.NEF` u `RAW Tests Images` nosi **12 „Removed" layera** iz mojih testova, plus
+jedan Exposure pomak. Sve je nedestruktivno (`PhotoEditStore`, original na disku
+netaknut), ali stoji dok se ne poništi ili resetuje.
+
+
+## KORAK 29 — selekcija je sada roze, i painting ne rezonuje dok traje (30. avgust 2026)
+
+### Boja
+
+Prijava: *„promeni boju da ne bude plava za AI selection vec crvenkasto rose".*
+
+Promenjeno na **dva mesta koja MORAJU da se slazu**, jer rucno naslikani potezi i
+Select People maska postaju JEDNA selekcija koja se brise u jednom potezu:
+- `Develop.swift`, `removalPaintOverlay`: `Color(red: 1.0, green: 0.35, blue: 0.51)`
+- `DevelopInpaint.swift`, `overlayImage`: `(r: 255, g: 90, b: 130)`
+
+**Roze, ne cist crven, i to namerno.** Beleska koja je tu stajala od ranije je i dalje
+tacna i zato je zadrzana u kodu: cista crvena se na fotografiji cita kao UPOZORENJE
+umesto kao „ovo je izabrano", a na toplim kadrovima na kojima se ovaj alat koristi
+(koza, pesak, zalazak) i crvena i bela su najteze za razaznati. Pomeranjem tona ka
+magenti dobija se trazeni roze, a ostaje se van narandzasto-crvene ose od koje su te
+fotke i sacinjene.
+
+Potvrdeno na ekranu: potez je roze.
+
+### Painting vise ne poništava ceo prikaz
+
+Prijava: *„dok paintujem tada mi laguje... da ne rezonuje dok paintujem pa laguje,
+vec kada zavrsim paint (click drag release) tada moze da rezonuje sta je paintovano".*
+
+Ovo je bio **poznat preostali trosak zapisan u KORAKU 25** — tamo je popravljen samo
+prsten kursora, a tacke poteza su ostale `@State` na `DevelopView`.
+
+Isti obrazac primenjen i na njih:
+- `ActiveStrokePoints: ObservableObject` — tacke poteza u toku, drzane kao `@State`
+  nad KLASOM (referenca prezivi, bez pretplate na `@Published`)
+- `ActiveStrokeLayer` — jedino dete koje ih posmatra, crta samo taj jedan potez
+- `briefShowStrokePath(_:frame:)` — putanja izvucena u slobodnu funkciju, da
+  zapoceti i zavrseni potez crta ISTA funkcija; inace bi linija vidno poskocila
+  u trenutku pustanja misa
+- `isPaintingRemovalStroke` — samo zastavica za skrivanje prstena, menja se dvaput
+  po potezu umesto jednom po dogadjaju
+
+Rezultat je tacno ono sto je trazeno: dok se vuce, menja se samo ta jedna putanja;
+`commitRemovalStroke()` na pustanju misa upisuje gotov potez u `removalStrokes`
+jednim `@State` upisom — **jedan prolaz kroz body po potezu umesto jednog po tacki.**
+
+Izmereno tokom poteza od 120 koraka: **prosek 23,7% CPU, vrh 80%, i 0% odmah po
+pustanju** (nema repa posle poteza). „Pre" broj nije uzet — trazio bi jos jedan build
+i ponovno pokretanje — pa je ovo apsolutna mera, ne poredjenje.
+
+### Ostaje
+
+Isti obrazac i dalje stoji na cetkici za maske (`brushHoverLocation` i njene tacke) —
+nije dirano jer nije prijavljeno, ali je ista mina.
+
+
+## KORAK 30 — sve u jednom redu, i prompt za Generative Clean Up (30. avgust 2026)
+
+### Traka u jednom redu
+
+Zahtev: Size / Add / Erase / Clear AI Area da se popnu desno od „Generative Clean Up",
+umesto da stoje u redu ispod.
+
+Urađeno. `toolStripDetail` više ne nosi nijednu kontrolu — ostala mu je SAMO rečenica
+(razlog zašto se ne može čistiti, plus stanje Add/Erase). Rečenica je jedina stvar koja
+ne može u isti red: dovoljno je duga da na užem prozoru izgura dugmad van ekrana.
+
+**Cena, izmerena na prozoru od 1470pt:** kad su sve kontrole prisutne, „Quick Clean Up"
+i „Generative Clean Up" se skraćuju na „Quick Clean…" i „Generative Cl…". Kad selekcija
+nestane, „Clear AI Area" izađe iz reda i imena se vrate cela. Ako to smeta, izbor je
+između kraćih imena i povratka na dva reda.
+
+### Prompt za Generative Clean Up
+
+Zahtev: prompt koji tera generativni engine da radi kao Quick Clean Up — dakle kao LaMa,
+koja nastavlja okolnu teksturu i ne izmišlja ništa.
+
+**Prava greška u starom promptu bila je fraza „no people".** Komentar iznad same
+konstante već kaže da CLIP čita prompt kao spisak stvari koje treba naslikati — a po
+tom istom pravilu „no people" ubacuje token *people* u POZITIVNO uslovljavanje. Traži
+tačno ono što izgleda da zabranjuje. Negacija pripada negativnom promptu, gde
+classifier-free guidance može stvarno da gura OD nje, i tamo je već i stajala.
+
+```
+pozitivan: "empty background, plain continuous surface, uniform texture, seamless continuation"
+negativan: "person, people, human, face, body, animal, object, sign, text, letters,
+            watermark, logo, ornament, duplicate"
+```
+
+Pozitivan sada imenuje samo podlogu — površinu, njenu teksturu, i to da se nastavlja.
+Nijedan subjekat, ništa oko čega bi se scena mogla sagraditi. Negativan je proširen sa
+`person` na sve što inpaint od 512px poseže kad odluči da rupa treba nešto da sadrži.
+
+**Blob je regenerisan, ne ostavljen zastareo.** `SDModelStore.promptEmbedsURL` traži
+`sd_prompt_embeds.bin` u bundle-u (nema ga tamo — nije u Xcode projektu), pa u model
+direktorijumu. Da je ostao stari, `embeddings()` bi na svakoj sesiji padao na živu
+putanju i učitavao TextEncoder od 235 MB. Regenerisan je postojećim alatom:
+
+```bash
+IDS=$(python3 Tools/clip_tokenize.py "<negativan>" "<pozitivan>")
+swift Tools/dump_prompt_embeds.swift "<negIds>" "<posIds>" \
+      ~/Desktop/BriefShow/CoreMLModels/SD15-Inpainting  out.bin
+```
+
+Upisan na oba mesta: `Tools/sd_prompt_embeds.bin` i
+`CoreMLModels/SD15-Inpainting/sd_prompt_embeds.bin`. **To je jedini upis u
+`CoreMLModels/` ikada napravljen ovde** — 236 KB regenerabilnog artefakta, nijedna
+težina nije dirana, direktorijum i dalje 4,4 GB.
+
+Provereno u pokrenutoj app-i: generativno čišćenje prolazi bez greške u logu, roze
+potez nestaje, šara haljine se nastavlja, ništa nije izmišljeno.
+
+### Jači poluga koja NIJE dirana
+
+`guidanceScale = 7.5` je ono što najviše tera SD da sledi prompt i izmišlja. Za
+LaMa-oliko ponašanje spuštanje te vrednosti je jače od bilo koje izmene teksta. Nije
+dirano jer je uz nju zapisano „confirmed on the user's own photos", i jer je zahtev bio
+za prompt. Ako prompt sam ne bude dovoljan, to je sledeće što treba probati.
+
+
+## KORAK 31 — veca radna povrsina, ostriji generativni, i red koji je nestao (30. avgust 2026)
+
+### Zasto je generativni mutan a Quick nije — nije prompt
+
+Dva strukturna razloga, oba u kodu:
+
+| | Quick (LaMa/exemplar) | Generative (SD) |
+|---|---|---|
+| radna rezolucija | do `maxWorkingEdge` | **fiksnih 512**, konverzija nema fleksibilan ulaz |
+| odakle pikseli | **kopira prave** iz okoline | sintetise ih, pa VAE round-trip |
+
+Za rupu od 800px: SD region je bio 2.0x = 1600px stisnut u 512 → svaki sintetisani
+piksel razvucen preko 3.1 pravog. LaMa je isti taj region radila na 1100 → 2.0x.
+**Otud blur samo kod generativnog.**
+
+Smanjen SD kontekst 2.0 → **1.6** (`squareRegion`), sto isti taj 800px otvor spusta sa
+3.1x na 2.5x razvlacenja. Trade je stvaran — manje okolne fotke je tacno smer koji tera
+SD da izmislja — pa je pomeren delimicno, ne na 1.0.
+
+**Ovo ga NE izjednacava sa Quick-om i ne moze.** Jedini pravi nacin je pustiti model
+preko preklapajucih 512 plocica u nativnoj rezoluciji; to je zaseban, mnogo veci
+zahvat.
+
+### Quick radna povrsina: 1000 → 2200 px
+
+Smear nikad nije bio funkcija velicine rupe u FOTOGRAFIJI nego koliko se region morao
+smanjiti da stane u radni bafer. Zato su dizani zajedno:
+
+```
+maxWorkingEdge      1100  → 2200   (razvlacenje prepolovljeno na istoj rupi)
+maxHolePixels     45 000  → 180 000 (inace bi shrink-and-retry ponistio gornje)
+blockingAreaPixels  1000  → 2200   (prag pomeren, a ne dozvoljen kvar na vecem broju)
+```
+
+**Cena je kvadratna i placa se na SVAKOM uklanjanju**, ne samo na velikom: pretraga
+zakrpa je O(rez^2), pa je 1100 → 2200 oko 4x posla. Ranije ~1s. **Nije pouzdano
+izmereno** — dva pokusaja merenja su promasila (prvi je uhvatio pojavu spinnera, drugi
+je klikao na „Clear AI Area" na staroj poziciji posle preseljenja u traku). Ako
+uklanjanje pocne da se oseca sporo, ovo je prvo mesto koje treba spustiti.
+
+### Red ispod trake vise ne postoji
+
+Kontrole su presle u traku (KORAK 30), a recenica je ostala kao red — i taj red je
+menjao visinu kad se tekst prelomi u dva reda, pa je gurao sliku dole i gore.
+
+Sada je `cleanUpNotice`: string, crtan kao kartica **preko pregleda**, isti obrazac kao
+`sliderToast`. Ne zauzima raspored, pa slika stoji mirno. Cuti kad alat nije u igri.
+
+`toolStripDetail` je uklonjen iz rasporeda.
+
+### Progres preseljen u gornju traku
+
+„Cleaning up… N%" je bio u traci sa alatima i pomerao svako dugme posle sebe dok traje
+brisanje. Sada stoji desno od RAW oznake, uz ime fajla — na trazenom mestu, i tamo gde
+oko ionako ode tokom ~13s generativnog brisanja.
+
+
+## KORAK 32 — „Clear All" u zaglavlju Layers panela (30. avgust 2026)
+
+Zahtev: dugme koje briše sve layere odjednom, umesto trash ikonice red po red.
+Postavljeno desno u `LAYERS` zaglavlju, uz brojač: `LAYERS  [🗑 Clear All]  19`.
+
+**Nazvano „Clear All", ne „Clear All History" kako je traženo.** Ova app IMA istoriju —
+`undoStack`, Cmd+Z — a ovo dugme je ne dira; briše spisak layera. Ime sa rečju History
+u panelu koji se zove Layers čitalo bi se kao brisanje undo steka. Menja se na jednom
+mestu ako se traži drugačije.
+
+**Bez dijaloga za potvrdu, namerno.** Upisuje u `settings.layers`, pa pada na undo stek
+kao svaka druga izmena. Potvrda bi bila drugi klik koji štiti od nečega što jedan
+taster već poništava. Tooltip to i kaže.
+
+Provereno u pokrenutoj app-i, nad 19 nakupljenih layera:
+
+```
+posle Clear All : panel se promenio 16,66%  (spisak prazan)
+posle Cmd+Z     : 0,00% razlike od stanja PRE brisanja — svih 19 vraćeno
+```
+
+
+## KORAK 33 — gumica nije oduzimala površinu, i ivice na dugmadima (30. avgust 2026)
+
+### Bug: Erase je POVEĆAVAO izmerenu površinu
+
+Prijava, i dijagnoza je bila tačna: *„on računa kada se stavlja brush na slici ali ne
+oduzima kada se briše brush"*. Namažeš veliku površinu, Quick Clean Up se ugasi, uzmeš
+Erase da je smanjiš — dugme ostaje mrtvo.
+
+`removalAreaPixels` je unijom sabirao **sve** poteze iz `removalStrokes`, bez obzira na
+`isErase`. Znači svaki potez gumicom je širio okvir umesto da ga sužava, i jednom kad
+je prag pređen nije ga bilo moguće vratiti nikakvim brisanjem.
+
+Popravka: dabovi brisanja se skupljaju posebno, iz unije se izbacuju, a **dodata tačka
+se preskače kad je pokrije dab brisanja** — pa brisanje krajeva dugog poteza stvarno
+sužava okvir. Provera je „centar tačke u dabu", ne pun preklop: pass gumicom je niz
+preklapajućih dabova, a traženje punog sadržavanja bi pustilo tačku da preživi između
+dva i sama drži ceo okvir otvorenim.
+
+**`removalMaskUnitBox` (Select People maska) i dalje se ne sužava brisanjem** — to je
+jedan pravougaonik bez tačaka koje bi se mogle izbaciti. Ostaje poznat trošak.
+
+### Ivice na dugmadima
+
+Prijava: Slideshow / Develop / Add Photos / Select All / Deselect / Export All / Done i
+kartice Edit-Retouch-Layers izgledaju kao goli tekst, ne kao dugmad.
+
+Uzrok je bio jedan: `ShowHeaderButtonStyle` (u `ContentView.swift`) nije imao nikakvu
+ivicu, a koristi se **37 puta**. Ivica je dodata tamo — isti oblik i boja koje traka sa
+alatima već koristi (`cornerRadius 6`, `AppColors.border` na 0.7) — pa je dobiju sva
+odjednom i dva reda čitaju kao jedna porodica. Kartice panela (`panelTabBar`) su dobile
+istu, jer je do sada samo AKTIVNA imala ispunu a druge dve ništa.
+
+### ⚠️ Pogrešna atribucija, zapisana da se ne ponovi
+
+Posle ove izmene app je šest puta zaredom otvorila samo prazan 0×0 prozor. Zaključio sam
+da je izmena kriva i vratio je — prozor se pojavio iz prvog pokušaja, što je izgledalo
+kao potvrda.
+
+**Nije bila kriva.** App ima ekran za prijavu: prozor se pojavi tek kad korisnik ukuca
+lozinku. Svi moji „0×0" pokušaji kroz celu sesiju bili su app koja čeka prijavu, a
+„popravka" se poklopila sa trenutkom kad je korisnik ukucao lozinku.
+
+**Pravilo za sledeću sesiju: 0×0 prozor NIJE kvar — to je ekran za prijavu. Sačekati da
+korisnik uđe, i ne gasiti app sa `kill -9` posle toga, jer sledeće pokretanje traži
+lozinku ponovo.**

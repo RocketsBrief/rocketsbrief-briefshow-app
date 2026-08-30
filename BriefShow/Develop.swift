@@ -14,6 +14,7 @@
 
 import SwiftUI
 import AppKit
+import Combine
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import UniformTypeIdentifiers
@@ -2250,6 +2251,219 @@ struct SliderSelectionToast: Identifiable, Equatable {
 
 // MARK: - Main view
 
+// Filmstrip thumbnails decode here rather than on DispatchQueue.global.
+//
+// Priority is the point. These used to run at .userInitiated — the same band
+// as the edit render the client is actually looking at — so a folder's worth
+// of thumbnail decodes competed directly with the preview. A thumbnail that
+// fills in a moment later costs nothing; a dropped frame mid-slider-drag is
+// the complaint. Serial rather than concurrent for the same reason: thumbnails
+// appear left to right at a steady rate instead of all contending at once.
+//
+// This is the second half of the fix; LazyHStack in `filmstrip` is the first,
+// and bounds HOW MANY are ever asked for. Either alone leaves the symptom.
+private let filmstripThumbnailQueue = DispatchQueue(
+    label: "com.rocketsbrief.briefshow.filmstrip-thumbnails",
+    qos: .utility
+)
+
+// How many decoded filmstrip thumbnails are kept. At 240px each is roughly a
+// quarter of a megabyte once decoded, so an uncapped cache on a few thousand
+// photos is hundreds of megabytes that never come back. Evicted oldest-first,
+// and a re-scroll simply decodes again — cheap now that it is one at a time
+// off the interactive path.
+private let filmstripThumbnailCacheLimit = 400
+
+// Where the brush cursor is, held in a reference the parent deliberately does
+// NOT observe.
+//
+// The cursor moves 60-120 times a second. This position used to be @State on
+// DevelopView, so every one of those hover events invalidated DevelopView.body
+// — the image, every section of the adjustment panel, the filmstrip, the
+// histogram — in order to move one circle. That is the "moving the mouse lags,
+// it isn't smooth" report: the work per mouse move was proportional to the
+// entire screen rather than to the ring being drawn.
+//
+// DevelopView keeps this as @State holding a CLASS, which persists the
+// reference across body evaluations without subscribing to its @Published
+// changes (only reassigning the property itself would invalidate the parent,
+// and nothing does). BrushCursorRing observes it, so a mouse move now redraws
+// the ring and nothing else.
+final class BrushCursorPosition: ObservableObject {
+    @Published var location: CGPoint?
+}
+
+// The ring that follows the cursor. Hit testing is off: the hover events and
+// the paint drag both belong to the parent's own hit area, which stays exactly
+// where it was — this view only draws.
+private struct BrushCursorRing: View {
+    @ObservedObject var cursor: BrushCursorPosition
+    let diameter: CGFloat
+    let color: Color
+    let isDashed: Bool
+    let isSuppressed: Bool
+
+    var body: some View {
+        Group {
+            if let location = cursor.location, !isSuppressed {
+                Circle()
+                    .stroke(
+                        color,
+                        style: StrokeStyle(lineWidth: 1.5, dash: isDashed ? [4, 3] : [])
+                    )
+                    .frame(width: diameter, height: diameter)
+                    .position(location)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+// Points of the stroke being painted RIGHT NOW, in a reference the parent
+// holds but does not observe — the same trick BrushCursorPosition uses, for
+// the same reason and the other half of the same problem.
+//
+// This used to be @State on DevelopView, appended to on every drag event. A
+// drag fires at screen rate, so painting one stroke invalidated the entire
+// DevelopView.body — image, panel, filmstrip, histogram — dozens of times a
+// second, and only to extend one line by one point. Reported as: painting
+// lags, and please only work out what was painted once I let go.
+//
+// Now the parent learns nothing until the mouse comes up: only ActiveStrokeLayer
+// observes this, so a drag redraws that one path and nothing else, and
+// commitRemovalStroke() folds the finished stroke into `removalStrokes` in a
+// single @State write — one body pass per stroke instead of one per point.
+final class ActiveStrokePoints: ObservableObject {
+    @Published var points: [CGPoint] = []
+}
+
+// Turns unit-space points into a screen-space path. A free function rather
+// than a method so both DevelopView and ActiveStrokeLayer can call the SAME
+// one — the in-progress stroke and the committed strokes have to be drawn
+// identically, or the line would visibly shift the moment the mouse is let go.
+func briefShowStrokePath(_ points: [CGPoint], frame: CGRect) -> Path {
+    Path { path in
+        let scaled = points.map {
+            CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
+        }
+        guard let first = scaled.first else {
+            return
+        }
+        path.move(to: first)
+        // A lone point needs a zero-length line, not just a move: with a
+        // round cap that draws the dab, while a bare move draws nothing.
+        if scaled.count == 1 {
+            path.addLine(to: first)
+        }
+        for point in scaled.dropFirst() {
+            path.addLine(to: point)
+        }
+    }
+}
+
+// Draws only the stroke in progress. Hit testing off — the drag belongs to the
+// parent's own hit area, which is what feeds this.
+private struct ActiveStrokeLayer: View {
+    @ObservedObject var stroke: ActiveStrokePoints
+    let frame: CGRect
+    let lineWidth: CGFloat
+    let color: Color
+    let isErase: Bool
+
+    var body: some View {
+        briefShowStrokePath(stroke.points, frame: frame)
+            .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
+            .blendMode(isErase ? .destinationOut : .normal)
+            .allowsHitTesting(false)
+    }
+}
+
+// The Develop panel's tabs. Every section listed here already existed; the
+// tabs only decide which of them are mounted at once. Layers gets its own tab
+// because it is a section you work IN rather than glance at, and it used to
+// sit ten sections down a single long scroll.
+//
+// Hiding a tab does NOT disable any keyboard shortcut that matters. Cmd+V
+// (paste as layer), Cmd+C/X, Cmd+Z, [ / ] and Backspace are all owned by the
+// shared local NSEvent monitor in installEditingKeyMonitor(), which is
+// installed on the Develop view itself, not inside any section. The one
+// SwiftUI-owned shortcut in the panel is Return-commits-crop, which lives on
+// the crop "Done" button and was already scoped to "only while that button
+// exists" — switching away from the Edit tab mid-crop now also unmounts it,
+// which is the same rule, not a new one.
+enum DevelopPanelTab: String, CaseIterable, Identifiable {
+    case edit = "Edit"
+    case retouch = "Retouch"
+    case layers = "Layers"
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .edit: return "slider.horizontal.3"
+        case .retouch: return "wand.and.stars"
+        case .layers: return "square.2.layers.3d"
+        }
+    }
+}
+
+// Reordering a layer by dragging its row. A DropDelegate rather than the
+// simpler .onMove because .onMove requires a List, and this panel is a VStack
+// inside a ScrollView — swapping in a List would restyle every row and nest a
+// second scroller inside the existing one.
+//
+// Everything resolves by id, never by index. The array is reordered while the
+// drag is still in flight (that is what makes rows slide under the cursor), so
+// any index captured when the drag began is stale a moment later.
+struct LayerDropDelegate: DropDelegate {
+    let target: UUID
+    @Binding var dragging: UUID?
+    @Binding var layers: [ImageLayer]
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging else {
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            _ = LayerDropDelegate.reorder(&layers, moving: dragging, onto: target)
+        }
+    }
+
+    // The whole reorder, as a pure function on the array. Split out from
+    // dropEntered for one reason: a drag cannot be scripted, but this can, so
+    // "does dropping A onto B produce the right order" is answerable by
+    // Tools/test-layer-reorder.swift instead of by hand-dragging rows in a
+    // window nobody has managed to screenshot yet.
+    //
+    // Returns false and leaves the array untouched when there is nothing to do
+    // (same id, or either id no longer present because the layer was deleted
+    // mid-drag). Callers ignore the result; it exists so the test can assert
+    // that a no-op really is one.
+    @discardableResult
+    static func reorder<T: Identifiable>(_ items: inout [T], moving dragging: T.ID, onto target: T.ID) -> Bool {
+        guard dragging != target,
+              let from = items.firstIndex(where: { $0.id == dragging }),
+              let to = items.firstIndex(where: { $0.id == target }) else {
+            return false
+        }
+        let moved = items.remove(at: from)
+        items.insert(moved, at: to)
+        return true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    // Reached whether the drag was dropped on a row or abandoned, so the
+    // in-flight id is cleared in exactly one place. The array is already in
+    // its final order by now — dropEntered did the moving.
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
+    }
+}
+
 struct DevelopView: View {
     let photoURLs: [URL]
     let initialSelection: URL?
@@ -2280,6 +2494,13 @@ struct DevelopView: View {
     @State private var displayedImage: NSImage?
     @State private var histogramBins: [CGFloat] = []
     @State private var filmstripThumbnails: [URL: NSImage] = [:]
+    // Decodes already dispatched. The `filmstripThumbnails[url] == nil` check
+    // alone is not enough: it runs on the main thread before the dispatch, so
+    // two .onAppear for the same url arriving before the first decode finishes
+    // both pass it and decode the same photo twice.
+    @State private var filmstripThumbnailsInFlight: Set<URL> = []
+    // Insertion order, for oldest-first eviction at filmstripThumbnailCacheLimit.
+    @State private var filmstripThumbnailOrder: [URL] = []
     @State private var isLoadingPreview = false
     @State private var showOriginal = false
     @State private var isCropping = false
@@ -2432,6 +2653,11 @@ struct DevelopView: View {
     // (the array can shrink/reorder out from under a cached index).
     @State private var selectedLayerID: UUID?
     @State private var layerDragStart: ImageLayer?
+    // Which panel tab is showing.
+    @State private var panelTab: DevelopPanelTab = .edit
+    // The layer being dragged in the Layers list, by id — an index would go
+    // stale the instant the drop reorders the array underneath it.
+    @State private var draggingLayerID: UUID?
     // Token for the Cmd+C/X/V local key monitor — see installClipboardKeyMonitor.
     @State private var editingKeyMonitor: Any?
     // Undo/redo — see scheduleUndoCommit's doc comment for the
@@ -2512,13 +2738,17 @@ struct DevelopView: View {
     // was missing was any way to make one.
     @State private var isRemoveBrushErasing = false
     @State private var removalStrokes: [BrushStroke] = []
-    @State private var activeRemovalStrokePoints: [CGPoint] = []
+    @State private var activeRemovalStroke = ActiveStrokePoints()
+    // Only whether a stroke is in progress, not its points — flips twice per
+    // stroke instead of once per drag event, which is cheap enough to stay
+    // @State and is all the cursor ring needs to know to hide itself.
+    @State private var isPaintingRemovalStroke = false
     // 0.02, not the 0.06 this shipped with: at 6 the smallest thing anyone
     // could select was already bigger than most of what this tool is for (a
     // mole, an insect, a cable), and every use started by dragging the size
     // down. Explicit request.
     @State private var removalBrushSize: Double = 0.02
-    @State private var removalBrushHoverLocation: CGPoint?
+    @State private var removalBrushCursor = BrushCursorPosition()
 
     // Same soft-yellow-in-Dark, mid-gray-elsewhere accent PhotoShowSheet
     // uses for its own selection border, kept consistent here for the
@@ -2541,8 +2771,13 @@ struct DevelopView: View {
 
                     toolStrip
 
-                    toolStripDetail
-
+                    // toolStripDetail is NOT here any more. As a row it changed
+                    // height whenever its text wrapped to a second line, and
+                    // every one of those changes pushed the picture down and
+                    // back up. It says the same things as an overlay on the
+                    // preview instead (cleanUpNoticeCard), where it costs no
+                    // layout at all — the same reason sliderToast is drawn that
+                    // way rather than docked.
                     Divider()
 
                     centerPreview
@@ -2949,7 +3184,20 @@ struct DevelopView: View {
     private var filmstrip: some View {
         HStack(spacing: 0) {
             ScrollView(.horizontal) {
-                HStack(spacing: 8) {
+                // LazyHStack, emphatically not HStack. A plain HStack inside a
+                // ScrollView builds and mounts EVERY child immediately, so
+                // .onAppear fired on every thumbnail in the folder the moment
+                // Develop opened — and each of those calls
+                // makeShowGridThumbnail, which passes
+                // kCGImageSourceCreateThumbnailFromImageAlways and therefore
+                // decodes the FULL image before scaling it to 240px. Opening a
+                // folder of 300 RAWs started 300 full decodes at once. That is
+                // the "Develop stutters as if every photo opened at full size"
+                // report, and it was literally true.
+                //
+                // Lazy mounts only what is scrolled into view, so the cost is
+                // proportional to what the client can actually see.
+                LazyHStack(spacing: 8) {
                     ForEach(photoURLs, id: \.self) { url in
                         filmstripThumbnail(for: url)
                     }
@@ -3175,17 +3423,40 @@ struct DevelopView: View {
     }
 
     private func loadFilmstripThumbnail(for url: URL) {
-        guard filmstripThumbnails[url] == nil else {
+        guard filmstripThumbnails[url] == nil, !filmstripThumbnailsInFlight.contains(url) else {
             return
         }
+        filmstripThumbnailsInFlight.insert(url)
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        filmstripThumbnailQueue.async {
             let image = makeShowGridThumbnail(from: url, maxPixelSize: 240)
 
             DispatchQueue.main.async {
-                if let image {
-                    filmstripThumbnails[url] = image
+                filmstripThumbnailsInFlight.remove(url)
+                guard let image else {
+                    return
                 }
+                filmstripThumbnails[url] = image
+                // Re-decoded after an eviction: drop the stale position first,
+                // or the old entry would evict this fresh one on the next pass.
+                filmstripThumbnailOrder.removeAll { $0 == url }
+                filmstripThumbnailOrder.append(url)
+                evictOldestFilmstripThumbnailsIfNeeded()
+            }
+        }
+    }
+
+    // Oldest-first, and never the photo currently open — that one is on screen
+    // in the filmstrip's selection ring, so dropping it would visibly blank the
+    // row the client is working from.
+    private func evictOldestFilmstripThumbnailsIfNeeded() {
+        while filmstripThumbnailOrder.count > filmstripThumbnailCacheLimit {
+            guard let oldest = filmstripThumbnailOrder.first else {
+                return
+            }
+            filmstripThumbnailOrder.removeFirst()
+            if oldest != selectedURL {
+                filmstripThumbnails[oldest] = nil
             }
         }
     }
@@ -3203,9 +3474,47 @@ struct DevelopView: View {
                 if PhotoEditRenderer.isRAW(selectedURL) {
                     rawBadge
                 }
+
+                // Erase progress, beside the file name rather than in the tool
+                // strip where it used to live. Two reasons: it shifted every
+                // button after it while an erase ran, and the generative path
+                // takes ~13s, which is long enough that the eye leaves the
+                // button and comes back to the top of the window.
+                if isRemoving {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(aiEraseProgress.map { "Cleaning up… \(Int($0 * 100))%" } ?? "Erasing…")
+                            .font(.custom("Figtree", size: 11))
+                            .foregroundColor(AppColors.muted)
+                    }
+                }
             }
 
-            Spacer()
+            // The Clean Up tool's commentary, in the empty middle of the top
+            // bar. It was briefly drawn over the picture instead, which kept it
+            // out of the layout but put text on the client's photograph — the
+            // one place it must not be. This gap was already dead space.
+            //
+            // Two rules keep it from reintroducing the problem it was moved to
+            // avoid — a bar that changes height and shoves the picture around:
+            // a FIXED height, and a two-line cap. Whatever the text does, the
+            // bar is the same height it was when there is no text at all.
+            //
+            // maxWidth: .infinity is what "stretch it" means here: it takes the
+            // whole gap and the Spacer below collapses to nothing. With no
+            // notice, the Spacer takes it back and the bar looks untouched.
+            if let notice = cleanUpNotice {
+                Text(notice)
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 30)
+            }
+
+            Spacer(minLength: 0)
 
             if let exportStatusText {
                 Text(exportStatusText)
@@ -3258,12 +3567,26 @@ struct DevelopView: View {
             // strip before, with the two things that MAKE a selection at one
             // end and the two that CONSUME it at the other — which read as
             // four unrelated buttons.
-            toolButton("AI Selection", systemImage: "paintbrush", isActive: isRemoveBrushActive) {
+            // Label is just "Clean Up" — the AI badge to its left already says
+            // the other half, and "AI AI Clean Up" is what it read as before.
+            toolButton("Clean Up", systemImage: "paintbrush", textIcon: "AI",
+                       isActive: isRemoveBrushActive) {
                 toggleRemoveBrush()
             }
 
-            toolButton("Select People", systemImage: "person.crop.rectangle", isActive: isFindingPeople) {
-                findPeople()
+            // Explicit way out, in the slot "Select People" used to hold.
+            // Select People is NOT gone — it lives on in the Remove section of
+            // the Retouch tab, which is its only entry point now. It was moved
+            // rather than deleted because it MAKES a selection, and the request
+            // here was for a way to leave the tool, not to lose a way into it.
+            //
+            // Disabled rather than hidden while the tool is off: a button that
+            // appears and disappears shifts every other button in the strip
+            // sideways, and this row is meant to be muscle memory.
+            toolButton("Exit Clean Up", systemImage: "xmark",
+                       isActive: false,
+                       isEnabled: isRemoveBrushActive) {
+                toggleRemoveBrush()
             }
 
             toolButton("Quick Clean Up", systemImage: "wand.and.rays",
@@ -3273,26 +3596,113 @@ struct DevelopView: View {
                 eraseMaskedArea(using: .quick)
             }
 
-            toolButton("AI Clean Up", systemImage: "wand.and.stars",
+            // "Generative Clean Up", not "AI Clean Up": the paint tool to the
+            // left now carries that name, and two buttons reading the same in
+            // one strip is worse than either name on its own. "Generative" is
+            // also the truer word — this is the Stable Diffusion path (~13s),
+            // against LaMa's ~1s next to it.
+            toolButton("Generative Clean Up", systemImage: "wand.and.stars",
                        isActive: false,
                        isEnabled: cleanUpUnavailableReason(.generative) == nil,
                        help: cleanUpUnavailableReason(.generative)) {
                 eraseMaskedArea(using: .generative)
             }
 
-            // Up here as well as in the panel: the erase takes thirteen
-            // seconds, and the button that started it is the place the eye
-            // is already on.
-            if isRemoving {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(aiEraseProgress.map { "Cleaning up… \(Int($0 * 100))%" } ?? "Erasing…")
-                        .font(.custom("Figtree", size: 11))
-                        .foregroundColor(AppColors.muted)
-                }
-                .padding(.leading, 4)
+            // Everything the Clean Up brush needs, in the SAME row rather than
+            // on a line of its own underneath. There is room: the seven buttons
+            // to the left end around a third of the way across a 1470pt window,
+            // and this fills the gap that was empty. Only the long explanatory
+            // sentence is not here at all: it floats over the preview as
+            // cleanUpNotice, because as a docked row it changed height when it
+            // wrapped and pushed the picture up and down.
+            if isRemoveBrushActive || hasRemovalArea {
+                toolStripDivider
             }
+
+            if isRemoveBrushActive {
+                Text("Size")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                // Narrower than the 220 it had on its own line: it is sharing
+                // now, and the number beside it is what gets read anyway.
+                EditTrackSlider(value: $removalBrushSize, range: 0.01...0.3,
+                                step: 0.01, accent: accentColor)
+                    .frame(width: 130)
+                Text(String(format: "%.0f", removalBrushSize * 100))
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .monospacedDigit()
+                    .frame(width: 20, alignment: .trailing)
+
+                // Add / Erase, Lightroom's own pairing: pick Erase and the
+                // brush takes area back OUT of what is already marked instead
+                // of adding to it — including anything Select People found.
+                //
+                // Two visible buttons rather than a held modifier key: "hold
+                // this to take some back" is the sort of thing only the person
+                // who wrote it remembers.
+                ForEach([false, true], id: \.self) { erasing in
+                    Button {
+                        isRemoveBrushErasing = erasing
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: erasing ? "eraser" : "plus")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(erasing ? "Erase" : "Add")
+                                .font(.custom("Figtree", size: 11))
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(isRemoveBrushErasing == erasing ? AppColors.ink : AppColors.muted)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(isRemoveBrushErasing == erasing ? accentColor.opacity(0.18) : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(isRemoveBrushErasing == erasing ? accentColor.opacity(0.55) : AppColors.border,
+                                    lineWidth: 1)
+                    )
+                }
+            }
+
+            // Drops every mark on the photo — painted strokes and a Select
+            // People mask alike — without touching the picture itself. Shown
+            // whenever there IS something to drop, brush on or off, since a
+            // Select People mask is made with the brush off.
+            //
+            // Named "Clear", not "Clean": three buttons to the left say "Clean
+            // Up" and every one of them CHANGES the photo. This one only throws
+            // away the marking.
+            if hasRemovalArea {
+                Button {
+                    clearRemovalMask()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Clear AI Area")
+                            .font(.custom("Figtree", size: 11))
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(AppColors.muted)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(AppColors.border, lineWidth: 1)
+                )
+            }
+
+            // The erase progress used to sit here. It moved to the top bar,
+            // beside the file name: appearing and disappearing inside this row
+            // shoved every button after it sideways mid-erase, and the strip is
+            // meant to be muscle memory.
 
             Spacer(minLength: 0)
         }
@@ -3314,7 +3724,7 @@ struct DevelopView: View {
             return "Already cleaning up — wait for this one to finish."
         }
         if !hasRemovalArea {
-            return "Nothing is selected yet. Paint over what should go with AI Selection, or press Select People."
+            return "Nothing is selected yet. Paint over what should go with AI Clean Up, or press Select People in the Retouch tab."
         }
         if !removalAreaFits(engine) {
             return engine.oversizeReason
@@ -3325,45 +3735,29 @@ struct DevelopView: View {
     // The row under the strip: whatever the active tool needs at hand, and
     // nothing when it needs nothing. A size slider belongs next to the tool
     // it resizes, not four sections down a panel the client has to scroll.
-    @ViewBuilder
-    private var toolStripDetail: some View {
+    /// The Clean Up tool's running commentary, or nil when it has nothing to
+    /// say. Returned as text rather than a view so the top bar can draw it in
+    /// its own empty middle, at a fixed height that cannot move the picture.
+    ///
+    /// Silent unless this tool is actually in play — brush on, something
+    /// selected, or a reason the erase cannot run. It no longer needs to be
+    /// permanently visible: what made that worth asking for was that the old
+    /// docked row disappeared and shifted everything below it, and a
+    /// fixed-height slot in the top bar cannot do that whether it is filled
+    /// or empty.
+    private var cleanUpNotice: String? {
         let reason = hasRemovalArea ? nil : cleanUpUnavailableReason(.quick)
+        let painting = isRemoveBrushErasing
+            ? "Painting takes area back out of the selection."
+            : "Painting adds to the selection."
 
-        if isRemoveBrushActive || reason != nil {
-            VStack(alignment: .leading, spacing: 6) {
-                if isRemoveBrushActive {
-                    HStack(spacing: 10) {
-                        Text("Size")
-                            .font(.custom("Figtree", size: 11))
-                            .foregroundColor(AppColors.muted)
-                        EditTrackSlider(value: $removalBrushSize, range: 0.01...0.3,
-                                        step: 0.01, accent: accentColor)
-                            .frame(maxWidth: 220)
-                        Text(String(format: "%.0f", removalBrushSize * 100))
-                            .font(.custom("Figtree", size: 11))
-                            .foregroundColor(AppColors.muted)
-                            .monospacedDigit()
-                            .frame(width: 22, alignment: .trailing)
-
-                        Text(isRemoveBrushErasing ? "Erasing selection" : "Adding to selection")
-                            .font(.custom("Figtree", size: 11))
-                            .foregroundColor(AppColors.muted)
-
-                        Spacer(minLength: 0)
-                    }
-                }
-
-                if let reason {
-                    Text(reason)
-                        .font(.custom("Figtree", size: 11))
-                        .foregroundColor(AppColors.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 8)
-            .background(AppColors.panel.opacity(0.4))
+        guard isRemoveBrushActive || hasRemovalArea || reason != nil else {
+            return nil
         }
+        guard isRemoveBrushActive || hasRemovalArea else {
+            return reason
+        }
+        return [reason, painting].compactMap { $0 }.joined(separator: "  ")
     }
 
     private var toolStripDivider: some View {
@@ -3373,9 +3767,13 @@ struct DevelopView: View {
             .padding(.horizontal, 4)
     }
 
+    // `textIcon` draws letters where the SF Symbol would go — used for "AI",
+    // which has no glyph that says what it is. Sized and framed to occupy the
+    // same box a symbol does, so a strip mixing the two stays on one baseline.
     private func toolButton(
         _ title: String,
         systemImage: String,
+        textIcon: String? = nil,
         isActive: Bool,
         isEnabled: Bool = true,
         help: String? = nil,
@@ -3384,8 +3782,14 @@ struct DevelopView: View {
         let live = isEnabled && selectedURL != nil
         return Button(action: action) {
             HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 12))
+                if let textIcon {
+                    Text(textIcon)
+                        .font(.system(size: 10, weight: .heavy, design: .rounded))
+                        .frame(width: 14, height: 12)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12))
+                }
                 Text(title)
                     .font(.custom("Figtree", size: 11).weight(isActive ? .semibold : .regular))
                     .lineLimit(1)
@@ -3474,6 +3878,28 @@ struct DevelopView: View {
                         .position(x: fitted.midX, y: fitted.midY)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         .clipped()
+                        // .clipped() clips DRAWING, not hit testing. Zoomed in,
+                        // `fitted` is far taller than the preview — measured at
+                        // 2x on a 498pt container: fitted=(197,-238 727x974), so
+                        // the picture's hit region ran 238pt ABOVE the preview,
+                        // straight over the tool strip. centerPreview is the last
+                        // child of the VStack, so it sits on top of that strip in
+                        // z-order and quietly ate every click on AI Selection,
+                        // Quick Clean Up and AI Clean Up — the buttons stayed
+                        // enabled and looked normal, which is why this read as
+                        // "the button does nothing when zoomed".
+                        //
+                        // Measured, not reasoned: with zoom at 1.95 a synthetic
+                        // click on Quick Clean Up produced NO tap; the identical
+                        // click at zoom 1.0 produced one, with the button
+                        // reporting ENABLED in both cases.
+                        //
+                        // allowsHitTesting(false) rather than a container-level
+                        // clip: the picture is display-only (every gesture lives
+                        // in the overlays above it), and clipping the container
+                        // would shave the crop tool's corner handles, which is
+                        // exactly why the clip was put on the image alone.
+                        .allowsHitTesting(false)
 
                     // Drag to pan, but ONLY when zoomed in and no tool owns
                     // the canvas — every tool below claims the same drag, and
@@ -3506,15 +3932,40 @@ struct DevelopView: View {
                     }
 
                     if isCropping {
+                        // Crop stays OUTSIDE the containment below on purpose:
+                        // its corner handles sit right on the image edge and
+                        // have to be grabbable a few points beyond it.
                         cropOverlay(frame: fitted, containerSize: proxy.size)
-                    } else if isRemoveBrushActive {
-                        removalPaintOverlay(frame: fullImageFrame(from: fitted))
-                    } else if let index = selectedAdjustmentIndex {
-                        localAdjustmentOverlay(settings.localAdjustments[index], frame: fullImageFrame(from: fitted))
-                    } else if let activeSelection {
-                        selectionOverlay(activeSelection, frame: fullImageFrame(from: fitted))
-                    } else if let index = selectedLayerIndex {
-                        layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
+                    } else {
+                        // Every tool overlay draws against the FULL pre-crop
+                        // image frame, which zoomed in is far larger than the
+                        // preview — measured at 2x: container 1121x502 against
+                        // full=(-268,-262 1573x1048). Their hit areas
+                        // (patchBrushOverlay, patchCanvasClickArea,
+                        // patchFreeDrawOverlay, selectionFreeDrawOverlay,
+                        // brushPaintOverlay, brushMaskCanvas) are sized to that
+                        // frame, so unbounded they reach hundreds of points
+                        // above the preview and sit over the tool strip, eating
+                        // clicks on buttons that are enabled and look fine.
+                        //
+                        // That is the same defect the preview Image had, proved
+                        // by measurement there; contentShape after the frame is
+                        // what bounds interaction, since .clipped() bounds only
+                        // drawing.
+                        Group {
+                            if isRemoveBrushActive {
+                                removalPaintOverlay(frame: fullImageFrame(from: fitted), containerSize: proxy.size)
+                            } else if let index = selectedAdjustmentIndex {
+                                localAdjustmentOverlay(settings.localAdjustments[index], frame: fullImageFrame(from: fitted))
+                            } else if let activeSelection {
+                                selectionOverlay(activeSelection, frame: fullImageFrame(from: fitted))
+                            } else if let index = selectedLayerIndex {
+                                layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
+                            }
+                        }
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .contentShape(Rectangle())
+                        .clipped()
                     }
 
                     // Space-to-pan, deliberately AFTER every tool overlay
@@ -5225,16 +5676,28 @@ struct DevelopView: View {
     // CIImage re-render per drag point can't keep up), and here it doubles
     // as the translucent paint the tool is supposed to look like.
     // The real mask is only built at Erase time (see eraseMaskedArea).
-    private func removalPaintOverlay(frame: CGRect) -> some View {
+    // `frame` is the FULL pre-crop image rect, in the preview container's own
+    // coordinate space; `containerSize` is that container. Both are needed, and
+    // they are not interchangeable: strokes are stored as fractions of the full
+    // image so they must be drawn against `frame`, but the part of it the
+    // client can actually see and click is bounded by `containerSize` — and
+    // zoomed in, `frame` is several times larger than the container.
+    private func removalPaintOverlay(frame: CGRect, containerSize: CGSize) -> some View {
         let longEdge = max(frame.width, frame.height)
         let brushDiameter = max(removalBrushSize * longEdge, 2)
-        // Blue, matching InpaintPipeline.overlayImage — painting by hand and
+        // Rose, matching InpaintPipeline.overlayImage — painting by hand and
         // finding people automatically produce ONE mask that gets erased in
-        // one go, so showing them in two different colours said they were two
-        // different things. Blue also sits furthest from what beach, skin and
-        // sunset photos are actually made of, which is why it beats both the
-        // red this started as and the white it briefly was.
-        let ink = Color(red: 0.20, green: 0.55, blue: 1.0)
+        // one go, so showing them in two different colours would say they were
+        // two different things. Changed from blue on request.
+        //
+        // Rose rather than plain red, deliberately: the note this replaces
+        // recorded that pure red reads as a WARNING on a photo rather than as
+        // "this is selected", and that on the warm frames this tool is used on
+        // — skin, sand, sunset — red is among the hardest things to pick out.
+        // Pushing the hue toward magenta keeps the warm, pink cast that was
+        // asked for while staying off the orange-red axis those photos are
+        // actually built from.
+        let ink = Color(red: 1.0, green: 0.35, blue: 0.51)
 
         return ZStack {
             // Every stroke is painted OPAQUE into one group, and the group is
@@ -5262,76 +5725,81 @@ struct DevelopView: View {
                         .blendMode(stroke.isErase ? .destinationOut : .normal)
                 }
 
-                if !activeRemovalStrokePoints.isEmpty {
-                    strokePath(activeRemovalStrokePoints, frame: frame)
-                        .stroke(
-                            ink,
-                            style: StrokeStyle(lineWidth: brushDiameter, lineCap: .round, lineJoin: .round)
-                        )
-                        .blendMode(isRemoveBrushErasing ? .destinationOut : .normal)
-                }
+                // Always mounted, drawing nothing when there are no points.
+                // Mounting it conditionally would put the condition back in the
+                // parent's body, which is the invalidation this exists to avoid.
+                ActiveStrokeLayer(
+                    stroke: activeRemovalStroke,
+                    frame: frame,
+                    lineWidth: brushDiameter,
+                    color: ink,
+                    isErase: isRemoveBrushErasing
+                )
             }
             .compositingGroup()
             .opacity(0.45)
+            // Clipped to the preview, the same way the rendered removalOverlay
+            // two blocks down already is and for the same reason: `frame` is
+            // the full pre-crop image, which zoomed in (or under a tight crop)
+            // extends well past the preview area, and unclipped strokes were
+            // painted straight over the panel beside it.
+            .frame(width: containerSize.width, height: containerSize.height)
+            .clipped()
             .allowsHitTesting(false)
 
-            if let hover = removalBrushHoverLocation, activeRemovalStrokePoints.isEmpty {
-                // Dashed while erasing, so which of the two the next drag will
-                // do is visible before it happens rather than after.
-                Circle()
-                    .stroke(
-                        isRemoveBrushErasing ? Color.white.opacity(0.95) : ink.opacity(0.9),
-                        style: StrokeStyle(
-                            lineWidth: 1.5,
-                            dash: isRemoveBrushErasing ? [4, 3] : []
-                        )
-                    )
-                    .frame(width: brushDiameter, height: brushDiameter)
-                    .position(hover)
-                    .allowsHitTesting(false)
-            }
+            // Dashed while erasing, so which of the two the next drag will do
+            // is visible before it happens rather than after.
+            BrushCursorRing(
+                cursor: removalBrushCursor,
+                diameter: brushDiameter,
+                color: isRemoveBrushErasing ? Color.white.opacity(0.95) : ink.opacity(0.9),
+                isDashed: isRemoveBrushErasing,
+                isSuppressed: isPaintingRemovalStroke
+            )
+            .frame(width: containerSize.width, height: containerSize.height)
 
+            // Sized to the CONTAINER, not to `frame`. It used to be
+            // `.frame(frame.size).position(frame.mid)`, which at fit is the
+            // same thing but zoomed in is a hit rect several times larger than
+            // its own parent — and the parent is bounded by .frame(proxy.size),
+            // so the overflow is not hit-testable. That is why painting stopped
+            // working once zoomed while the button itself still toggled.
+            //
+            // The coordinate space does not change: .position() already made
+            // the old hit area report locations in the container's space (which
+            // is why unitPoint(from:frame:) subtracting frame.minX was correct),
+            // and a container-filling view reports the same space. So `frame`
+            // stays the mapping target for both the hover and the drag.
             Color.clear
                 .contentShape(Rectangle())
-                .frame(width: frame.width, height: frame.height)
-                .position(x: frame.midX, y: frame.midY)
+                .frame(width: containerSize.width, height: containerSize.height)
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let location):
-                        removalBrushHoverLocation = location
+                        removalBrushCursor.location = location
                     case .ended:
-                        removalBrushHoverLocation = nil
+                        removalBrushCursor.location = nil
                     }
                 }
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
-                            removalBrushHoverLocation = value.location
+                            if !isPaintingRemovalStroke {
+                                isPaintingRemovalStroke = true
+                            }
+                            removalBrushCursor.location = value.location
                             paintRemovalBrush(at: value.location, frame: frame)
                         }
-                        .onEnded { _ in commitRemovalStroke() }
+                        .onEnded { _ in
+                            isPaintingRemovalStroke = false
+                            commitRemovalStroke()
+                        }
                 )
         }
     }
 
     private func strokePath(_ points: [CGPoint], frame: CGRect) -> Path {
-        Path { path in
-            let scaled = points.map {
-                CGPoint(x: frame.minX + $0.x * frame.width, y: frame.minY + $0.y * frame.height)
-            }
-            guard let first = scaled.first else {
-                return
-            }
-            path.move(to: first)
-            // A lone point needs a zero-length line, not just a move: with a
-            // round cap that draws the dab, while a bare move draws nothing.
-            if scaled.count == 1 {
-                path.addLine(to: first)
-            }
-            for point in scaled.dropFirst() {
-                path.addLine(to: point)
-            }
-        }
+        briefShowStrokePath(points, frame: frame)
     }
 
     private func unitPoint(from location: CGPoint, frame: CGRect) -> CGPoint? {
@@ -5429,62 +5897,126 @@ struct DevelopView: View {
     // MARK: Adjustment panel
 
     private var adjustmentPanel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                histogramView
+        VStack(spacing: 0) {
+            panelTabBar
 
-                Divider()
+            Divider()
 
-                presetsSection
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    switch panelTab {
+                    case .edit:
+                        histogramView
 
-                Divider()
+                        Divider()
 
-                cropRotateSection
+                        presetsSection
 
-                Divider()
+                        Divider()
 
-                lightSection
+                        cropRotateSection
 
-                Divider()
+                        Divider()
 
-                colorSection
+                        lightSection
 
-                Divider()
+                        Divider()
 
-                detailSection
+                        colorSection
 
-                Divider()
+                        Divider()
 
-                masksSection
+                        detailSection
 
-                Divider()
+                    case .retouch:
+                        masksSection
 
-                selectionSection
+                        Divider()
 
-                Divider()
+                        selectionSection
 
-                removeSection
+                        Divider()
 
-                Divider()
+                        removeSection
 
-                layersSection
+                    case .layers:
+                        layersSection
+                    }
 
-                Divider()
+                    Divider()
 
-                settingsActionsSection
-
-                Divider()
-
-                resetButton
-
-                Divider()
-
-                exportActionsSection
+                    panelFooter
+                }
+                .padding(18)
             }
-            .padding(18)
         }
         .frame(width: 300)
         .background(AppColors.panel)
+    }
+
+    // Pinned above the scroll, so switching tabs never depends on where the
+    // panel happens to be scrolled to. Hand-built buttons rather than
+    // Picker(.segmented): every other control in this panel is styled by hand
+    // (ShowHeaderButtonStyle, AppColors), and a segmented Picker would be the
+    // single macOS-default control sitting in the middle of it.
+    //
+    // .contentShape(Rectangle()) on each label is load-bearing, not decorative
+    // — the same omission was a real bug on the Crop/Rotate and aspect-ratio
+    // buttons (see a50776f): without it only the glyph and the text glyphs
+    // themselves are hit-testable, and the padding around them is dead.
+    private var panelTabBar: some View {
+        HStack(spacing: 4) {
+            ForEach(DevelopPanelTab.allCases) { tab in
+                let isActive = panelTab == tab
+
+                Button {
+                    panelTab = tab
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 11))
+                        Text(tab.rawValue)
+                            .font(.custom("Figtree", size: 12).weight(isActive ? .bold : .medium))
+                    }
+                    .foregroundColor(isActive ? AppColors.ink : AppColors.muted)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(AppColors.panelAlt.opacity(isActive ? 1 : 0))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    // Outlined like every other button in the app: the fill
+                    // alone marked the ACTIVE tab, which left the other two
+                    // reading as plain text.
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(isActive ? AppColors.border : AppColors.border.opacity(0.7),
+                                    lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    // Settings, Reset and Export act on the whole photo, not on whichever tab
+    // is open, so they sit below every tab's content instead of living at the
+    // bottom of one of them. Appended inside the scroll rather than pinned:
+    // exportActionsSection carries the filmstrip and the format card, and
+    // pinning that much would eat the panel on a short window.
+    private var panelFooter: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            settingsActionsSection
+
+            Divider()
+
+            resetButton
+
+            Divider()
+
+            exportActionsSection
+        }
     }
 
     // A plain luminance histogram — one bar per bucket, tallest bucket
@@ -6200,7 +6732,7 @@ struct DevelopView: View {
             // Painting also stacks WITH a found mask rather than replacing
             // it, so "find the people, then paint the two things Vision
             // missed" is one Erase, not two.
-            panelActionButton(isRemoveBrushActive ? "AI Selection (painting)" : "AI Selection", systemImage: "paintbrush") {
+            panelActionButton(isRemoveBrushActive ? "AI Clean Up (painting)" : "AI Clean Up", systemImage: "paintbrush") {
                 toggleRemoveBrush()
             }
             .disabled(isFindingPeople || isRemoving || selectedURL == nil)
@@ -6396,10 +6928,38 @@ struct DevelopView: View {
         if let removalMaskUnitBox {
             union = removalMaskUnitBox
         }
+
+        // Every dab that is being TAKEN AWAY. Collected first, because the
+        // additions below have to be measured against it.
+        //
+        // This loop used to not exist, and the one below unioned every stroke
+        // in `removalStrokes` regardless of `isErase`. So painting with Erase
+        // made this box BIGGER — the exact opposite of what erasing does — and
+        // once the area had tripped the Quick limit, no amount of rubbing it
+        // out could bring the button back. Reported precisely: "he counts when
+        // the brush is put on, but does not subtract when it is erased".
+        let erasedDabs: [CGRect] = removalStrokes.filter { $0.isErase }.flatMap { stroke in
+            stroke.points.map { point in
+                let radius = stroke.size / 2
+                return CGRect(x: point.x - radius, y: point.y - radius,
+                              width: stroke.size, height: stroke.size)
+            }
+        }
+
         // Strokes are already in unit space; their box needs no rendering,
         // just the brush's own radius added around the points.
-        for stroke in removalStrokes {
+        //
+        // An added point is skipped once an erase dab covers its centre, so
+        // rubbing out the ends of a long stroke really does shrink the box
+        // rather than leaving it spanning ground that is no longer selected.
+        // Centre-in-dab rather than full-overlap on purpose: an erase pass is
+        // made of overlapping dabs, and asking for full containment would let
+        // a point survive between two of them and hold the whole box open.
+        for stroke in removalStrokes where !stroke.isErase {
             for point in stroke.points {
+                if erasedDabs.contains(where: { $0.contains(point) }) {
+                    continue
+                }
                 let radius = stroke.size / 2
                 let dab = CGRect(x: point.x - radius, y: point.y - radius,
                                  width: stroke.size, height: stroke.size)
@@ -6438,7 +6998,7 @@ struct DevelopView: View {
         removalMask = nil
         removalOverlay = nil
         removalStrokes = []
-        activeRemovalStrokePoints = []
+        activeRemovalStroke.points = []
         removeNotice = nil
         foundBackgroundOnly = false
         removalMaskUnitBox = nil
@@ -6454,7 +7014,7 @@ struct DevelopView: View {
             isRemoveBrushErasing = false
         }
         guard isRemoveBrushActive else {
-            activeRemovalStrokePoints = []
+            activeRemovalStroke.points = []
             return
         }
         selectedLocalAdjustmentID = nil
@@ -6469,29 +7029,29 @@ struct DevelopView: View {
             return
         }
         // Same minimum-spacing filter as paintBrush — see its doc comment.
-        if let last = activeRemovalStrokePoints.last {
+        if let last = activeRemovalStroke.points.last {
             let dx = unit.x - last.x, dy = unit.y - last.y
             if (dx * dx + dy * dy) < 0.0001 {
                 return
             }
         }
-        activeRemovalStrokePoints.append(unit)
+        activeRemovalStroke.points.append(unit)
     }
 
     private func commitRemovalStroke() {
-        defer { activeRemovalStrokePoints = [] }
+        defer { activeRemovalStroke.points = [] }
         // One point counts: a single click should dab the brush where it was
         // clicked, rather than needing a drag before anything appears.
         // brushStrokeDabs already handles a one-point stroke, so the mask side
         // has always been ready for this.
-        guard !activeRemovalStrokePoints.isEmpty else {
+        guard !activeRemovalStroke.points.isEmpty else {
             return
         }
         // hardness 1: this is a SELECTION, not a soft adjustment — a feathered
         // edge would fall under the mask threshold and quietly shrink what
         // gets erased. The pipeline grows and softens the hole itself.
         removalStrokes.append(BrushStroke(
-            points: activeRemovalStrokePoints,
+            points: activeRemovalStroke.points,
             size: removalBrushSize,
             hardness: 1,
             isErase: isRemoveBrushErasing
@@ -6588,7 +7148,7 @@ struct DevelopView: View {
         var title: String {
             switch self {
             case .quick: return "Quick AI Clean Up"
-            case .generative: return "AI Clean Up"
+            case .generative: return "Generative Clean Up"
             }
         }
 
@@ -6617,7 +7177,13 @@ struct DevelopView: View {
         // overlaps exactly where the results diverge. Numbers in the notes.)
         var blockingAreaPixels: CGFloat? {
             switch self {
-            case .quick: return 1000        // between 830 (clean) and 1550 (smeared)
+            // Was 1000, sitting between a clean 830 and a smeared 1550 at the
+            // old maxWorkingEdge of 1100. That cap is now 1600, so the region
+            // is scaled down a third less for the same hole and the smear
+            // threshold moves up with it. 1500 keeps the same margin below the
+            // old failure point that 1000 kept — it does not permit the
+            // failure at a bigger number, it moves where the failure starts.
+            case .quick: return 2200
             case .generative: return nil    // no size at which this reliably fails
             }
         }
@@ -6743,7 +7309,20 @@ struct DevelopView: View {
                 settings.layers.append(layer)
                 clearRemovalMask()
                 activeSelection = nil
-                isRemoveBrushActive = false
+                // The brush deliberately STAYS ON. It used to switch itself off
+                // here, which meant every clean up ended by throwing the client
+                // out of the tool they were in the middle of using — reported
+                // directly: "posle izbaci da moram opet da kliknem na AI
+                // Selection". Removing something is rarely one removal; the
+                // normal shape of the work is paint, clean, paint the next
+                // thing, clean again.
+                //
+                // clearRemovalMask() above already emptied the strokes, so what
+                // is left is the brush armed over a clean slate, which is
+                // exactly the state the next removal starts from. Erase mode is
+                // reset with it: erasing FROM an empty selection does nothing,
+                // so staying in it would be a dead cursor.
+                isRemoveBrushErasing = false
             }
         }
     }
@@ -6759,29 +7338,94 @@ struct DevelopView: View {
 
     private var layersSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Layers")
+            HStack(spacing: 8) {
+                sectionTitle("Layers")
+
+                Spacer()
+
+                if !settings.layers.isEmpty {
+                    // Removes every layer in one go, instead of ten trips to
+                    // the trash icon. Requested as "clear all history"; the
+                    // word History is left off because this app HAS a history —
+                    // the Cmd+Z stack — and this button does not touch it. It
+                    // clears the layer list.
+                    //
+                    // Not guarded by a confirmation dialog, deliberately: it
+                    // writes settings.layers, so it lands on the undo stack
+                    // like any other edit and Cmd+Z brings every layer back.
+                    // A confirmation would be a second click protecting against
+                    // something one keystroke already undoes.
+                    Button {
+                        selectedLayerID = nil
+                        settings.layers.removeAll()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Clear All")
+                                .font(.custom("Figtree", size: 11))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(AppColors.muted)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(AppColors.border, lineWidth: 1)
+                    )
+                    .help("Remove every layer. Cmd+Z brings them back.")
+
+                    Text("\(settings.layers.count)")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+                }
+            }
 
             panelActionButton("Paste as Layer", systemImage: "doc.on.clipboard") {
                 pasteLayer()
             }
             .disabled(layerClipboard == nil)
             .opacity(layerClipboard == nil ? 0.4 : 1)
-            // Cmd+V pastes directly, same expectation as any other
-            // clipboard in macOS — this button is always in the view tree
-            // (not conditionally inserted), so the shortcut works no
-            // matter where the Layers section has scrolled to, and
-            // SwiftUI disables the shortcut itself whenever the button is
-            // (i.e. whenever the clipboard is empty).
+            // This modifier does NOT serve Cmd+V, despite appearances. The
+            // shared local NSEvent monitor (installEditingKeyMonitor) matches
+            // Cmd+V first and returns nil, so the event never reaches
+            // SwiftUI's shortcut dispatch; and when layerClipboard is nil this
+            // button is disabled, so the shortcut would do nothing then
+            // either. It is kept purely because it draws the ⌘V hint beside
+            // the title. The previous comment here claimed the button had to
+            // stay mounted for paste to work — it does not, and that mattered
+            // when Layers moved behind a tab: paste keeps working from any
+            // tab precisely because the monitor, not this button, owns it.
             .keyboardShortcut("v", modifiers: .command)
 
             if settings.layers.isEmpty {
-                Text("No layers yet")
+                Text("No layers yet. Cut or copy a selection, then paste it here.")
                     .font(.custom("Figtree", size: 11))
                     .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            ForEach(settings.layers) { layer in
+            // Topmost layer first, the way every layers panel reads.
+            // settings.layers is stored bottom-to-top because compositeLayers
+            // draws it in array order, so this reverses for DISPLAY only —
+            // every action still resolves through the layer's id, and the drop
+            // delegate reorders the real array.
+            ForEach(Array(settings.layers.reversed())) { layer in
                 layerRow(layer)
+                    .onDrag {
+                        draggingLayerID = layer.id
+                        return NSItemProvider(object: layer.id.uuidString as NSString)
+                    }
+                    .onDrop(
+                        of: [.text],
+                        delegate: LayerDropDelegate(
+                            target: layer.id,
+                            dragging: $draggingLayerID,
+                            layers: $settings.layers
+                        )
+                    )
             }
 
             if let index = selectedLayerIndex {
@@ -6794,10 +7438,23 @@ struct DevelopView: View {
         let isSelected = selectedLayerID == layer.id
 
         return HStack(spacing: 8) {
-            Image(systemName: "square.2.layers.3d")
-                .font(.system(size: 11))
-                .foregroundColor(AppColors.muted)
-                .frame(width: 16)
+            // Grip glyph, not the old stack-of-layers icon: the row is now
+            // draggable and this is the only thing that says so.
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10))
+                .foregroundColor(AppColors.muted.opacity(draggingLayerID == layer.id ? 1 : 0.6))
+                .frame(width: 12)
+                .help("Drag to reorder")
+
+            Button {
+                toggleLayerEnabled(layer.id)
+            } label: {
+                Image(systemName: layer.isEnabled ? "eye" : "eye.slash")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
             Button {
                 selectLayer(layer.id)
@@ -6808,15 +7465,6 @@ struct DevelopView: View {
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                toggleLayerEnabled(layer.id)
-            } label: {
-                Image(systemName: layer.isEnabled ? "eye" : "eye.slash")
-                    .font(.system(size: 11))
-                    .foregroundColor(AppColors.muted)
             }
             .buttonStyle(.plain)
 

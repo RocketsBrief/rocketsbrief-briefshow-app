@@ -375,7 +375,22 @@ enum ExemplarInpainter {
     // so a very large removal comes back slightly softer than its
     // surroundings — an accepted trade for keeping a removal interactive
     // (the search cost is quadratic in resolution).
-    static let maxWorkingEdge = 1100
+    // Raised from 1100 on 30.08.2026, to answer "make the Quick working area
+    // bigger without it going white/smeary".
+    //
+    // The smear was never about the hole's size in the PHOTO — it was about how
+    // far the region had to be scaled down to fit this cap. A 1550px hole meant
+    // a ~4400px region squeezed into 1100, so every copied patch was stretched
+    // back over four real pixels. 1600 cuts that stretch by a third at the same
+    // hole size, which is what buys the larger working area rather than simply
+    // permitting the failure at a bigger number.
+    //
+    // The cost is real and quadratic: the patch search is O(resolution^2), so
+    // this is roughly 4x the work per removal against the old 1100. That is the
+    // whole price of the larger working area, and it is paid on every removal,
+    // not just the big ones — see the timing in the notes before raising it
+    // again.
+    static let maxWorkingEdge = 2200
 
     // Hard ceiling on how many pixels a single removal has to synthesize.
     // Runtime is roughly (hole pixels) x (search window), so without a cap
@@ -384,7 +399,11 @@ enum ExemplarInpainter {
     // scaled down until the hole fits — a big removal comes back a little
     // softer, which is exactly the case where nobody can tell, and the
     // wait stays in the seconds either way.
-    static let maxHolePixels = 45_000
+    // Raised with maxWorkingEdge, and it HAS to be: this cap counts the hole in
+    // the WORKING buffer, so enlarging that buffer grows the same hole past the
+    // old ceiling and the shrink-and-retry below would have scaled it straight
+    // back down — quietly cancelling the change above.
+    static let maxHolePixels = 180_000
 
     struct Buffers {
         var pixels: [UInt8]     // RGBA8, row-major, top-down
@@ -1241,13 +1260,20 @@ enum InpaintPipeline {
             )
         }
 
-        // Blue, matching the hand-painted overlay in Develop.swift. Red — what
-        // this started as — reads as a warning on a photo rather than "this is
-        // what is selected", and on the warm frames this tool is actually used
-        // on (skin, sand, sunset) both red and white are the hardest things to
-        // pick out. Blue is the one hue those photos are largely made without.
+        // Rose, matching the hand-painted overlay in Develop.swift — the two
+        // have to agree, because a Select People mask and hand-painted strokes
+        // become ONE selection that gets erased in one go. Changed from blue on
+        // request.
+        //
+        // The earlier note here is still worth keeping, because it is why this
+        // is rose and not plain red: pure red reads as a WARNING on a photo
+        // rather than "this is what is selected", and on the warm frames this
+        // tool is used on (skin, sand, sunset) both red and white are the
+        // hardest things to pick out. Pushing the hue toward magenta keeps the
+        // pink cast that was asked for while staying off the orange-red axis
+        // those photos are largely built from.
         // Bytes are premultiplied, hence each channel scaled by alpha.
-        let colour = (r: 51, g: 140, b: 255)
+        let colour = (r: 255, g: 90, b: 130)
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
         for index in 0..<(width * height) {
             let alpha = Int(maskBytes[index]) * 45 / 100

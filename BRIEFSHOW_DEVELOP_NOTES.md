@@ -35,7 +35,7 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | 40 | **Generative sada radi kao LaMa** — LaMa prvo popuni, SD samo doteruje. Izmereno; usput i 2× brže |
 | 41 | **BELA MRLJA — UZROK NAĐEN I POPRAVLJEN.** `toneMatch` je dizao svaki piksel rupe za +39 kad je okolina prežarena |
 | 42 | **Klik na sličicu se više ne čeka** — dva tap gesture-a su terala SwiftUI da odloži selekciju |
-| 43 | **Slideshow → BriefShow, Develop → LumenoLab** sa ručno nacrtanom ikonicom (čaša + presečeno sunce) |
+| 43 | **Slideshow → BriefShow, Develop → LumenoLab** sa ručno nacrtanom ikonicom čašice |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
@@ -5703,6 +5703,12 @@ Korisnikov zahtev: dugme „Slideshow" da se zove **BriefShow** i to **fontom
 wordmark-a**, a „Develop" da postane **LumenoLab** sa ikonicom „lab čašica sa
 mehurićima i sunce iza, presečeno".
 
+### ⚠️ Ovaj korak je prošao kroz TRI verzije ikonice — čitati do kraja
+
+Prva verzija (čašica + presečeno sunce) i druga (čašica + iskre) su **odbačene**.
+Isporučena je treća. Ne praviti prve dve ponovo bez izričitog traženja; zašto su
+pale piše na dnu ovog koraka.
+
 ### Nov fajl `Marks.swift`
 
 **`BriefShowWordmark(size:)`** — dvotonski wordmark kao jedan view. Veliki u
@@ -5769,3 +5775,63 @@ imena kroz devet hiljada linija bio bi velik diff koji ne menja ponašanje.
 Dugmad su renderovana istim fontom, veličinom, razmakom i okvirom koje
 `ShowHeaderButtonLabel` koristi, pa je ono što je gledano ono što ide na ekran —
 ali u pokrenutoj app-i ih još niko nije video.
+
+
+## KORAK 43, dopuna — konačna ikonica i zašto prve dve nisu prošle (31. avgust 2026)
+
+Ikonica je prošla kroz tri verzije u istoj sesiji. Sve tri su renderovane
+headless i **gledane** na 240 pt i na pravih 15 pt pre nego što je bilo šta
+isporučeno — što je i razlog što se stiglo do treće bez trošenja korisnikovog
+vremena na build-ove.
+
+| verzija | šta je bilo | ishod |
+|---|---|---|
+| A | čašica + sunce iza, presečeno | **odbačena** — korisnik: „nađi neku ikonicu za lab koja je cool" |
+| B | čašica + iskre (četvorokrake zvezde) | **odbačena** — korisnik poslao referencu |
+| **C** | **čašica sa tečnošću, bez mehurića** | **isporučena** |
+
+### Šta je isporučeno
+
+Konusna čašica po korisnikovoj referenci: debeo obris, usna preko otvorenog
+vrata, i tečnost do ispod ramena. **Bez mehurića** — nacrtani su pa izvađeni na
+zahtev, i mark je bolji bez njih: na 15 pt četiri tačke u tečnosti pretvore se u
+šum uz donju ivicu, a ono što ostane — jedan oblik i jedan ravan ton u njemu —
+jeste ono što se čita.
+
+**Boja:** korisnikova referenca je ljubičasta, ali je izričito tražio boje app-a.
+Mark uzima boju koju mu dugme prosledi, pa prati i hover tint i sve tri teme ne
+znajući ni za jedno od toga. Tečnost je **ista boja na 0,40 prozirnosti**, ne
+drugi ton — drugi ton bi morao da se bira po temi i razišao bi se čim se jedna od
+njih promeni.
+
+0,40 a ne 0,32 na kojima je crtana: na 15 pt trećina mastila je jedva vidljiva, a
+tečnost je cela razlika između ovoga i praznog trougla. Provereno na obe veličine,
+ne izabrano po velikoj.
+
+**Geometrija ide iz jednog izvora** (`enum Flask`), a `wallInset(atY:)` računa
+koliko je kosi zid odmakao na datoj visini — tako gornja ivica tečnosti dodiruje
+staklo tačno, umesto da se pogađa drugim skupom brojeva.
+
+### Zašto su prve dve pale — da se ne prave ponovo
+
+**A (sunce presečeno iza):** na 15 pt su sunce i čašica dva obrisa koja se otimaju
+o isti ugao, a rez potreban da se razdvoje košta više nego što donosi. Usput je
+otkriveno pravilo koje vredi i dalje: **presečen KRUG čita kao krug koji se
+nastavlja iza nečega, ali prav potez odsečen sa oba kraja ne čita kao ništa** —
+izgleda kao trunka prašine. Zato je zrak morao da se crta ceo ili nikako.
+
+**B (iskre):** legla je najbolje od prve dve i bila je najčitljivija na 15 pt, ali
+nije ono što je korisnik hteo. Iz nje ostaje jedan koristan nalaz: **iskra mora
+da bude ispunjena, ne obris**, i mora da ima udubljene stranice — prve iskre su
+bile ukrštene prave linije i čitale su se kao znak „plus", kao matematički
+simbol, a ne kao svetlo.
+
+### Takođe u ovom koraku: BriefShow dugme je vraćeno na običan stil
+
+Wordmark u dugmetu je probaan i skinut **čim je viđen**. Postavlja svoje dve boje,
+pa nije mogao da primi hover tint koji ima svako drugo dugme u zaglavlju, a
+brend-znak koji viče iz reda tihih dugmadi čita se kao greška, ne kao brendiranje.
+Veliki wordmark iznad i dalje nosi identitet.
+
+`BriefShowWordmark` **ostaje** u `Marks.swift` — zaglavlje ga koristi, i time je
+veliki wordmark prestao da bude dva ručno postavljena `Text`-a.

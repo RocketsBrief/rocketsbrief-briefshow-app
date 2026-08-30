@@ -21501,22 +21501,20 @@ struct PhotoShowSheet: View {
 
             Spacer()
 
-            // Named BriefShow rather than Slideshow, and set in the app's own
-            // wordmark rather than the button font: this is the button that
+            // Named BriefShow rather than Slideshow — this is the button that
             // opens BriefShow itself, so it carries the name of the thing it
-            // opens. The two-tone mark is shared with the header's big one
-            // (see BriefShowWordmark) so the small copy cannot drift from it.
-            //
-            // The wordmark sets its own two colours, which means it does not
-            // take the hover tint the other header buttons do. That is the
-            // trade for it being the brand mark; the hover scale still answers
-            // the pointer, so the button is not silent.
+            // opens. Set in the plain button font, NOT the wordmark: the
+            // wordmark was tried here and dropped on sight. It sets its own two
+            // colours, so it could not take the hover tint every other header
+            // button has, and a brand mark shouting from inside a row of quiet
+            // buttons reads as a mistake rather than as branding. The big
+            // wordmark in the header above still carries the identity.
             Button {
                 BriefShowWindowController.shared.open(initialPhotoURLs: photoURLs)
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "film")
-                    BriefShowWordmark(size: 13)
+                    Text("BriefShow")
                 }
             }
             .buttonStyle(ShowHeaderButtonStyle())

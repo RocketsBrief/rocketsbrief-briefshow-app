@@ -107,7 +107,22 @@ posle KORAKA 31.
 bafera umesto da bude konstanta. Proveriti cenu — pretraga je kvadratna po prečniku,
 pa je 80 → 160 oko 4x posla po pikselu rupe, povrh već podignute rezolucije.
 
-**Ako to ne reši**, tek onda razdvajati (a) i (b) testom ispod.
+**HIPOTEZA (a) JE ODBAČENA, istog večeri, korisnikovim zapažanjem:** posle bele mrlje
+nastavio je da koristi Quick Clean Up i **radilo je normalno**. Da se stanje prenosi
+između uklanjanja, sledeća bi takođe bila pokvarena. Alat se, dakle, uredno osvežava —
+`clearRemovalMask()` vraća površinu na nulu i LaMa sledeći put dobija praznu selekciju.
+
+**Korisnikova nova pretpostavka — „mislim da je bilo zbog sunca" — POKLAPA SE SA (c)** i
+opisuje tačno njen mehanizam: kad je prsten oko rupe prežaren, jedino što pretraga nađe
+u svom (sada prepolovljenom) dometu jeste belina, pa je kopira. Nije slučajnost da se
+javilo baš na najsvetlijem delu kadra.
+
+**Ostaje jedna sumnja, i ona je moja:** ako je uzrok samo sunce, zašto se nije javljalo
+pre KORAKA 31? Prežarenih plažnih kadrova je bilo i ranije. Zato `searchRadius` ostaje
+prvo što se dira — on je jedina stvar koja se promenila između „radilo je" i „pobeli".
+
+**Ako popravka `searchRadius`-a ne reši**, ostaje hipoteza (b) — granica podignuta
+previsoko — i test ispod.
 
 **Kako razdvojiti (a) i (b), jednim testom:** na SVEŽOJ fotki, bez ijednog prethodnog
 uklanjanja, označiti površinu slične veličine i pustiti Quick Clean Up.

@@ -4258,6 +4258,9 @@ struct DevelopView: View {
     @State private var kelvinFieldText = ""
     @State private var isAddingPreset = false
     @State private var newPresetName = ""
+    /// Which preset is being renamed, and what it is being renamed to.
+    @State private var renamingPresetID: UUID?
+    @State private var renamingPresetName = ""
     /// What the last Lightroom import did, and what it could not do.
     @State private var presetImportNotice: String?
     @State private var settingsClipboard: PhotoEditSettings?
@@ -8329,17 +8332,22 @@ struct DevelopView: View {
                 .opacity(settings.isNeutral ? 0.4 : 1)
                 .disabled(settings.isNeutral)
 
+                // "Import", not "Import from Lightroom". Lightroom is what it
+                // happens to READ today, not what the button is for — and the
+                // panel already says which formats when you open it. Naming a
+                // button after one supported format is a name that has to be
+                // changed every time another one is added.
                 Button {
                     importLightroomPresets()
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "square.and.arrow.down")
-                        Text("Import from Lightroom…")
+                        Text("Import")
                     }
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
-                .help("Reads Lightroom / Camera Raw .xmp presets. Pick a file, "
-                      + "several, or a whole folder of them.")
+                .help("Import presets. Supports Lightroom / Camera Raw .xmp "
+                      + "files — pick one, several, or a whole folder.")
             }
 
             if let presetImportNotice {
@@ -8352,28 +8360,106 @@ struct DevelopView: View {
         }
     }
 
+    /// The JPEG/PNG/TIFF choice, drawn by hand instead of `.pickerStyle(.segmented)`.
+    ///
+    /// AppKit's segmented control paints itself from the SYSTEM appearance, not
+    /// from this app's theme. Under the dark theme that put grey-on-grey labels
+    /// on a panel of a different grey again — reported with a screenshot, and it
+    /// was barely readable. A theme the app draws everywhere else and then hands
+    /// off to the system in one place is a theme with a hole in it.
+    ///
+    /// Same AppColors every other control here uses, so it goes dark and light
+    /// with the rest of the window.
+    private var exportFormatPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(ExportFormat.allCases) { option in
+                let isSelected = exportFormat == option
+                Button {
+                    exportFormatRaw = option.rawValue
+                } label: {
+                    Text(option.title)
+                        .font(.custom("Figtree", size: 11)
+                                .weight(isSelected ? .semibold : .regular))
+                        .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(isSelected ? AppColors.background : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(AppColors.panelAlt)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(AppColors.border.opacity(0.7), lineWidth: 1)
+        )
+    }
+
     private func presetRow(_ preset: PhotoEditPreset) -> some View {
         HStack(spacing: 8) {
-            Button {
-                applyPreset(preset)
-            } label: {
-                Text(preset.name)
-                    .font(.custom("Figtree", size: 12).weight(.medium))
-                    .foregroundColor(AppColors.ink)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            if renamingPresetID == preset.id {
+                // The row becomes the field, rather than opening a dialog over
+                // it: the name is already there to be corrected, and a sheet
+                // for one word is a sheet too many.
+                TextField("Preset name", text: $renamingPresetName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.custom("Figtree", size: 12))
+                    .onSubmit { commitPresetRename() }
 
-            Button {
-                deletePreset(preset)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 11))
-                    .foregroundColor(AppColors.muted)
+                Button("Save") { commitPresetRename() }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                    .disabled(renamingPresetName
+                                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Button("Cancel") { cancelPresetRename() }
+                    .buttonStyle(ShowHeaderButtonStyle())
+            } else {
+                Button {
+                    applyPreset(preset)
+                } label: {
+                    Text(preset.name)
+                        .font(.custom("Figtree", size: 12).weight(.medium))
+                        .foregroundColor(AppColors.ink)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // Double-click is the Finder gesture for renaming and costs no
+                // space in the row; the pencil is there so it can be found
+                // without knowing that.
+                .simultaneousGesture(TapGesture(count: 2).onEnded {
+                    beginPresetRename(preset)
+                })
+
+                Button {
+                    beginPresetRename(preset)
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11))
+                        .foregroundColor(AppColors.muted)
+                }
+                .buttonStyle(.plain)
+                .help("Rename this preset")
+
+                Button {
+                    deletePreset(preset)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundColor(AppColors.muted)
+                }
+                .buttonStyle(.plain)
+                .help("Delete this preset")
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -10659,13 +10745,7 @@ struct DevelopView: View {
             // Above the buttons rather than behind a gear, unlike the AI
             // prompt: format is something you decide before exporting, not a
             // setting you tune once and forget.
-            Picker("", selection: $exportFormatRaw) {
-                ForEach(ExportFormat.allCases) { option in
-                    Text(option.title).tag(option.rawValue)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            exportFormatPicker
 
             if exportFormat.isLossy {
                 editSlider("Quality", key: "export.quality",
@@ -10718,13 +10798,7 @@ struct DevelopView: View {
                     .font(.custom("Figtree", size: 11))
                     .foregroundColor(AppColors.muted)
 
-                Picker("", selection: $exportFormatRaw) {
-                    ForEach(ExportFormat.allCases) { option in
-                        Text(option.title).tag(option.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                exportFormatPicker
             }
 
             if exportFormat.isLossy {
@@ -10857,7 +10931,36 @@ struct DevelopView: View {
     }
 
     private func deletePreset(_ preset: PhotoEditPreset) {
+        if renamingPresetID == preset.id {
+            cancelPresetRename()
+        }
         presets.removeAll { $0.id == preset.id }
+        PhotoEditPresetStore.save(presets)
+    }
+
+    private func beginPresetRename(_ preset: PhotoEditPreset) {
+        renamingPresetID = preset.id
+        renamingPresetName = preset.name
+    }
+
+    private func cancelPresetRename() {
+        renamingPresetID = nil
+        renamingPresetName = ""
+    }
+
+    /// Renames in place — same id, same settings, so a renamed preset is the
+    /// same preset and not a copy of it.
+    private func commitPresetRename() {
+        defer { cancelPresetRename() }
+        guard let id = renamingPresetID,
+              let index = presets.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let trimmed = renamingPresetName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        presets[index].name = trimmed
         PhotoEditPresetStore.save(presets)
     }
 
@@ -10878,7 +10981,7 @@ struct DevelopView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
-        panel.message = "Choose Lightroom preset files (.xmp), or a folder of them."
+        panel.message = "Choose preset files, or a folder of them. Lightroom / Camera Raw .xmp is supported."
         panel.prompt = "Import"
         if let xmp = UTType(filenameExtension: "xmp") {
             panel.allowedContentTypes = [xmp, .folder]

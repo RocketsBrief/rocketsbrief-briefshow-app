@@ -186,6 +186,25 @@ enum LightroomPresetImport {
         if let v = hundredths("Dehaze") { s.dehaze = v }
         if let v = hundredths("PostCropVignetteAmount", invert: true) { s.vignette = v }
 
+        // The vignette's SHAPE, and this part is a straight copy because the
+        // fields were given Lightroom's own defaults when they were added:
+        // midpoint 50, feather 50, roundness 0 mean the same thing on both
+        // sides, so there is no baseline to subtract and no sign to flip.
+        if let v = number("PostCropVignetteMidpoint") {
+            s.vignetteMidpoint = clamp(v / 100, 0, 1)
+        }
+        if let v = number("PostCropVignetteFeather") {
+            s.vignetteFeather = clamp(v / 100, 0, 1)
+        }
+        if let v = number("PostCropVignetteRoundness") {
+            s.vignetteRoundness = clamp(v / 100, -1, 1)
+        }
+
+        // Sharpening radius, in the same 0.5...3 Lightroom uses.
+        if let v = number("SharpenRadius") {
+            s.sharpenRadius = clamp(v, 0.5, 3)
+        }
+
         // Sharpening: Lightroom's own RAW default is 40, and that is the value
         // a preset carries when the photographer never touched the slider.
         if let v = number("Sharpness") {
@@ -238,6 +257,8 @@ enum LightroomPresetImport {
         "SharpenDetail": 25,
         "PostCropVignetteMidpoint": 50,
         "PostCropVignetteFeather": 50,
+        // 1 is Highlight Priority, Lightroom's own default.
+        "PostCropVignetteStyle": 1,
         "PerspectiveScale": 100,
         "DefringePurpleHueLo": 30,
         "DefringePurpleHueHi": 70,
@@ -286,8 +307,9 @@ enum LightroomPresetImport {
         if moved("LuminanceSmoothing") || moved("ColorNoiseReduction") {
             parts.append("Noise Reduction")
         }
-        if moved("SharpenRadius") || moved("SharpenDetail") || moved("SharpenEdgeMasking") {
-            parts.append("Sharpening detail (radius / detail / masking)")
+        // Radius comes across now; Detail and Masking still have no dial here.
+        if moved("SharpenDetail") || moved("SharpenEdgeMasking") {
+            parts.append("Sharpening Detail and Masking")
         }
         if values["LensProfileEnable"] == "1" || moved("AutoLateralCA")
             || moved("DefringePurpleAmount") || moved("DefringeGreenAmount") {
@@ -307,12 +329,12 @@ enum LightroomPresetImport {
            !["Adobe Color", "Adobe Standard", "Adobe Monochrome"].contains(look) {
             parts.append("Profile “\(look)”")
         }
-        // Only worth saying when there IS a vignette: the shape of a vignette
-        // of zero is not something anyone lost.
-        if moved("PostCropVignetteAmount"),
-           moved("PostCropVignetteFeather") || moved("PostCropVignetteMidpoint")
-            || moved("PostCropVignetteRoundness") {
-            parts.append("Vignette shape (midpoint / feather / roundness)")
+        // The vignette's midpoint, feather and roundness now come across. Its
+        // STYLE does not: Lightroom offers Highlight Priority / Colour Priority
+        // / Paint Overlay, which are three different ways of mixing the
+        // darkening with the picture, and this app has the one.
+        if moved("PostCropVignetteAmount"), moved("PostCropVignetteStyle") {
+            parts.append("Vignette style (Highlight / Colour Priority)")
         }
 
         return parts

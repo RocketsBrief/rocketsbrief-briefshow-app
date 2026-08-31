@@ -6814,6 +6814,163 @@ unutar drugog, jer Look nosi svoj sopstveni `crs:Name`.
   se pročitao, ali bi mu se uzeli samo klizači.
 
 
+## KORAK 53 — Color Mixer (HSL), i još tri stvari — SVE KAO DODATAK (31. avgust 2026)
+
+Korisnik: „jel možeš da napraviš da i LumenoLab ima HSL", pa zatim vinjeta kao
+Lightroom, kelvini, highlights i sharpening kao Lightroom — a onda, izričito:
+
+> **„ali ne smeš da menjaš green lock uopšte! samo možeš da dodaš ove stvari"**
+
+To pravilo je oblikovalo ceo korak i vredi ga zapisati kao pravilo, ne kao
+anegdotu: **ništa se ne menja, sve se dodaje.** Svaki nov regulator ima difolt
+koji reprodukuje TAČNO ono što je app crtao pre nego što je taj regulator
+postojao, i to je izmereno, ne pretpostavljeno.
+
+### Zaključane sekcije — provereno da nisu dirane
+
+- `DevelopInpaint.swift`, `DevelopSDInpaint.swift`, `DevelopLaMaInpaint.swift`
+  **nisu dirani ni jednom u celoj sesiji** (`git diff --stat` od 5da0314).
+  `imageSide` je i dalje 512/512, `defaultSteps` 12. Lock 2 i lock 3 netaknuti.
+- Lock 1 (rezolucija): `previewMax` je i dalje **2600**, a `refinedRenderNow` i
+  dalje renderuje iz `fullBaseImage` u nativnoj rezoluciji. ⚠️ U KORAKU 49 je
+  promenjen NAČIN na koji se tih 2600 px dobija (pravo umanjeno dekodiranje
+  umesto skaliranja lenjog punog CIImage-a). Dimenzije su izmerene identične
+  (2600×1732 oba puta) i srednja RGB vrednost identična, ali to je jedina tačka
+  u sesiji koja dodiruje temu zaključanu lockom 1 — vredi da klijent baci oko.
+
+### Color Mixer
+
+Osam opsega na **Adobe-ovim sopstvenim centrima** hue točka: 0, 30, 60, 120,
+180, 240, 285, 315. Nisu ravnomerno raspoređeni i to je namerno kod Adobe-a —
+topli kraj, gde je koža, ima korak od 30°, a zeleno-plavi od 60°. Kopiranje tog
+rasporeda je ono što uvezen preset spušta na iste boje na koje ga je spustio
+Lightroom.
+
+Renderuje se kao **jedan `CIColorCube`**, ne kao osam maskiranih lanaca filtera.
+Kocka je jedan filter šta god mikser nosio, a njena gradnja dodiruje 32³ =
+32.768 ulaza — posao koji ne zavisi od veličine fotografije. Izmereno 5 ms, uz
+keš vezan za vrednost miksera, jer `render` u toku vučenja slajdera radi na
+~20 ms i svaki prolaz traži kocku.
+
+**Težine opsega su particija jedinice**: hue leži između dva centra i glatko se
+deli između njih, pa zbir uvek daje tačno 1. Provereno po celom točku i na sva
+tri centra. Zvonaste krive po centru bi značile da svih osam saturacija na +20
+neke hue-ove zasiti više nego druge — dakle da regulator ne radi ono što piše.
+
+### Tri stvari oko kocke, sve tri jer je očigledna verzija izmerena i pala
+
+**1. Siva mora ostati siva.** Kocka se uzorkuje trilinearno, pa prava neutralna
+0,5 pada TAČNO IZMEĐU ulaza i meša se iz osam ćoškova — šest su blago obojeni i
+zato ih je pomerio onaj opseg koji ih polaže. Izmereno: sa svih osam Luminance
+na +100, siva 0,5 je izašla na **0,725**. Gašenje efekta UNUTAR kocke jedva je
+pomoglo (0,35 → 0,11 u najboljem slučaju) jer su komšije TAMNE sive jako
+zasićene. Ono što radi je odlučivanje IZVAN kocke, u punoj preciznosti: koliko
+je piksel daleko od sive, i mešanje odgovora kocke tom merom. Rezultat:
+**0,000000** pomeraja, a bledo nebo i zasićena plava prošli su nepromenjeni do
+poslednjeg broja.
+
+**2. Prostor iznad bele mora preživeti.** `CIColorCube` gleda po 0...1 i
+klampuje preko. Izmereno na .NEF-u kroz baš ovaj lanac: slika stiže do miksera
+sa komponentama do **1,33**, a **identična** kocka ih je vratila na 1,000 — što
+posle čitaju clarity, vinjeta i svaka zatamnjujuća maska. Deo iznad bele se
+zato nosi oko kocke i vraća sabiranjem.
+
+**3. Sabiranje dve slike je palo TRI puta, sve tri zbog premultiplikovane alfe.**
+Zapisano da se ne ponavlja:
+
+1. Postavi alfu viška na 0 da sabiranje ne udvostruči neprozirnost. Core Image
+   drži boju PREMULTIPLIKOVANO, pa alfa 0 znači boja 0 — višak je izašao kao
+   (0,0,0,0) i cela stvar je bila tih no-op.
+2. Zadrži alfu pa je posle vrati na 1 preko `CIColorMatrix`. **Taj filter prvo
+   DEPREMULTIPLIKUJE**, pa je sa alfom 2 svaki kanal podeljen sa dva — cela
+   fotografija na pola svetline. Izmereno: netaknuta narandžasta je od
+   0,90/0,50/0,20 otišla na 0,4494/0,2500/0,0996.
+3. `CILinearDodgeBlendMode` — čuva alfu 1, ali **klampuje zbir na 1**, što je
+   baš ono što se zaobilazi.
+
+Radi ovako: pusti sabiranje da udvostruči alfu, pa tačno to poništi — **boja ×2,
+alfa ×0,5**. Izmereno tačno za zbir ispod 1, iznad 1, za nulti višak (pravi
+no-op) i, pošto je ispravka algebarska a ne specijalan slučaj za neprozirno, za
+dve slike sa alfom 0,5.
+
+### Dodato uz to — vinjeta i sharpening, oba kao ČIST dodatak
+
+| polje | difolt | šta je difolt |
+|---|---|---|
+| `vignetteMidpoint` | 0,5 | stari `radius0 = 1` |
+| `vignetteFeather` | 0,5 | stari `radius1 = √2` |
+| `vignetteRoundness` | 0 | stara elipsa po kadru |
+| `sharpenRadius` | 1 | ×1,69, sopstveni difolt `CISharpenLuminance` |
+
+**Izmereno da su difolti pravi no-op**, jer bi drugačije ovo bila promena a ne
+dodatak:
+
+- `CISharpenLuminance` prijavljuje difolt radijusa **1,69**, a render sa
+  eksplicitnih 1,69 protiv rendera bez postavljenog radijusa daje **najveću
+  razliku po kanalu 0**. (Kontrola: 1,7 daje razliku 1, a 1,6 razliku 4 — test
+  jeste osetljiv.)
+- Nova vinjeta na difoltima računa `inner = 1,0000000000` i
+  `outer = 1,4142135624` — identično starim `radius0`/`radius1` do 1e-12. Pri
+  `roundness = 0` ose ostaju `halfW`/`halfH`, nedirnute.
+
+`isNeutral` NAMERNO ne broji ova četiri polja: to je OBLIK efekta, ne efekat.
+Fotka sa Vignette na 0 je bez vinjete šta god midpoint kaže, a brojanje bi
+upalilo „ova fotka ima izmene" — i s tim Flatten, Reset i spiskove za export —
+zbog regulatora koji ne radi ništa.
+
+Roundness je pošteno **približavanje**: Lightroom-ov negativan roundness savija
+oblik ka zaobljenom PRAVOUGAONIKU, što nijedna elipsa ne može. Pozitivan je
+tačan (ose se stapaju dok elipsa ne postane krug); negativan se dobija guranjem
+elipse napolje da joj ivica grli ćoškove.
+
+### Kelvini — dodati kao PRIKAZ, ne kao promena skladišta
+
+Ovaj app čuva POMERAJ od as-shot balansa te fotke, ne apsolutne kelvine, i to je
+ispravno za ono čemu služi: pomeraj je ono što se sme preneti na fotografiju
+snimljenu pod drugim svetlom, a to je tačno posao Sync-a i preseta. Ali +0,33
+nije broj koji iko može da uporedi sa Lightroom-om ili sa poleđinom aparata.
+
+Zato se kelvini **prikazuju** — iz iste računice `asShot + offset × 3000` koju
+render radi — i mogu se **ukucati**, pa se slajder pomeri. Ništa se u tome što
+se čuva nije promenilo. Samo za RAW: JPEG nema as-shot kelvine da bi bio
+relativan prema njima, pa nema ni poštenog broja da se ispiše. Lightroom radi
+isto i za non-raw pokazuje običnu skalu −100...100.
+
+### Highlights — NIJE menjano, i zašto
+
+Traženo je da highlights bude kao u Lightroom-u. U Lightroom-u pozitivno
+posvetljuje, ovde pozitivno zatamnjuje, i taj znak je već jednom svesno zadržan
+zbog fotki editovanih starijim buildom (vidi `render`). Okretanje znaka je
+PROMENA, ne dodatak — pa nije urađeno.
+
+I ne treba: **uvoz već okreće znak**, pa Lightroom-ov preset ovde izgleda kako
+treba. Jedino što ostaje drugačije je smer sopstvenog slajdera u panelu. Ako se
+to ikad bude htelo, to je zaseban dogovor sa migracijom postojećih izmena, ne
+uzgredna izmena.
+
+### Rezultat na korisnikovom fajlu
+
+Preset „Camilo" se sad uvozi **u celosti**:
+
+```
+not carried over: []
+```
+
+Svih 24 HSL vrednosti (Yellow hue −31 → −0,31, Green hue −61 → −0,61, Blue sat
++39 → +0,39 …), vinjeta feather 100 → 1,0, SharpenRadius 1,1 → 1,1, uz sve
+klizače iz KORAKA 52.
+
+### ⚠️ Neprovereno
+
+- Nije gledano okom da li uvezeni „Camilo" sad liči na Lightroom-ov. Sad kad HSL
+  prolazi, trebalo bi znatno bliže — ali to presuđuje klijent.
+- Roundness i luminance krivulja (`luminanceSwing = 0,6`) su odabrani da budu
+  razumni, ne izmereni protiv Lightroom-a. Ako se pokaže preslabo ili prejako,
+  to su dva broja u `ColorMixerCube`.
+- Sharpening Detail i Masking i dalje nemaju regulator, kao ni stil vinjete
+  (Highlight/Colour Priority). Uvoz to i kaže.
+
+
 ## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)
 
 Korisnik: „promeni ime App-a u Afterburn Studio… kao i folder na desktopu

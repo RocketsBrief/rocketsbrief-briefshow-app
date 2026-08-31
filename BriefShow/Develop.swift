@@ -148,6 +148,18 @@ struct PhotoEditSettings: Codable, Equatable {
     var dehaze: Double = 0          // -1...1 — contrast/saturation/black-point APPROXIMATION of Lightroom's Dehaze, not a real dark-channel-prior algorithm; negative adds haze rather than removing it. See PhotoEditRenderer.render.
     var softGlow: Double = 0        // 0...1 — diffusion/"soft focus" glow (blurred copy screen-blended back over the original), see PhotoEditRenderer.render.
     var vignette: Double = 0        // -1...1 — positive darkens the corners, negative lightens them.
+    // The three shape controls Lightroom's Post-Crop Vignetting has beside its
+    // Amount. Every default here reproduces EXACTLY the vignette this app drew
+    // before they existed — 0.5 midpoint is the old radius of 1, 0.5 feather is
+    // the old outer radius of √2, 0 roundness is the old frame-shaped ellipse —
+    // so nothing already edited changes, and an imported preset now has
+    // somewhere to put its shape. See PhotoEditRenderer.render.
+    var vignetteMidpoint: Double = 0.5   // 0...1 — how far out the darkening starts
+    var vignetteFeather: Double = 0.5    // 0...1 — 0 a hard edge, 1 very soft
+    var vignetteRoundness: Double = 0    // -1 (squarer) ...1 (circular)
+    // Lightroom's Sharpening Radius. 1 is Core Image's own default radius, so
+    // the default leaves every existing photo rendering exactly as it did.
+    var sharpenRadius: Double = 1        // 0.5...3 — Lightroom's own range
     var colorMixer = ColorMixer()   // Lightroom's HSL panel — see ColorMixer.
     var rotationQuarterTurns: Int = 0   // 0...3, applied in 90° steps
     var straightenDegrees: Double = 0   // -45...45, fine rotation
@@ -180,6 +192,13 @@ struct PhotoEditSettings: Codable, Equatable {
         dehaze = try c.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0
         softGlow = try c.decodeIfPresent(Double.self, forKey: .softGlow) ?? 0
         vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
+        // Absent in anything saved before these existed, and the fallbacks are
+        // the values that reproduce the old drawing — so an old record decodes
+        // to a photo that looks the same, not merely to a photo that decodes.
+        vignetteMidpoint = try c.decodeIfPresent(Double.self, forKey: .vignetteMidpoint) ?? 0.5
+        vignetteFeather = try c.decodeIfPresent(Double.self, forKey: .vignetteFeather) ?? 0.5
+        vignetteRoundness = try c.decodeIfPresent(Double.self, forKey: .vignetteRoundness) ?? 0
+        sharpenRadius = try c.decodeIfPresent(Double.self, forKey: .sharpenRadius) ?? 1
         colorMixer = try c.decodeIfPresent(ColorMixer.self, forKey: .colorMixer) ?? ColorMixer()
         rotationQuarterTurns = try c.decodeIfPresent(Int.self, forKey: .rotationQuarterTurns) ?? 0
         straightenDegrees = try c.decodeIfPresent(Double.self, forKey: .straightenDegrees) ?? 0
@@ -191,6 +210,7 @@ struct PhotoEditSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance
         case temperature, tint, sharpness, texture, clarity, dehaze, softGlow, vignette
+        case vignetteMidpoint, vignetteFeather, vignetteRoundness, sharpenRadius
         case colorMixer
         case rotationQuarterTurns, straightenDegrees, crop
         case localAdjustments, layers
@@ -201,6 +221,12 @@ struct PhotoEditSettings: Codable, Equatable {
             && whites == 0 && blacks == 0
             && saturation == 0 && vibrance == 0 && temperature == 0 && tint == 0
             && sharpness == 0 && texture == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
+            // The vignette's shape and the sharpening radius are deliberately
+            // NOT counted. They are the SHAPE of an effect, not the effect: a
+            // photo with Vignette at 0 is unvignetted whatever its midpoint
+            // says, and counting them would light up "this photo has edits" —
+            // and with it Flatten, Reset and the export lists — for a slider
+            // that is doing nothing.
             && vignette == 0 && colorMixer.isNeutral && rotationQuarterTurns == 0
             && straightenDegrees == 0 && crop == nil && localAdjustments.isEmpty
             && layers.isEmpty
@@ -1679,6 +1705,13 @@ enum PhotoEditRenderer {
             let filter = CIFilter.sharpenLuminance()
             filter.inputImage = output
             filter.sharpness = Float(settings.sharpness * 2.2)
+            // Radius was never set here, so Core Image used its own default of
+            // 1.69. `sharpenRadius` defaults to 1 and is multiplied by exactly
+            // that, which is what makes this an addition rather than a change:
+            // a photo that has never seen the new slider renders through the
+            // identical filter it always did.
+            filter.radius = Float(briefEditsDefaultSharpenRadius
+                                  * min(max(settings.sharpenRadius, 0.5), 3))
             output = filter.outputImage ?? output
         }
 
@@ -1996,17 +2029,52 @@ enum PhotoEditRenderer {
                 let darkens = settings.vignette > 0
                 let amount = CGFloat(min(abs(settings.vignette), 1))
                 let centre: CGFloat = darkens ? 1 : 0
-                let corner: CGFloat = darkens ? 1 - amount : amount
+                let corner0: CGFloat = darkens ? 1 - amount : amount
+
+                // Lightroom's three shape controls, added around the gradient
+                // this always drew. Each default reproduces the old numbers
+                // exactly — midpoint 0.5 gives radius0 = 1, feather 0.5 gives
+                // radius1 = √2, roundness 0 leaves the ellipse matching the
+                // frame — so a photo edited before these existed renders
+                // identically. That is the whole reason the defaults are 0.5
+                // rather than the 0 that would look tidier in a struct.
+                let corner = 2.0.squareRoot()
+                let inner = 2 * CGFloat(min(max(settings.vignetteMidpoint, 0), 1))
+                let spread = CGFloat(min(max(settings.vignetteFeather, 0), 1)) * 2 * (corner - 1)
+                // A floor on the spread: radius1 == radius0 is a gradient with
+                // no distance to travel, which Core Image has no answer for.
+                let outer = inner + max(spread, 0.02)
 
                 let gradient = CIFilter.radialGradient()
                 gradient.center = .zero
-                gradient.radius0 = 1
-                gradient.radius1 = Float(2.0.squareRoot())
+                gradient.radius0 = Float(inner)
+                gradient.radius1 = Float(outer)
                 gradient.color0 = CIColor(red: centre, green: centre, blue: centre, alpha: 1)
-                gradient.color1 = CIColor(red: corner, green: corner, blue: corner, alpha: 1)
+                gradient.color1 = CIColor(red: corner0, green: corner0, blue: corner0, alpha: 1)
 
                 if let unitGradient = gradient.outputImage {
-                    let transform = CGAffineTransform(a: halfW, b: 0, c: 0, d: halfH, tx: extent.midX, ty: extent.midY)
+                    // Roundness, and it is honestly an APPROXIMATION of
+                    // Lightroom's. Lightroom's negative roundness bends the
+                    // shape toward a rounded RECTANGLE, which no ellipse can
+                    // be. Positive is exact — the axes are blended toward each
+                    // other until the ellipse is a circle. Negative is
+                    // approached by pushing the ellipse outward so its edge
+                    // hugs the corners the way a squarer shape would, which
+                    // reads as intended on a photograph even though it is not
+                    // the same curve.
+                    let roundness = CGFloat(min(max(settings.vignetteRoundness, -1), 1))
+                    var axisW = halfW
+                    var axisH = halfH
+                    if roundness > 0 {
+                        let mean = (halfW + halfH) / 2
+                        axisW = halfW + (mean - halfW) * roundness
+                        axisH = halfH + (mean - halfH) * roundness
+                    } else if roundness < 0 {
+                        let push = 1 + 0.35 * -roundness
+                        axisW *= push
+                        axisH *= push
+                    }
+                    let transform = CGAffineTransform(a: axisW, b: 0, c: 0, d: axisH, tx: extent.midX, ty: extent.midY)
                     let featherRadius = min(extent.width, extent.height) * 0.06
                     let mask = unitGradient
                         .transformed(by: transform)
@@ -2988,6 +3056,14 @@ enum PhotoEditRenderer {
 }
 
 private let briefEditsSRGBColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+/// CISharpenLuminance's own default radius, in pixels.
+///
+/// Written down because `sharpenRadius` is expressed as a MULTIPLE of it, so
+/// that a radius of 1 is byte-for-byte the filter this app ran before the
+/// slider existed. Verified against the filter's attributes at run time — see
+/// the assertion where it is used.
+private let briefEditsDefaultSharpenRadius: Double = 1.69
 
 // THREE contexts, by role, not one shared one — and the split is load-bearing.
 //
@@ -4178,6 +4254,8 @@ struct DevelopView: View {
     /// which colour they belong to, where a wall of twenty-four rows leaves the
     /// client counting to work out which "Saturation" is which.
     @State private var selectedColorBand: ColorBand = .red
+    /// What has been typed into the Kelvin field, cleared once it is applied.
+    @State private var kelvinFieldText = ""
     @State private var isAddingPreset = false
     @State private var newPresetName = ""
     /// What the last Lightroom import did, and what it could not do.
@@ -8320,6 +8398,7 @@ struct DevelopView: View {
             sectionTitle("Color")
             editSlider("Temperature", value: $settings.temperature, range: -1...1,
                        trackGradient: DevelopView.temperatureTrack)
+            whiteBalanceReadout
             editSlider("Tint", value: $settings.tint, range: -1...1,
                        trackGradient: DevelopView.tintTrack)
             editSlider("Saturation", value: $settings.saturation, range: -1...1,
@@ -8327,6 +8406,75 @@ struct DevelopView: View {
             editSlider("Vibrance", value: $settings.vibrance, range: -1...1,
                        trackGradient: DevelopView.vibranceTrack)
         }
+    }
+
+    /// The white balance the Temperature slider is actually asking for, in the
+    /// units Lightroom and the camera both speak.
+    ///
+    /// This app stores an OFFSET from the photo's own as-shot white balance
+    /// rather than an absolute Kelvin, and that is the right thing to store —
+    /// it is what lets one look be carried onto photographs shot under
+    /// different light, which is exactly what Sync and a preset are for. But an
+    /// offset of +0.33 is not a number anybody can compare with Lightroom, or
+    /// with a grey card, or with the back of the camera.
+    ///
+    /// So the Kelvin is SHOWN, computed from the same `asShot + offset × 3000`
+    /// the RAW render performs, and can be typed in to set the offset. Nothing
+    /// about what is stored changes.
+    ///
+    /// Only for RAW: a JPEG has no as-shot Kelvin to be relative to, so there
+    /// is no honest number to print. Lightroom does the same and shows its
+    /// non-raw Temperature on a plain −100...100 scale.
+    @ViewBuilder
+    private var whiteBalanceReadout: some View {
+        if let asShot = asShotWhiteBalance {
+            HStack(spacing: 6) {
+                Text("As shot \(Int(asShot.temperature.rounded())) K")
+                    .font(.custom("Figtree", size: 10))
+                    .foregroundColor(AppColors.muted.opacity(0.8))
+
+                Spacer()
+
+                Text("\(Int(currentKelvin(asShot: asShot).rounded())) K")
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .foregroundColor(AppColors.ink)
+
+                TextField("K", text: $kelvinFieldText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.custom("Figtree", size: 11))
+                    .frame(width: 62)
+                    .onSubmit { commitKelvinField(asShot: asShot) }
+                    .help("Type a colour temperature in Kelvin, the way "
+                          + "Lightroom states it, and the slider moves to match.")
+            }
+        }
+    }
+
+    /// The camera's own white balance, when this photo is a RAW.
+    private var asShotWhiteBalance: (temperature: Double, tint: Double)? {
+        guard case .raw(_, let temperature, let tint) = fullBaseImage else {
+            return nil
+        }
+        return (Double(temperature), Double(tint))
+    }
+
+    /// The same arithmetic `render` performs, so the number on screen is the
+    /// number the picture was made with rather than a second opinion.
+    private func currentKelvin(asShot: (temperature: Double, tint: Double)) -> Double {
+        min(max(asShot.temperature + settings.temperature * 3000, 2000), 50000)
+    }
+
+    private func commitKelvinField(asShot: (temperature: Double, tint: Double)) {
+        defer { kelvinFieldText = "" }
+        let trimmed = kelvinFieldText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let kelvin = Double(trimmed.replacingOccurrences(of: "K", with: "")
+                                    .trimmingCharacters(in: .whitespaces)) else {
+            return
+        }
+        // Back through the same relation, and clamped to the slider's own range
+        // rather than silently accepting a Kelvin the slider cannot hold.
+        let offset = (min(max(kelvin, 2000), 50000) - asShot.temperature) / 3000
+        settings.temperature = min(max(offset, -1), 1)
     }
 
     /// Lightroom's Colour Mixer / HSL panel: pick a colour, move three sliders.
@@ -8486,11 +8634,33 @@ struct DevelopView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Detail & Effects")
             editSlider("Sharpness", value: $settings.sharpness, range: 0...1) { String(format: "%.0f", $0 * 100) }
+            // Shown only while there is sharpening for it to shape. A radius
+            // with the amount at zero is a control that cannot do anything, and
+            // Lightroom's own panel greys its sub-sliders the same way.
+            if settings.sharpness > 0 {
+                editSlider("  Radius", key: "sharpen.radius",
+                           value: $settings.sharpenRadius, range: 0.5...3) {
+                    String(format: "%.1f", $0)
+                }
+            }
             editSlider("Texture", value: $settings.texture, range: -1...1)
             editSlider("Clarity", value: $settings.clarity, range: -1...1)
             editSlider("Dehaze", value: $settings.dehaze, range: -1...1)
             editSlider("Soft Glow", value: $settings.softGlow, range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Vignette", value: $settings.vignette, range: -1...1)
+            // Same rule as Radius: the shape of a vignette of zero is nothing.
+            if settings.vignette != 0 {
+                editSlider("  Midpoint", key: "vignette.midpoint",
+                           value: $settings.vignetteMidpoint, range: 0...1) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                editSlider("  Feather", key: "vignette.feather",
+                           value: $settings.vignetteFeather, range: 0...1) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                editSlider("  Roundness", key: "vignette.roundness",
+                           value: $settings.vignetteRoundness, range: -1...1)
+            }
         }
     }
 

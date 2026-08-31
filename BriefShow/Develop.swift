@@ -4524,6 +4524,18 @@ struct DevelopView: View {
     @State private var isSpaceHeld = false
     @State private var spaceKeyMonitor: Any?
     @State private var optionKeyMonitor: Any?
+    @State private var scrollWheelMonitor: Any?
+    /// Scroll deltas add up here until they are worth one size step.
+    ///
+    /// A trackpad reports a continuous stream of small fractions and a mouse
+    /// wheel reports a few whole numbers per detent, so acting on every event
+    /// would make the brush leap across its whole range on a trackpad and crawl
+    /// on a wheel. Accumulating and stepping at a threshold gives both the same
+    /// feel — see `briefEditsScrollStep`.
+    @State private var scrollSizeAccumulator: CGFloat = 0
+    /// Whether the pointer is anywhere over the preview area — see
+    /// `isPointerOverCanvas`.
+    @State private var isHoveringPreview = false
     @AppStorage("develop.aiRemove.feather")
     private var aiRemoveFeather: Double = SDInpaintPipeline.defaultFeather
     // Hand-painted half of the Remove tool: paint over anything (a bin, a
@@ -4695,11 +4707,13 @@ struct DevelopView: View {
             installEditingKeyMonitor()
             installSpaceKeyMonitor()
             installOptionKeyMonitor()
+            installScrollWheelMonitor()
         }
         .onDisappear {
             removeEditingKeyMonitor()
             removeSpaceKeyMonitor()
             removeOptionKeyMonitor()
+            removeScrollWheelMonitor()
         }
         .onReceive(NotificationCenter.default.publisher(for: .photoEditsChanged)) { note in
             guard let changed = note.userInfo?[photoEditsChangedURLsKey] as? Set<URL> else {
@@ -4952,6 +4966,88 @@ struct DevelopView: View {
             }
             return event
         }
+    }
+
+    /// Scroll over the photo to resize the tool circle — bigger up, smaller
+    /// down, the way every other editor does it.
+    ///
+    /// It fires ONLY while the pointer is actually over the picture with a
+    /// sizeable tool armed, and that guard is the whole safety of it: the right
+    /// hand panel is a scroll view, so a monitor that took every scroll would
+    /// resize the brush whenever the client tried to scroll down to Vignette.
+    /// The test is the tool's own hover position, which the overlays already
+    /// track for drawing the cursor ring — it is non-nil exactly while the
+    /// pointer is over the canvas, so there is no second source of truth to
+    /// keep in step.
+    ///
+    /// The event is swallowed only when it is used. A scroll that resizes
+    /// nothing is handed back, so the panel keeps scrolling normally.
+    private func installScrollWheelMonitor() {
+        guard scrollWheelMonitor == nil else {
+            return
+        }
+        scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard NSApp.keyWindow?.title == DevelopWindowController.windowTitle,
+                  activeToolHasAdjustableSize,
+                  isPointerOverCanvas else {
+                return event
+            }
+            // A modifier held with a scroll is somebody asking for something
+            // else — horizontal scrolling, a zoom gesture, whatever the system
+            // does with it. Only a plain scroll resizes.
+            guard event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty else {
+                return event
+            }
+
+            // The PHYSICAL direction, not the reported one. macOS already
+            // inverts the delta when "natural" scrolling is on, so reading the
+            // delta raw would make the gesture mean opposite things on two
+            // Macs with different settings. The gesture should be the gesture.
+            let delta = event.isDirectionInvertedFromDevice
+                ? -event.scrollingDeltaY
+                : event.scrollingDeltaY
+            guard delta != 0 else {
+                return nil
+            }
+
+            // A trackpad's deltas are fractions; a wheel's are whole detents.
+            let step: CGFloat = event.hasPreciseScrollingDeltas ? 6 : 1
+
+            // Reset when the direction reverses, so changing your mind is
+            // immediate rather than having to spend the accumulated other way
+            // first.
+            if scrollSizeAccumulator != 0,
+               (scrollSizeAccumulator > 0) != (delta > 0) {
+                scrollSizeAccumulator = 0
+            }
+            scrollSizeAccumulator += delta
+
+            while abs(scrollSizeAccumulator) >= step {
+                adjustActiveToolSize(increase: scrollSizeAccumulator > 0)
+                scrollSizeAccumulator -= scrollSizeAccumulator > 0 ? step : -step
+            }
+            return nil
+        }
+    }
+
+    private func removeScrollWheelMonitor() {
+        if let scrollWheelMonitor {
+            NSEvent.removeMonitor(scrollWheelMonitor)
+            self.scrollWheelMonitor = nil
+        }
+        scrollSizeAccumulator = 0
+    }
+
+    /// Is the pointer over the picture, with a tool that draws a ring?
+    ///
+    /// Read from the same hover positions the overlays use to draw the cursor,
+    /// so "the ring is on screen" and "scrolling resizes it" are one fact
+    /// rather than two that can disagree.
+    private var isPointerOverCanvas: Bool {
+        isHoveringPreview
+            || removalBrushCursor.location != nil
+            || brushCursor.brushHover != nil
+            || patchCursor.brushHover != nil
     }
 
     private func removeOptionKeyMonitor() {
@@ -6269,6 +6365,22 @@ struct DevelopView: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .padding(24)
+        // Belt to the tool cursors' braces, for the scroll-to-resize monitor.
+        //
+        // The per-tool hover positions cover the brush, the patch and the Clean
+        // Up brush, because those three draw a ring that has to follow the
+        // mouse. A radial mask and the Selection tool have a size but no ring,
+        // so they track nothing — and without this they would be the two tools
+        // where scrolling quietly did nothing.
+        //
+        // On the container rather than per tool: one place, every tool,
+        // including any added later.
+        .onContinuousHover { phase in
+            switch phase {
+            case .active: isHoveringPreview = true
+            case .ended: isHoveringPreview = false
+            }
+        }
     }
 
     private func fittedImageFrame(imageSize: CGSize, in containerSize: CGSize) -> CGRect {

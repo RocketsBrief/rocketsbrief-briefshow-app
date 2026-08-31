@@ -7140,6 +7140,60 @@ nečega što jede sve ostalo.
 - Snimanje prečice nije probano na ne-US rasporedu tastature.
 
 
+## KORAK 55 — točkić miša menja veličinu alata (1. septembar 2026)
+
+Traženo: krug alata — patch ili AI Clean Up četkica — da raste na scroll gore i
+da se smanjuje na scroll dole.
+
+U LumenoLab-u dotad **nije postojalo nikakvo rukovanje scroll-om**, pa je ovo
+čist dodatak. `[` i `]` rade i dalje, nepromenjeni; točkić je drugi put do iste
+funkcije `adjustActiveToolSize`.
+
+### Guard je ceo posao
+
+Desni panel je scroll view. Monitor koji bi uzimao svaki scroll menjao bi
+veličinu četkice svaki put kad klijent skroluje nadole do Vignette. Zato se
+okida **samo** kad je pokazivač nad slikom i kad je upaljen alat koji ima
+veličinu, a događaj se **guta samo kad je iskorišćen** — scroll koji nije ništa
+promenio vraća se dalje, pa panel skroluje normalno.
+
+Test „nad slikom" ima dva izvora, namerno:
+
+1. **Hover pozicije samih alata** (`removalBrushCursor.location`,
+   `brushCursor.brushHover`, `patchCursor.brushHover`). One su ne-nil tačno dok
+   je pokazivač nad platnom, jer se iz njih crta prsten kursora — dakle „prsten
+   se vidi" i „scroll ga menja" su jedna činjenica, ne dve koje mogu da se
+   raziđu.
+2. **`isHoveringPreview`**, jedan `.onContinuousHover` na samom kontejneru
+   preview-a. Radial maska i Selection alat **imaju veličinu ali nemaju prsten**,
+   pa ne prate ništa — bez ovoga bi to bila jedina dva alata kod kojih scroll
+   tiho ne radi ništa. Na kontejneru, a ne po alatu: jedno mesto, svi alati,
+   uključujući i one dodate kasnije.
+
+### Tri stvari koje nisu očigledne
+
+- **Fizički smer, ne prijavljeni.** macOS već obrne delta kad je uključeno
+  „natural" skrolovanje, pa bi čitanje sirove vrednosti značilo da isti pokret
+  prsta radi suprotno na dva Mac-a sa različitim podešavanjem. Kompenzuje se
+  preko `isDirectionInvertedFromDevice` — pokret je pokret.
+- **Akumulator, ne korak po događaju.** Trackpad šalje niz sitnih razlomaka, miš
+  nekoliko celih brojeva po zupcu. Reagovanje na svaki događaj bi na trackpad-u
+  prebacilo četkicu preko celog opsega, a na mišu bi puzalo. Prag je 6 za
+  precizne delte (trackpad) i 1 za zupčaste (miš), pa oba imaju isti osećaj.
+- **Promena smera resetuje akumulator**, da se predomišljanje odmah vidi umesto
+  da prvo mora da se „potroši" nakupljeno u suprotnu stranu.
+- Scroll sa modifikatorom (⌘, ⇧, ⌥, ⌃) se **ne dira** — to je neko ko traži
+  nešto drugo od sistema.
+
+### ⚠️ Neprovereno
+
+- **Smer nije proveren rukom.** Kompenzacija za „natural scrolling" je urađena
+  po dokumentaciji, ne izmerena na ovoj mašini. Ako se ispostavi obrnuto, to je
+  jedan minus u `installScrollWheelMonitor`.
+- Nije probano na mišu sa zupcima, samo rezonovano; prag 1 po zupcu je izbor, ne
+  merenje.
+
+
 ## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)
 
 Korisnik: „promeni ime App-a u Afterburn Studio… kao i folder na desktopu

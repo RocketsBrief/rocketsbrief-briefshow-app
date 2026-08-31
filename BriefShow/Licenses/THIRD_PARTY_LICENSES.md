@@ -4,10 +4,19 @@ Everything in the app that someone else made, what it is licensed under, and —
 where it is not settled — what is still open. Last checked: 31 August 2026,
 against app version 6.0.
 
-**This is a working record, not a legal clearance.** Two entries below are
-marked ⚠️ OPEN. They are open because nothing in this project grants the right
-in writing, not because the answer is likely to be bad. They should be closed
-before the app is sold.
+**This is a working record, not a legal clearance.** One entry below is marked
+⚠️ OPEN. It is open because nothing in this project grants the right in writing,
+not because the answer is likely to be bad. It should be closed before the app
+is sold.
+
+The full text of every licence named here ships inside the app, in
+`BriefShow.app/Contents/Resources/`, and lives in this folder in the
+repository:
+
+- `LaMa-Apache-2.0.txt`
+- `StableDiffusion-CreativeML-Open-RAIL-M.txt`
+- `CLIP-MIT.txt`
+- `Fonts-SIL-OFL-1.1.txt`
 
 ---
 
@@ -90,22 +99,22 @@ ML with Apple's `ml-stable-diffusion` conversion script
 `VAEEncoder`.
 
 **Open RAIL-M does permit commercial use**, which makes this the more
-straightforward of the two models. It carries obligations, and they are
-currently ⚠️ NOT MET:
+straightforward of the two models. It carries two obligations, and both are now
+✅ MET:
 
-- A copy of the licence must accompany any distribution of the model or its
-  derivatives. There is no licence file in `CoreMLModels/SD15-Inpainting/`.
-- The use restrictions (Attachment A of the licence) must be passed on to
-  anyone who receives the model — in practice, reproduced in the app's terms of
-  use.
+- **A copy of the licence must accompany any distribution of the model.**
+  `Licenses/StableDiffusion-CreativeML-Open-RAIL-M.txt` is the verbatim licence
+  and is built into the app bundle as a resource.
+- **The use restrictions (Attachment A) must be passed on to anyone who
+  receives the model.** They are reproduced, in plain language, in the
+  "Restrictions on AI use" section of the app's own Disclaimer & Usage Notice,
+  which every user can open from the footer — and the notice states that
+  agreeing to it includes agreeing to the third-party terms it passes on.
 
 Worth noting: the conversion script this project used sets a `license` field on
-the converted model (`torch2coreml.patched.py:458`), so the tooling expects the
-licence to travel with the model. It did not end up in the shipped folder.
-
-**To close it:** add the licence text to the repository and to the shipped app,
-and put Attachment A's restrictions into the end-user terms. This is a small
-job and it settles the entry completely.
+the converted model (`torch2coreml.patched.py:458`), so the tooling expected the
+licence to travel with the model. It had not been ending up in the shipped
+folder; it does now.
 
 ### 2a. CLIP tokenizer data
 
@@ -169,11 +178,11 @@ Nothing to reproduce here.
 |---|---|
 | LaMa source code | ✅ Apache 2.0 |
 | **LaMa `big-lama` weights** | ⚠️ **OPEN — no grant received; identified above by SHA-256** |
-| **Stable Diffusion 1.5 Inpainting** | ⚠️ **OPEN — commercial use allowed, obligations not yet met** |
+| Stable Diffusion 1.5 Inpainting | ✅ Open RAIL-M — commercial use allowed, obligations met |
 | CLIP tokenizer data | ✅ MIT |
 | Figtree, Unbounded | ✅ SIL OFL 1.1 |
 | Lightroom `.xmp` import | ✅ Own implementation; trademark wording to watch |
 | Apple frameworks | ✅ Developer Program agreement |
 
-Item 2 is the cheap one and closes completely. Item 1b is the one that decides
-whether the app can be sold as it stands.
+Item 2 is closed. **Item 1b — the LaMa weights — is the one left, and it is the
+one that decides whether the app can be sold as it stands.**

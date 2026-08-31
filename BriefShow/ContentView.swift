@@ -12084,7 +12084,7 @@ struct DisclaimerNoticeModal: View {
         ),
         (
             "Copyright and ownership",
-            "BriefShow and ShowGrid are created by and are the property of the RocketsBrief Team. You are welcome to share or recommend them to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow or ShowGrid, in whole or in part."
+            "BriefShow, ShowGrid, and LumenoLab are created by and are the property of the RocketsBrief Team, apart from the third-party components listed below, which remain the property of their own authors and are used under their own licences. You are welcome to share or recommend the app to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow, ShowGrid, or LumenoLab, in whole or in part."
         ),
         (
             "Account data and email use",
@@ -12093,6 +12093,22 @@ struct DisclaimerNoticeModal: View {
         (
             "Usage analytics",
             "BriefShow and ShowGrid share only basic metrics with RocketsBrief: how many videos have been exported from BriefShow, and how many separate machines run BriefShow or ShowGrid. To protect your privacy, the app generates a strictly randomized installation ID that has no connection to your hardware, device serial numbers, or network configuration. This does not include your files, photos, music, exported videos, or any personal information — and it is completely separate from, and in addition to, the email address you provide only if you create an account."
+        ),
+        (
+            "AI features run on your own Mac",
+            "LumenoLab’s Quick AI Clean Up and Generative Clean Up run entirely on your own machine. Your photographs are not uploaded, not sent to a server, and not used to train anything. The two AI models are included with the app: LaMa, from the Samsung AI Center, and Stable Diffusion v1.5 Inpainting. Both remove and rebuild parts of a photograph by inventing plausible pixels — the result is a new image, not a recovery of something that was really there, and it should be looked at before the photograph is published, sold, or relied on."
+        ),
+        (
+            "Restrictions on AI use",
+            "The Generative Clean Up model is provided under the CreativeML Open RAIL-M licence, whose use restrictions pass to you and to anyone you pass the app to. You may not use it, or any output from it, to break the law; to exploit or harm minors; to generate or spread false information or content intended to harm others; to defame, harass, insult, or belittle anyone; to generate or spread personal information in order to harm someone; to discriminate against people or groups on the basis of legally protected characteristics, or to exploit the vulnerabilities of a particular group; to provide medical advice or interpret medical results; or to make automated decisions affecting a person’s legal rights, or decisions in law enforcement, immigration, or asylum. The full licence text ships with the app."
+        ),
+        (
+            "Third-party components",
+            "BriefShow, ShowGrid, and LumenoLab include work by others, each under its own licence: the LaMa inpainting code (Apache License 2.0, Samsung AI Center) and its pre-trained model; Stable Diffusion v1.5 Inpainting (CreativeML Open RAIL-M); OpenAI’s CLIP tokenizer data (MIT License); and the Figtree and Unbounded typefaces (SIL Open Font License 1.1). Those licences govern those components — the “Copyright and ownership” section above is about this application itself, not about them. THIRD_PARTY_LICENSES, shipped with the app, lists each one in full."
+        ),
+        (
+            "Reading Lightroom presets",
+            "LumenoLab can read Lightroom / Camera Raw preset files (.xmp) that you already have. It contains no Adobe software and is not connected with, endorsed by, or certified by Adobe. Adobe, Lightroom, and Camera Raw are trademarks of Adobe Inc., used here only to say which files can be read. A preset is read into LumenoLab’s own controls, which are not Lightroom’s: what it can carry across, and what it cannot, is reported every time you import one. Presets you have bought or licensed remain governed by whatever terms came with them."
         )
     ]
 
@@ -12104,7 +12120,7 @@ struct DisclaimerNoticeModal: View {
                         .font(.custom("Figtree", size: 24).weight(.semibold))
                         .foregroundColor(AppColors.ink)
 
-                    Text("For BriefShow, ShowGrid, and RocketsBrief products")
+                    Text("For BriefShow, ShowGrid, LumenoLab, and RocketsBrief products")
                         .font(.custom("Figtree", size: 12.5).weight(.regular))
                         .foregroundColor(AppColors.muted)
                 }
@@ -12140,7 +12156,7 @@ struct DisclaimerNoticeModal: View {
                         }
                     }
 
-                    Text("By using BriefShow or ShowGrid, you agree to this entire Disclaimer & Usage Notice, including that you are responsible for your own use of the tool and any content or output you create with it.")
+                    Text("By using BriefShow, ShowGrid, or LumenoLab, you agree to this entire Disclaimer & Usage Notice, including the third-party licence terms it passes on to you, and including that you are responsible for your own use of the tool and any content or output you create with it.")
                         .font(.custom("Figtree", size: 12).weight(.semibold))
                         .foregroundColor(AppColors.hoverInk)
                         .lineSpacing(3)
@@ -12151,7 +12167,7 @@ struct DisclaimerNoticeModal: View {
                 .padding(.bottom, 24)
             }
         }
-        .frame(width: 640, height: 620)
+        .frame(width: 640, height: 660)
         .background(AppColors.background)
     }
 }

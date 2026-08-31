@@ -7185,13 +7185,18 @@ Test „nad slikom" ima dva izvora, namerno:
 - Scroll sa modifikatorom (⌘, ⇧, ⌥, ⌃) se **ne dira** — to je neko ko traži
   nešto drugo od sistema.
 
+### Provereno
+
+- **Klijent je probao i smer je tačan.** Kompenzacija za „natural scrolling"
+  preko `isDirectionInvertedFromDevice` radi kako je zamišljena: scroll gore
+  povećava, dole smanjuje. Potvrđeno 01.09.2026. na klijentovoj mašini, sa
+  njegovim sopstvenim podešavanjem skrolovanja.
+
 ### ⚠️ Neprovereno
 
-- **Smer nije proveren rukom.** Kompenzacija za „natural scrolling" je urađena
-  po dokumentaciji, ne izmerena na ovoj mašini. Ako se ispostavi obrnuto, to je
-  jedan minus u `installScrollWheelMonitor`.
-- Nije probano na mišu sa zupcima, samo rezonovano; prag 1 po zupcu je izbor, ne
-  merenje.
+- Nije probano na mišu sa zupcima, samo na klijentovom ulaznom uređaju. Prag 1
+  po zupcu je izbor, ne merenje — ako na nekom mišu bude preosetljivo ili
+  pretromo, to je `step` u `installScrollWheelMonitor`.
 
 
 ## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)

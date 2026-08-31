@@ -43,7 +43,7 @@ je samo granicu `blockingAreaPixels`, i to mrtvim obrazloženjem.
 | 41 | **BELA MRLJA — UZROK NAĐEN I POPRAVLJEN.** `toneMatch` je dizao svaki piksel rupe za +39 kad je okolina prežarena |
 | 42 | **Klik na sličicu se više ne čeka** — dva tap gesture-a su terala SwiftUI da odloži selekciju |
 | 43 | **Slideshow → BriefShow, Develop → LumenoLab** sa ručno nacrtanom ikonicom čašice |
-| 44 | **Patch i Selection kreću kao free**, i nijedan više ne laguje pri prevlačenju |
+| 44 | **Selection kreće kao free, Patch ostaje krug**, i nijedan više ne laguje pri prevlačenju |
 
 #### ⚠️ NEPROVERENO NA EKRANU
 
@@ -5851,13 +5851,22 @@ Korisnik: „kada kliknem na patch circle se dobije i laguje, nije smooth. A kad
 kliknem na selection pojavi se neki krug na slici — ja bi da bude free selection
 i isto da ne laguje."
 
-### Oba alata sada kreću kao free-hand
+### Selection kreće kao free-hand. Patch OSTAJE krug.
 
-Krug je bio stari difolt, uz obrazloženje da „ne traži crtanje da bi nešto
-uradio". U upotrebi je to naopako: krug sleti nasred fotke preko onoga što se tu
-zatekne, pa se onda vuče, menja mu se veličina i najčešće se ionako prebaci na
-free — dakle ono što je taj difolt kupovao niko nije ni hteo. Oba oblika i dalje
-postoje u panelu.
+**Ovo su dva različita zaključka, iako liče na jedan.** U prvom prolazu su oba
+prebačena na free i to je bilo pogrešno na Patch strani; korisnik je ispravio
+istog trenutka („ne, patch tool je trebao da bude circle, a selection tool free
+selection"). Zapisano da neko ko „sređuje nedoslednost" ne izjednači to dvoje
+ponovo.
+
+- **Selection → free.** Selekcija se crta oko nečega što već ima oblik — čoveka,
+  table — pa krug nasred fotke nikad nije ono što se htelo: mora da se vuče,
+  da mu se menja veličina i da se ionako prebaci na free.
+- **Patch → krug.** Patch je clone stamp. Njegov krug JESTE alat — to je četkica
+  kojom se slika, a ne obris koji treba ispravljati — pa je to što stiže spreman
+  za slikanje upravo poenta.
+
+Oba oblika i dalje postoje u panelu za oba alata.
 
 ### Lag je bio isti kvar iz KORAKA 36, ostavljen na JOŠ ČETIRI mesta
 

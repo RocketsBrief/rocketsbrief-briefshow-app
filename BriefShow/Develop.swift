@@ -3940,23 +3940,27 @@ struct DevelopView: View {
                 toggleCropMode()
             }
 
-            // Both of these start FREE-HAND, not as a circle.
+            // Selection starts FREE-HAND; Patch stays a CIRCLE. The two look
+            // like the same choice and are not.
             //
-            // A circle was the old default on the reasoning that it needs no
-            // drawing before it does something. In use that is backwards: a
-            // circle lands in the middle of the photo over whatever happens to
-            // be there, and it has to be dragged, resized and usually swapped
-            // for free-hand anyway — so the "does something immediately" it
-            // buys is something nobody wanted. Reported as "kada kliknem na
-            // selection pojavi se neki krug na slici, ja bi da bude free
-            // selection". Both shapes are still there in the panel.
+            // A selection is drawn around something that already has a shape —
+            // a person, a sign — so a circle landing in the middle of the photo
+            // is never what was wanted and has to be dragged, resized and
+            // swapped for free-hand anyway.
+            //
+            // Patch is a clone stamp. Its circle IS the tool: it is the brush
+            // you paint with, not an outline you have to correct, so arriving
+            // ready to paint is the point of it. Both defaults were briefly set
+            // to free together and that was wrong on the Patch side —
+            // corrected on the spot, and written down here so the two are not
+            // "made consistent" again by someone tidying up.
             toolButton("Selection", systemImage: "lasso", isActive: activeSelection != nil) {
                 addSelection(shape: .free)
             }
 
             toolButton("Patch", systemImage: "bandage",
                        isActive: selectedAdjustmentIndex.map { settings.localAdjustments[$0].type == .patch } ?? false) {
-                addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .free))
+                addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .circle))
             }
 
             toolStripDivider

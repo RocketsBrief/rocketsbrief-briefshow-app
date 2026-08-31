@@ -29,6 +29,108 @@ import UniformTypeIdentifiers
 // filter parameter), so a fresh PhotoEditSettings() is trivially "no edit
 // at all" (see isNeutral) and each slider can be reset independently just
 // by setting it back to 0.
+/// The eight colour bands Lightroom's Colour Mixer works in, at Adobe's own
+/// hue centres.
+///
+/// The centres are not evenly spaced and that is deliberate on Adobe's part:
+/// the warm end of the wheel is where skin lives, so red/orange/yellow sit 30°
+/// apart while green/aqua/blue sit 60° apart. Copying the spacing is what makes
+/// an imported preset land on the same colours it did in Lightroom.
+enum ColorBand: String, CaseIterable, Codable, Identifiable {
+    case red, orange, yellow, green, aqua, blue, purple, magenta
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .red: return "Red"
+        case .orange: return "Orange"
+        case .yellow: return "Yellow"
+        case .green: return "Green"
+        case .aqua: return "Aqua"
+        case .blue: return "Blue"
+        case .purple: return "Purple"
+        case .magenta: return "Magenta"
+        }
+    }
+
+    var centreDegrees: Double {
+        switch self {
+        case .red: return 0
+        case .orange: return 30
+        case .yellow: return 60
+        case .green: return 120
+        case .aqua: return 180
+        case .blue: return 240
+        case .purple: return 285
+        case .magenta: return 315
+        }
+    }
+
+    /// The swatch on the band's own button — the band's hue at full saturation.
+    var swatch: Color {
+        Color(hue: centreDegrees / 360, saturation: 0.85, brightness: 0.95)
+    }
+}
+
+/// What one band's three sliders hold. All -1...1, zero being untouched.
+struct ColorMixerBand: Codable, Equatable {
+    var hue: Double = 0         // -1...1 → ±30° of hue rotation
+    var saturation: Double = 0  // -1 = grey, +1 = twice as saturated
+    var luminance: Double = 0   // -1 = darker, +1 = brighter
+
+    var isNeutral: Bool { hue == 0 && saturation == 0 && luminance == 0 }
+}
+
+/// Lightroom's Colour Mixer / HSL panel.
+///
+/// Eight named fields rather than an array or a dictionary: this is stored in
+/// every photo's settings record and in every preset, so its Codable shape is
+/// something the app has to live with. A named field can be added or left
+/// alone; an array's meaning depends on its length and on nobody ever
+/// reordering it.
+struct ColorMixer: Codable, Equatable {
+    var red = ColorMixerBand()
+    var orange = ColorMixerBand()
+    var yellow = ColorMixerBand()
+    var green = ColorMixerBand()
+    var aqua = ColorMixerBand()
+    var blue = ColorMixerBand()
+    var purple = ColorMixerBand()
+    var magenta = ColorMixerBand()
+
+    var isNeutral: Bool {
+        ColorBand.allCases.allSatisfy { self[$0].isNeutral }
+    }
+
+    subscript(band: ColorBand) -> ColorMixerBand {
+        get {
+            switch band {
+            case .red: return red
+            case .orange: return orange
+            case .yellow: return yellow
+            case .green: return green
+            case .aqua: return aqua
+            case .blue: return blue
+            case .purple: return purple
+            case .magenta: return magenta
+            }
+        }
+        set {
+            switch band {
+            case .red: red = newValue
+            case .orange: orange = newValue
+            case .yellow: yellow = newValue
+            case .green: green = newValue
+            case .aqua: aqua = newValue
+            case .blue: blue = newValue
+            case .purple: purple = newValue
+            case .magenta: magenta = newValue
+            }
+        }
+    }
+}
+
 struct PhotoEditSettings: Codable, Equatable {
     var exposure: Double = 0        // EV, roughly -3...3
     var contrast: Double = 0        // -1...1
@@ -46,6 +148,7 @@ struct PhotoEditSettings: Codable, Equatable {
     var dehaze: Double = 0          // -1...1 — contrast/saturation/black-point APPROXIMATION of Lightroom's Dehaze, not a real dark-channel-prior algorithm; negative adds haze rather than removing it. See PhotoEditRenderer.render.
     var softGlow: Double = 0        // 0...1 — diffusion/"soft focus" glow (blurred copy screen-blended back over the original), see PhotoEditRenderer.render.
     var vignette: Double = 0        // -1...1 — positive darkens the corners, negative lightens them.
+    var colorMixer = ColorMixer()   // Lightroom's HSL panel — see ColorMixer.
     var rotationQuarterTurns: Int = 0   // 0...3, applied in 90° steps
     var straightenDegrees: Double = 0   // -45...45, fine rotation
     var crop: EditCropRect?             // nil = uncropped
@@ -77,6 +180,7 @@ struct PhotoEditSettings: Codable, Equatable {
         dehaze = try c.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0
         softGlow = try c.decodeIfPresent(Double.self, forKey: .softGlow) ?? 0
         vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
+        colorMixer = try c.decodeIfPresent(ColorMixer.self, forKey: .colorMixer) ?? ColorMixer()
         rotationQuarterTurns = try c.decodeIfPresent(Int.self, forKey: .rotationQuarterTurns) ?? 0
         straightenDegrees = try c.decodeIfPresent(Double.self, forKey: .straightenDegrees) ?? 0
         crop = try c.decodeIfPresent(EditCropRect.self, forKey: .crop)
@@ -87,6 +191,7 @@ struct PhotoEditSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance
         case temperature, tint, sharpness, texture, clarity, dehaze, softGlow, vignette
+        case colorMixer
         case rotationQuarterTurns, straightenDegrees, crop
         case localAdjustments, layers
     }
@@ -96,7 +201,7 @@ struct PhotoEditSettings: Codable, Equatable {
             && whites == 0 && blacks == 0
             && saturation == 0 && vibrance == 0 && temperature == 0 && tint == 0
             && sharpness == 0 && texture == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
-            && vignette == 0 && rotationQuarterTurns == 0
+            && vignette == 0 && colorMixer.isNeutral && rotationQuarterTurns == 0
             && straightenDegrees == 0 && crop == nil && localAdjustments.isEmpty
             && layers.isEmpty
     }
@@ -981,6 +1086,186 @@ enum PhotoEditPresetStore {
     }
 }
 
+
+// MARK: - Colour Mixer
+
+/// Turns a ColorMixer into the 3D lookup table CIColorCube renders through.
+///
+/// A LUT rather than a chain of per-band filters, and the difference is not
+/// small: eight bands times three controls would be a couple of dozen masked
+/// filter passes over a 45-megapixel frame on every slider tick. A cube is ONE
+/// filter whatever the mixer holds, and building it touches 32³ = 32,768 table
+/// entries — work that does not depend on the size of the photograph at all.
+///
+/// 32 per side is the size Adobe, Apple and every LUT format settle on for
+/// colour work. The table is interpolated between entries, and hue/saturation
+/// moves are smooth by construction, so the visible error at 32 is nil; 64
+/// would be eight times the build for nothing to look at.
+enum ColorMixerCube {
+
+    static let dimension = 32
+
+    // Rebuilt only when the mixer actually changes. render() runs at a ~20ms
+    // cadence while a slider is dragged and every one of those passes asks for
+    // the cube, so without this the table would be rebuilt fifty times a second
+    // for a photo whose mixer had not moved at all.
+    private static let lock = NSLock()
+    private static var cachedMixer: ColorMixer?
+    private static var cachedData: Data?
+
+    static func data(for mixer: ColorMixer) -> Data {
+        lock.lock()
+        if let cachedData, cachedMixer == mixer {
+            lock.unlock()
+            return cachedData
+        }
+        lock.unlock()
+
+        let built = build(mixer)
+
+        lock.lock()
+        cachedMixer = mixer
+        cachedData = built
+        lock.unlock()
+        return built
+    }
+
+    /// How far the Hue slider swings, in degrees, at ±1.
+    ///
+    /// 30° is one whole step of the warm end of the wheel — red to orange,
+    /// orange to yellow — which is the range Lightroom's own Hue slider covers
+    /// and about as far as a hue can move before it stops reading as a shift of
+    /// that colour and starts reading as a different colour.
+    private static let hueSwingDegrees: Double = 30
+
+    /// How hard the Luminance slider pushes at ±1. Chosen so -1 is clearly dark
+    /// but not black and +1 is clearly bright but not blown: a band driven to
+    /// either end should still be a colour, not a hole in the photograph.
+    private static let luminanceSwing: Double = 0.6
+
+    private static func build(_ mixer: ColorMixer) -> Data {
+        let n = dimension
+        let bands = ColorBand.allCases
+        let settings = bands.map { mixer[$0] }
+        var table = [Float](repeating: 0, count: n * n * n * 4)
+        var index = 0
+
+        for b in 0..<n {
+            let blue = Double(b) / Double(n - 1)
+            for g in 0..<n {
+                let green = Double(g) / Double(n - 1)
+                for r in 0..<n {
+                    let red = Double(r) / Double(n - 1)
+
+                    var (h, s, l) = Self.rgbToHSL(red, green, blue)
+
+                    // A grey has no hue to belong to a band, so no band may
+                    // touch it. Without this a neutral would drift with
+                    // whichever band happened to win the weighting, and a
+                    // photograph's greys drifting is the one thing a colour
+                    // tool must never do.
+                    if s > 0 {
+                        let weights = Self.bandWeights(h)
+                        var hueShift = 0.0, satAmount = 0.0, lumAmount = 0.0
+                        for i in 0..<bands.count where weights[i] != 0 {
+                            hueShift += weights[i] * settings[i].hue
+                            satAmount += weights[i] * settings[i].saturation
+                            lumAmount += weights[i] * settings[i].luminance
+                        }
+
+                        h += hueShift * hueSwingDegrees
+                        // Negative takes it to grey at -1, positive doubles it
+                        // at +1 — the two ends Lightroom's own slider has.
+                        s = min(max(s * (1 + satAmount), 0), 1)
+                        l = lumAmount >= 0
+                            ? l + (1 - l) * lumAmount * luminanceSwing
+                            : l * (1 + lumAmount * luminanceSwing)
+                        l = min(max(l, 0), 1)
+                    }
+
+                    let (outR, outG, outB) = Self.hslToRGB(h, s, l)
+                    // CIColorCube wants the table premultiplied. Everything
+                    // here is opaque, so premultiplying by 1 is the identity —
+                    // stated rather than assumed, because a cube written the
+                    // other way looks right until it meets a transparent pixel.
+                    table[index] = Float(min(max(outR, 0), 1))
+                    table[index + 1] = Float(min(max(outG, 0), 1))
+                    table[index + 2] = Float(min(max(outB, 0), 1))
+                    table[index + 3] = 1
+                    index += 4
+                }
+            }
+        }
+
+        return table.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
+    /// Each hue sits between two of the eight centres and splits smoothly
+    /// between them, so the weights always sum to exactly 1.
+    ///
+    /// That property is the whole design. Weighting each band independently —
+    /// a bell curve per centre, say — makes the weights sum to something that
+    /// varies with hue, so a mixer with all eight saturations at +20 would
+    /// saturate some hues more than others rather than doing what it plainly
+    /// says. A partition of unity cannot do that.
+    ///
+    /// Smoothstep rather than a straight line, so a colour crossing a centre
+    /// has no kink in it — a gradient sky sliding from aqua to blue must not
+    /// show a band edge.
+    static func bandWeights(_ hue: Double) -> [Double] {
+        var weights = [Double](repeating: 0, count: 8)
+        let centres = ColorBand.allCases.map(\.centreDegrees)
+        let wrapped = hue.truncatingRemainder(dividingBy: 360)
+        let h = wrapped < 0 ? wrapped + 360 : wrapped
+
+        for i in 0..<8 {
+            let a = centres[i]
+            let b = i == 7 ? centres[0] + 360 : centres[i + 1]
+            // The last span wraps past 360 back to red.
+            var x = h
+            if i == 7 && h < centres[0] { x += 360 }
+            guard x >= a, x <= b, b > a else { continue }
+            let t = (x - a) / (b - a)
+            let smooth = t * t * (3 - 2 * t)
+            weights[i] = 1 - smooth
+            weights[(i + 1) % 8] = smooth
+            return weights
+        }
+        return weights
+    }
+
+    static func rgbToHSL(_ r: Double, _ g: Double, _ b: Double) -> (Double, Double, Double) {
+        let high = max(r, g, b), low = min(r, g, b)
+        let l = (high + low) / 2
+        guard high > low else { return (0, 0, l) }
+        let d = high - low
+        let s = l > 0.5 ? d / (2 - high - low) : d / (high + low)
+        var h: Double
+        if high == r { h = (g - b) / d + (g < b ? 6 : 0) }
+        else if high == g { h = (b - r) / d + 2 }
+        else { h = (r - g) / d + 4 }
+        return (h * 60, s, l)
+    }
+
+    static func hslToRGB(_ h: Double, _ s: Double, _ l: Double) -> (Double, Double, Double) {
+        guard s > 0 else { return (l, l, l) }
+        let q = l < 0.5 ? l * (1 + s) : l + s - l * s
+        let p = 2 * l - q
+        func channel(_ t0: Double) -> Double {
+            var t = t0
+            if t < 0 { t += 1 }
+            if t > 1 { t -= 1 }
+            if t < 1.0 / 6 { return p + (q - p) * 6 * t }
+            if t < 1.0 / 2 { return q }
+            if t < 2.0 / 3 { return p + (q - p) * (2.0 / 3 - t) * 6 }
+            return p
+        }
+        let hk = (h / 360).truncatingRemainder(dividingBy: 1)
+        let k = hk < 0 ? hk + 1 : hk
+        return (channel(k + 1.0 / 3), channel(k), channel(k - 1.0 / 3))
+    }
+}
+
 // MARK: - Render pipeline
 
 // The once-per-photo decoded image handed to PhotoEditRenderer.render.
@@ -1381,6 +1666,13 @@ enum PhotoEditRenderer {
             filter.inputImage = output
             filter.amount = Float(settings.vibrance)
             output = filter.outputImage ?? output
+        }
+
+        // The Colour Mixer sits here, after the basic tone and colour work and
+        // before texture/clarity — the same place Lightroom's panel sits, so an
+        // imported preset meets the picture in the state it expects.
+        if !settings.colorMixer.isNeutral {
+            output = applyColorMixer(settings.colorMixer, to: output)
         }
 
         if settings.sharpness > 0 {
@@ -2299,6 +2591,148 @@ enum PhotoEditRenderer {
     // Composites every enabled ImageLayer on top of `image` in order (later
     // entries in the array paint over earlier ones, same "list order is
     // stack order" convention as Lightroom/Photoshop's own layer panels).
+    /// Runs the image through the mixer's lookup table.
+    ///
+    /// Three things happen around the cube, and each one is there because the
+    /// obvious version was measured and found wrong.
+    ///
+    /// **A grey must stay grey.** A cube is sampled with trilinear
+    /// interpolation, so a true neutral at 0.5 lands exactly BETWEEN table
+    /// entries and is mixed from eight corners — six of which are slightly
+    /// coloured and have therefore been moved by whichever band claims them.
+    /// Measured: with every band's Luminance at +100, a 0.5 grey came out at
+    /// 0.725. Fading the effect out inside the cube barely helped (0.35 → 0.11
+    /// at best) because the neighbours of a DARK grey are strongly saturated.
+    /// What works is deciding outside the cube, at full precision, how far each
+    /// pixel is from grey and blending the cube's answer in by that much: drift
+    /// went to 0.0000, and a pale sky and a saturated blue came through
+    /// completely unchanged. The mixer is a COLOUR tool; a photograph's greys
+    /// drifting is the one thing it must never do.
+    ///
+    /// **The headroom above white must survive.** CIColorCube looks up over
+    /// 0...1 and clamps past it, and measured on a .NEF through this very
+    /// pipeline the image arrives here with components up to 1.33 — an IDENTITY
+    /// cube brought them to 1.000. Everything downstream still reads those
+    /// highlights: clarity, the vignette, a darkening mask. So the part above
+    /// white is carried around the cube and added back.
+    ///
+    /// **Adding two images back together took three attempts**, all of them
+    /// undone by premultiplied alpha, and the dead ends are written down
+    /// because each one looked right:
+    ///
+    /// 1. Zero the excess image's alpha so the addition cannot double the
+    ///    opacity. Core Image stores colour PREMULTIPLIED, so alpha 0 means
+    ///    colour 0: the excess came out (0, 0, 0, 0) and the whole thing was a
+    ///    silent no-op.
+    /// 2. Keep the alpha and reset it to 1 afterwards with a colour matrix.
+    ///    CIColorMatrix UNPREMULTIPLIES before it works, so with the addition's
+    ///    alpha of 2 every channel was divided by 2 — the whole photograph came
+    ///    out at exactly half brightness. Measured: an untouched orange went
+    ///    from 0.90/0.50/0.20 to 0.4494/0.2500/0.0996.
+    /// 3. CILinearDodgeBlendMode, which does keep alpha at 1 — and clamps the
+    ///    sum to 1, which is the very thing being worked around.
+    ///
+    /// What works is to let the addition double the alpha and then undo exactly
+    /// that: colour times two, alpha times a half. Measured exact for a sum
+    /// under 1, a sum over 1, a zero excess (a true no-op), and — because the
+    /// correction is algebraic rather than a special case for opaque pixels —
+    /// for two images at alpha 0.5 as well.
+    private static func applyColorMixer(_ mixer: ColorMixer, to image: CIImage) -> CIImage {
+        let cube = CIFilter.colorCubeWithColorSpace()
+        cube.inputImage = image
+        cube.cubeDimension = Float(ColorMixerCube.dimension)
+        cube.cubeData = ColorMixerCube.data(for: mixer)
+        cube.colorSpace = briefEditsSRGBColorSpace
+        guard var output = cube.outputImage else {
+            return image
+        }
+
+        // Neutrals come from the original, colours from the cube, and the
+        // crossover is smooth.
+        if let mask = colourDistanceFromGrey(image) {
+            let blend = CIFilter.blendWithMask()
+            blend.inputImage = output
+            blend.backgroundImage = image
+            blend.maskImage = mask
+            output = blend.outputImage ?? output
+        }
+
+        // Everything above 1 and nothing else: clamp the bottom UP to 1, then
+        // subtract that 1 away.
+        let clamp = CIFilter.colorClamp()
+        clamp.inputImage = image
+        clamp.minComponents = CIVector(x: 1, y: 1, z: 1, w: 0)
+        clamp.maxComponents = CIVector(x: 1e6, y: 1e6, z: 1e6, w: 1)
+        guard let clamped = clamp.outputImage else {
+            return output.cropped(to: image.extent)
+        }
+        let excess = CIFilter.colorMatrix()
+        excess.inputImage = clamped
+        excess.biasVector = CIVector(x: -1, y: -1, z: -1, w: 0)
+        guard let headroom = excess.outputImage else {
+            return output.cropped(to: image.extent)
+        }
+        let add = CIFilter.additionCompositing()
+        add.inputImage = headroom
+        add.backgroundImage = output
+        guard let summed = add.outputImage else {
+            return output.cropped(to: image.extent)
+        }
+        // Undo what the addition did to alpha, and to the colour along with it:
+        // both inputs carry the same alpha, so the sum carries twice it, and
+        // the premultiplied colour is therefore twice as dark once anything
+        // divides it back out. Colour times two, alpha times a half.
+        let unwind = CIFilter.colorMatrix()
+        unwind.inputImage = summed
+        unwind.rVector = CIVector(x: 2, y: 0, z: 0, w: 0)
+        unwind.gVector = CIVector(x: 0, y: 2, z: 0, w: 0)
+        unwind.bVector = CIVector(x: 0, y: 0, z: 2, w: 0)
+        unwind.aVector = CIVector(x: 0, y: 0, z: 0, w: 0.5)
+        return (unwind.outputImage ?? summed).cropped(to: image.extent)
+    }
+
+    /// How far each pixel is from grey, 0 at a true neutral and 1 by the time
+    /// any channel is `fullyColoured` away from the pixel's own grey.
+    ///
+    /// 0.04 is generous to colour and strict about neutrals: a deviation of
+    /// 0.04 is about a saturation of 0.08 at mid grey, which is far below any
+    /// colour anybody points a mixer at, so real colours get the full effect
+    /// while the neutral axis is pinned. Measured at 0.02, 0.04 and 0.08 — all
+    /// three pin the greys exactly and none of them changed a pale sky or a
+    /// saturated blue by a single count.
+    private static let fullyColoured: Double = 0.04
+
+    private static func colourDistanceFromGrey(_ image: CIImage) -> CIImage? {
+        let grey = CIFilter.colorControls()
+        grey.inputImage = image
+        grey.saturation = 0
+        guard let greyed = grey.outputImage else { return nil }
+
+        let difference = CIFilter.colorAbsoluteDifference()
+        difference.inputImage = image
+        difference.inputImage2 = greyed
+        guard let deviation = difference.outputImage,
+              let peak = CIFilter(name: "CIMaximumComponent",
+                                  parameters: [kCIInputImageKey: deviation])?.outputImage else {
+            return nil
+        }
+
+        let gain = CIFilter.colorMatrix()
+        gain.inputImage = peak
+        let scale = 1 / fullyColoured
+        gain.rVector = CIVector(x: scale, y: 0, z: 0, w: 0)
+        gain.gVector = CIVector(x: 0, y: scale, z: 0, w: 0)
+        gain.bVector = CIVector(x: 0, y: 0, z: scale, w: 0)
+        gain.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        guard let scaled = gain.outputImage else { return nil }
+
+        let clamp = CIFilter.colorClamp()
+        clamp.inputImage = scaled
+        clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+        clamp.maxComponents = CIVector(x: 1, y: 1, z: 1, w: 1)
+        return clamp.outputImage
+    }
+
     private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage) -> CIImage {
         var output = image
         let extent = image.extent
@@ -3736,6 +4170,14 @@ struct DevelopView: View {
     // persisted, since it's meant for "copy from A, paste onto B" within
     // one sitting, not a saved look (that's what a preset is for).
     @State private var presets: [PhotoEditPreset] = PhotoEditPresetStore.loadAll()
+    /// Which of the eight bands the Colour Mixer's three sliders act on.
+    ///
+    /// Lightroom shows all twenty-four at once, in three tabs of eight. One
+    /// band at a time is the right shape for a panel this narrow, and it is
+    /// also the honest one: the three sliders under the swatches always say
+    /// which colour they belong to, where a wall of twenty-four rows leaves the
+    /// client counting to work out which "Saturation" is which.
+    @State private var selectedColorBand: ColorBand = .red
     @State private var isAddingPreset = false
     @State private var newPresetName = ""
     /// What the last Lightroom import did, and what it could not do.
@@ -7518,6 +7960,10 @@ struct DevelopView: View {
 
                         colorSection
 
+                        Divider().background(AppColors.border.opacity(0.5))
+
+                        colorMixerSection
+
                         Divider()
 
                         detailSection
@@ -7881,6 +8327,103 @@ struct DevelopView: View {
             editSlider("Vibrance", value: $settings.vibrance, range: -1...1,
                        trackGradient: DevelopView.vibranceTrack)
         }
+    }
+
+    /// Lightroom's Colour Mixer / HSL panel: pick a colour, move three sliders.
+    ///
+    /// The swatches are the control. A row of eight named buttons would work
+    /// and would be worse — the client is looking for a colour in their
+    /// photograph, not for a word, and "aqua" and "purple" are exactly the two
+    /// names people disagree about.
+    private var colorMixerSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                sectionTitle("Color Mixer")
+
+                Spacer()
+
+                if !settings.colorMixer.isNeutral {
+                    Button {
+                        settings.colorMixer = ColorMixer()
+                    } label: {
+                        Text("Reset")
+                            .font(.custom("Figtree", size: 11))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(AppColors.muted)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(AppColors.border, lineWidth: 1)
+                    )
+                    .help("Put all eight colours back to zero.")
+                }
+            }
+
+            HStack(spacing: 6) {
+                ForEach(ColorBand.allCases) { band in
+                    colorBandSwatch(band)
+                }
+            }
+
+            let band = selectedColorBand
+            editSlider("Hue", key: "mixer.hue",
+                       value: colorMixerBinding(band, \.hue), range: -1...1)
+            editSlider("Saturation", key: "mixer.saturation",
+                       value: colorMixerBinding(band, \.saturation), range: -1...1)
+            editSlider("Luminance", key: "mixer.luminance",
+                       value: colorMixerBinding(band, \.luminance), range: -1...1)
+        }
+    }
+
+    private func colorBandSwatch(_ band: ColorBand) -> some View {
+        let isSelected = selectedColorBand == band
+        // A band that has been moved keeps a mark whichever one is selected,
+        // so a look built on three colours does not hide two of them behind a
+        // picker. Without it the panel would show one band's sliders and give
+        // no sign at all that the others had been touched.
+        let isTouched = !settings.colorMixer[band].isNeutral
+
+        return Button {
+            selectedColorBand = band
+        } label: {
+            Circle()
+                .fill(band.swatch)
+                .frame(width: 20, height: 20)
+                .overlay(
+                    Circle().stroke(AppColors.ink.opacity(isSelected ? 0.9 : 0.25),
+                                    lineWidth: isSelected ? 2 : 1)
+                )
+                .overlay(alignment: .bottom) {
+                    Circle()
+                        .fill(isTouched ? AppColors.ink.opacity(0.85) : .clear)
+                        .frame(width: 4, height: 4)
+                        .offset(y: 6)
+                }
+                .padding(.bottom, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(band.title)
+    }
+
+    /// One band's one slider, as a Binding.
+    ///
+    /// Written by hand rather than reaching for `$settings.colorMixer.red.hue`
+    /// because the BAND is chosen at runtime: the subscript picks the band and
+    /// the key path picks the slider, and the setter puts the whole band back.
+    private func colorMixerBinding(_ band: ColorBand,
+                                   _ slider: WritableKeyPath<ColorMixerBand, Double>) -> Binding<Double> {
+        Binding(
+            get: { settings.colorMixer[band][keyPath: slider] },
+            set: { newValue in
+                var updated = settings.colorMixer[band]
+                updated[keyPath: slider] = newValue
+                settings.colorMixer[band] = updated
+            }
+        )
     }
 
     // The four Color-panel track gradients. Each one shows what its own
@@ -10290,6 +10833,10 @@ struct DevelopView: View {
             result.tint = source.tint
             result.saturation = source.saturation
             result.vibrance = source.vibrance
+            // The mixer is colour work, so it travels with Color rather than
+            // getting a checkbox of its own — the dialog is meant to read as
+            // the panel with checkboxes, and the mixer sits under Color there.
+            result.colorMixer = source.colorMixer
         }
         if categories.contains(.detail) {
             result.sharpness = source.sharpness

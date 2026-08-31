@@ -18,6 +18,13 @@
 import Foundation
 import UniformTypeIdentifiers
 
+extension ColorBand {
+    /// The word Adobe puts on the end of HueAdjustment / SaturationAdjustment /
+    /// LuminanceAdjustment. Identical to this app's own names, which is not a
+    /// coincidence — the bands were built from Adobe's.
+    var adobeSuffix: String { title }
+}
+
 enum LightroomPresetImport {
 
     struct Result {
@@ -146,6 +153,21 @@ enum LightroomPresetImport {
         if let v = hundredths("Blacks2012") { s.blacks = v }
         if let v = hundredths("Saturation") { s.saturation = v }
 
+        // The Colour Mixer, all twenty-four of them.
+        //
+        // Adobe names the bands the same way this app does, so the only work is
+        // the divide by 100 — and the band centres were copied from Adobe when
+        // ColorBand was written precisely so that "Yellow" here means the same
+        // wedge of the hue wheel it meant there.
+        for band in ColorBand.allCases {
+            let adobe = band.adobeSuffix
+            var mixed = ColorMixerBand()
+            if let v = hundredths("HueAdjustment" + adobe) { mixed.hue = v }
+            if let v = hundredths("SaturationAdjustment" + adobe) { mixed.saturation = v }
+            if let v = hundredths("LuminanceAdjustment" + adobe) { mixed.luminance = v }
+            s.colorMixer[band] = mixed
+        }
+
         // A black & white preset comes across as black & white.
         //
         // Lightroom builds its greyscale from the B&W mixer — eight per-colour
@@ -251,9 +273,6 @@ enum LightroomPresetImport {
             // see `settings(from:)`. What cannot is how Lightroom weighted the
             // colours on the way to grey.
             parts.append("Black & White channel mixing (imported as plain desaturation)")
-        }
-        if anyMoved(["HueAdjustment", "SaturationAdjustment", "LuminanceAdjustment"]) {
-            parts.append("Colour Mixer (HSL)")
         }
         if parser.hasNonLinearToneCurve {
             parts.append("Tone Curve")

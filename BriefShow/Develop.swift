@@ -172,6 +172,21 @@ enum ExportFormat: String, CaseIterable, Identifiable {
     /// Only JPEG is lossy, so only JPEG has anything to trade.
     var isLossy: Bool { self == .jpeg }
 
+    /// What the render that feeds the encoder should be done at.
+    ///
+    /// The panel tells the client that PNG and TIFF are "lossless — every
+    /// export is full quality", and that was only half true: every export ran
+    /// through `createCGImage(_:from:)`, whose default is 8 bits per component,
+    /// so a 16-bit-capable format was handed 8-bit pixels to be lossless about.
+    /// Measured on a 5176x3448 .NEF: TIFF 20 MB at depth 8 against 107 MB at
+    /// depth 16, PNG 18 MB against 75 MB, for 0.07 s more render time. The
+    /// dimensions were never the problem — they are native either way — but the
+    /// tones a grade was pushed through were being rounded on the way out.
+    ///
+    /// JPEG stays 8-bit because JPEG IS 8-bit; asking for 16 there costs the
+    /// render and changes nothing in the file.
+    var renderFormat: CIFormat { isLossy ? .RGBA8 : .RGBA16 }
+
     func encode(_ representation: NSBitmapImageRep, quality: Double) -> Data? {
         switch self {
         case .jpeg:
@@ -1302,20 +1317,50 @@ enum PhotoEditRenderer {
             // instead of stacking separate filters. point2 (x = 0.5, the
             // midtone) is left fixed as the pivot, so every slider rotates
             // or bends the curve around a constant middle gray rather than
-            // shifting overall brightness. point0/point4 (the endpoints)
-            // are deliberately allowed past 0...1 — that's what lets Whites/
-            // Blacks push tones into clipping instead of just flattening
-            // toward it, which a curve clamped to 0...1 at the ends can't
-            // do. Highlights keeps the "positive = recover/darken" sign it
-            // had under the old CIHighlightShadowAdjust-based version (so a
-            // photo edited before this change still reads the same
-            // direction); Shadows/Whites/Blacks use the more familiar
-            // Lightroom convention where positive means brighter.
+            // shifting overall brightness. point4 (the top endpoint) is
+            // deliberately allowed past 1 — that's what lets Whites push tones
+            // into clipping instead of just flattening toward it, which a
+            // curve clamped at the end can't do. Highlights keeps the
+            // "positive = recover/darken" sign it had under the old
+            // CIHighlightShadowAdjust-based version (so a photo edited before
+            // this change still reads the same direction); Shadows/Whites/
+            // Blacks use the more familiar Lightroom convention where positive
+            // means brighter.
+            //
+            // BLACKS ALSO BENDS point1, and without that it did nothing at all
+            // — reported as "-100 to +100 and nothing happens", and measured
+            // here on a 0...255 ramp:
+            //
+            //     blacks -1, point0 only:  16 -> 16,  32 -> 32   (no change)
+            //     blacks +1, point0 only:   0 -> 19,  16 -> 15   (and inverted)
+            //
+            // Two structural reasons. A negative y at x = 0 has nowhere to go,
+            // because the output there is already black — "crush the blacks" is
+            // a move along x, not down past zero; the symmetry with point4 that
+            // the paragraph above claimed simply is not there. And point1 is
+            // pinned at x = 0.25, so whatever point0 does is spent by the time
+            // the curve has travelled a quarter of the range — at +1 it even
+            // came back DOWN in between, which is the inversion above.
+            //
+            // Carrying a fraction of Blacks onto point1 gives it somewhere to
+            // act. Same ramp, with the weight below:
+            //
+            //     blacks -1:   16 ->  4,  32 -> 21,  128 -> 129
+            //     blacks +1:   16 -> 35,  32 -> 42,  128 -> 128
+            //
+            // — a real crush and a real lift, monotonic in both directions,
+            // and the midtone pivot at 0.5 left alone, which was the point of
+            // the layout in the first place. Blacks and Shadows now share
+            // point1, and that is honest: both are controls over the bottom of
+            // the range, and they overlap in Lightroom too.
             let strength = 0.3
+            let blacksOnShadowPoint = 0.15
             let filter = CIFilter.toneCurve()
             filter.inputImage = output
-            filter.point0 = CGPoint(x: 0, y: settings.blacks * strength)
-            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 + settings.shadows * strength, 0), 1))
+            // Clamped at 0: below black is not a place to go.
+            filter.point0 = CGPoint(x: 0, y: min(max(settings.blacks * strength, 0), 1))
+            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 + settings.shadows * strength
+                                                        + settings.blacks * blacksOnShadowPoint, 0), 1))
             filter.point2 = CGPoint(x: 0.5, y: 0.5)
             filter.point3 = CGPoint(x: 0.75, y: min(max(0.75 - settings.highlights * strength, 0), 1))
             filter.point4 = CGPoint(x: 1, y: 1 + settings.whites * strength)
@@ -1879,11 +1924,16 @@ enum PhotoEditRenderer {
         }
 
         if local.blacks != 0 || local.shadows != 0 || local.highlights != 0 || local.whites != 0 {
+            // Same curve as the global one, and it carried the same dead
+            // Blacks slider — a mask's Blacks was as inert as the panel's. The
+            // measurements are on the global version.
             let strength = 0.3
+            let blacksOnShadowPoint = 0.15
             let filter = CIFilter.toneCurve()
             filter.inputImage = output
-            filter.point0 = CGPoint(x: 0, y: local.blacks * strength)
-            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 + local.shadows * strength, 0), 1))
+            filter.point0 = CGPoint(x: 0, y: min(max(local.blacks * strength, 0), 1))
+            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 + local.shadows * strength
+                                                        + local.blacks * blacksOnShadowPoint, 0), 1))
             filter.point2 = CGPoint(x: 0.5, y: 0.5)
             filter.point3 = CGPoint(x: 0.75, y: min(max(0.75 - local.highlights * strength, 0), 1))
             filter.point4 = CGPoint(x: 1, y: 1 + local.whites * strength)
@@ -4098,6 +4148,18 @@ struct DevelopView: View {
                 case "v" where layerClipboard != nil: pasteLayer(); return nil
                 case "c" where activeSelection != nil: copySelection(); return nil
                 case "x" where activeSelection != nil: cutSelection(); return nil
+                // Cmd+A selects every photo in the filmstrip, the same set the
+                // right-click "Select All" builds — the Finder/ShowGrid
+                // convention, which ShowGrid has had and this window had not.
+                //
+                // Guarded on the field editor so it stays out of the way of
+                // the preset-name text field, where Cmd+A means select the
+                // TEXT and always will. Everywhere else in this window there
+                // is nothing else it could mean.
+                case "a" where !photoURLs.isEmpty
+                    && !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false):
+                    selectAllPhotos()
+                    return nil
                 default: break
                 }
             }
@@ -7144,13 +7206,19 @@ struct DevelopView: View {
 
             // Dashed while erasing, so which of the two the next drag will do
             // is visible before it happens rather than after.
-            BrushCursorRing(
-                cursor: removalBrushCursor,
-                diameter: brushDiameter,
-                color: isRemoveBrushErasing ? Color.white.opacity(0.95) : ink.opacity(0.9),
-                isDashed: isRemoveBrushErasing
-            )
-            .frame(width: containerSize.width, height: containerSize.height)
+            //
+            // Gone entirely while a clean up is running: a ring following the
+            // mouse over a brush that will not paint is the tool telling the
+            // client it is ready when it is not.
+            if !isRemoving {
+                BrushCursorRing(
+                    cursor: removalBrushCursor,
+                    diameter: brushDiameter,
+                    color: isRemoveBrushErasing ? Color.white.opacity(0.95) : ink.opacity(0.9),
+                    isDashed: isRemoveBrushErasing
+                )
+                .frame(width: containerSize.width, height: containerSize.height)
+            }
 
             // Sized to the CONTAINER, not to `frame`. It used to be
             // `.frame(frame.size).position(frame.mid)`, which at fit is the
@@ -7189,6 +7257,19 @@ struct DevelopView: View {
                             commitRemovalStroke()
                         }
                 )
+                // The canvas stops taking the brush for as long as the model is
+                // working. Requested directly: "kada je progres cleaning up
+                // loading bar da se blokira dalje painting na slici dok ai ne
+                // završi."
+                //
+                // Everything the job needs was snapshotted at the press, so a
+                // stroke painted now could not join it — and clearRemovalMask()
+                // at the end wipes the strokes, so it would either vanish
+                // without explanation or, worse, outlive the wipe and be swept
+                // into the next removal. Disabling the hit area is also what
+                // makes the brush ring disappear, since the hover that drives
+                // it comes through the same view.
+                .disabled(isRemoving)
         }
     }
 
@@ -8473,6 +8554,17 @@ struct DevelopView: View {
         // leaves the photo and comes back cannot put geometry outside it — the
         // line simply cuts across, which is what it would have done anyway had
         // the mouse travelled that way inside the frame.
+        // Nothing new gets painted while a clean up is running. The strokes
+        // the model is working from were snapshotted when the button was
+        // pressed, so anything added now is not in the job — it would sit on
+        // the photo looking selected, survive the clearRemovalMask() that ends
+        // the job, and then be silently carried into the NEXT clean up as if
+        // the client had meant it there. The gesture is switched off in
+        // removalPaintOverlay too; this is the funnel every path goes through,
+        // so the rule is stated here as well.
+        guard !isRemoving else {
+            return
+        }
         guard imageFrame.contains(location), let unit = unitPoint(from: location, frame: frame) else {
             return
         }
@@ -8488,6 +8580,11 @@ struct DevelopView: View {
 
     private func commitRemovalStroke() {
         defer { activeRemovalStroke.points = [] }
+        // A drag that was under way when the clean up started ends here, and
+        // it ends with nothing recorded — see paintRemovalBrush.
+        guard !isRemoving else {
+            return
+        }
         // One point counts: a single click should dab the brush where it was
         // clicked, rather than needing a drag before anything appears.
         // brushStrokeDabs already handles a one-point stroke, so the mask side
@@ -10668,7 +10765,9 @@ struct DevelopView: View {
             let rendered = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage)
             var didWrite = false
 
-            if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
+            if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent,
+                                                              format: format.renderFormat,
+                                                              colorSpace: briefEditsSRGBColorSpace) {
                 let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
                 if let data = format.encode(bitmapRep, quality: quality) {
                     didWrite = (try? data.write(to: destinationURL)) != nil
@@ -10717,7 +10816,9 @@ struct DevelopView: View {
 
             if let base = PhotoEditRenderer.loadBaseImage(from: url) {
                 let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
-                if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
+                if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent,
+                                                                  format: format.renderFormat,
+                                                                  colorSpace: briefEditsSRGBColorSpace) {
                     let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
                     if let data = format.encode(bitmapRep, quality: quality) {
                         didWrite = (try? data.write(to: destinationURL)) != nil
@@ -10770,7 +10871,9 @@ struct DevelopView: View {
                 let settingsForPhoto = PhotoEditStore.settings(for: url)
                 if let base = PhotoEditRenderer.loadBaseImage(from: url) {
                     let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
-                    if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
+                    if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent,
+                                                                      format: format.renderFormat,
+                                                                      colorSpace: briefEditsSRGBColorSpace) {
                         let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
                         if let data = format.encode(bitmapRep, quality: quality) {
                             let destinationURL = destinationFolder
@@ -10840,7 +10943,9 @@ struct DevelopView: View {
                 let settingsForPhoto = PhotoEditStore.settings(for: url)
                 if let base = PhotoEditRenderer.loadBaseImage(from: url) {
                     let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
-                    if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) {
+                    if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent,
+                                                                      format: format.renderFormat,
+                                                                      colorSpace: briefEditsSRGBColorSpace) {
                         let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
                         if let data = format.encode(bitmapRep, quality: quality) {
                             // Same "<name> Edited.<ext>" naming as the

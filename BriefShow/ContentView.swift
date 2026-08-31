@@ -21512,7 +21512,20 @@ struct PhotoShowSheet: View {
                 }
 
                 if !photoURLs.isEmpty {
-                    Text("\(photoURLs.count) photos · \(likedURLs.count) liked")
+                    // "labeled" and "starred", not "liked" — reported directly,
+                    // and it was the only place left calling it that. Every
+                    // other thing on this screen already says label: the two
+                    // export buttons beside this line are Export Labeled and
+                    // Export Starred, and they act on exactly these two sets.
+                    // One screen should not have two names for one thing.
+                    //
+                    // The starred count is its own number rather than folded
+                    // into the first, because the two are independent: a photo
+                    // can be starred without being labeled, so a single total
+                    // would be a number that matches neither export button.
+                    // Shown only when there is at least one, so a folder nobody
+                    // has rated yet does not carry a "0 starred".
+                    Text(gridCountsSummary)
                         .font(.custom("Figtree", size: 12).weight(.medium))
                         .foregroundColor(AppColors.muted)
                 }
@@ -21520,20 +21533,30 @@ struct PhotoShowSheet: View {
 
             Spacer()
 
-            // Named BriefShow rather than Slideshow — this is the button that
-            // opens BriefShow itself, so it carries the name of the thing it
-            // opens. Set in the plain button font, NOT the wordmark: the
-            // wordmark was tried here and dropped on sight. It sets its own two
-            // colours, so it could not take the hover tint every other header
-            // button has, and a brand mark shouting from inside a row of quiet
-            // buttons reads as a mistake rather than as branding. The big
-            // wordmark in the header above still carries the identity.
+            // "Showcase", on request. It was "BriefShow", which named the
+            // thing it opens — and that was the problem: the app is called
+            // BriefShow too, so a button reading BriefShow inside BriefShow,
+            // directly under the BriefShow wordmark, says nothing about where
+            // it goes. Showcase names the ACTION, next to LumenoLab beside it.
+            //
+            // ONLY THE LABEL. The window's title stays "BriefShow" — both key
+            // monitors in this app scope themselves by window title
+            // (`NSApp.keyWindow?.title == "BriefShow"`), so renaming the window
+            // silently unhooks every shortcut on this screen. See MINA 2 in
+            // BRIEFSHOW_DEVELOP_NOTES.md.
+            //
+            // Set in the plain button font, NOT the wordmark: the wordmark was
+            // tried here and dropped on sight. It sets its own two colours, so
+            // it could not take the hover tint every other header button has,
+            // and a brand mark shouting from inside a row of quiet buttons
+            // reads as a mistake rather than as branding. The big wordmark in
+            // the header above still carries the identity.
             Button {
                 BriefShowWindowController.shared.open(initialPhotoURLs: photoURLs)
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "film")
-                    Text("BriefShow")
+                    Text("Showcase")
                 }
             }
             .buttonStyle(ShowHeaderButtonStyle())
@@ -21625,7 +21648,7 @@ struct PhotoShowSheet: View {
                         clearAllLabelsAndRatings()
                     }
                 } message: {
-                    Text("This removes the liked label and star rating from every photo. It doesn't touch the photo files themselves.")
+                    Text("This removes the label and star rating from every photo. It doesn't touch the photo files themselves.")
                 }
             }
         }
@@ -21635,6 +21658,21 @@ struct PhotoShowSheet: View {
 
     private var hasStarredPhotos: Bool {
         ratings.values.contains { $0 > 0 }
+    }
+
+    private var starredCount: Int {
+        photoURLs.filter { (ratings[$0] ?? 0) > 0 }.count
+    }
+
+    /// "184 photos · 12 labeled · 5 starred" — the same words, and the same
+    /// two sets, as the Export Labeled / Export Starred buttons next to it.
+    private var gridCountsSummary: String {
+        var parts = ["\(photoURLs.count) photos", "\(likedURLs.count) labeled"]
+        let starred = starredCount
+        if starred > 0 {
+            parts.append("\(starred) starred")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var hasLabelsOrRatings: Bool {

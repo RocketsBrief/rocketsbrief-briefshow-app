@@ -6468,6 +6468,155 @@ Uz to dve stvari koje su morale da idu zajedno sa tim:
   (očekivano ~1,5 s, jer teški kontekst sad dekodira sam za sebe).
 
 
+## KORAK 50 — šest prijava odjednom (31. avgust 2026)
+
+### 1. Painting je blokiran dok AI radi
+
+Traženo doslovno: „kada je progres cleaning up loading bar da se blokira dalje
+painting na slici dok ai ne završi."
+
+I nije bilo samo kozmetički. `eraseMaskedArea` snima poteze u trenutku
+pritiska, a `clearRemovalMask()` na kraju posla briše SVE poteze. Potez
+naslikan u međuvremenu, dakle, ili nestane bez objašnjenja, ili — ako se
+poklopi sa redosledom — preživi brisanje i tiho uđe u SLEDEĆI clean up kao da
+ga je klijent tamo i hteo.
+
+Zatvoreno na tri mesta, sva tri potrebna:
+
+- `.disabled(isRemoving)` na hit površini u `removalPaintOverlay` — gest ne
+  stiže.
+- `guard !isRemoving` u `paintRemovalBrush`, jer je to levak kroz koji prolazi
+  svaki put do poteza.
+- `guard !isRemoving` u `commitRemovalStroke`, za potez koji je već bio u toku
+  kad je posao krenuo.
+
+Prsten četkice se sklanja dok posao traje. Prsten koji prati miša nad četkicom
+koja ne slika je alat koji tvrdi da je spreman a nije.
+
+### 2. Blacks nije radio — i nije bila jačina nego oblik krive
+
+Prijava: „Blacks slider, pomeram levo desno, −100 do +100, ništa se ne dešava."
+Tačno tako i jeste bilo. Izmereno na rampi 0...255 kroz istu `CIToneCurve`
+koju `render` gradi:
+
+```
+blacks -1 (staro):  16 -> 16,  32 -> 32     ništa
+blacks +1 (staro):   0 -> 19,  16 -> 15     i to obrnuto
+```
+
+Dva razloga, oba u rasporedu tačaka, nijedan u vrednosti `strength`:
+
+1. `point0` je bio `(0, blacks * 0.3)`, dakle za negativan blacks y ispod nule.
+   **Ispod crne nema gde.** Izlaz na x = 0 je već crn; „skupi crne" je pomeranje
+   po x osi, ne spuštanje ispod nule. Komentar iznad koda je tvrdio da su oba
+   kraja krive namerno puštena van 0...1 „da bi Whites/Blacks gurali u
+   klipovanje" — za Whites (point4, iznad 1) to važi, za Blacks ne važi i nikad
+   nije.
+2. `point1` je zakucan na x = 0.25. Šta god point0 uradi, potrošeno je do
+   četvrtine opsega. Na +1 se kriva između te dve tačke čak vraćala nadole, što
+   je ona inverzija gore.
+
+Popravka: `point0` se klampuje na 0, i Blacks nosi **0,15 na point1** pored
+Shadows-ovog sopstvenog člana. Isto merenje posle:
+
+```
+blacks -1:  16 ->  4,  32 -> 21,  128 -> 129
+blacks +1:  16 -> 35,  32 -> 42,  128 -> 128
+```
+
+Pravo skupljanje i pravo podizanje, monotono u oba smera, a srednji ton na 0,5
+netaknut — što je i bila poenta postojećeg rasporeda. Blacks i Shadows sad dele
+point1; to je pošteno, oba su kontrole dna opsega i preklapaju se i u
+Lightroom-u.
+
+Probano i odbačeno: dizanje `strength`. Ne pomaže — problem nije koliko se
+point0 pomera nego to što ga point1 odmah poništi.
+
+**Isti kvar je bio i u maskama** (`applyLocalAdjustments` gradi istu krivu), pa
+je popravljeno na oba mesta. Blacks na maski je bio jednako mrtav.
+
+### 3. Cmd+A
+
+- **LumenoLab: dodato.** Ide u `installEditingKeyMonitor`, bira sve fotke u
+  traci — isti skup koji pravi „Select All" iz desnog klika. Čuvano od polja za
+  ime preseta (tamo Cmd+A znači označi TEKST i uvek će značiti).
+- **ShowGrid: već postoji**, i provereno je zašto bi moglo da izgleda da ne
+  radi. Naslov glavnog prozora je tačno `BriefShow`, pa čuvar monitora prolazi;
+  a stavka Edit → Select All u meniju je **disabled** (provereno preko System
+  Events na pokrenutoj app-i, kao i Cut/Copy/Paste), pa meni ne otima taster.
+  Ostaju dva stanja u kojima kod namerno ne radi ništa: kad je otvoren loupe i
+  kad u folderu nema nijedne fotke. Ako se ponovi van ta dva, treba tražiti
+  dalje — ovo NIJE zatvoreno merenjem u pravoj upotrebi.
+
+### 4. Rezolucija posle edita — provereno, i nađena jedna poluistina
+
+Pitanje: da li slika posle edita u LumenoLab-u ostaje original po veličini i
+pikselima.
+
+**Po dimenzijama — da, svuda.** Izmereno na `C4S_5744.NEF` kroz iste pozive koje
+export radi:
+
+```
+fajl kaže                5176 x 3448
+pun RAW dekod (bez draft) 5176 x 3448
+posle grade-a             5176 x 3448
+CGImage za upis           5176 x 3448
+gotov JPEG kaže           5176 x 3448
+```
+
+Nigde nema smanjenja. Preview jeste umanjen dok se radi (2600 px), ali on nikad
+ne stiže do fajla — export i refine renderuju iz `fullBaseImage`. Crop naravno
+smanjuje, ali to je izmena koju klijent traži.
+
+**Po dubini — bila je poluistina i popravljena je.** Panel piše da su PNG i TIFF
+„lossless — every export is full quality", a svi exporti su išli kroz
+`createCGImage(_:from:)` čiji je difolt **8 bita po kanalu**. Formatu koji zna
+16 bita davani su 8-bitni pikseli da bude lossless nad njima. Izmereno:
+
+| format | staro | novo |
+|---|---|---|
+| TIFF | 20 MB, depth 8 | 107 MB, depth 16 |
+| PNG | 18 MB, depth 8 | 75 MB, depth 16 |
+| JPEG | 3 MB, depth 8 | 3 MB, depth 8 (JPEG JESTE 8-bitni) |
+
+Cena: 0,41 → 0,48 s po renderu. `ExportFormat.renderFormat` sad bira, i sva
+četiri mesta koja pišu fajl idu kroz njega.
+
+### 5. „liked" → „labeled", i broj zvezdica
+
+U zaglavlju ShowGrid-a je pisalo `N photos · M liked`. To je bilo poslednje
+mesto koje tu stvar zove tako — dva dugmeta odmah pored zovu se Export Labeled i
+Export Starred i rade nad tačno tim skupovima. Sad piše
+`N photos · M labeled · K starred`.
+
+Zvezdice su **poseban broj**, ne sabran sa oznakama: fotka može biti starred a
+ne labeled, pa bi jedan zbir bio broj koji ne odgovara nijednom od dva dugmeta.
+Prikazuje se samo kad ih ima, da folder koji niko nije ocenio ne nosi
+„0 starred".
+
+Ispravljen i tekst potvrde za Clear All („the liked label" → „the label").
+
+### 6. Dugme „BriefShow" → „Showcase"
+
+Zvalo se po onome što otvara, i to je bio problem: app se takođe zove BriefShow,
+pa dugme BriefShow unutar BriefShow-a, ispod BriefShow wordmark-a, ne govori
+kuda vodi. „Showcase" imenuje radnju, pored „LumenoLab" do njega.
+
+⚠️ **Promenjen je SAMO natpis.** `window.title` ostaje `"BriefShow"` — oba
+monitora tastature u app-i se ograničavaju po naslovu prozora
+(`NSApp.keyWindow?.title == "BriefShow"`), pa bi preimenovanje prozora tiho
+otkačilo svaku prečicu na tom ekranu. Vidi MINA 2 u planu za Afterburn Studio.
+
+### ⚠️ Neprovereno
+
+- Nije vožena prava app ni za jednu od ovih šest. Sva merenja su rađena posebnim
+  programima nad korisnikovim fajlovima, kroz iste pozive koje kod radi; build
+  prolazi bez novih upozorenja.
+- Nove vrednosti Blacks-a nisu gledane okom na fotografiji, samo na rampi.
+  Ako je 0,15 prejako ili preslabo, to je jedan broj (`blacksOnShadowPoint`) na
+  dva mesta u `Develop.swift`.
+
+
 ## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)
 
 Korisnik: „promeni ime App-a u Afterburn Studio… kao i folder na desktopu

@@ -2792,16 +2792,52 @@ final class DevelopWindowController {
 
     private var windowController: NSWindowController?
 
+    /// True from the moment a click is accepted until the window exists.
+    ///
+    /// `windowController` is not set until the far side of the hop below, so it
+    /// cannot answer "is one already coming". ShowGrid's launch card swallows
+    /// clicks, but it draws one runloop turn AFTER `begin()` — that hop is the
+    /// only reason it gets to draw at all — and a click landing in that gap
+    /// used to queue a SECOND `openNow`, which builds a second window and
+    /// leaves the first one orphaned with nothing pointing at it. Clicking
+    /// again is precisely what someone does when a click looks ignored, so this
+    /// guard covers the exact case the report describes.
+    private var isOpening = false
+
+    private var closeWatcher: DevelopWindowCloseWatcher?
+
     private init() {}
 
     func open(photoURLs: [URL], initialSelection: URL?) {
-        if let controller = windowController {
-            DevelopLaunchProgress.shared.cancel()
-            controller.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+        guard !isOpening else {
             return
         }
 
+        if let controller = windowController {
+            // A window that is on screen: bring it forward.
+            //
+            // One that is NOT is stale, and it is reachable: closing LumenoLab
+            // with the red titlebar button never ran `close()`, so the
+            // controller stayed set, pointing at a hidden window built around
+            // whatever photo list was open when it was made. Re-showing it
+            // would hand back an editor for the wrong folder — and it is
+            // exactly the shape of "I clicked and it did not react", since the
+            // window it orders in may be anywhere, including behind this one.
+            //
+            // The delegate below now closes that gap at the source; this is
+            // the belt to its braces, and it also covers a controller left over
+            // from any other path that loses its window.
+            if controller.window?.isVisible == true {
+                DevelopLaunchProgress.shared.cancel()
+                // Activate FIRST, order second — see the note in openNow.
+                NSApp.activate(ignoringOtherApps: true)
+                controller.window?.makeKeyAndOrderFront(nil)
+                return
+            }
+            close()
+        }
+
+        isOpening = true
         DevelopLaunchProgress.shared.begin()
 
         // Everything below this hop is synchronous and is the slow part —
@@ -2834,6 +2870,18 @@ final class DevelopWindowController {
         let controller = NSWindowController(window: window)
         windowController = controller
 
+        // Closing with the red titlebar button has to do everything the Done
+        // button does. It did not: `close()` — and with it the flush of the
+        // debounced settings write — only ran from Done, so a client who shut
+        // the editor the ordinary macOS way left up to half a second of their
+        // last edit sitting unwritten, and left this controller pointing at a
+        // window that was no longer on screen.
+        let watcher = DevelopWindowCloseWatcher { [weak self] in
+            self?.close()
+        }
+        closeWatcher = watcher
+        window.delegate = watcher
+
         DevelopLaunchProgress.shared.report(0.45, "Building the editor…")
 
         window.contentView = ClickThroughHostingView(
@@ -2848,8 +2896,35 @@ final class DevelopWindowController {
 
         DevelopLaunchProgress.shared.report(0.7, "Loading the photo…")
 
-        controller.showWindow(nil)
+        // ORDER MATTERS HERE, and it was the wrong way round.
+        //
+        // It was `showWindow` and then `activate`. Activating an app makes
+        // AppKit re-assert that app's own window order, and the window it puts
+        // on top is the one it considers key — which, in the same runloop turn
+        // that a brand-new window is being mounted, is still ShowGrid. So the
+        // editor could be built, shown, and then immediately buried behind the
+        // window the client was looking at.
+        //
+        // From the client's seat that is a click that did nothing. And it
+        // explains the other half of the report — that clicking a second time
+        // worked — exactly: by then `windowController` is set and the window is
+        // visible, so the second click takes the makeKeyAndOrderFront branch in
+        // `open()` above, which does nothing but bring it forward.
+        //
+        // Reported right after switching the theme, and that fits rather than
+        // being a coincidence: the theme swatch changes @Published state inside
+        // `withAnimation`, which re-renders every view in this window that
+        // reads AppColors — the header button style alone is used in 37 places.
+        // A busy main thread is where a race between activating and ordering
+        // gets decided the wrong way.
+        //
+        // Activate first, then order in, then make it key. The last call is not
+        // redundant with showWindow: showWindow ran before the activation, and
+        // this one is what fixes the front-most window after it.
         NSApp.activate(ignoringOtherApps: true)
+        controller.showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+        isOpening = false
 
         // The card is taken down by DevelopView the moment the first photo is
         // actually drawn (see loadImages). This is the backstop for the case
@@ -2866,8 +2941,32 @@ final class DevelopWindowController {
         // unwritten, and this is also what makes ShowGrid's thumbnails correct
         // the instant the editor is dismissed rather than half a second later.
         PhotoEditStore.flushNow()
+        // Detached BEFORE closing, so the watcher cannot call back into this
+        // and run the whole thing a second time.
+        windowController?.window?.delegate = nil
+        closeWatcher = nil
         windowController?.close()
         windowController = nil
+        isOpening = false
+    }
+}
+
+/// Turns "the window went away" into the same call the Done button makes.
+///
+/// A separate object rather than making the controller itself the delegate:
+/// NSWindow holds its delegate weakly, and DevelopWindowController is a plain
+/// singleton that is never otherwise referenced by AppKit, so this keeps the
+/// ownership visible — the controller holds the watcher, the window points at
+/// it, and both go away together in `close()`.
+private final class DevelopWindowCloseWatcher: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose()
     }
 }
 

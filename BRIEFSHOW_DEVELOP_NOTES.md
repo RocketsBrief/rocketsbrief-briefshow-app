@@ -6617,6 +6617,89 @@ otkačilo svaku prečicu na tom ekranu. Vidi MINA 2 u planu za Afterburn Studio.
   dva mesta u `Develop.swift`.
 
 
+## KORAK 51 — „kliknem LumenoLab i ne reaguje, kliknem opet i otvori se" (31. avgust 2026)
+
+Prijava: desilo se JEDNOM, odmah posle prebacivanja teme na crnu. Prvi klik na
+LumenoLab ništa, drugi klik otvorio prozor.
+
+Nije reprodukovano — u trenutku analize je klijent imao LumenoLab otvoren sa
+svojim radom u njemu, pa app NIJE vožena preko System Events-a da se to ne
+pokvari. Ono što sledi je nađeno čitanjem koda, i za glavni nalaz postoji
+mehanizam koji objašnjava OBA klika, ne samo prvi.
+
+### Glavni nalaz — redosled `activate` i `showWindow` je bio obrnut
+
+`openNow` je radio:
+
+```swift
+controller.showWindow(nil)
+NSApp.activate(ignoringOtherApps: true)
+```
+
+Aktiviranje app-e tera AppKit da **ponovo nametne sopstveni redosled prozora**, a
+na vrh stavlja onaj koji smatra ključnim — što je u istom prolazu runloop-a i
+dalje ShowGrid. Prozor editora ume da bude napravljen, prikazan, pa odmah
+zakopan iza prozora u koji klijent gleda.
+
+Iz klijentove stolice: klik koji nije uradio ništa.
+
+I to objašnjava drugu polovinu prijave, koju nijedno drugo objašnjenje ne
+pokriva: **drugi klik radi** zato što je tada `windowController` postavljen i
+prozor je vidljiv, pa klik pada u granu `makeKeyAndOrderFront` u `open()`, koja
+ne radi ništa drugo nego ga izvuče napred.
+
+Zašto baš posle promene teme, i zašto samo jednom: swatch teme menja
+`@Published` unutar `withAnimation`, što ponovo iscrtava svaki view u prozoru
+koji čita `AppColors` — samo stil dugmadi u zaglavlju je upotrebljen na 37
+mesta. Zauzeta glavna nit je tačno mesto gde se trka između aktiviranja i
+uređivanja redosleda reši na pogrešnu stranu. Otud „desilo se jednom".
+
+Popravka: **prvo `activate`, pa `showWindow`, pa `makeKeyAndOrderFront`.**
+Poslednji poziv nije višak — `showWindow` je odradio svoje PRE aktivacije, a
+ovaj sređuje ko je na vrhu POSLE nje. Isti obrnut redosled je bio i u grani za
+već otvoren prozor, i tamo je ispravljen.
+
+### Usput nađeno — crveno dugme prozora nikad nije zvalo `close()`
+
+`close()` se zvao samo iz Done dugmeta. Zatvaranje LumenoLab-a običnim macOS
+putem, crvenim dugmetom u naslovnoj traci, nije zvalo ništa. Dve posledice, obe
+prave:
+
+1. **`PhotoEditStore.flushNow()` se preskakao.** Upis podešavanja je debounce-ovan
+   na 0,5 s (KORAK 46), pa je klijent koji zatvori editor na uobičajen način
+   mogao da ostavi do pola sekunde poslednje izmene neupisano.
+2. `windowController` je ostajao postavljen, i pokazivao na skriven prozor
+   napravljen oko STARE liste fotografija. Sledeći klik na LumenoLab bi vratio
+   editor za pogrešan folder.
+
+Dodat `DevelopWindowCloseWatcher` kao `NSWindowDelegate`; `windowWillClose` zove
+isti `close()` koji zove i Done. Zaseban objekat, ne sam kontroler, jer NSWindow
+drži delegata slabo — ovako je vlasništvo vidljivo: kontroler drži watcher-a,
+prozor pokazuje na njega, i oba nestaju u `close()`. Delegat se odvezuje PRE
+`close()`-a da se ne bi vrteo u krug.
+
+### Usput nađeno — dva klika su mogla da naprave dva prozora
+
+`windowController` se postavlja tek sa druge strane `DispatchQueue.main.async`
+hopa, pa nije mogao da odgovori na pitanje „da li jedan već stiže". Kartica nad
+ShowGrid-om guta klikove, ali se ona iscrtava JEDAN prolaz runloop-a posle
+`begin()` — taj hop joj i omogućava da se uopšte iscrta — a klik koji padne u
+taj procep je pravio drugi `openNow`, dakle drugi prozor, dok prvi ostaje bez
+ičega što na njega pokazuje.
+
+A klik ponovo je tačno ono što čovek uradi kad mu se čini da klik nije primljen,
+što je doslovno ova prijava. Dodat `isOpening` u samom kontroleru, tamo gde se
+odgovor zna.
+
+### ⚠️ Neprovereno
+
+- Nije reprodukovano ni pre ni posle popravke. Mehanizam objašnjava obe polovine
+  prijave i redosled `activate`/`showWindow` je nesporno bio pogrešan, ali da je
+  baš to bilo — nije dokazano vožnjom.
+- Ako se ponovi: vredi pogledati da li dugme izgleda ugašeno (`.disabled` kad je
+  folder prazan) i da li se negde otvorio drugi LumenoLab prozor iza prvog.
+
+
 ## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)
 
 Korisnik: „promeni ime App-a u Afterburn Studio… kao i folder na desktopu

@@ -86,6 +86,37 @@ the live page on 31 August 2026.
 This is the same upstream question that sits under essentially every published
 vision model, and it is not specific to LaMa or to this app.
 
+**Supporting evidence, checked 1 September 2026 — the OpenCV project publishes
+these same weights under an explicit Apache 2.0.**
+
+`huggingface.co/opencv/inpainting_lama`, from the real `opencv` organisation,
+ships LaMa as ONNX with an actual `LICENSE` file containing the full Apache 2.0
+text, and a README that states: *"All files in this directory are licensed under
+Apache License"*, referencing `github.com/advimman/lama`. Its own stated source
+is `Carve/LaMa-ONNX` (also declared Apache 2.0), which is a conversion of the
+same `big-lama` checkpoint this app uses.
+
+That matters as evidence rather than as an alternative: a large, long-standing
+open-source project with real legal exposure has looked at these weights and
+redistributed them commercially under Apache 2.0, in a licence FILE rather than
+a metadata tag.
+
+**But a licence tag on a re-upload is worth nothing on its own**, and the
+evidence for that is easy to see. Searching Hugging Face for `big-lama` returns
+the identical checkpoint published by many people under contradictory terms —
+`apache-2.0`, `mit`, and `gpl-3.0` all appear across copies of the same file. An
+uploader cannot grant what they do not hold, so what carries weight is the
+authors' own repository and README (Apache 2.0, no restriction stated), and a
+LICENSE file placed by an organisation that had reason to check.
+
+**Swapping to the OpenCV build would not change the legal position**, because it
+is the same model trained on the same data — the Places2 question travels with
+the weights whoever repackages them. It would, however, change the OUTPUT: it is
+a different export (ONNX, `inpainting_lama_2025jan.onnx`) and this app runs a
+Core ML conversion of the PyTorch checkpoint. The quality of the AI Clean Up
+result is 🟢 LOCKED in `BRIEFSHOW_DEVELOP_NOTES.md`, so that is not a swap to
+make for a paper benefit that is already available by citing OpenCV here.
+
 **Reasonable ways to close it**, cheapest first:
 
 1. Keep the record above. Apache 2.0 from the authors is a real commercial

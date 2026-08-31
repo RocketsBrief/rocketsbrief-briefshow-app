@@ -12055,8 +12055,8 @@ struct DisclaimerNoticeModal: View {
 
     private let noticeSections: [(String, String)] = [
         (
-            "Free creative tool",
-            "BriefShow and ShowGrid are provided as free creative tools by RocketsBrief. They are offered “as is” and “as available,” without guarantees that they will always be error-free, uninterrupted, or suitable for every specific purpose."
+            "Paid product, sold as is",
+            "BriefShow, ShowGrid, and LumenoLab are paid software from RocketsBrief. Buying them grants you a licence to use the application; it does not transfer ownership of the software or of anything in it. The price, what a purchase includes, and how it is billed are whatever is stated where you bought it. The software is offered “as is” and “as available,” without guarantees that it will always be error-free, uninterrupted, or suitable for every specific purpose."
         ),
         (
             "User responsibility",
@@ -12080,7 +12080,7 @@ struct DisclaimerNoticeModal: View {
         ),
         (
             "Future changes to BriefShow and ShowGrid",
-            "RocketsBrief may change, add, remove, lock, or discontinue any feature, theme, or part of BriefShow or ShowGrid at any time, without notice. This includes requiring a free account sign-up to continue using either one, and introducing paid features, subscriptions, or pricing for BriefShow or ShowGrid in the future. By continuing to use either one, you agree that these changes may happen at any time."
+            "RocketsBrief may change, add, remove, lock, or discontinue any feature, theme, or part of BriefShow, ShowGrid, or LumenoLab at any time, without notice. This includes requiring an account sign-up to continue use, and changing pricing, introducing subscriptions, or moving features between paid tiers in the future. By continuing to use the software, you agree that these changes may happen at any time."
         ),
         (
             "Copyright and ownership",
@@ -12088,7 +12088,7 @@ struct DisclaimerNoticeModal: View {
         ),
         (
             "Account data and email use",
-            "If BriefShow or ShowGrid ever requires a free account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
+            "If BriefShow, ShowGrid, or LumenoLab requires an account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
         ),
         (
             "Usage analytics",
@@ -12104,7 +12104,7 @@ struct DisclaimerNoticeModal: View {
         ),
         (
             "Third-party components",
-            "BriefShow, ShowGrid, and LumenoLab include work by others, each under its own licence: the LaMa inpainting code (Apache License 2.0, Samsung AI Center) and its pre-trained model; Stable Diffusion v1.5 Inpainting (CreativeML Open RAIL-M); OpenAI’s CLIP tokenizer data (MIT License); and the Figtree and Unbounded typefaces (SIL Open Font License 1.1). Those licences govern those components — the “Copyright and ownership” section above is about this application itself, not about them. THIRD_PARTY_LICENSES, shipped with the app, lists each one in full."
+            "BriefShow, ShowGrid, and LumenoLab include work by others, each under its own licence: the LaMa inpainting model, code and pre-trained weights alike, under the Apache License 2.0 (Samsung AI Center — the same weights are also published under Apache 2.0 by the OpenCV project); Stable Diffusion v1.5 Inpainting (CreativeML Open RAIL-M); OpenAI’s CLIP tokenizer data (MIT License); and the Figtree and Unbounded typefaces (SIL Open Font License 1.1). Those licences govern those components — the “Copyright and ownership” section above is about this application itself, not about them. THIRD_PARTY_LICENSES, shipped inside the app, lists each one in full, names the exact model build in use, and records what is settled and what is not."
         ),
         (
             "Reading Lightroom presets",

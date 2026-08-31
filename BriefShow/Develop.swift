@@ -4255,7 +4255,20 @@ struct DevelopView: View {
     /// client counting to work out which "Saturation" is which.
     @State private var selectedColorBand: ColorBand = .red
     /// What has been typed into the Kelvin field, cleared once it is applied.
+    ///
+    /// The field is only MOUNTED while it is being used, and that is not a
+    /// styling choice — it is a bug fix. A TextField sitting permanently in the
+    /// panel becomes the window's first responder, and the ← / → slider nudge
+    /// deliberately stands down whenever a field editor has focus (so arrows
+    /// can move a caret). So an always-present Kelvin box silently took the
+    /// arrow keys away from every slider in the panel. Reported exactly that
+    /// way: "kada hoću da pomeram strelicama slide bar u Editu on ne reaguje".
+    ///
+    /// Same shape as renaming a preset: a value you click to edit, not a box
+    /// that is always open. Nothing in this panel should hold focus it is not
+    /// being given.
     @State private var kelvinFieldText = ""
+    @State private var isEditingKelvin = false
     @State private var isAddingPreset = false
     @State private var newPresetName = ""
     /// Which preset is being renamed, and what it is being renamed to.
@@ -8521,17 +8534,35 @@ struct DevelopView: View {
 
                 Spacer()
 
-                Text("\(Int(currentKelvin(asShot: asShot).rounded())) K")
-                    .font(.custom("Figtree", size: 11).weight(.medium))
-                    .foregroundColor(AppColors.ink)
+                if isEditingKelvin {
+                    TextField("K", text: $kelvinFieldText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.custom("Figtree", size: 11))
+                        .frame(width: 70)
+                        .onSubmit { commitKelvinField(asShot: asShot) }
 
-                TextField("K", text: $kelvinFieldText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.custom("Figtree", size: 11))
-                    .frame(width: 62)
-                    .onSubmit { commitKelvinField(asShot: asShot) }
-                    .help("Type a colour temperature in Kelvin, the way "
+                    Button("Cancel") { cancelKelvinEdit() }
+                        .buttonStyle(ShowHeaderButtonStyle())
+                } else {
+                    Button {
+                        kelvinFieldText = "\(Int(currentKelvin(asShot: asShot).rounded()))"
+                        isEditingKelvin = true
+                    } label: {
+                        Text("\(Int(currentKelvin(asShot: asShot).rounded())) K")
+                            .font(.custom("Figtree", size: 11).weight(.medium))
+                            .foregroundColor(AppColors.ink)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .stroke(AppColors.border.opacity(0.7), lineWidth: 1)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Click to type a colour temperature in Kelvin, the way "
                           + "Lightroom states it, and the slider moves to match.")
+                }
             }
         }
     }
@@ -8550,8 +8581,13 @@ struct DevelopView: View {
         min(max(asShot.temperature + settings.temperature * 3000, 2000), 50000)
     }
 
+    private func cancelKelvinEdit() {
+        isEditingKelvin = false
+        kelvinFieldText = ""
+    }
+
     private func commitKelvinField(asShot: (temperature: Double, tint: Double)) {
-        defer { kelvinFieldText = "" }
+        defer { cancelKelvinEdit() }
         let trimmed = kelvinFieldText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let kelvin = Double(trimmed.replacingOccurrences(of: "K", with: "")
                                     .trimmingCharacters(in: .whitespaces)) else {

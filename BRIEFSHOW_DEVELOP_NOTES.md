@@ -6700,6 +6700,120 @@ odgovor zna.
   folder prazan) i da li se negde otvorio drugi LumenoLab prozor iza prvog.
 
 
+## KORAK 52 — uvoz Lightroom preseta (.xmp) (31. avgust 2026)
+
+Korisnik je dao jedan pravi fajl, `Classic Edits Lightroom.xmp` (preset
+„Camilo"), i tražio da se presets mogu uvesti u LumenoLab.
+
+Nov fajl `DevelopLightroomPreset.swift`. Dugme **„Import from Lightroom…"** u
+sekciji Presets. Bira se jedan fajl, više njih, ili **ceo folder** — paketi
+preseta se tako i prodaju, pa biranje jednog po jednog iz seta od četrdeset ne
+bi bio način na koji bi to iko koristio.
+
+### Ovo NIJE Lightroom renderer
+
+Pola onoga što .xmp može da nosi — Color Mixer, tone curve, color grading,
+profil kamere — ovde nema svoj regulator. Uvezen preset je zato
+**približavanje** izgleda, i uvoz **naglas kaže šta nije preneo**. Prećutan
+gubitak bi ostavio klijenta da poredi sa Lightroom-om i nalazi razliku bez
+ijednog objašnjenja.
+
+### Mapiranje, i tri mesta gde nije obično deljenje sa 100
+
+Većina jeste deljenje sa 100 (Adobe ide −100...100, ovde je −1...1). Zanimljivo
+je ostalo:
+
+**Highlights se OKREĆE.** U Lightroom-u pozitivan Highlights posvetljuje, a
+negativan vraća detalj. Ovde je obrnuto — `render` gradi krivu kao
+`0.75 - highlights`, dakle pozitivno zatamnjuje. Taj znak je jednom već
+zadržan zbog fotki editovanih starijim buildom, pa se okreće uvoz, ne kod.
+Preset koji vraća svetla na −77 mora ovde da stigne kao **+0,77**, inače bi ih
+raspalio umesto da ih spasi.
+
+**Vignette se takođe okreće.** Lightroom-ov Post-Crop Vignetting je negativan da
+zatamni uglove, ovdašnji `vignette` je pozitivan za isto.
+
+**Beli balans je RELATIVAN, ne apsolutan.** Lightroom čuva kelvine (6339 K);
+ovde se čuva pomeraj od as-shot balansa te fotke, skaliran tako da je 1,0 =
+3000 K (`asShotTemperature + temperature * 3000` u `render`-u). Preset nosi
+as-shot vrednost fotke NA KOJOJ je napravljen, pa je pomeraj koji je fotograf
+zaista odabrao razlika između to dvoje — a pomeraj je ionako ono što ima smisla
+preneti na drugu fotografiju. Apsolutni kelvin se ovde ne može ni izraziti.
+Ako je `WhiteBalance="As Shot"`, beli balans se ne dira uopšte.
+
+**Izoštravanje se čita u odnosu na Lightroom-ov difolt, ne na nulu.** Lightroom
+svaki RAW počinje na Sharpness 40, pa 40 u presetu znači „nisam dirao
+izoštravanje". Uvoz toga kao 0,4 bi izoštrio fotku koju niko nije tražio da se
+izoštri, pa se difolt prvo oduzme.
+
+**Crno-belo se prenosi**, kao puna desaturacija. Lightroom pravi svoje sivo iz
+B&W miksera — osam težina po boji, za koje ovde nema regulatora — pa se ne može
+poklopiti kanal po kanal. Ali izbor nije „tačno sivo ili približno sivo" nego
+„sivo ili U BOJI", a monohromatski look koji stigne u punoj boji nije
+približavanje ničega. U izveštaju stoji da je izgubljeno miksovanje, ne
+konverzija.
+
+### Zamka koja je uhvaćena na prvom pravom fajlu
+
+Prva verzija je prijavljivala kao izgubljeno sve što nije nula. **Lightroom u
+preset upisuje svaki regulator, dirao ga neko ili ne.** Na korisnikovom fajlu je
+tako prijavljivala Color Grading, Noise Reduction i Sharpening detail — a sva
+tri su stajala na Adobe-ovim difoltima: `ColorGradeBlending` je 50 iz kutije,
+`ColorNoiseReduction` je 25 na svakom RAW-u, `SharpenDetail` je 25.
+
+Spisak stvari kojih nikad nije ni bilo nauči klijenta da prestane da čita
+spisak, a to košta više nego da ništa nije ni pisalo. Sad postoji tabela
+Adobe-ovih difolta i prijavljuje se samo ono što se **pomerilo**.
+
+### Izmereno na korisnikovom fajlu
+
+```
+name: "Camilo"
+  exposure     -0.1000     (Exposure2012 -0.10, isti EV)
+  contrast     -0.0500     (-5 / 100)
+  highlights   +0.7700     (-77, okrenuto)
+  shadows      +0.7000     (+70 / 100)
+  whites       +0.2500     (+25 / 100)
+  blacks       -0.2800     (-28 / 100)
+  vibrance     +0.1000     (+10 / 100)
+  temperature  +0.3297     ((6339 - 5350) / 3000)
+  tint         -0.1600     ((-10 - 6) / 100)
+  texture      -0.1400     (-14 / 100)
+  clarity      +0.0700     (+7 / 100)
+  dehaze       +0.0400     (+4 / 100)
+  vignette     +0.1900     (PostCropVignetteAmount -19, okrenuto)
+  sharpness     —          (Sharpness 40 = Lightroom-ov difolt, dakle nula)
+
+nije preneto: Colour Mixer (HSL),
+              Sharpening detail (radius / detail / masking),
+              Vignette shape (midpoint / feather / roundness)
+```
+
+Ime „Camilo" je pročitano iz `crs:Name`, **ne** „Adobe Color" iz ugnežđenog
+`crs:Look` — parser hvata samo prvi, spoljni `rdf:Description` i ignoriše sve
+unutar drugog, jer Look nosi svoj sopstveni `crs:Name`.
+
+### Provereno i na sintetičkim slučajevima
+
+| slučaj | rezultat |
+|---|---|
+| vrednosti kao ELEMENTI umesto atributa | pročitano (oba oblika se sreću) |
+| `WhiteBalance="As Shot"` uz `Temperature="9000"` | temperatura ignorisana, kako i treba |
+| bez `AsShotTemperature` | pretpostavljen dnevni 5500 K, pa (8500−5500)/3000 |
+| bez `crs:Name` | ime preseta = ime fajla |
+| kriva sa tri tačke | prijavljena kao Tone Curve |
+| fajl koji nije XML | uredna greška, bez rušenja |
+
+### ⚠️ Neprovereno
+
+- Nije gledano OKOM na fotografiji da li uvezeni „Camilo" liči na Lightroom-ov.
+  Brojevi su tačni po mapiranju; koliko je približavanje verno bez HSL-a je
+  nešto što može da presudi samo klijent.
+- Nije probano na paketu od više desetina preseta odjednom, niti na .xmp koji
+  je razvoj fotografije (sa crop-om i maskama) umesto preseta — takav fajl bi
+  se pročitao, ali bi mu se uzeli samo klizači.
+
+
 ## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)
 
 Korisnik: „promeni ime App-a u Afterburn Studio… kao i folder na desktopu

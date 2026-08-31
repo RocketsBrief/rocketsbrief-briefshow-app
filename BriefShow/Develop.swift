@@ -3738,6 +3738,8 @@ struct DevelopView: View {
     @State private var presets: [PhotoEditPreset] = PhotoEditPresetStore.loadAll()
     @State private var isAddingPreset = false
     @State private var newPresetName = ""
+    /// What the last Lightroom import did, and what it could not do.
+    @State private var presetImportNotice: String?
     @State private var settingsClipboard: PhotoEditSettings?
     // Lightroom-style "Synchronize Settings" — showSyncDialog presents a
     // sheet (syncDialogView) where the user picks WHICH categories to sync
@@ -7802,6 +7804,26 @@ struct DevelopView: View {
                 .buttonStyle(ShowHeaderButtonStyle())
                 .opacity(settings.isNeutral ? 0.4 : 1)
                 .disabled(settings.isNeutral)
+
+                Button {
+                    importLightroomPresets()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.arrow.down")
+                        Text("Import from Lightroom…")
+                    }
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .help("Reads Lightroom / Camera Raw .xmp presets. Pick a file, "
+                      + "several, or a whole folder of them.")
+            }
+
+            if let presetImportNotice {
+                Text(presetImportNotice)
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
         }
     }
@@ -10124,6 +10146,73 @@ struct DevelopView: View {
     private func deletePreset(_ preset: PhotoEditPreset) {
         presets.removeAll { $0.id == preset.id }
         PhotoEditPresetStore.save(presets)
+    }
+
+    /// Reads Lightroom / Camera Raw .xmp presets into this app's own list.
+    ///
+    /// Folders are allowed, and that is not a nicety — preset packs are sold
+    /// and shipped as folders of .xmp files, so picking one file at a time out
+    /// of a set of forty is not how anyone would use this.
+    ///
+    /// The result is reported in full, including what did NOT come across. A
+    /// Lightroom preset can carry a colour mixer, a tone curve, colour grading
+    /// and a camera profile, none of which exist here; importing those in
+    /// silence would leave the client comparing this against Lightroom and
+    /// finding a difference with nothing to explain it. See
+    /// LightroomPresetImport for the mapping itself.
+    private func importLightroomPresets() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.message = "Choose Lightroom preset files (.xmp), or a folder of them."
+        panel.prompt = "Import"
+        if let xmp = UTType(filenameExtension: "xmp") {
+            panel.allowedContentTypes = [xmp, .folder]
+        }
+
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else {
+            return
+        }
+
+        let files = panel.urls.flatMap { LightroomPresetImport.presetFiles(under: $0) }
+        guard !files.isEmpty else {
+            presetImportNotice = "No .xmp presets found there."
+            return
+        }
+
+        var imported: [PhotoEditPreset] = []
+        var failed = 0
+        // A set, because forty presets from one pack tend to leave out the same
+        // four things and a list would repeat them forty times.
+        var missing: Set<String> = []
+
+        for file in files {
+            guard let result = try? LightroomPresetImport.read(file) else {
+                failed += 1
+                continue
+            }
+            imported.append(result.preset)
+            missing.formUnion(result.unsupported)
+        }
+
+        guard !imported.isEmpty else {
+            presetImportNotice = "Could not read \(files.count == 1 ? "that preset" : "any of those presets")."
+            return
+        }
+
+        presets.append(contentsOf: imported)
+        PhotoEditPresetStore.save(presets)
+
+        var lines = ["Imported \(imported.count) preset\(imported.count == 1 ? "" : "s")."]
+        if failed > 0 {
+            lines.append("\(failed) could not be read.")
+        }
+        if !missing.isEmpty {
+            lines.append("Not carried over (LumenoLab has no equivalent): "
+                         + missing.sorted().joined(separator: ", ") + ".")
+        }
+        presetImportNotice = lines.joined(separator: " ")
     }
 
     private func pasteSettings() {

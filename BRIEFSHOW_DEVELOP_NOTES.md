@@ -6330,6 +6330,144 @@ fajla), fajl ide u kontejner app-e.
 
 
 
+## KORAK 49 — flatten: LZW je bio uzrok TRI prijavljene stvari (31. avgust 2026)
+
+Korisnik je prijavio tri kvara. **Dva od njih su isti kvar**, i to onaj koji se
+najmanje očekivao — kompresija fajla.
+
+Prijava, doslovno:
+
+1. „Flatujem sliku, on je izgleda flatovao ali odmah sam izgubio taj isti image
+   da ga vidim. Kliknem na drugu sliku — pojavi se, velika i spremna za rad.
+   Kliknem opet na tu flatovanu — ništa, prazno. Odradim rotate i back,
+   sačekam 4 sekunde, on je prikaže."
+2. „Već flatovana slika, pa opet AI Clean Up — dole više nema opcije da je
+   flatujem, samo da je unflatujem."
+3. „Generative Clean Up: loading bar do 100%, ugasi se, makne red paint, ništa
+   nije promenjeno — pa posle 5 sekundi nestane taj deo koji je trebalo da
+   nestane."
+
+### Uzrok 1 i 3: LZW
+
+`FlattenedImageStore.flatten` je pisao **16-bitni TIFF sa LZW kompresijom**.
+Izmereno na korisnikovom sopstvenom spljoštenom fajlu (C4S_7889.NEF, 5176×3448,
+16 bita, 126 MB):
+
+| fajl | veličina | prvi render | drugi render kroz ISTI kontekst |
+|---|---|---|---|
+| LZW | 126 MB | **10,2 s** | **10,2 s** |
+| bez kompresije | 142 MB | 1,5 s | 0,025 s |
+
+Ključni red je onaj drugi. **Sa LZW se ne zagreje nikad** — tri uzastopna
+rendera istog CIImage-a kroz isti kontekst koštaju po deset sekundi. Core Image
+čita po pločicama, a LZW je serijska dekompresija koja se ne može preskočiti u
+sredini, pa svaka pločica plaća ceo fajl ispočetka. Bez kompresije ImageIO
+mapira fajl i drugi render je 25 ms.
+
+Time pada oba kvara odjednom:
+
+- **(1)** Posle flatten-a svaki povratak na tu fotku plaćao je 10 s po renderu,
+  a `isLoadingPreview` je već bio ugašen (gasi se kad dekodiranje legne, ne kad
+  se slika nacrta), pa je u tih deset sekundi pisalo „Select a photo from the
+  filmstrip" — na fotki koju je klijent upravo izabrao. Otud „prazno".
+- **(3)** Generative je završio, sloj je dodat, `renderNow` je krenuo — i trajao
+  je tih ~5–10 s. Traka je nestala, paint je nestao, slika se nije promenila, pa
+  se promenila. Ništa nije bilo pokvareno u samom brisanju.
+
+`CGImageSourceCreateImageAtIndex` dekodira taj isti LZW fajl za **0,56 s**, što
+znači da problem nije LZW sam po sebi nego kako ga Core Image čita. Nije se
+dalje kopalo: fajl je privatni keš, 16 MB je jeftina cena.
+
+### Popravka 1 — bez kompresije
+
+`flatten` piše `representation(using: .tiff, properties: [:])`. 126 → 142 MB po
+spljoštenoj fotki.
+
+Postojeći fajlovi se same popravljaju: `upgradeLegacyCompressedFile(for:)` čita
+SAMO TIFF zaglavlje (~1 ms, tag `Compression`; 1 = bez kompresije, 5 = LZW) i
+prepisuje fajl samo ako treba. Zove se sa pozadinske niti u `loadImages`, tik
+pre dekodiranja. Izmereno na korisnikovom fajlu: 0,56 s jednom, pikseli
+identični (srednja vrednost 202/200/198 pre i posle), drugi poziv ne radi ništa.
+
+### Popravka 2 — preview se DEKODIRA umanjen, ne skalira posle
+
+`loadPreviewBaseImage`, `.standard` grana, radila je
+`image.transformed(by: scale)` nad lenjim punim CIImage-om. Skaliranje lenje
+slike je ne pojeftinjuje — samo dodaje umanjenje na kraj grafa koji i dalje mora
+prvo da naduva svaki piksel fajla.
+
+Sad ide `CGImageSourceCreateThumbnailAtIndex` sa
+`kCGImageSourceCreateThumbnailFromImageAlways` — pravo umanjeno dekodiranje iz
+fajla. (Ime je nesrećno: to je puna kvalitet umanjena slika, ne sličica iz
+EXIF-a; ta bi bila `...IfAbsent`.)
+
+| | transform | umanjeno dekodiranje |
+|---|---|---|
+| spljošten TIFF 5176×3448 | 1,50 s | **0,16 s** |
+| JPEG 7800×2600 | 0,011 s | 0,066 s |
+
+Na JPEG-u je ovo 55 ms **sporije** i to je pošteno zapisati. Razlog je što Core
+Image lenjo dekodiranje JPEG-a ionako radi dobro. Uzeto je jedinstveno rešenje
+umesto raspoznavanja formata: 55 ms jednom po otvaranju fotke, protiv sekunde i
+po koja se izbegava, i bez pravila koje bi se raspalo na sledećem formatu.
+
+Provereno da nije promenilo sliku: identične dimenzije i identična srednja RGB
+vrednost kroz oba puta, na TIFF-u, JPEG-u i PNG-u.
+
+Cena koja se plaća: preview više ne deli dekodiranje sa `fullBaseImage`, pa
+refine plati svoje. To je dobra trampa — klijent vidi sliku odmah, a oštru
+verziju sekundu i po kasnije, umesto da ne vidi ništa sekundu i po.
+
+### Popravka 3 — prozor više ne laže dok čeka
+
+Grana `else if isLoadingPreview` je sad
+`else if isLoadingPreview || selectedURL != nil`. Ako je fotka izabrana a slike
+još nema, stoji spinner. Tekst „Select a photo from the filmstrip" ostaje samo
+za slučaj kad zaista ništa nije izabrano.
+
+Ovo ne popravlja nijedno kašnjenje — ono je popravljeno gore. Ovo je zato što je
+klijent tri puta prijavio „prazno" na tri različita uzroka (vidi i KORAK 46), a
+prazan panel sa pogrešnim tekstom je ono što je svaki od njih učinio nečitljivim.
+
+### Uzrok 2: dugme je bilo u `else` grani
+
+`flattenSection` je bila `if isFlattened { Unflatten } else { Flatten }`. To nije
+rubni slučaj nego normalan tok rada: flatten, pa se uoči još nešto, pa AI Clean
+Up — a taj clean up je opet sloj zapečenih piksela van tonskog lanca, sa tačno
+onim kvarom zbog kojeg flatten i postoji.
+
+Sad se **Flatten nudi uvek kad ima šta da se zapeče**, i na već spljoštenoj
+fotki (tada piše „Flatten Again"); Unflatten stoji pored njega kad je fotka
+spljoštena.
+
+Uz to dve stvari koje su morale da idu zajedno sa tim:
+
+- **`hasUnbakedEdits` umesto `settings.isNeutral`.** `isNeutral` broji crop kao
+  izmenu, a crop se namerno NE peče (`applyCrop: false`) — i baš crop je ono što
+  ostane posle flatten-a. Sa `isNeutral` bi dugme posle svakog flatten-a ostalo
+  upaljeno i nudilo da zapeče ništa, i potrošilo 142 MB na to. Sad se poredi sa
+  praznim podešavanjima kojima je dodat isti crop.
+- **`flatten` više ne prepisuje snimljena podešavanja.** Snimak pravi samo PRVI
+  flatten. Drugi flatten meri podešavanja prema VEĆ ZAPEČENOJ slici, pa bi
+  njihovo vraćanje na original bilo vraćanje grade-a fotki koja ga nikad nije
+  imala. Unflatten znači „pre svega ovoga", i to je isto mesto bio jedan flatten
+  ili tri. Napisano i u panelu, pod dugmetom, da se ne mora pogađati.
+
+### Provereno
+
+- Build prolazi, bez novih upozorenja u `Develop.swift`.
+- Sva merenja gore su na korisnikovom fajlu, ne na sintetičkom.
+- Migracija LZW → bez kompresije: pikseli identični, idempotentna.
+
+### ⚠️ Neprovereno
+
+- Nije vožena prava app: flatten i Generative traže klikove u prozoru. Merenja
+  su rađena posebnim programima nad korisnikovim fajlom, kroz iste pozive koje
+  kod radi.
+- Nije mereno koliko traje prvi refine posle ove promene na spljoštenoj fotki
+  (očekivano ~1,5 s, jer teški kontekst sad dekodira sam za sebe).
+
+
 ## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)
 
 Korisnik: „promeni ime App-a u Afterburn Studio… kao i folder na desktopu

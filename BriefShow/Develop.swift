@@ -20,6 +20,7 @@ import AppKit
 import Combine
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import ImageIO
 import UniformTypeIdentifiers
 
 // MARK: - Edit model
@@ -724,6 +725,21 @@ enum PhotoEditStore {
 /// 16-bit, not 8: the photo goes on being edited after this — that is the whole
 /// point of it — and a grade pushed onto 8-bit baked pixels bands. Resolution
 /// is native, per the lock at the top of BRIEFSHOW_DEVELOP_NOTES.md.
+///
+/// UNCOMPRESSED, and that is not a detail — it was the whole of "I flatten the
+/// photo and then it will not show me the photo any more". Measured on the
+/// client's own flattened .NEF (5176x3448, 16-bit):
+///
+///     LZW      126 MB   first render  9.9 s
+///     none     142 MB   first render  1.5 s
+///     none + downsampled decode for the preview   0.13 s
+///
+/// LZW is a serial, whole-file decompression that ImageIO cannot subsample
+/// through, so every path that wanted a few megapixels had to inflate all 143
+/// of them first — and it had to do it again on every return to the photo,
+/// which is exactly what the client saw. Uncompressed costs 16 MB more in a
+/// private cache directory and lets ImageIO read a reduced-size image straight
+/// out of the file. See loadPreviewBaseImage.
 enum FlattenedImageStore {
 
     private static let settingsKey = "com.rocketsbrief.briefshow.flattenedSettings"
@@ -795,16 +811,53 @@ enum FlattenedImageStore {
             throw Failure.renderFailed
         }
         let rep = NSBitmapImageRep(cgImage: cgImage)
-        guard let data = rep.representation(
-            using: .tiff,
-            properties: [.compressionMethod: NSBitmapImageRep.TIFFCompression.lzw.rawValue]) else {
+        // No compression — see the type's own comment for the measurement.
+        guard let data = rep.representation(using: .tiff, properties: [:]) else {
             throw Failure.encodeFailed
         }
         try data.write(to: destination, options: .atomic)
 
+        // Only the FIRST flatten records a snapshot. Flattening a second time
+        // (an AI Clean Up done after the first bake, which is the normal way to
+        // reach this) must not overwrite it: those settings were measured
+        // against the already-baked picture, so restoring them onto the
+        // ORIGINAL file — which is what unflatten goes back to — would be
+        // restoring a grade to a photo that never had it. Unflatten means "back
+        // to before any of this", and one flatten or three, that is the same
+        // place.
         var all = storedSettings
-        all[key(for: photo)] = settings
-        storedSettings = all
+        if all[key(for: photo)] == nil {
+            all[key(for: photo)] = settings
+            storedSettings = all
+        }
+    }
+
+    /// Rewrites a flattened file that was written by an older build with LZW
+    /// compression, which cost ~10 s on every first render of the photo.
+    ///
+    /// Cheap to call on every open: it reads the TIFF header only (~1 ms) and
+    /// returns immediately unless the compression tag says otherwise. Called
+    /// off the main thread, from the decode that is about to open the file.
+    static func upgradeLegacyCompressedFile(for photo: URL) {
+        guard let url = flattenedURL(for: photo),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [String: Any],
+              let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any],
+              let compression = tiff[kCGImagePropertyTIFFCompression as String] as? Int,
+              compression != 1 else {
+            return
+        }
+        guard let decoded = CGImageSourceCreateImageAtIndex(source, 0, [
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary) else {
+            return
+        }
+        let rep = NSBitmapImageRep(cgImage: decoded)
+        guard let data = rep.representation(using: .tiff, properties: [:]) else {
+            return
+        }
+        try? data.write(to: url, options: .atomic)
     }
 
     /// Deletes the flattened copy and returns the settings it was baked from,
@@ -1049,6 +1102,31 @@ enum PhotoEditRenderer {
         return .standard(image)
     }
 
+    /// A reduced-size decode straight out of the file, at most `maxPixelSize`
+    /// on the long edge.
+    ///
+    /// `kCGImageSourceCreateThumbnailFromImageAlways` is what makes this worth
+    /// having: ImageIO reads the pixels it needs for the requested size instead
+    /// of decoding the frame and shrinking it. The name is unfortunate — this
+    /// is a full-quality reduced image, not the postage stamp the camera
+    /// embedded, which is what `...FromImageIfAbsent` would have settled for.
+    private static func downsampledImage(from url: URL, maxPixelSize: CGFloat) -> CIImage? {
+        guard maxPixelSize.isFinite, maxPixelSize >= 1,
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceThumbnailMaxPixelSize: Int(maxPixelSize.rounded()),
+                  // Orientation applied here, to match the .applyOrientationProperty
+                  // the full decode above opens with — otherwise a photo shot in
+                  // portrait would preview on its side and render upright.
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary) else {
+            return nil
+        }
+        return CIImage(cgImage: cgImage)
+    }
+
     // A second, independent decode used for the live-editing preview.
     // Non-RAW just downsamples the already-decoded full image with a CI
     // transform, same as before. RAW gets its OWN CIRAWFilter instance —
@@ -1082,6 +1160,24 @@ enum PhotoEditRenderer {
             guard scale < 1 else {
                 return full
             }
+            // A real reduced-size DECODE, not an affine transform over the
+            // full-resolution one — and for the same reason the RAW branch
+            // below builds its own filter rather than shrinking the export
+            // filter's output: scaling a lazy CIImage does not make it cheaper,
+            // it just puts a downsample at the end of a graph that still has to
+            // inflate every pixel of the file first.
+            //
+            // That cost is invisible on a 4 MB JPEG and enormous on a flattened
+            // photo, which is a 142 MB 16-bit TIFF at native resolution. It was
+            // measured on the client's flattened .NEF: 1.5 s through the
+            // transform, 0.13 s through this path, and the same saving is paid
+            // back on every return to the photo, because each open decodes
+            // afresh.
+            if let reduced = downsampledImage(from: url, maxPixelSize: previewMax) {
+                return .standard(reduced)
+            }
+            // A format ImageIO will not hand back a reduced image for still has
+            // to show something, so the old path stays as the fallback.
             return .standard(image.transformed(by: CGAffineTransform(scaleX: scale, y: scale)))
 
         case .raw:
@@ -5394,7 +5490,20 @@ struct DevelopView: View {
                             rect: fitted.intersection(CGRect(origin: .zero, size: proxy.size))))
                         .allowsHitTesting(false)
                     }
-                } else if isLoadingPreview {
+                } else if isLoadingPreview || selectedURL != nil {
+                    // A photo IS chosen and its picture is not on screen yet,
+                    // so it is still on its way — say that, rather than the
+                    // "nothing is selected" text.
+                    //
+                    // isLoadingPreview goes false when the DECODE lands, which
+                    // is not when the picture appears: the first render still
+                    // has to run. On a flattened photo that gap used to be
+                    // seconds long, and what filled it was an empty panel
+                    // telling the client to select a photo they had already
+                    // selected — reported as "I lose the image, it will not
+                    // show it to me". The gap itself is fixed elsewhere in this
+                    // file; this makes sure the window never lies about it
+                    // again, whatever the cause.
                     ProgressView()
                 } else {
                     Text("Select a photo from the filmstrip")
@@ -9519,9 +9628,55 @@ struct DevelopView: View {
         loadImages(for: selectedURL)
     }
 
+    /// Is there anything a flatten would actually bake?
+    ///
+    /// Not `settings.isNeutral`, which counts a crop as an edit. The crop is
+    /// deliberately NOT baked (flattenPhoto renders with `applyCrop: false`),
+    /// so a photo carrying nothing but a crop has nothing to flatten — and
+    /// after a flatten the crop is exactly what is left behind, which would
+    /// otherwise leave the button lit up forever offering to bake nothing.
+    private var hasUnbakedEdits: Bool {
+        var cropOnly = PhotoEditSettings()
+        cropOnly.crop = settings.crop
+        return settings != cropOnly
+    }
+
     private var flattenSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let selectedURL, FlattenedImageStore.isFlattened(selectedURL) {
+        let isFlattened = selectedURL.map { FlattenedImageStore.isFlattened($0) } ?? false
+
+        return VStack(alignment: .leading, spacing: 8) {
+            // Flatten is offered whenever there is anything to bake — INCLUDING
+            // on a photo that is already flattened. That case is not an edge
+            // case, it is the ordinary way of working: flatten, then clean up
+            // something else, and the clean up is a fresh layer of baked pixels
+            // sitting outside the tonal chain again, with exactly the defect
+            // flattening exists to fix. The panel used to swap the button out
+            // for Unflatten the moment a photo was flattened, so the second
+            // clean up had no way to be baked at all — reported directly.
+            if hasUnbakedEdits {
+                panelActionButton(isFlattening
+                                    ? "Flattening…"
+                                    : (isFlattened ? "Flatten Again" : "Flatten Photo"),
+                                  systemImage: "square.stack.3d.down.forward") {
+                    flattenPhoto()
+                }
+                .opacity(isFlattening ? 0.4 : 1)
+                .disabled(isFlattening)
+
+                Text(isFlattened
+                     ? "Bakes what has been done since the last flatten — an AI Clean Up "
+                       + "included — into the photo, so a grade applied afterwards reaches "
+                       + "all of it too."
+                     : "Bakes the grade, the masks and the AI Clean Up into the photo, "
+                       + "so anything applied afterwards — a synced grade included — "
+                       + "reaches all of it. Your original file is never touched, and "
+                       + "Unflatten puts this back.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if isFlattened {
                 Text("This photo is flattened. Edits now apply to everything, "
                      + "including the AI Clean Up.")
                     .font(.custom("Figtree", size: 11))
@@ -9531,23 +9686,12 @@ struct DevelopView: View {
                 panelActionButton("Unflatten", systemImage: "arrow.uturn.backward") {
                     unflattenPhoto()
                 }
-            } else {
-                // Offered whenever there is anything to bake. It is most needed
-                // after an AI Clean Up — that layer is the thing a later grade
-                // cannot reach — but a photo with only sliders flattens fine
-                // too, and refusing that would be a rule the client has to
-                // learn for no gain.
-                panelActionButton(isFlattening ? "Flattening…" : "Flatten Photo",
-                                  systemImage: "square.stack.3d.down.forward") {
-                    flattenPhoto()
-                }
-                .opacity(settings.isNeutral || isFlattening ? 0.4 : 1)
-                .disabled(settings.isNeutral || isFlattening)
 
-                Text("Bakes the grade, the masks and the AI Clean Up into the photo, "
-                     + "so anything applied afterwards — a synced grade included — "
-                     + "reaches all of it. Your original file is never touched, and "
-                     + "Unflatten puts this back.")
+                // Said plainly, because Unflatten goes all the way back to the
+                // original file however many times the photo has been baked —
+                // there is one saved copy, not a stack of them.
+                Text("Goes back to the original file and the settings from before "
+                     + "the first flatten. Anything done since is discarded.")
                     .font(.custom("Figtree", size: 11))
                     .foregroundColor(AppColors.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -10239,6 +10383,12 @@ struct DevelopView: View {
         histogramBins = []
 
         DispatchQueue.global(qos: .userInitiated).async {
+            // Off the main thread, before the decode that is about to open the
+            // file: a flattened copy written by an older build is LZW and costs
+            // ~10 s on its first render. Reads the TIFF header and returns
+            // immediately for everything else.
+            FlattenedImageStore.upgradeLegacyCompressedFile(for: url)
+
             guard let base = PhotoEditRenderer.loadBaseImage(from: url) else {
                 DispatchQueue.main.async {
                     if url == selectedURL {

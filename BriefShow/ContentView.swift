@@ -11961,7 +11961,7 @@ struct DisclaimerHoverCard: View {
                 .font(.custom("Figtree", size: 14).weight(.medium))
                 .foregroundColor(AppColors.ink)
 
-            Text("Read the usage notice for BriefShow, ShowGrid, and RocketsBrief products, including user responsibility, voluntary support terms, limitations, and prohibited use.")
+            Text("Read the usage notice for BriefShow — Showcase and LumenoLab — and RocketsBrief products, including user responsibility, voluntary support terms, limitations, and prohibited use.")
                 .font(.custom("Figtree", size: 11).weight(.regular))
                 .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -12056,19 +12056,19 @@ struct DisclaimerNoticeModal: View {
     private let noticeSections: [(String, String)] = [
         (
             "Paid product, sold as is",
-            "BriefShow, ShowGrid, and LumenoLab are paid software from RocketsBrief. Buying them grants you a licence to use the application; it does not transfer ownership of the software or of anything in it. The price, what a purchase includes, and how it is billed are whatever is stated where you bought it. The software is offered “as is” and “as available,” without guarantees that it will always be error-free, uninterrupted, or suitable for every specific purpose."
+            "BriefShow is paid software from RocketsBrief. BriefShow is the suite; Showcase is its slideshow and LumenoLab is its photo editor. Buying them grants you a licence to use the application; it does not transfer ownership of the software or of anything in it. The price, what a purchase includes, and how it is billed are whatever is stated where you bought it. The software is offered “as is” and “as available,” without guarantees that it will always be error-free, uninterrupted, or suitable for every specific purpose."
         ),
         (
             "User responsibility",
-            "You are responsible for the images, music, files, prompts, content, exports, and any other materials you upload, create, process, publish, share, or use through BriefShow, ShowGrid, or any RocketsBrief product."
+            "You are responsible for the images, music, files, prompts, content, exports, and any other materials you upload, create, process, publish, share, or use through BriefShow, Showcase, LumenoLab, or any RocketsBrief product."
         ),
         (
             "Prohibited use",
-            "You may not use BriefShow, ShowGrid, RocketsBrief, or any related tool to create, promote, distribute, or support unlawful, harmful, fraudulent, abusive, infringing, or prohibited activity. This includes scams, phishing, malware, spam, impersonation, copyright infringement, illegal products or services, or any activity that violates applicable laws, third-party rights, platform rules, or payment processor policies."
+            "You may not use BriefShow, Showcase, LumenoLab, RocketsBrief, or any related tool to create, promote, distribute, or support unlawful, harmful, fraudulent, abusive, infringing, or prohibited activity. This includes scams, phishing, malware, spam, impersonation, copyright infringement, illegal products or services, or any activity that violates applicable laws, third-party rights, platform rules, or payment processor policies."
         ),
         (
             "Review before use",
-            "Any output or exported photos created with BriefShow or ShowGrid should be reviewed by you before publishing, selling, sharing, or relying on it. RocketsBrief does not guarantee legal compliance, business results, earnings, conversions, or that any output will meet a specific requirement."
+            "Any output or exported photos created with BriefShow should be reviewed by you before publishing, selling, sharing, or relying on it. RocketsBrief does not guarantee legal compliance, business results, earnings, conversions, or that any output will meet a specific requirement."
         ),
         (
             "Fund Mission support",
@@ -12079,20 +12079,20 @@ struct DisclaimerNoticeModal: View {
             "RocketsBrief may refuse, limit, suspend, or remove access to any product or service if it believes a user is violating these terms, applicable law, third-party rights, payment processor rules, or creating risk for RocketsBrief, other users, or the public."
         ),
         (
-            "Future changes to BriefShow and ShowGrid",
-            "RocketsBrief may change, add, remove, lock, or discontinue any feature, theme, or part of BriefShow, ShowGrid, or LumenoLab at any time, without notice. This includes requiring an account sign-up to continue use, and changing pricing, introducing subscriptions, or moving features between paid tiers in the future. By continuing to use the software, you agree that these changes may happen at any time."
+            "Future changes to BriefShow",
+            "RocketsBrief may change, add, remove, lock, or discontinue any feature, theme, or part of BriefShow, Showcase, or LumenoLab at any time, without notice. This includes requiring an account sign-up to continue use, and changing pricing, introducing subscriptions, or moving features between paid tiers in the future. By continuing to use the software, you agree that these changes may happen at any time."
         ),
         (
             "Copyright and ownership",
-            "BriefShow, ShowGrid, and LumenoLab are created by and are the property of the RocketsBrief Team, apart from the third-party components listed below, which remain the property of their own authors and are used under their own licences. You are welcome to share or recommend the app to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow, ShowGrid, or LumenoLab, in whole or in part."
+            "BriefShow, including Showcase and LumenoLab, is created by and is the property of the RocketsBrief Team, apart from the third-party components listed below, which remain the property of their own authors and are used under their own licences. You are welcome to share or recommend the app to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow, Showcase, or LumenoLab, in whole or in part."
         ),
         (
             "Account data and email use",
-            "If BriefShow, ShowGrid, or LumenoLab requires an account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
+            "If BriefShow requires an account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
         ),
         (
             "Usage analytics",
-            "BriefShow and ShowGrid share only basic metrics with RocketsBrief: how many videos have been exported from BriefShow, and how many separate machines run BriefShow or ShowGrid. To protect your privacy, the app generates a strictly randomized installation ID that has no connection to your hardware, device serial numbers, or network configuration. This does not include your files, photos, music, exported videos, or any personal information — and it is completely separate from, and in addition to, the email address you provide only if you create an account."
+            "BriefShow shares only basic metrics with RocketsBrief: how many videos have been exported from Showcase, and how many separate machines run BriefShow. To protect your privacy, the app generates a strictly randomized installation ID that has no connection to your hardware, device serial numbers, or network configuration. This does not include your files, photos, music, exported videos, or any personal information — and it is completely separate from, and in addition to, the email address you provide only if you create an account."
         ),
         (
             "AI features run on your own Mac",
@@ -12104,7 +12104,7 @@ struct DisclaimerNoticeModal: View {
         ),
         (
             "Third-party components",
-            "BriefShow, ShowGrid, and LumenoLab include work by others, each under its own licence: the LaMa inpainting model, code and pre-trained weights alike, under the Apache License 2.0 (Samsung AI Center — the same weights are also published under Apache 2.0 by the OpenCV project); Stable Diffusion v1.5 Inpainting (CreativeML Open RAIL-M); OpenAI’s CLIP tokenizer data (MIT License); and the Figtree and Unbounded typefaces (SIL Open Font License 1.1). Those licences govern those components — the “Copyright and ownership” section above is about this application itself, not about them. THIRD_PARTY_LICENSES, shipped inside the app, lists each one in full, names the exact model build in use, and records what is settled and what is not."
+            "BriefShow includes work by others, each under its own licence: the LaMa inpainting model, code and pre-trained weights alike, under the Apache License 2.0 (Samsung AI Center — the same weights are also published under Apache 2.0 by the OpenCV project); Stable Diffusion v1.5 Inpainting (CreativeML Open RAIL-M); OpenAI’s CLIP tokenizer data (MIT License); and the Figtree and Unbounded typefaces (SIL Open Font License 1.1). Those licences govern those components — the “Copyright and ownership” section above is about this application itself, not about them. THIRD_PARTY_LICENSES, shipped inside the app, lists each one in full, names the exact model build in use, and records what is settled and what is not."
         ),
         (
             "Reading Lightroom presets",
@@ -12120,7 +12120,7 @@ struct DisclaimerNoticeModal: View {
                         .font(.custom("Figtree", size: 24).weight(.semibold))
                         .foregroundColor(AppColors.ink)
 
-                    Text("For BriefShow, ShowGrid, LumenoLab, and RocketsBrief products")
+                    Text("For BriefShow — Showcase, LumenoLab — and RocketsBrief products")
                         .font(.custom("Figtree", size: 12.5).weight(.regular))
                         .foregroundColor(AppColors.muted)
                 }
@@ -12156,7 +12156,7 @@ struct DisclaimerNoticeModal: View {
                         }
                     }
 
-                    Text("By using BriefShow, ShowGrid, or LumenoLab, you agree to this entire Disclaimer & Usage Notice, including the third-party licence terms it passes on to you, and including that you are responsible for your own use of the tool and any content or output you create with it.")
+                    Text("By using BriefShow, Showcase, or LumenoLab, you agree to this entire Disclaimer & Usage Notice, including the third-party licence terms it passes on to you, and including that you are responsible for your own use of the tool and any content or output you create with it.")
                         .font(.custom("Figtree", size: 12).weight(.semibold))
                         .foregroundColor(AppColors.hoverInk)
                         .lineSpacing(3)
@@ -21791,8 +21791,18 @@ struct PhotoShowSheet: View {
                     NSWorkspace.shared.open(url)
                 }
             } label: {
-                Text("Fund Mission")
-                    .frame(height: 13)
+                HStack(spacing: 6) {
+                    // A heart, not a coin or a card: this is a voluntary
+                    // contribution, and the notice beside it says so. A payment
+                    // glyph would promise a purchase.
+                    Image(systemName: "heart.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 13, height: 13)
+
+                    Text("Fund Mission")
+                }
+                .frame(height: 13)
             }
             .buttonStyle(HeaderLinkButtonStyle())
             .overlay(alignment: .bottomTrailing) {
@@ -21812,8 +21822,15 @@ struct PhotoShowSheet: View {
             Button {
                 isDisclaimerNoticePresented = true
             } label: {
-                Text("Disclaimer")
-                    .frame(height: 13)
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.text")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 13, height: 13)
+
+                    Text("Disclaimer")
+                }
+                .frame(height: 13)
             }
             .buttonStyle(HeaderLinkButtonStyle())
             .overlay(alignment: .bottomTrailing) {
@@ -22772,31 +22789,34 @@ struct PhotoShowSheet: View {
                     return nil
                 }()
 
-                if character == "c", let copyCutTargets {
+                // Bindings come from ShortcutStore so the client can change
+                // them (Edit ▸ Keyboard Shortcuts). The defaults are exactly
+                // the keys this monitor had written into it.
+                if ShortcutStore.matches(event, .gridCopy), let copyCutTargets {
                     writeURLsToPasteboard(copyCutTargets)
                     clipboardURLs = copyCutTargets
                     clipboardIsCut = false
                     return nil
                 }
 
-                if character == "x", let copyCutTargets {
+                if ShortcutStore.matches(event, .gridCut), let copyCutTargets {
                     writeURLsToPasteboard(copyCutTargets)
                     clipboardURLs = copyCutTargets
                     clipboardIsCut = true
                     return nil
                 }
 
-                if character == "v" {
+                if ShortcutStore.matches(event, .gridPaste) {
                     pasteIntoGrid()
                     return nil
                 }
 
-                // Cmd-A selects every photo currently in the grid at once
+                // Selects every photo currently in the grid at once
                 // (Finder/Photos convention) — only back in the grid itself,
                 // not while the loupe is open (there's nothing to "select
                 // all" inside a single-photo preview) and only when there's
                 // at least one photo to select.
-                if character == "a", loupeURLs == nil, !photoURLs.isEmpty {
+                if ShortcutStore.matches(event, .gridSelectAll), loupeURLs == nil, !photoURLs.isEmpty {
                     replaceSelection(with: photoURLs)
                     return nil
                 }
@@ -22888,7 +22908,7 @@ struct PhotoShowSheet: View {
                 // photo (same per-photo toggle as clicking its circle) —
                 // checked by character rather than key code so it still
                 // works under non-US keyboard layouts.
-                if !isCommandDown, !selectedURLs.isEmpty, character == "x" {
+                if ShortcutStore.matches(event, .gridToggleLabel), !selectedURLs.isEmpty {
                     for url in selectedURLs {
                         toggleLike(url)
                     }
@@ -22898,7 +22918,7 @@ struct PhotoShowSheet: View {
                 // "v" clears every label and star rating, same as the
                 // "Clear All" header button — still asks for confirmation
                 // since it's a bulk, all-photos action.
-                if !isCommandDown, character == "v", hasLabelsOrRatings {
+                if ShortcutStore.matches(event, .gridClearLabels), hasLabelsOrRatings {
                     isClearAllConfirmationPresented = true
                     return nil
                 }

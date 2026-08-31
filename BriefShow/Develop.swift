@@ -4768,8 +4768,13 @@ struct DevelopView: View {
             // the modifiers that actually distinguish one shortcut from
             // another (command alone vs command+shift) fixes that without
             // losing the ability to tell them apart.
+            // `flags` is still needed by the arrow-key nudge below, which is a
+            // FIXED shortcut rather than a bound one. The character lookup that
+            // used to sit beside it is gone: every bound shortcut now goes
+            // through KeyCombo.matches, which does the same narrowing to the
+            // four modifiers that can tell one shortcut from another — see its
+            // `relevantModifiers`, and the bug that rule exists to prevent.
             let flags = event.modifierFlags.intersection([.command, .shift, .control, .option])
-            let key = event.charactersIgnoringModifiers?.lowercased()
 
             // Each case only fires when there's actually something for it
             // to DO (a populated clipboard / a non-empty undo stack / an
@@ -4780,24 +4785,40 @@ struct DevelopView: View {
             // isn't in active use. Without these guards, every one of
             // these keys anywhere in Develop — including inside a plain
             // text field — would be swallowed by this monitor.
-            if flags == .command, !event.isARepeat {
-                switch key {
-                case "v" where layerClipboard != nil: pasteLayer(); return nil
-                case "c" where activeSelection != nil: copySelection(); return nil
-                case "x" where activeSelection != nil: cutSelection(); return nil
-                // Cmd+A selects every photo in the filmstrip, the same set the
-                // right-click "Select All" builds — the Finder/ShowGrid
-                // convention, which ShowGrid has had and this window had not.
-                //
-                // Guarded on the field editor so it stays out of the way of
-                // the preset-name text field, where Cmd+A means select the
-                // TEXT and always will. Everywhere else in this window there
-                // is nothing else it could mean.
-                case "a" where !photoURLs.isEmpty
-                    && !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false):
-                    selectAllPhotos()
+            // Every binding below comes from ShortcutStore, so the client can
+            // change any of them (Edit ▸ Keyboard Shortcuts). The DEFAULTS in
+            // ShortcutAction are exactly the keys this monitor used to have
+            // written into it, so nothing about a fresh install changed.
+            //
+            // A press inside a text field is left alone throughout: in a field
+            // ⌘A means select the TEXT, and Q and E are letters.
+            let isTyping = (NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false
+
+            if !event.isARepeat, !isTyping {
+                if ShortcutStore.matches(event, .pasteLayer), layerClipboard != nil {
+                    pasteLayer(); return nil
+                }
+                if ShortcutStore.matches(event, .copySelection), activeSelection != nil {
+                    copySelection(); return nil
+                }
+                if ShortcutStore.matches(event, .cutSelection), activeSelection != nil {
+                    cutSelection(); return nil
+                }
+                if ShortcutStore.matches(event, .selectAllPhotos), !photoURLs.isEmpty {
+                    selectAllPhotos(); return nil
+                }
+            }
+
+            // Stepping through the filmstrip. Repeats ARE allowed — holding the
+            // key to run through a folder is the point of having it on a letter
+            // rather than on a menu — and each press is one bounded index move,
+            // so nothing can pile up the way a repeated paste once did.
+            if !isTyping {
+                if ShortcutStore.matches(event, .nextPhoto), stepPhoto(by: 1) {
                     return nil
-                default: break
+                }
+                if ShortcutStore.matches(event, .previousPhoto), stepPhoto(by: -1) {
+                    return nil
                 }
             }
             // Cmd +/- zoom, Cmd 0 back to fit. Repeat is allowed on purpose —
@@ -4806,27 +4827,31 @@ struct DevelopView: View {
             // Cmd+V paste-per-repeat bug did. Both "=" and "+" are matched
             // because the same physical key reports as "=" unshifted and "+"
             // with shift, and people press it either way.
-            if flags == .command || flags == [.command, .shift] {
-                switch key {
-                case "=", "+": stepZoom(1); return nil
-                case "-", "_": stepZoom(-1); return nil
-                // Cmd+0 only. Cmd+Space was tried and dropped: Spotlight owns
-                // it system-wide, so it never reaches the app.
-                case "0" where flags == .command: resetZoom(); return nil
-                default: break
+            // Zoom. "+" and "_" are matched alongside "=" and "-" because the
+            // same physical key reports either way depending on Shift, and
+            // people press it both ways.
+            if !isTyping {
+                if ShortcutStore.matches(event, .zoomIn) || shiftedTwin(event, of: .zoomIn, "+") {
+                    stepZoom(1); return nil
                 }
-            }
-            if flags == .command, key == "z", !undoStack.isEmpty {
-                undo()
-                return nil
-            }
-            if flags == [.command, .shift], key == "z", !redoStack.isEmpty {
-                redo()
-                return nil
-            }
-            if flags.isEmpty, key == "[" || key == "]", activeToolHasAdjustableSize {
-                adjustActiveToolSize(increase: key == "]")
-                return nil
+                if ShortcutStore.matches(event, .zoomOut) || shiftedTwin(event, of: .zoomOut, "_") {
+                    stepZoom(-1); return nil
+                }
+                if ShortcutStore.matches(event, .zoomToFit) {
+                    resetZoom(); return nil
+                }
+                if ShortcutStore.matches(event, .undo), !undoStack.isEmpty {
+                    undo(); return nil
+                }
+                if ShortcutStore.matches(event, .redo), !redoStack.isEmpty {
+                    redo(); return nil
+                }
+                if ShortcutStore.matches(event, .decreaseToolSize), activeToolHasAdjustableSize {
+                    adjustActiveToolSize(increase: false); return nil
+                }
+                if ShortcutStore.matches(event, .increaseToolSize), activeToolHasAdjustableSize {
+                    adjustActiveToolSize(increase: true); return nil
+                }
             }
             // ← / → step whichever slider is currently armed (clicking a
             // slider's name arms it, see selectSlider), Shift+arrow steps it
@@ -5342,11 +5367,21 @@ struct DevelopView: View {
             }
 
             if hasEdits {
+                // NOT accentColor. In the dark theme that is a pale cream, and
+                // a white glyph on pale cream is a white glyph on nothing —
+                // reported with a screenshot, the badge was visible and the
+                // icon inside it was not.
+                //
+                // ink-on-background instead, which is the app's own text pair:
+                // it is guaranteed to contrast in every theme because that is
+                // the one thing those two colours are for, and it reads as part
+                // of the app rather than as a warning. accentColor stays the
+                // selection ring, which is what it is reserved for.
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(AppColors.background)
                     .padding(4)
-                    .background(Circle().fill(accentColor))
+                    .background(Circle().fill(AppColors.ink.opacity(0.92)))
                     .padding(4)
             }
         }
@@ -10400,6 +10435,39 @@ struct DevelopView: View {
     // Shift+arrow for coarse" pairing. Returns false when nothing is armed
     // or the armed slider isn't currently on screen, so the caller can let
     // the keypress through untouched.
+    /// The same key with Shift held, for the one pair where the keyboard gives
+    /// two characters for one key: "=" / "+" and "-" / "_".
+    ///
+    /// Only applies while the binding is still the default one — if the client
+    /// has rebound Zoom In to something else, there is no twin to guess at.
+    private func shiftedTwin(_ event: NSEvent, of action: ShortcutAction, _ twin: String) -> Bool {
+        let combo = ShortcutStore.combo(for: action)
+        guard combo == action.defaultCombo else {
+            return false
+        }
+        var shifted = combo
+        shifted.character = twin
+        shifted.shift = true
+        return shifted.matches(event)
+    }
+
+    /// Moves `by` photos along the filmstrip. Returns false at either end and
+    /// when there is nowhere to go, so the key falls through untouched rather
+    /// than being swallowed for nothing.
+    @discardableResult
+    private func stepPhoto(by offset: Int) -> Bool {
+        guard let selectedURL,
+              let index = photoURLs.firstIndex(of: selectedURL) else {
+            return false
+        }
+        let target = index + offset
+        guard photoURLs.indices.contains(target) else {
+            return false
+        }
+        selectPhoto(photoURLs[target])
+        return true
+    }
+
     private func nudgeSelectedSlider(increase: Bool, coarse: Bool) -> Bool {
         guard let key = selectedSliderKey else {
             return false

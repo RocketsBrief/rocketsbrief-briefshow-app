@@ -98,6 +98,77 @@ razlog da se naivna verzija vrati — bila bi spora i tamo.
 1. UVEK proveriti `event.isARepeat` i vratiti `event` (ne progutati) kad je true, OSIM ako je namerno drugačije. Stavka #15 ispod dokumentuje prvi incident (app zamrznut, `kill -9` morao) kad je ovo izostavljeno.
 2. UVEK ograničiti monitor na SVOJ prozor (`guard NSApp.keyWindow?.title == "<taj prozor>" else { return event }`, prva linija u handleru). Local NSEvent monitori su APP-WIDE, ne po-prozoru — bez ove provere, monitor registrovan u JEDNOM prozoru (npr. ShowGrid) i dalje prima i OBRAĐUJE tastere dok je NEKI DRUGI prozor (npr. Develop) fokusiran, često sa netačnim/praznim kontekstom (npr. "ništa nije selektovano, pa primeni na CEO folder"). Stavka #18 dokumentuje pravi incident (ceo Desktop folder rekurzivno kopiran u sebe, DVA puta, `kill -9` morao oba puta) kad je ovo izostavljeno na ShowGrid-ovom monitoru dok je Develop-ov (koji JESTE imao ovu proveru) bio ispravan primer.
 
+## 🟢 ZAKLJUČANO — LICENCE I KOMERCIJALNA UPOTREBA
+
+**Provereno 31.08–01.09.2026. u primarnim izvorima. Ovo se više ne preispituje.**
+Ako neka buduća sesija ponovo otvori pitanje „smemo li komercijalno", odgovor je
+ovde, sa dokazima. Menja se samo ako stigne nov dokument od nosioca prava.
+
+| komponenta | licenca | komercijalno |
+|---|---|---|
+| **LaMa — kod** | Apache 2.0 (`lama-src/LICENSE`) | **DA** |
+| **LaMa — težine `big-lama`** | Apache 2.0 | **DA** |
+| **Stable Diffusion 1.5 Inpainting** | CreativeML Open RAIL-M | **DA**, uz obaveze — ispunjene |
+| **CLIP tokenizer** | MIT | DA |
+| **Figtree, Unbounded** | SIL OFL 1.1 | DA |
+| **Čitanje Lightroom .xmp** | naša implementacija | DA |
+
+### Zašto su težine rešene
+
+- Zvanični LaMa README (i naš `lama-src/README.md` linija 113, i aktuelni na
+  `github.com/advimman/lama`) daje **tačno jedan** link za „The best model
+  (Places2, Places Challenge)": `huggingface.co/smartywu/big-lama`. To je link
+  koji **autori propisuju**, a ne kopija nađena sa strane.
+- Ta HF stranica deklariše `license: apache-2.0`.
+- Aktuelni zvanični README **nigde** ne ograničava modele — traženo „licen",
+  „commercial", „non-commercial", „copyright": nula pogodaka. Repo ima jednu
+  licencu, Apache 2.0, u korenu.
+- **OpenCV** objavljuje **iste** težine (`huggingface.co/opencv/inpainting_lama`)
+  sa pravim `LICENSE` fajlom, pun Apache 2.0 tekst, i README-om koji kaže „All
+  files in this directory are licensed under Apache License". Velik projekat sa
+  stvarnom pravnom izloženošću ih je pogledao i objavio komercijalno.
+
+### Dve stvari koje su usput bile POGREŠNO zaključene, da se ne ponove
+
+1. „Težine su sa tuđeg re-uploada i ne daju ništa." **Netačno** — to je link iz
+   zvaničnog README-a.
+2. „Težine idu pod CC BY-NC-SA 4.0, nekomercijalno." **Netačno i nepotvrđeno** —
+   ništa u repou, README-u ni model card-u to ne kaže.
+
+Obe su bile moje, obe su povučene i **izričito zapisane kao povučene** u
+`BriefShow/Licenses/THIRD_PARTY_LICENSES.md`, jer je ranija verzija bila osnova
+za odluku o prodaji app-a.
+
+### Šta ostaje, i zašto NIJE prepreka
+
+Places2 (dataset na kome je model treniran) deli se za istraživanje. Da li se
+uslovi dataseta uopšte protežu kroz istrenirane težine — da li su težine
+„izvedeno delo" od slika — **nerešeno je pravno pitanje, ne „ne"**. Isto stoji
+ispod praktično svakog objavljenog vision modela, uključujući i SD koji već
+koristimo. Nije specifično za nas.
+
+Ako se ikad bude htela hartija: jedno pitanje autorima uz SHA-256
+`fccb7adffd53ec0974ee5503c3731c2c2f1e7e07856fd9228cdcc0b46fd5d423`, odgovor
+sačuvati u `BriefShow/Licenses/`.
+
+### Šta je ISPORUČENO u app-u
+
+`BriefShow.app/Contents/Resources/` nosi pun tekst svake licence — povučeni
+doslovno, ne prepričani: `LaMa-Apache-2.0.txt`,
+`StableDiffusion-CreativeML-Open-RAIL-M.txt`, `CLIP-MIT.txt`,
+`Fonts-SIL-OFL-1.1.txt`, `THIRD_PARTY_LICENSES.md`.
+
+Open RAIL-M ima dve obaveze i **obe su ispunjene**: licenca putuje uz app, a
+ograničenja upotrebe (Attachment A) stoje u Disclaimer-u, u sekciji
+„Restrictions on AI use", koju korisnik otvara iz futera.
+
+### ⚠️ Ne pravi Opciju B
+
+Retreniranje modela na „čistim" podacima je bilo planirano samo za slučaj da
+odgovor bude „ne". Odgovor nije „ne". Retreniranje bi promenilo rezultat AI
+Clean Up-a, koji je zaključan gore kao dobar.
+
+
 ## TL;DR — gde smo stali
 
 ### ⚠️ PRVO ZA SLEDEĆU SESIJU — preimenovanje u „Afterburn Studio"
@@ -6969,6 +7040,104 @@ klizače iz KORAKA 52.
   to su dva broja u `ColorMixerCube`.
 - Sharpening Detail i Masking i dalje nemaju regulator, kao ni stil vinjete
   (Highlight/Colour Priority). Uvoz to i kaže.
+
+
+## KORAK 54 — prečice postaju podesive, i sitnice oko njih (1. septembar 2026)
+
+### Nazivi proizvoda — ispravljeno svuda u Disclaimer-u
+
+Korisnik: „nemamo ustvari mi ShowGrid, imamo samo **BriefShow kao suite**,
+**Showcase** kao slideshow app i **LumenoLab** kao app za editovanje."
+
+Disclaimer je govorio o „BriefShow and ShowGrid" kao o dva proizvoda. Sad:
+BriefShow je paket, Showcase je slideshow u njemu, LumenoLab je editor. Reč
+„ShowGrid" više ne postoji ni u jednoj rečenici koju klijent čita — provereno
+programski nad celim blokom teksta.
+
+⚠️ `window.title` je i dalje `"BriefShow"` i **ne sme se dirati** — oba monitora
+tastature se po njemu ograničavaju (MINA 2).
+
+### Nov fajl `Shortcuts.swift`
+
+Do sad je svaka prečica bila literal zakopan u jedan od dva `NSEvent` monitora —
+`key == "x"` u BriefShow-u, `key == "z"` u LumenoLab-u. Nije postojao spisak,
+nije se moglo promeniti, i nije se moglo saznati šta je zauzeto pre nego što se
+doda nova. Sad postoji spisak, a monitori ga pitaju.
+
+**Difolti su tačno one prečice koje je app već imao.** Ništa se u ponašanju
+svežeg instala nije promenilo; promenilo se to što sad može da se promeni.
+
+- `KeyCombo` — taster plus modifikatori, uporediv i upisiv. Slova se čuvaju kao
+  `charactersIgnoringModifiers` (radi i na ne-US rasporedu), a strelice/Esc/
+  Delete po **key code-u**, jer su to fizičke pozicije a ne slova.
+- `KeyCombo.relevantModifiers` sužava na command/shift/option/control —
+  **namerno ne** `.deviceIndependentFlagsMask`. Caps Lock ili numerički bit
+  legitimno stignu uz pritisak, a poređenje je stroga jednakost, pa bi jedan
+  slučajan bit tiho ubio prečicu. **Taj bag je u ovom app-u već jednom
+  popravljen i ne vraća se.**
+- `ShortcutStore` čuva **samo izmene**, ne ceo skup. Difolt koji se popravi u
+  nekoj kasnijoj verziji tako stigne svakome ko tu prečicu nije dirao.
+- **Setovi prečica** (`Preset`) čuvaju **pun** skup, difolte uključivo — set je
+  potpun odgovor na „koje su bile moje prečice" i mora da preživi promenu
+  difolta u novoj verziji.
+- Sudar se prijavljuje **samo unutar iste grupe**. ⌘C znači jedno u BriefShow-u
+  a drugo u LumenoLab-u i oduvek je tako — monitori su i ograničeni po prozoru
+  baš zato. To nije sudar.
+
+### Šta je podesivo, a šta nije
+
+Podesivo: Next/Previous Photo, Undo, Redo, Copy/Cut/Paste Selection, Select All,
+Zoom In/Out/Fit, veličina alata — plus, za BriefShow prozor: Select All, Copy,
+Cut, Paste, Toggle Label, Clear All, Preview.
+
+Fiksno, i **ispisano u prozoru da klijent vidi da postoji**: ← / → (nudge
+slajdera), Esc, Delete, Space (ručica), ⌥ (izvorni prsten), strelice u mreži,
+1–5 (zvezdice). Svaka od njih je taster čije značenje drži platforma ili alat
+kome pripada; nuditi njihovu izmenu značilo bi nuditi nešto što ostatak app-a ne
+može da ispoštuje.
+
+### Q i E
+
+Traženo: „E" sledeća slika, „Q" prethodna. Kroz `ShortcutStore` od prvog dana, pa
+se mogu promeniti kao i sve ostalo.
+
+Ponavljanje pritiska **jeste** dozvoljeno — držanje tastera da se protrči kroz
+folder je poenta toga što je na slovu a ne u meniju — a svaki pritisak je jedan
+ograničen pomeraj indeksa, pa se ne može gomilati kao nekad ponovljeni paste.
+`stepPhoto` vraća `false` na krajevima, pa taster tada prođe dalje netaknut
+umesto da bude progutan bez efekta.
+
+### Edit ▸ Keyboard Shortcuts…
+
+**Jedna** stavka u meniju, namerno — ne meni sa svakom komandom i njenim
+tasterom. Obe prečice žive u lokalnim monitorima vezanim za naslov prozora, a
+key equivalent u meniju bi bio **drugi polagač prava** na isti pritisak: dva
+puta do iste akcije, u trci, a klijentova izmena vidljiva samo u jednom. Prozor
+koji se otvori **jeste** spisak, i on je onaj koji se menja.
+
+Snimač u tom prozoru **guta svaki pritisak** dok je upaljen. To je poenta: ceo
+app osluškuje tastere, pa bi snimač koji pušta pritisak dalje istovremeno
+prevezao Undo i izvršio ga. Esc izlazi bez vezivanja — jedini način napolje iz
+nečega što jede sve ostalo.
+
+### Sitnice iz istog zahvata
+
+- **Oznaka „editovano" na sličici** bila je bela ikonica na `accentColor`, a to
+  je u crnoj temi bledo krem — bela na krem je bela na ničemu. Sad je
+  `AppColors.background` na `AppColors.ink`: to su dve boje app-a čiji je jedini
+  posao da se razlikuju, pa kontrast postoji u svakoj temi, i čita se kao deo
+  app-a a ne kao upozorenje. `accentColor` ostaje prsten selekcije, za šta je i
+  rezervisan.
+- **Ikonice u futeru** za Fund Mission (srce — dobrovoljan prilog, ne kupovina,
+  pa ne ikonica kartice) i Disclaimer (dokument). RocketsBrief i Support su ih
+  već imali, pa je red čitao kao dve vrste stvari.
+
+### ⚠️ Neprovereno
+
+- Prečice nisu isprobane rukom posle prevezivanja; difolti su prepisani jedan u
+  jedan iz starih monitora i build prolazi, ali klik-po-klik proveru vredi
+  uraditi, naročito ⌘Z/⌘⇧Z i `[` / `]`.
+- Snimanje prečice nije probano na ne-US rasporedu tastature.
 
 
 ## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)

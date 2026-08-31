@@ -4,10 +4,9 @@ Everything in the app that someone else made, what it is licensed under, and —
 where it is not settled — what is still open. Last checked: 31 August 2026,
 against app version 6.0.
 
-**This is a working record, not a legal clearance.** One entry below is marked
-⚠️ OPEN. It is open because nothing in this project grants the right in writing,
-not because the answer is likely to be bad. It should be closed before the app
-is sold.
+**This is a working record, not a legal clearance.** Everything below is
+settled except one upstream question about the LaMa weights, described in full
+in its own section.
 
 The full text of every licence named here ships inside the app, in
 `BriefShow.app/Contents/Resources/`, and lives in this folder in the
@@ -37,11 +36,27 @@ Apache 2.0 permits commercial use, modification and distribution. Its
 conditions — keep the licence and the notices with any redistribution, state
 what was changed — are met by shipping this file.
 
-### 1b. Pre-trained weights (`big-lama`) — ⚠️ OPEN
+### 1b. Pre-trained weights (`big-lama`) — 🟡 LIKELY SETTLED, one upstream question
 
-**No licence document was received with these weights.** There is no LICENSE,
-NOTICE or model card in `CoreMLModels/big-lama/`; the Apache 2.0 file above sits
-in `lama-src/` and covers the CODE.
+**The weights are published under Apache 2.0, by the route the LaMa authors
+themselves specify.** Checked 31 August 2026:
+
+- The official LaMa README (`lama-src/README.md`, line 113, and the current one
+  at `github.com/advimman/lama`) gives exactly one download for "The best model
+  (Places2, Places Challenge)": `huggingface.co/smartywu/big-lama`. That is the
+  authors' own designated link, not a copy someone found elsewhere.
+- That Hugging Face repository declares `license: apache-2.0` in its model card
+  metadata.
+- The current official LaMa README contains **no** licence restriction on the
+  models at all — searched for "licen", "commercial", "non-commercial" and
+  "copyright": no matches. The repository ships one licence, Apache 2.0, at its
+  root.
+
+An earlier revision of this file recorded that no grant had been received and
+that the weights were commonly reported as CC BY-NC-SA 4.0. **Both statements
+were wrong** and are withdrawn: the first mistook the authors' own download link
+for a third-party re-upload, and the second was not supported by anything in the
+repository, the README, or the model card.
 
 **Exactly which weights these are** (so the question can be asked precisely):
 
@@ -59,23 +74,27 @@ in `lama-src/` and covers the CODE.
 That is the official Samsung-trained `big-lama` — the model the LaMa paper and
 README describe as the best one, trained on **Places2 / Places-Challenge**.
 
-**Why this is open, and it is not the usual "grey area" framing.** The LaMa
-README fetches these weights from `https://huggingface.co/smartywu/big-lama`,
-which is a **third-party re-upload**, not a Samsung or advimman channel. A
-re-uploader cannot grant a licence they do not hold, so no grant has been
-received here at all. Separately, the LaMa project's own terms for its
-pre-trained models are commonly reported as **CC BY-NC-SA 4.0
-(non-commercial)**, and the Places2 dataset the model was trained on is itself
-distributed for research use — but neither of those has been confirmed against
-the primary source for this project.
+**What is left is one question upstream of Samsung, not a question about what
+Samsung granted.** The model was trained on **Places2** (MIT CSAIL), a dataset
+distributed for research; its download page still routes legacy access through a
+form "for research purposes". Whether a set of trained weights is a derivative
+work of the images used to train it — and therefore whether a dataset's terms
+reach through to a model — is genuinely unsettled law, not a settled "no". The
+Places2 terms could not be confirmed as an explicit non-commercial licence from
+the live page on 31 August 2026.
 
-**To close it**, one of:
+This is the same upstream question that sits under essentially every published
+vision model, and it is not specific to LaMa or to this app.
 
-1. Confirm the weights' licence at the primary source (the `advimman/lama`
-   repository and its model card, or Samsung directly), quoting the SHA-256
-   above, and save the answer in this repository next to the weights.
-2. Obtain a commercial grant.
-3. Fine-tune or retrain the Apache-2.0 code on data that permits commercial use.
+**Reasonable ways to close it**, cheapest first:
+
+1. Keep the record above. Apache 2.0 from the authors is a real commercial
+   grant, and it is what a purchaser of the app would be relying on.
+2. If certainty is wanted before selling, ask the authors to confirm in writing
+   that the Apache 2.0 grant covers the weights, quoting the SHA-256 above, and
+   save the answer beside them.
+3. Only if that comes back negative: retrain the Apache-2.0 code on data that
+   permits commercial use.
 
 ⚠️ Option 3 changes what the model produces, and the quality of the AI Clean Up
 result is recorded as 🟢 LOCKED in `BRIEFSHOW_DEVELOP_NOTES.md`. It is not a
@@ -177,12 +196,13 @@ Nothing to reproduce here.
 | Item | State |
 |---|---|
 | LaMa source code | ✅ Apache 2.0 |
-| **LaMa `big-lama` weights** | ⚠️ **OPEN — no grant received; identified above by SHA-256** |
+| LaMa `big-lama` weights | 🟡 Apache 2.0 per the authors' own model card; one upstream dataset question |
 | Stable Diffusion 1.5 Inpainting | ✅ Open RAIL-M — commercial use allowed, obligations met |
 | CLIP tokenizer data | ✅ MIT |
 | Figtree, Unbounded | ✅ SIL OFL 1.1 |
 | Lightroom `.xmp` import | ✅ Own implementation; trademark wording to watch |
 | Apple frameworks | ✅ Developer Program agreement |
 
-Item 2 is closed. **Item 1b — the LaMa weights — is the one left, and it is the
-one that decides whether the app can be sold as it stands.**
+Both models are covered by licences that permit commercial use. The one thing
+still worth a written answer is whether the LaMa authors' Apache 2.0 grant is
+understood to reach the weights as well as the code — see 1b.

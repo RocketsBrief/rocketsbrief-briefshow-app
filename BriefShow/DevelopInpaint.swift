@@ -979,7 +979,15 @@ enum InpaintPipeline {
                 }
                 gain = min(measured, 1.18)
             }
-            result[channel] = (gain: Float(gain), offset: Float(meanReal - gain * meanModel))
+            let offset = Float(meanReal - gain * meanModel)
+            // A non-finite fit is not a small error to be clamped — it is the
+            // whole correction being meaningless, and applying it paints the
+            // hole PURE WHITE. See the guard at the bottom of this function for
+            // where that came from and why it is worth this much care.
+            guard gain.isFinite, offset.isFinite else {
+                return identity
+            }
+            result[channel] = (gain: Float(gain), offset: offset)
         }
 
         if SDInpaintPipeline.isDebugging {
@@ -987,6 +995,32 @@ enum InpaintPipeline {
             print("  [sd] tone match  \(text)")
         }
         return result
+    }
+
+    /// Converts a model's float pixel into a byte, refusing to invent white.
+    ///
+    /// `UInt8(max(0, min(255, value.rounded())))` looks safe and is not. Swift's
+    /// `min(255, x)` is `x < 255 ? x : 255`, and every comparison against NaN
+    /// is false — so a NaN arrives at the clamp and leaves it as **255**. Every
+    /// channel of every affected pixel then writes pure white.
+    ///
+    /// That is not hypothetical. It is the white blotch, caught in the client's
+    /// own run with BRIEFSHOW_SD_DEBUG on:
+    ///
+    ///     [sd] tone match  x1.000 nan  x1.000 nan  x1.000 nan
+    ///
+    /// one operation in four, and that one produced the blotch. The NaN came
+    /// out of the model's decode and rode the tone-match offset into the
+    /// clamp. The correction is now refused when it is non-finite (see
+    /// `toneMatch`), and a stray non-finite PIXEL is refused here.
+    ///
+    /// Returns nil rather than a substitute colour, so callers keep whatever
+    /// was already in the buffer. For the generative path that is LaMa's fill,
+    /// which is the right answer; for LaMa it is the untouched photograph.
+    /// Both are better than white.
+    static func byteFromModel(_ value: Float) -> UInt8? {
+        guard value.isFinite else { return nil }
+        return UInt8(max(0, min(255, value.rounded())))
     }
 
     static func featherRadius(_ feather: Double, originalKnown: [UInt8], side: Int) -> Int {
@@ -1195,74 +1229,101 @@ enum InpaintPipeline {
     // Square dilation and a separable box blur, both on the 8-bit alpha
     // only — a couple of hundred kilopixels, so the simple version is
     // quicker than reaching for Core Image and rendering twice more.
+    /// Separable maximum filter. Max is associative, so a pass across and a
+    /// pass down give the same result as the square window did, at 2(2r+1)
+    /// comparisons per pixel instead of (2r+1)².
     private static func grow(_ buffer: inout [UInt8], width: Int, height: Int, radius: Int) {
         guard radius > 0 else {
             return
         }
-        let source = buffer
+        var horizontal = [UInt8](repeating: 0, count: width * height)
+        for y in 0..<height {
+            let row = y * width
+            for x in 0..<width {
+                var maximum: UInt8 = 0
+                for dx in max(x - radius, 0)...min(x + radius, width - 1) {
+                    maximum = max(maximum, buffer[row + dx])
+                }
+                horizontal[row + x] = maximum
+            }
+        }
         for y in 0..<height {
             for x in 0..<width {
                 var maximum: UInt8 = 0
-                for dy in -radius...radius {
-                    let py = y + dy
-                    guard py >= 0, py < height else {
-                        continue
-                    }
-                    for dx in -radius...radius {
-                        let px = x + dx
-                        guard px >= 0, px < width else {
-                            continue
-                        }
-                        maximum = max(maximum, source[py * width + px])
-                    }
+                for dy in max(y - radius, 0)...min(y + radius, height - 1) {
+                    maximum = max(maximum, horizontal[dy * width + x])
                 }
                 buffer[y * width + x] = maximum
             }
         }
     }
 
+    /// Box blur with a RUNNING SUM, so the cost per pixel does not depend on
+    /// the radius.
+    ///
+    /// This used to re-add every value in the window for every pixel: with the
+    /// two passes here, and `package` calling it twice, that is
+    /// 4 × w × h × (2r+1) additions. On a 512×512 patch with the radius a
+    /// generous feather asks for, it was the single most expensive thing in a
+    /// removal — measured in the client's own run at **6.9 s of an 8.0 s
+    /// "Quick" Clean Up**, against 1.14 s for the model itself. The button is
+    /// called Quick.
+    ///
+    /// The window is the same window and the edges behave the same way: the
+    /// average is over the valid pixels only, so `count` shrinks at the
+    /// borders exactly as it did when they were skipped by a guard.
     private static func blur(_ buffer: inout [UInt8], width: Int, height: Int, radius: Int) {
         guard radius > 0 else {
             return
         }
+
         var horizontal = [UInt8](repeating: 0, count: width * height)
         for y in 0..<height {
+            let row = y * width
+            var total = 0
+            var count = 0
+            for px in 0...min(radius, width - 1) {
+                total += Int(buffer[row + px])
+                count += 1
+            }
             for x in 0..<width {
-                var total = 0
-                var count = 0
-                for dx in -radius...radius {
-                    let px = x + dx
-                    guard px >= 0, px < width else {
-                        continue
-                    }
-                    total += Int(buffer[y * width + px])
+                horizontal[row + x] = UInt8(total / max(count, 1))
+                let leaving = x - radius
+                if leaving >= 0 {
+                    total -= Int(buffer[row + leaving])
+                    count -= 1
+                }
+                let entering = x + radius + 1
+                if entering < width {
+                    total += Int(buffer[row + entering])
                     count += 1
                 }
-                horizontal[y * width + x] = UInt8(total / max(count, 1))
             }
         }
-        for y in 0..<height {
-            for x in 0..<width {
-                var total = 0
-                var count = 0
-                for dy in -radius...radius {
-                    let py = y + dy
-                    guard py >= 0, py < height else {
-                        continue
-                    }
-                    total += Int(horizontal[py * width + x])
+
+        for x in 0..<width {
+            var total = 0
+            var count = 0
+            for py in 0...min(radius, height - 1) {
+                total += Int(horizontal[py * width + x])
+                count += 1
+            }
+            for y in 0..<height {
+                buffer[y * width + x] = UInt8(total / max(count, 1))
+                let leaving = y - radius
+                if leaving >= 0 {
+                    total -= Int(horizontal[leaving * width + x])
+                    count -= 1
+                }
+                let entering = y + radius + 1
+                if entering < height {
+                    total += Int(horizontal[entering * width + x])
                     count += 1
                 }
-                buffer[y * width + x] = UInt8(total / max(count, 1))
             }
         }
     }
 
-    // A red, semi-transparent picture of the mask for the canvas — the
-    // same "here is what I selected" affordance Lightroom paints over a
-    // mask. Built at preview size (nobody inspects a selection overlay at
-    // 45MP) and returned in the FULL, pre-crop image's own aspect so the
-    // caller can hang it on the same frame every other overlay uses.
     static func overlayImage(for mask: CIImage, context: CIContext, maxEdge: CGFloat = 1200) -> NSImage? {
         let extent = mask.extent
         guard extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite else {

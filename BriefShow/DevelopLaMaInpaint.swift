@@ -140,7 +140,9 @@ final class LaMaInpaintPipeline {
             for channel in 0..<3 {
                 let (gain, offset) = correction[channel]
                 let value = gain * pixels[channel * pixelCount + index] + offset
-                buffers.pixels[index * 4 + channel] = UInt8(max(0, min(255, value.rounded())))
+                if let byte = InpaintPipeline.byteFromModel(value) {
+                    buffers.pixels[index * 4 + channel] = byte
+                }
             }
             buffers.pixels[index * 4 + 3] = 255
         }
@@ -164,7 +166,6 @@ extension InpaintPipeline {
     ) throws -> Removal? {
         let extent = image.extent
         guard extent.width >= 8, extent.height >= 8 else { return nil }
-
         let grownMask = SubjectMasker.grown(mask, by: max(extent.width, extent.height) * 0.0025)
         guard let maskBox = maskBoundingBox(grownMask, extent: extent, context: context),
               let region = squareRegion(around: maskBox, in: extent) else {

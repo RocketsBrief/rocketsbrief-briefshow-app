@@ -1,6 +1,98 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 25. avgust 2026.
+Beleška za nastavak rada. Poslednja izmena: 31. avgust 2026.
+
+## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
+
+**Slika otvorena u LumenoLab-u i spremna za rad MORA biti u originalnoj
+rezoluciji fajla. Nijedna popravka, optimizacija ni ubrzanje ne sme da je
+smanji.** Ovo je zahtev korisnika, izričit, i ne pregovara se performansama.
+
+Šta to konkretno znači u kodu:
+
+- `refinedRenderNow` renderuje iz `fullBaseImage` i mora da završi na **native
+  rezoluciji fajla** (mereno: 5176×3448 na .NEF-u). Ne skraćivati ga na
+  rezoluciju ekrana, ma koliko to bilo brže.
+- `loadPreviewBaseImage(previewMax:)` je SAMO međukorak dok se vuče slajder.
+  Trenutno 2600 px. Ako ga neko spušta, mora prvo da izmeri šta klijent vidi —
+  na 1600 px je bilo vidljivo meko i prijavljeno je kao kvar.
+- Kašnjenje refine-a (`scheduleRefinedRender`) sme da se podešava, ali sa merom:
+  1,2 s je jednom postavljeno „za svaki slučaj" i to je značilo da klijent
+  gleda meku sliku više od sekunde posle SVAKE izmene. Sad je 0,45 s za RAW.
+- Sličice u filmstrip-u i u ShowGrid-u su izuzetak — one SMEJU biti male, to je
+  dogovoreno.
+
+Ako neka buduća optimizacija traži da se ovo prekrši, odgovor je ne; traži se
+drugo rešenje.
+
+## 🟢 ZAKLJUČANO — AI MODELI I NJIHOVA PODEŠAVANJA
+
+**Rezultat AI Clean Up-a je 31.08. proglašen dobrim od strane korisnika.
+Ništa u ovom odeljku se ne dira dok se popravlja bilo šta drugo.** Ako neki
+budući posao naizgled traži izmenu ovde, odgovor je ne — traži se drugo
+rešenje, ili se prvo pita korisnik.
+
+### Brojevi koji ostaju kakvi jesu
+
+| šta | vrednost | zašto |
+|---|---|---|
+| `LaMaInpaintPipeline.imageSide` | **512** | 1024 je rekonvertovan DVAPUT i oba puta gori; 2048 je OOM na 9 GB. KORAK 19. |
+| `SDInpaintPipeline.imageSide` | **512** | isto radno platno |
+| `SDInpaintPipeline.defaultSteps` | **12** | manje koraka = manje detalja u izmišljenom delu |
+| `SDInpaintPipeline.defaultRefineStrength` | **0,3** | 0,65 izmišlja objekte na zdravim kadrovima, mereno |
+
+### Odluke koje ostaju kakve jesu
+
+- **Generative kreće od LaMine popune, ne od šuma** (KORAK 40). Start od šuma je
+  meren i izmišlja cele objekte.
+- **`toneMatch` napušta korekciju kad prsten nije merljiv** — donja granica
+  clamp-a (0,85) se čita kao signal, ne zaokružuje (KORAK 41).
+- **`toneMatch` odbija nekonačan fit**, i **`byteFromModel` odbija nekonačan
+  piksel** (KORAK 45). Ovo dvoje je popravilo belu mrlju. `UInt8(max(0,
+  min(255, nan)))` daje **255**, dakle čisto belo — ne dirati taj lanac.
+- **Jedno brisanje po grupi oznaka**, ne jedna maska preko svega
+  (`briefShowRemovalJobs`). Jedna maska preko dva udaljena mesta stavlja radni
+  kvadrat u praznu sredinu kadra.
+- **`blur` i `grow`** — vidi zasebni zaključani odeljak ispod; to je bila
+  popravka brzine koja NE menja rezultat ni za piksel.
+
+### Ako ipak zatreba brže
+
+Jedina dva poluga su **manje koraka difuzije** i **manji radni kvadrat**, i oba
+plaćaju kvalitetom. Ne dirati bez izričite reči korisnika.
+
+
+## 🟢 ZAKLJUČANO — `blur` i `grow` u `DevelopInpaint.swift`
+
+**`InpaintPipeline.blur` mora ostati box blur sa KLIZEĆIM ZBIROM, a `grow`
+razdvojen na dva prolaza. Ne vraćati ih na naivnu petlju.** Provereno, izmereno
+i potvrđeno od korisnika 31.08.
+
+Naivna verzija je za svaki piksel iznova sabirala svih `2r+1` vrednosti u
+prozoru. `blur` ima dva prolaza i `package` ga zove dvaput, dakle
+`4 × w × h × (2r+1)` sabiranja. Na 512×512 sa radijusom koji feather traži to
+su stotine miliona operacija.
+
+Mereno u app-i, isti potez, ista maska, „Quick" Clean Up:
+
+| | pre | posle |
+|---|---|---|
+| `lama fill` (sam model) | 1,14 s | 1,19 s |
+| ceo prolaz | **8,03 s** | **2,19 s** |
+| od toga `package()` | **6,9 s** | **1,0 s** |
+
+Model nikad nije bio problem. `package` jeste, i to je dugme koje se zove
+Quick.
+
+Klizeći zbir daje **identičan rezultat do piksela** — isti prozor, i ivice se
+ponašaju isto (prosek samo preko važećih piksela, `count` se smanjuje na rubu
+tačno kao kad su preskakani `guard`-om). Cena po pikselu ne zavisi od radijusa.
+`grow` je razdvojen jer je maksimum asocijativan, pa prolaz po širini pa po
+visini daje isti rezultat uz `2(2r+1)` umesto `(2r+1)²` poređenja.
+
+⚠️ Merenja gore su iz **Debug** builda. Release je znatno brži, ali to nije
+razlog da se naivna verzija vrati — bila bi spora i tamo.
+
 
 **⚠️ Za sledeću sesiju koja dodaje bilo kakav novi `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` monitor** — DVA obavezna pravila, oba naučena kroz prave incidente u produkciji:
 1. UVEK proveriti `event.isARepeat` i vratiti `event` (ne progutati) kad je true, OSIM ako je namerno drugačije. Stavka #15 ispod dokumentuje prvi incident (app zamrznut, `kill -9` morao) kad je ovo izostavljeno.
@@ -5916,6 +6008,327 @@ poskoči u trenutku kad se pusti miš.
 Da li se sada zaista oseća glatko. Broj prolaza kroz `body` je izveden čitanjem
 svakog upisa u drag i hover putanjama, kao u KORAKU 36 — potez se ne može odvući
 bez pravog miša.
+
+## KORAK 45 — bela mrlja: NaN, ne veličina (31. avgust 2026)
+
+KORAK 41 je našao i popravio JEDAN uzrok bele mrlje (`toneMatch` zakucan na
+donju granicu clamp-a nad prežarenim prstenom). Mrlja se ipak vratila. Korisnik
+je pretpostavio da je prešao limit od 2200 i da zato LaMa razmazuje.
+
+**Nije veličina. Nije LaMa. NaN je.**
+
+Uhvaćeno u korisnikovom SOPSTVENOM pokretanju, sa `BRIEFSHOW_SD_DEBUG=1`,
+četiri brisanja u nizu:
+
+```
+[sd] tone match  x1.019 -1.1   x0.990 +3.2   x0.990 +2.4     ← LaMa, zdravo
+[sd] tone match  x0.985 +3.7   x0.986 +4.1   x0.988 +3.5     ← SD,   zdravo
+[sd] tone match  x1.014 -0.3   x0.996 +2.2   x1.000 +0.6     ← LaMa, zdravo
+[sd] tone match  x1.000 nan    x1.000 nan    x1.000 nan      ← SD,   NaN
+```
+
+Jedno od četiri. To jedno je napravilo mrlju.
+
+### Zašto NaN postaje BELO, a ne crno ili nasumično
+
+```swift
+UInt8(max(0, min(255, value.rounded())))
+```
+
+Izgleda bezbedno i nije. Swift-ov `min(255, x)` je `x < 255 ? x : 255`, a
+**svako poređenje sa NaN je false** — pa NaN prođe kroz clamp i izađe kao
+**255**. Sva tri kanala odu na 255. To je čisto belo, i to je mrlja.
+
+`offset` je bio NaN jer `meanModel` računa srednju vrednost dekodiranog izlaza
+modela, a taj izlaz je sadržao NaN. `gain` je ostao 1,000 jer grana koja ga
+menja traži varijansu > 4, a varijansa sa NaN-om ne prolazi taj uslov.
+
+### Popravka — dva sloja, oba potrebna
+
+1. **`toneMatch`** odbija korekciju čim `gain` ili `offset` nisu konačni i
+   vraća identitet. Nekonačan fit nije mala greška za zaokruživanje nego cela
+   korekcija bez značenja.
+2. **`InpaintPipeline.byteFromModel`** zamenjuje onaj clamp na oba mesta (SD i
+   LaMa). Vraća `nil` za nekonačnu vrednost, a pozivalac tada **ne upisuje
+   ništa** — ostaje ono što je već u baferu. Za generativni put to je LaMina
+   popuna, za LaMu netaknuta fotografija. Oba su bolja od belog.
+
+Nije stavljena zamenska boja: izmišljanje piksela je tačno ono što je ovaj bag
+i radio.
+
+### ⚠️ Neprovereno
+
+Popravka je izvedena iz korisnikovog loga i pročitana u kodu. U app-i posle
+popravke još niko nije ponovio to brisanje. Ako se mrlja vrati, prvo pokrenuti
+sa `BRIEFSHOW_SD_DEBUG=1` i tražiti `nan` u ispisu — ako ga NEMA, uzrok je
+nešto treće i KORAK 41 i 45 su oba iscrpljeni.
+
+### Šta je ovom prilikom bilo POGREŠNO isprobano, da se ne ponavlja
+
+Pre nego što je log stigao, potrošene su tri hipoteze i sve tri su oborene:
+
+| hipoteza | ishod |
+|---|---|
+| SD da kreće od šuma kad je prsten prežaren | izmisli ceo objekat — zato KORAK 40 i jeste prešao na LaMu |
+| dići refine sa 0,3 na 0,65 | vidi dole, merenje je bilo neispravno |
+| prepoznati „LaMa je razmazala" po svetlini/teksturi zakrpe | brojevi se ne razdvajaju: prežareno +8,8/x0,754 naspram zdravih +11,4/x0,689 i +11,5/x0,565 |
+
+**I jedna metodološka greška koja je koštala najviše:**
+`Tools/run-inpaint-sweep.py` **ne piše ceo kadar nego isečak oko maske**
+(mereno: 1332×1335). Isečci su onda još jednom sečeni `sips`-om kao da su pun
+kadar, pa su ocenjivani delovi slike koje maska nikad nije dotakla. Svi
+zaključci doneti sa tih slika su odbačeni, a sve izmene u inpaint kodu koje su
+iz njih sledile su vraćene.
+
+**Pravilo koje iz ovoga sledi:** izlaz sweep-a gledati direktno. Ako baš treba
+sekundarni crop, koristiti alat koji seče po eksplicitnim pikselima i ispisuje
+dobijenu veličinu — ne `sips --cropOffset`, čija semantika nije ono što deluje.
+
+
+## KORAK 46 — LumenoLab: raspored, brzina i zaglavljivanja (31. avgust 2026)
+
+### Raspored
+
+Slika je preuzela celu levu stranu, od vrha do dna. Traka sa alatima i gornji
+bar su otišli u desni panel; slika je time dobila ~90 pt visine.
+
+To usput penzioniše celu klasu bagova: sve što je menjalo visinu IZNAD slike
+(spinner brisanja, tekst koji pređe u drugi red) guralo je fotku gore-dole dok
+klijent radi na njoj. Zato je `cleanUpNotice` bio prikovan na fiksnih 30 pt i
+zato je progres brisanja izmešten iz trake. Pored slike umesto iznad nje, ništa
+od toga je ne može pomeriti — pa su obe stvari puštene da budu koliko im treba.
+
+- Panel i filmstrip se **razvlače mišem**, vrednosti se pamte
+  (`develop.layout.panelWidth`, `develop.layout.filmstripHeight`).
+- **AI Manipulation** je iznad tabova, sklopiv, zatvoren po difoltu.
+- **Tools** ostaje u Retouch-u i sadrži samo **Patch** — Crop je u Edit-u, a
+  Selection u svojoj sekciji, pa su odatle uklonjeni kao dupli ulazi.
+  `Patch Circle` i `Patch Free` su obrisani iz Masks; Patch u Tools je jedini
+  ulaz.
+- Dugmad Select All / Deselect / Sync / Export All su otišla sa filmstrip-a na
+  **desni klik**. Filmstrip je sad samo fotografije.
+- **Reset** je u zaglavlju pored Done (bio je na dnu skrola i klijent ga nije
+  našao — vraćao je fotku ručno, slajder po slajder). Dodat i
+  **Reset N Selected** za celu selekciju, na desni klik i u dnu panela.
+- Filmstrip i ShowGrid pokazuju **editovane** sličice i osvežavaju se uživo
+  preko `.photoEditsChanged`. Sličice koje se još dekodiraju imaju spinner.
+
+### Razvlačenje je drhtalo — dva uzroka
+
+1. `DragGesture` je merio pomeraj u LOKALNOM prostoru hvataljke, a hvataljka se
+   pomera zbog tog istog drag-a. Svaki frame je merio od pozicije koju je
+   prethodni upravo pomerio. Rešeno sa `coordinateSpace: .global`.
+2. Vrednosti su `@AppStorage`, pa je svaki frame bio sinhroni upis u
+   UserDefaults plus notifikacija koja ponovo ulazi u view. Sad drag vozi
+   obično `@State`, a u UserDefaults se upisuje jednom, na `.onEnded`.
+
+### Otvaranje je trajalo 4 s — `PhotoEditStore`
+
+`allSettings` je bio computed property koji **dekodira ceo JSON iz UserDefaults
+na svaki pristup**, a panel je u body pass-u radio
+`photoURLs.filter { hasEdits($0) }` — 300 fotki = 300 punih dekodiranja rečnika
+sa svim izmenama koje je klijent ikad napravio.
+
+Najgori mogući oblik usporenja: raste I sa brojem fotki I sa istorijom izmena.
+Sad se dekodira jednom i drži u kešu, pod `NSLock`-om (keš je od shared mutable
+state napravio nešto što tri niti dodiruju).
+
+Isto u drugom smeru: `setSettings` se zove iz `renderNow` na ~20 ms throttle,
+pa je enkodirao celu istoriju stotinak puta po jednom potezu slajdera. Sad je
+upis debounce-ovan na 0,5 s, sa prinudnim flush-om kad se prozor zatvori.
+
+Dodata i **kartica sa progresom** pri ulasku. Traka se pomera na stvarnim
+granicama faza; poslednja faza se završava kad je fotka STVARNO nacrtana.
+Zamka: gradnja prozora je sinhrona, pa bi se u istom runloop prolazu sve
+završilo i kartica se ne bi ni iscrtala — otud jedan `DispatchQueue.main.async`
+hop pre nje.
+
+### Prazan preview — TRI promašena sloja pa tek onda uzrok
+
+Ovo je najvažniji deo koraka, jer je pokazao gde se ne isplati zaključivati.
+
+Simptom: klik na sličicu, panel pun (ime fajla, slajderi), a preview prazan i
+histogram prazan, bez „loading".
+
+Popravljano je, redom, i **nijedno nije bio uzrok**:
+
+1. gomilanje refine-ova (uvedeno otkazivanje i 1,2 s za RAW)
+2. `createCGImage` koji vraća LENJ CGImage, pa se filter graf izvršava na
+   GLAVNOJ niti u Core Animation commit-u — rešeno sa `deferred: false`
+3. razdvajanje `DispatchQueue`-ova
+
+(1) i (2) su same po sebi ispravne i ostaju. (2) je stvarna i vredna: uzorak je
+pokazao glavnu nit 100% u `CA::Layer::prepare_contents → CI::copyIOSurfaceCallback`
+sa 83 nivoa `recursive_render`. Ali (3) nije promenilo ništa, jer:
+
+**`CIContext` se serijalizuje INTERNO.** Svaki render kroz njega uzima isti
+`-[CIContext lock]`. Ceo app je koristio jedan kontekst, pa je svaki render
+čekao svaki drugi, bez obzira na broj redova.
+
+Sad tri konteksta po ulozi: `briefEditsPreviewCIContext` (samo interaktivni
+render), `briefEditsThumbnailCIContext` (mreža i traka), `briefEditsCIContext`
+(refine, export, erase).
+
+I to je jednom podeljeno POGREŠNO: refine je bio stavljen na preview kontekst
+uz obrazloženje „refine zamenjuje ono što je preview nacrtao". Tačno i
+nebitno — bitno je da je refine spor. **Pravilo: ništa sporo ne deli kontekst
+sa nečim interaktivnim.**
+
+**Pravi uzrok praznog preview-a** našao se tek instrumentacijom svake grane
+`renderNow`. Trag je stajao ovde:
+
+```
+renderNow rendering gen=3
+renderNow got cgImage 1424x1069
+← ništa više, ni COMMIT ni BAIL
+```
+
+`luminanceHistogram` je renderovao kroz TEŠKI kontekst i blokirao na lock-u
+koji drži refine. Gotova slika je sedela u lokalnoj promenljivoj i nikad se nije
+upisala.
+
+Popravka: histogram prima kontekst kao parametar, i **slika se upisuje prva,
+sama za sebe** — histogram ide posle, u zasebnom koraku. Ono što klijent čeka
+ne sme da zavisi od nečeg sporednog.
+
+**Pouka:** kod tri uzastopna „popravljena pa se vratilo", uzorkovati
+(`sample <pid>`) ili instrumentirati PRE nego što se dirne još jedan sloj.
+
+### Ostalo u ovom koraku
+
+- **Alat nije prebacivao.** `removalPaintOverlay` je prva grana lanca overlay-a,
+  pa dok je Clean Up četkica upaljena nijedan drugi alat ne dobija platno.
+  Paljenje četkice je gasilo sve ostale alate, ali obrnuto niko nije radio — pa
+  je klik na Patch dodavao masku a klijent je i dalje slikao AI selekciju.
+  Dodat `deactivateRemoveBrush()`, koji NE briše naslikanu površinu.
+- **Izvorni prsten Patch-a**: krug iste veličine kao četkica, isprekidan,
+  narandžast, bez senke i bez crnog prstena ispod (oboje je probano i odbijeno
+  — mrlja na klijentovoj fotografiji da bi se overlay lakše video). Vidi se u
+  tačno dva trenutka: dok je ⌥ pritisnut i dok se slika. Pojavljuje se na sam
+  pritisak ⌥ (`installOptionKeyMonitor`), ne tek kad se miš pomeri.
+- **Minimum četkice** 0,1 umesto 2 (`range: 0.001...0.3`), prikaz na decimalu.
+- **Progres brisanja** je traka sa žutim fill-om umesto spinnera; determinate
+  kad ima broj, pulsira kad ga nema (LaMin put traje ~1 s i nema šta da javi).
+
+
+## KORAK 47 — „Quick" Clean Up nije bio quick: `package`, ne model (31. avgust 2026)
+
+Korisnik: traka pokaže puno pa stoji još 20 sekundi. Dva odvojena nalaza.
+
+### Nalaz 1 — traka je lagala
+
+Quick nikad nije ni imao procenat: LaMin put nema šta da javi usput, pa je
+neodređeno stanje bilo nacrtano kao **puna traka koja pulsira**. Puna traka je
+završena traka, šta god radila sa prozirnošću — čitalo se kao „100% i zaglavilo
+se", i tako je i prijavljeno.
+
+Sad je **kratak segment koji putuje** po trećini staze i nikad ne dodiruje
+krajeve, pa se ne može pročitati kao gotovo.
+
+### Nalaz 2 — gde je vreme stvarno odlazilo
+
+Instrumentirano po fazama, u korisnikovom pokretanju:
+
+```
+[Q] grown        0.01 s
+[Q] boundingBox  0.08 s
+[Q] makeBuffers  0.18 s     ← pun RAW render NIJE problem
+[Q] lama fill    1.14 s     ← model gotov
+[T] job 0 done   8.03 s     ← 6,9 s POSLE modela
+```
+
+Sve posle modela je `package()`, a u njemu `blur`. Popravka i brojevi su gore,
+u zaključanom odeljku na vrhu dokumenta.
+
+**Dve hipoteze su usput oborene merenjem**, obe moje:
+
+1. „Vreme jede ponovno računanje punog RAW rendera, jer je `full` lenj CIImage
+   i `cacheIntermediates` je isključen." — `makeBuffers` traje **0,18 s**. Nije.
+2. „Vreme je posle petlje, u upisu sloja ili u `PhotoEditStore`." — od
+   `all jobs done` do `main block end` je **0,00 s**. Nije.
+
+Obe su zvučale ubedljivo i obe su bile netačne. Faze su merene tek posle toga i
+odgovor je bio na trećem mestu.
+
+### ⚠️ Greška pri izvođenju, da se zapamti
+
+Pri prepisivanju `blur`/`grow` obrisan je i `overlayImage`, koji je stajao
+između njih i `makeCGImage`. Uhvaćeno na buildu, vraćeno iz kopije koju
+`Tools/run-inpaint-sweep.py` ostavlja u `$TMPDIR/inpaint-sweep-*/`.
+
+Pri sečenju većeg bloka koda ovde: seći po EKSPLICITNIM granicama funkcije, ne
+po „od A do sledećeg B", jer između zna da stoji nešto treće.
+
+(U prvoj verziji ovog koraka je pisalo da projekat nije pod git-om — netačno.
+Repo je u `BriefShow/BriefShow/.git`. Kopije koje sweep ostavlja u
+`$TMPDIR/inpaint-sweep-*/` su zgodne, ali git je pravi backup.)
+
+
+
+## KORAK 48 — Flatten: zašto AI Clean Up ne prati grade (31. avgust 2026)
+
+Korisnik: „kad patchujem ili odradim AI clean up, pa posle sinhronizujem grade
+sa druge slike — taj setting se primeni samo na sliku, ne na AI clean up."
+
+### Šta je tačno, a šta nije
+
+Provereno u `PhotoEditRenderer.render`, redosled je:
+
+```
+1. RAW / ekspozicija / balans belog
+2. rotacija, straighten
+3. tonske klizače
+4. boja, kriva
+5. applyLocalAdjustments   ← maske i PATCH
+6. compositeLayers         ← AI CLEAN UP slojevi
+7. crop
+```
+
+**Patch je bio ispravan.** `patchSampledImage` uzorkuje iz ŽIVE slike u koraku
+5, dakle iz već obrađene — pa patch prati svaku kasniju izmenu.
+
+**AI Clean Up nije.** Rezultat se čuva kao sloj ZAPEČENIH piksela, snimljenih
+sa podešavanjima koja su važila u trenutku brisanja, a kompozituje se u koraku
+6 — POSLE celog tonskog lanca. Nijedna kasnija izmena ga ne dodiruje. I to nije
+samo kod sinhronizacije: isto se vidi ako se posle brisanja samo pomeri
+Exposure.
+
+### Dve opcije, korisnik izabrao A
+
+**A — flatten:** zapeći trenutni render kao novu podlogu te fotke.
+**B — kompozitovati slojeve pre tonskog dela**, kao Lightroom.
+
+B je nedestruktivan i rešava sve, ali traži da se pikseli zakrpe hvataju PRE
+grade-a, dakle da model dobije neobrađen RAW — na ovim presvetlim kadrovima to
+je rizik po kvalitet modela — i menja izgled već sačuvanih brisanja (stari
+grade bi bio primenjen dvaput).
+
+Izabrano **A**, i to **kao dugme koje korisnik sam pritisne**. Nikako kao
+sporedni efekat sinhronizacije: flatten je jedina radnja ovde koja menja ŠTA
+fotografija JESTE, a ne kako je opisana, i to se ne sme desiti dok neko pritiska
+nešto drugo.
+
+### Kako je izvedeno
+
+`FlattenedImageStore`. Ključ je isti kao kod `PhotoEditStore` (ime + veličina
+fajla), fajl ide u kontejner app-e.
+
+- **Originalni fajl se NIKAD ne dira.** Spljoštena kopija je zaseban privatni
+  fajl.
+- **16-bit TIFF**, ne 8-bit: fotka se posle ovoga i dalje obrađuje — to joj je i
+  svrha — a grade gurnut preko 8-bitnih zapečenih piksela pravi trake.
+  Rezolucija je native, po zaključanom pravilu na vrhu dokumenta.
+- **Crop se NE peče.** Render je `applyCrop: false`, a crop ostaje kao setting,
+  pa se kadriranje i posle flatten-a može otvoriti i menjati.
+- `loadBaseImage` i `loadPreviewBaseImage` otvaraju spljoštenu kopiju preko
+  `FlattenedImageStore.sourceURL`. Namerno TU, da preview, refine, export i
+  brisanja vide istu sliku — flatten koji bi poštovao samo preview bio bi laž
+  koju bi export posle odao. Isto i `makeEditedShowGridThumbnail`, inače bi
+  mreža i traka pokazivale original.
+- **Unflatten** briše kopiju i vraća podešavanja od pre pečenja (čuvaju se uz
+  fajl), pa je ovo u praksi povratno.
+
+
 
 ## PLAN — preimenovanje u „Afterburn Studio" (dogovoreno 31. avgusta 2026, NIJE počelo)
 

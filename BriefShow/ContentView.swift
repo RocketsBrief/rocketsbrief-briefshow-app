@@ -21119,6 +21119,7 @@ struct PhotoShowSheet: View {
     // in — a camera switched on while the client is in Develop still gets
     // noticed.
     @ObservedObject private var cameraBrowser = CameraBrowser.shared
+    @ObservedObject private var developLaunch = DevelopLaunchProgress.shared
 
     // Which camera the import window is open on, if any. Set either by
     // clicking the camera in the sidebar or, for a camera that is newly
@@ -21398,7 +21399,25 @@ struct PhotoShowSheet: View {
             guard let newValue else { return }
             loadImages(inFolder: newValue)
         }
+        // The card that says LumenoLab is opening. An overlay rather than a
+        // sheet: a sheet animates in over about a third of a second, which on
+        // a fast open is most of the wait it is supposed to be explaining.
+        .overlay {
+            if developLaunch.isOpening {
+                developLaunchCard
+            }
+        }
         .onAppear { CameraBrowser.shared.start() }
+        // LumenoLab saves an edit, this grid shows it. Without this the grid
+        // only picked up edits when the folder was re-opened, so a client
+        // could finish retouching a photo, close the editor, and see the
+        // untouched original still sitting in the grid behind it.
+        .onReceive(NotificationCenter.default.publisher(for: .photoEditsChanged)) { note in
+            guard let changed = note.userInfo?[photoEditsChangedURLsKey] as? Set<URL> else {
+                return
+            }
+            refreshEditedThumbnails(changed)
+        }
         // A camera that is switched on opens the import window by itself —
         // that is the behaviour being matched, and it is the whole point: plug
         // in, switch on, the card is on screen. Watching lastConnectedCamera
@@ -22873,7 +22892,7 @@ struct PhotoShowSheet: View {
                 // brief app hang when several selected photos loaded at
                 // once. makeShowGridThumbnail is ImageIO-based and safe to
                 // call concurrently from a background queue.
-                let image = makeShowGridThumbnail(from: url, maxPixelSize: 2000)
+                let image = makeEditedShowGridThumbnail(from: url, maxPixelSize: 2000)
 
                 DispatchQueue.main.async {
                     if let image {
@@ -23078,6 +23097,97 @@ struct PhotoShowSheet: View {
         ratings = newRatings
     }
 
+    private var developLaunchCard: some View {
+        ZStack {
+            // Dims the grid and, just as importantly, swallows clicks: without
+            // it a client faced with a wait clicks again, and a second
+            // double-click during an open is exactly how you end up asking for
+            // two windows.
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {}
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Opening LumenoLab")
+                    .font(.custom("Figtree", size: 15).weight(.bold))
+                    .foregroundColor(AppColors.ink)
+
+                Text(developLaunch.stage)
+                    .font(.custom("Figtree", size: 12))
+                    .foregroundColor(AppColors.muted)
+                    // Fixed height: the stage names differ in length and a card
+                    // that resizes on every stage draws the eye to the wrong
+                    // thing while someone is already waiting.
+                    .frame(height: 15, alignment: .leading)
+
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(AppColors.border.opacity(0.6))
+
+                        Capsule()
+                            .fill(developLaunchBarColor)
+                            .frame(width: max(0, min(1, developLaunch.fraction)) * proxy.size.width)
+                    }
+                }
+                .frame(height: 6)
+                .animation(.easeOut(duration: 0.22), value: developLaunch.fraction)
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 20)
+            .frame(width: 320)
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(AppColors.panel)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(AppColors.border, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.22), radius: 22, y: 8)
+        }
+        .transition(.opacity)
+    }
+
+    // Same pair as the Clean Up bar in LumenoLab, and for the same reason: the
+    // app's accentColor is only yellow in dark mode.
+    private var developLaunchBarColor: Color {
+        ThemeManager.shared.current == .dark
+            ? Color(red: 1.0, green: 0.94, blue: 0.62)
+            : Color(red: 0.93, green: 0.72, blue: 0.16)
+    }
+
+    // Re-renders only the photos that actually changed, and only the ones this
+    // grid is showing. The notification is already coalesced on the sending
+    // side (see PhotoEditStore.flushNow), so this runs once after a burst of
+    // edits rather than once per slider tick.
+    //
+    // The loupe cache is dropped for those photos rather than re-rendered:
+    // it is a 2000px render that only matters while the Space preview is open,
+    // and it is rebuilt on demand the next time it is.
+    private func refreshEditedThumbnails(_ changed: Set<URL>) {
+        let mine = photoURLs.filter { changed.contains($0) }
+        guard !mine.isEmpty else {
+            return
+        }
+
+        for url in mine {
+            loupeImages[url] = nil
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            for url in mine {
+                guard let thumbnail = makeEditedShowGridThumbnail(from: url) else {
+                    continue
+                }
+                DispatchQueue.main.async {
+                    gridThumbnails[url] = thumbnail
+                }
+            }
+        }
+    }
+
     private func loadGridThumbnails(for urls: [URL]) {
         isLoadingPhotos = true
         loadedThumbnailCount = 0
@@ -23093,7 +23203,10 @@ struct PhotoShowSheet: View {
             var pendingBatch: [URL: NSImage] = [:]
 
             for (index, url) in urls.enumerated() {
-                if let thumbnail = makeShowGridThumbnail(from: url) {
+                // Edited, not raw. A photo worked on in LumenoLab shows the
+                // work here — the grid used to show the original file no
+                // matter what had been done to it.
+                if let thumbnail = makeEditedShowGridThumbnail(from: url) {
                     pendingBatch[url] = thumbnail
                 }
 

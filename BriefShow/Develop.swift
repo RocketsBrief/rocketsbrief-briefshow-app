@@ -579,25 +579,307 @@ enum PhotoEditStore {
         } else {
             all[key(for: url)] = settings
         }
-        allSettings = all
+        lock.lock()
+        cachedSettings = all
+        generation &+= 1
+        pendingChangedURLs.insert(url)
+        lock.unlock()
+        scheduleFlush()
     }
 
-    // Powers the small "has edits" badge on a filmstrip thumbnail.
+    // MARK: Writing back
+
+    // Writing is debounced; reading is not. Everything above reads
+    // `cachedSettings`, which is updated synchronously, so nothing in the app
+    // can observe a stale edit — the delay is only in how often the dictionary
+    // is encoded and handed to UserDefaults.
+    //
+    // That matters because `setSettings` is called from `renderNow`, which
+    // runs on a ~20ms throttle: dragging one slider for two seconds used to
+    // JSON-encode the client's ENTIRE edit history, every photo of it, about a
+    // hundred times. Same shape as the decode problem above — cost that grows
+    // with how long the app has been used rather than with what is being done.
+    //
+    // Half a second, and flushed outright when the LumenoLab window closes, so
+    // the window that owns the edits cannot go away with anything unwritten.
+    private static let flushDelay: TimeInterval = 0.5
+    private static var flushWorkItem: DispatchWorkItem?
+    private static var pendingChangedURLs: Set<URL> = []
+
+    private static func scheduleFlush() {
+        flushWorkItem?.cancel()
+        let work = DispatchWorkItem { flushNow() }
+        flushWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + flushDelay, execute: work)
+    }
+
+    /// Writes any pending changes out and tells the rest of the app which
+    /// photos moved. Safe to call when nothing is pending.
+    static func flushNow() {
+        flushWorkItem?.cancel()
+        flushWorkItem = nil
+
+        lock.lock()
+        let snapshot = cachedSettings
+        let changed = pendingChangedURLs
+        pendingChangedURLs = []
+        lock.unlock()
+
+        guard let snapshot else {
+            return
+        }
+        UserDefaults.standard.set(try? JSONEncoder().encode(snapshot), forKey: defaultsKey)
+
+        guard !changed.isEmpty else {
+            return
+        }
+        // Posted here rather than from setSettings so it is coalesced by the
+        // same debounce: ShowGrid re-renders a thumbnail through the whole
+        // edit pipeline when it hears this, which is not something to do a
+        // hundred times during one slider drag.
+        NotificationCenter.default.post(name: .photoEditsChanged, object: nil,
+                                        userInfo: [photoEditsChangedURLsKey: changed])
+    }
+
+    // Powers the small "has edits" badge on a filmstrip thumbnail, and the
+    // decision in ShowGrid about whether a photo's thumbnail has to be
+    // re-rendered through the edit pipeline at all.
     static func hasEdits(_ url: URL) -> Bool {
         allSettings[key(for: url)] != nil
     }
 
+    /// Bumped on every write. ShowGrid watches this to know its thumbnails are
+    /// stale without having to diff the settings of every photo it is showing
+    /// — see `refreshEditedGridThumbnailsIfNeeded`.
+    private(set) static var generation: Int = 0
+
+    // Decoded ONCE and held, rather than re-decoded on every read.
+    //
+    // This getter used to decode the entire JSON blob out of UserDefaults on
+    // every single access, and the accesses are not rare: `hasEdits` is one,
+    // and the panel ran `photoURLs.filter { hasEdits($0) }` inside a body
+    // pass — so opening a folder of 300 photos meant 300 full decodes of a
+    // dictionary holding every edit the client has ever made, before the
+    // window could be shown. That was the four seconds of nothing between
+    // double-clicking a photo and LumenoLab appearing. It grew with BOTH the
+    // folder size and the client's edit history, so it got worse the longer
+    // the app was used, which is the worst shape a slowdown can have.
+    //
+    // The cache is safe because this type is the only writer: `setSettings`
+    // updates the dictionary and the store together, so nothing can go stale
+    // underneath it within a run.
+    private static var cachedSettings: [String: PhotoEditSettings]?
+
+    // Guards `cachedSettings`. Before the cache existed this type was a pure
+    // read of UserDefaults and needed no lock; caching turned it into shared
+    // mutable state, and it is genuinely shared — ShowGrid renders its tiles
+    // on one queue, the filmstrip decodes on another, and the editor reads on
+    // the main thread, all of them asking this for a photo's settings. A Swift
+    // Dictionary written on one thread while read on another is not a race
+    // that shows up as a wrong answer; it shows up as a crash, eventually.
+    private static let lock = NSLock()
+
     private static var allSettings: [String: PhotoEditSettings] {
         get {
+            lock.lock()
+            defer { lock.unlock() }
+            if let cachedSettings {
+                return cachedSettings
+            }
             guard let data = UserDefaults.standard.data(forKey: defaultsKey) else {
+                cachedSettings = [:]
                 return [:]
             }
-            return (try? JSONDecoder().decode([String: PhotoEditSettings].self, from: data)) ?? [:]
+            let decoded = (try? JSONDecoder().decode([String: PhotoEditSettings].self, from: data)) ?? [:]
+            cachedSettings = decoded
+            return decoded
         }
         set {
+            lock.lock()
+            cachedSettings = newValue
+            generation &+= 1
+            lock.unlock()
             UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: defaultsKey)
         }
     }
+}
+
+/// Where a flattened photo lives, and how to get back.
+///
+/// Flattening bakes the CURRENT render — grade, masks, patches and the AI Clean
+/// Up layers together — into one image, and that image becomes what the photo
+/// renders from. The reason is a real defect it fixes: an AI Clean Up result is
+/// stored as a layer of finished pixels, captured with whatever settings were
+/// active at the time, and `render` composites layers AFTER the whole tonal
+/// pipeline. So the repaired area keeps its old tone while the rest of the
+/// photograph moves — most visibly when a grade is synced onto it from another
+/// photo, which is how it was reported.
+///
+/// Nothing is written to the client's original file, ever. The flattened copy
+/// is a private file in the app's container; the original stays untouched on
+/// disk, and `unflatten` deletes the copy and puts the settings back exactly as
+/// they were, so this is reversible in practice even though it is called
+/// flattening.
+///
+/// 16-bit, not 8: the photo goes on being edited after this — that is the whole
+/// point of it — and a grade pushed onto 8-bit baked pixels bands. Resolution
+/// is native, per the lock at the top of BRIEFSHOW_DEVELOP_NOTES.md.
+enum FlattenedImageStore {
+
+    private static let settingsKey = "com.rocketsbrief.briefshow.flattenedSettings"
+
+    private static var directory: URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask).first else {
+            return nil
+        }
+        let directory = base.appendingPathComponent("BriefShow/Flattened", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// Keyed the same way PhotoEditStore keys its settings — name plus file
+    /// size — so a different file that happens to share a name cannot pick up
+    /// another photo's flattened copy.
+    private static func key(for url: URL) -> String {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? -1
+        return "\(url.lastPathComponent)|\(size)"
+    }
+
+    private static func fileURL(for photo: URL) -> URL? {
+        guard let directory else { return nil }
+        let safe = key(for: photo).replacingOccurrences(of: "/", with: "_")
+        return directory.appendingPathComponent(safe + ".tiff")
+    }
+
+    /// The flattened file for this photo, or nil.
+    static func flattenedURL(for photo: URL) -> URL? {
+        guard let candidate = fileURL(for: photo),
+              FileManager.default.fileExists(atPath: candidate.path) else {
+            return nil
+        }
+        return candidate
+    }
+
+    static func isFlattened(_ photo: URL) -> Bool {
+        flattenedURL(for: photo) != nil
+    }
+
+    /// What every decode in the app should actually open for this photo: the
+    /// flattened copy when there is one, the original otherwise.
+    static func sourceURL(for photo: URL) -> URL {
+        flattenedURL(for: photo) ?? photo
+    }
+
+    enum Failure: LocalizedError {
+        case noDirectory, renderFailed, encodeFailed
+        var errorDescription: String? {
+            switch self {
+            case .noDirectory: return "Could not find a place to save the flattened photo."
+            case .renderFailed: return "The photo could not be rendered."
+            case .encodeFailed: return "The flattened photo could not be written."
+            }
+        }
+    }
+
+    /// Writes `image` as this photo's flattened copy and remembers the settings
+    /// it was baked from, so `unflatten` can put them back.
+    static func flatten(_ image: CIImage, settings: PhotoEditSettings,
+                        for photo: URL, context: CIContext) throws {
+        guard let destination = fileURL(for: photo) else { throw Failure.noDirectory }
+        guard image.extent.width >= 1, image.extent.height >= 1,
+              let cgImage = context.createCGImage(image, from: image.extent,
+                                                  format: .RGBA16,
+                                                  colorSpace: briefEditsSRGBColorSpace,
+                                                  deferred: false) else {
+            throw Failure.renderFailed
+        }
+        let rep = NSBitmapImageRep(cgImage: cgImage)
+        guard let data = rep.representation(
+            using: .tiff,
+            properties: [.compressionMethod: NSBitmapImageRep.TIFFCompression.lzw.rawValue]) else {
+            throw Failure.encodeFailed
+        }
+        try data.write(to: destination, options: .atomic)
+
+        var all = storedSettings
+        all[key(for: photo)] = settings
+        storedSettings = all
+    }
+
+    /// Deletes the flattened copy and returns the settings it was baked from,
+    /// so the caller can restore them.
+    @discardableResult
+    static func unflatten(_ photo: URL) -> PhotoEditSettings? {
+        if let existing = flattenedURL(for: photo) {
+            try? FileManager.default.removeItem(at: existing)
+        }
+        var all = storedSettings
+        let previous = all.removeValue(forKey: key(for: photo))
+        storedSettings = all
+        return previous
+    }
+
+    private static var storedSettings: [String: PhotoEditSettings] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: settingsKey) else { return [:] }
+            return (try? JSONDecoder().decode([String: PhotoEditSettings].self, from: data)) ?? [:]
+        }
+        set {
+            UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: settingsKey)
+        }
+    }
+}
+
+extension Notification.Name {
+    /// Photos whose saved edits just changed, coalesced — see
+    /// `PhotoEditStore.flushNow`. userInfo carries a `Set<URL>` under
+    /// `photoEditsChangedURLsKey`.
+    static let photoEditsChanged = Notification.Name("com.rocketsbrief.briefshow.photoEditsChanged")
+}
+
+let photoEditsChangedURLsKey = "urls"
+
+/// A ShowGrid thumbnail with the client's LumenoLab edits applied.
+///
+/// The grid used to show the untouched file no matter how much work had been
+/// done on a photo, so a folder looked identical before and after an editing
+/// session — the edits existed but were only ever visible inside LumenoLab.
+///
+/// Edits are applied to the THUMBNAIL, not to a full decode that is then
+/// shrunk. That is the whole reason this is affordable in a grid: the small
+/// ImageIO decode is what the grid was already paying for, and the filter
+/// chain then runs over a few hundred pixels instead of forty megapixels.
+/// Every geometry in PhotoEditSettings — crops, masks, patches, layer bounds —
+/// is stored in unit coordinates precisely so it can be resolved against
+/// whatever extent it is handed, so the small render matches the big one.
+///
+/// A photo with no edits takes the plain path and costs exactly what it did
+/// before.
+func makeEditedShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> NSImage? {
+    // The flattened copy, when there is one — otherwise a flattened photo would
+    // still show its original in the grid and the filmstrip.
+    let source = FlattenedImageStore.sourceURL(for: url)
+    let settings = PhotoEditStore.settings(for: url)
+    guard !settings.isNeutral else {
+        return makeShowGridThumbnail(from: source, maxPixelSize: maxPixelSize)
+    }
+
+    guard let plain = makeShowGridThumbnail(from: source, maxPixelSize: maxPixelSize),
+          let plainCG = plain.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        return nil
+    }
+
+    let rendered = PhotoEditRenderer.render(settings, on: .standard(CIImage(cgImage: plainCG)))
+    guard rendered.extent.width >= 1, rendered.extent.height >= 1,
+          let out = briefEditsDisplayCGImage(rendered, from: rendered.extent,
+                                             context: briefEditsThumbnailCIContext) else {
+        // Falls back to the unedited thumbnail rather than to nothing: a photo
+        // that renders as a blank tile in the grid is worse than one that
+        // renders as its original.
+        return plain
+    }
+    return NSImage(cgImage: out, size: NSSize(width: out.width, height: out.height))
 }
 
 // A named, reusable snapshot of the *entire* PhotoEditSettings (light/color/
@@ -740,7 +1022,12 @@ enum PhotoEditRenderer {
     // per photo by DevelopView and reused for the full-resolution export.
     // See loadPreviewBaseImage for the separate, independently-scaled
     // instance used by the live preview.
-    static func loadBaseImage(from url: URL) -> PhotoBaseImage? {
+    static func loadBaseImage(from photoURL: URL) -> PhotoBaseImage? {
+        // A flattened photo opens its baked copy instead of the original, and
+        // it does so HERE so that every path — preview, refine, export, the
+        // erases — sees the same picture. Flattening that only the preview
+        // honoured would be a lie the export would then tell.
+        let url = FlattenedImageStore.sourceURL(for: photoURL)
         if isRAW(url), let rawFilter = CIRAWFilter(imageURL: url) {
             // Full quality, not the fast/lossy draft decode — this is for
             // an actual edit session, not a filmstrip thumbnail.
@@ -771,7 +1058,21 @@ enum PhotoEditRenderer {
     // scaleFactor can decode directly at the reduced size (cheaper and
     // higher quality than demosaicing full-res then downsampling with a CI
     // transform).
-    static func loadPreviewBaseImage(from url: URL, full: PhotoBaseImage, previewMax: CGFloat = 1600) -> PhotoBaseImage {
+    /// `previewMax` is the long edge, in pixels, of the image the client is
+    /// actually shown while editing.
+    ///
+    /// It was 1600, and 1600 is not enough. The preview area on a Retina
+    /// display is roughly 2900 physical pixels wide, so a 1600px render was
+    /// being enlarged nearly twice over — reported directly, with a crop of a
+    /// .NEF that looked nothing like the file that came out of the camera.
+    /// 2600 lands close to native for the screen without being the full frame.
+    ///
+    /// It is still the DRAFT decode for RAW (see below), and it is still
+    /// replaced by the full-resolution render as soon as editing pauses. What
+    /// changed is what the client looks at in between, which is most of the
+    /// time they spend in this window.
+    static func loadPreviewBaseImage(from photoURL: URL, full: PhotoBaseImage, previewMax: CGFloat = 2600) -> PhotoBaseImage {
+        let url = FlattenedImageStore.sourceURL(for: photoURL)
         let extent = full.extent
         let longEdge = max(extent.width, extent.height)
         let scale = (longEdge.isFinite && longEdge > previewMax) ? previewMax / longEdge : 1
@@ -2045,7 +2346,18 @@ enum PhotoEditRenderer {
     // than reading, say, just the green channel) keeps it representative of
     // overall tonal distribution the way a photo editor's histogram usually
     // reads, not one color channel's alone.
-    static func luminanceHistogram(of image: CIImage, bucketCount: Int = 48) -> [CGFloat] {
+    /// `context` is a parameter, not a hardcoded global, because which context
+    /// this renders through decides whether the editor works.
+    ///
+    /// It used to render through the shared heavy context. That context is the
+    /// one the full-resolution refine holds for seconds at a time on a RAW, so
+    /// the histogram — computed in the same closure as the preview, right
+    /// after the picture was successfully rendered — blocked on it. The
+    /// finished image was sitting in a local variable and never got assigned,
+    /// and the client saw an empty preview. Caught by logging every branch of
+    /// renderNow and finding the trace simply stop after "got cgImage".
+    static func luminanceHistogram(of image: CIImage, bucketCount: Int = 48,
+                                   context: CIContext) -> [CGFloat] {
         // CIColorMatrix computes each OUTPUT channel as a dot product of
         // (r, g, b, a) with the corresponding vector — so to get R=G=B=
         // luminance out, r/g/bVector all need to be the *same* Rec. 709
@@ -2076,7 +2388,7 @@ enum PhotoEditRenderer {
         // exceeds 255, which a several-hundred-thousand-pixel preview
         // hits immediately.
         var pixels = [Float](repeating: 0, count: bucketCount * 4)
-        briefEditsCIContext.render(
+        context.render(
             histogramImage,
             toBitmap: &pixels,
             rowBytes: bucketCount * 4 * MemoryLayout<Float>.size,
@@ -2097,6 +2409,58 @@ enum PhotoEditRenderer {
 
 private let briefEditsSRGBColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
 
+// THREE contexts, by role, not one shared one — and the split is load-bearing.
+//
+// A CIContext serializes internally: every render through it takes the same
+// `-[CIContext lock]`. So a single shared context makes every render in the
+// app queue behind every other one, no matter how many DispatchQueues they
+// were spread across. That was caught with `sample` on a LumenoLab that would
+// not show a photo:
+//
+//     renderNow          → briefEditsDisplayCGImage → -[CIContext lock]  (waiting)
+//     refreshEditedThumbnails → makeEditedShowGridThumbnail → same lock  (holding)
+//
+// ShowGrid re-rendering its edited thumbnails was holding the lock, and the
+// editor's interactive preview was stuck behind it — the photo simply never
+// appeared. An earlier attempt at this bug split the DISPATCH QUEUES apart,
+// which changed nothing, because the queues were never the bottleneck.
+//
+// Each context keeps its own caches, which is the cost. It is worth paying:
+// the three jobs have genuinely different urgency, and none of them should be
+// able to stall the one the client is looking at.
+private func makeBriefEditsCIContext() -> CIContext {
+    CIContext(options: [
+        .workingColorSpace: briefEditsSRGBColorSpace,
+        .outputColorSpace: briefEditsSRGBColorSpace,
+        .cacheIntermediates: false
+    ])
+}
+
+// The one the client is watching: LumenoLab's interactive preview, and NOTHING
+// else — not even the refine that later replaces what it drew.
+//
+// That exclusion is the whole value of this context and it was got wrong once
+// already. The refine was routed here on the reasoning that it replaces the
+// preview's own image, which is true and beside the point: it is a
+// FULL-RESOLUTION render, seconds long on a RAW, and it holds this context's
+// lock for every one of them. `sample` caught it exactly:
+//
+//     refinedRenderNow → -[CIContext lock]   (holding, mid full-res render)
+//     renderNow        → -[CIContext lock]   (waiting)
+//
+// and the client saw an empty preview with the placeholder text. The rule is
+// not "group renders by what they draw", it is "nothing slow shares a context
+// with something interactive".
+private let briefEditsPreviewCIContext = makeBriefEditsCIContext()
+
+// ShowGrid's tiles and LumenoLab's filmstrip — many small renders, none of
+// them urgent, and the ones that were blocking the preview.
+private let briefEditsThumbnailCIContext = makeBriefEditsCIContext()
+
+// The heavy end: the full-resolution refine, the exports, the erases. They all
+// run on developRenderQueue, one at a time, so sharing one context between
+// them costs nothing — and keeps every one of them off the preview's.
+//
 // One shared, Metal-backed context for both the live (downsampled) preview
 // and the full-resolution export — CIContext is safe to reuse across many
 // renders of different sizes.
@@ -2105,6 +2469,58 @@ private let briefEditsCIContext = CIContext(options: [
     .outputColorSpace: briefEditsSRGBColorSpace,
     .cacheIntermediates: false
 ])
+
+// Renders a CIImage to a CGImage that is ALREADY DRAWN — the whole point of
+// this helper, and it is not a detail.
+//
+// `createCGImage(_:from:)` hands back a CGImage backed by a lazily-rendered
+// IOSurface: the filter graph is not evaluated when you call it, but when
+// something first draws the result. So every render below could sit on a
+// background queue looking perfectly well-behaved while the actual work was
+// deferred to whoever displayed it — and that is Core Animation, on the MAIN
+// THREAD, inside its layer-commit.
+//
+// Caught in the act with `sample` on a beachballed app: the main thread was
+// 100% inside
+//     CA::Layer::prepare_contents → CA::Render::prepare_image
+//       → CI::copyIOSurfaceCallback → CIContext render
+//         → 83 nested levels of CI::Context::recursive_render
+// which is the entire patch-stroke filter graph being evaluated during a
+// window flush. No amount of moving work onto developRenderQueue could have
+// helped: the queue was never where the work happened.
+//
+// `deferred: false` makes createCGImage do the rendering there and then, on
+// the thread that asked for it. Only for images destined for the SCREEN; the
+// export paths hand their CGImage straight to NSBitmapImageRep, which forces
+// the same realization on their own background queue already.
+private func briefEditsDisplayCGImage(_ image: CIImage, from rect: CGRect,
+                                      context: CIContext) -> CGImage? {
+    context.createCGImage(image, from: rect, format: .RGBA8,
+                          colorSpace: briefEditsSRGBColorSpace,
+                          deferred: false)
+}
+
+// The interactive preview's own queue, separate from the heavy one below.
+//
+// They were one serial queue, and that was a real bug: the refine and the
+// exports render the FULL-resolution image, which on a RAW with a deep patch
+// graph is many seconds, and every interactive render sat behind it. The
+// symptom was clicking a filmstrip thumbnail and getting the empty
+// "Select a photo from the filmstrip" placeholder — the decode had finished,
+// so nothing said "loading", but the render that would have produced a picture
+// was still queued behind a refine and had not run yet.
+//
+// Splitting them is safe for the one reason that made a single queue necessary
+// in the first place. That reason is the shared CIRAWFilter: render() pushes
+// Exposure/Temperature/Tint into the filter, so two renders through the SAME
+// filter must not overlap. But `previewBaseImage` and `fullBaseImage` hold
+// DIFFERENT CIRAWFilter instances, deliberately — see loadPreviewBaseImage,
+// which creates its own precisely so the draft filter can be driven on every
+// slider tick without disturbing the full-quality one. renderNow is the only
+// thing that touches the preview filter; everything else touches the full one.
+// One serial queue each, and neither filter is ever written concurrently.
+private let developPreviewRenderQueue = DispatchQueue(
+    label: "com.rocketsbrief.briefshow.develop.render.preview", qos: .userInteractive)
 
 // Serial (not concurrent) — PhotoEditRenderer.render() mutates a RAW
 // photo's shared CIRAWFilter in place (see PhotoBaseImage.raw's own doc
@@ -2152,6 +2568,64 @@ private final class ClickThroughHostingView: NSHostingView<DevelopView> {
     }
 }
 
+/// Drives the card ShowGrid puts up while LumenoLab is opening.
+///
+/// Opening was never instant, and it used to give no sign at all: the client
+/// double-clicked a photo and the app sat there looking hung — the report was
+/// four seconds of nothing. Most of that turned out to be `PhotoEditStore`
+/// re-decoding its whole dictionary per photo (fixed at the source, see its
+/// own comment), but the rest is real work — building the window and decoding
+/// the photograph — and real work deserves to be shown rather than hidden.
+///
+/// The fraction moves at genuine stage boundaries, not on a timer. The last
+/// stage is the honest one: it ends when the first photo has actually been
+/// decoded and drawn, which is the moment the editor is usable, so the bar
+/// cannot reach the end while the client is still looking at an empty window.
+final class DevelopLaunchProgress: ObservableObject {
+    static let shared = DevelopLaunchProgress()
+
+    @Published private(set) var isOpening = false
+    @Published private(set) var fraction: Double = 0
+    @Published private(set) var stage: String = ""
+
+    private init() {}
+
+    func begin() {
+        isOpening = true
+        fraction = 0.08
+        stage = "Preparing…"
+    }
+
+    func report(_ fraction: Double, _ stage: String) {
+        guard isOpening else { return }
+        // Never backwards: the photo-decode stage can land before or after the
+        // window stages depending on how big the file is, and a bar that
+        // retreats reads as a fault.
+        self.fraction = max(self.fraction, fraction)
+        self.stage = stage
+    }
+
+    /// Called when the first photo is on screen. Holds the full bar briefly so
+    /// it is seen completed rather than vanishing at nine tenths.
+    func finish() {
+        guard isOpening else { return }
+        fraction = 1
+        stage = "Ready"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+            self?.isOpening = false
+            self?.fraction = 0
+            self?.stage = ""
+        }
+    }
+
+    /// Opening failed or the window was already up — take the card down now.
+    func cancel() {
+        isOpening = false
+        fraction = 0
+        stage = ""
+    }
+}
+
 final class DevelopWindowController {
     static let shared = DevelopWindowController()
 
@@ -2176,10 +2650,27 @@ final class DevelopWindowController {
 
     func open(photoURLs: [URL], initialSelection: URL?) {
         if let controller = windowController {
+            DevelopLaunchProgress.shared.cancel()
             controller.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
+
+        DevelopLaunchProgress.shared.begin()
+
+        // Everything below this hop is synchronous and is the slow part —
+        // building the window and mounting the SwiftUI tree. Done inline it
+        // would run to completion inside the SAME runloop turn that asked for
+        // the card, so the card would never get a chance to draw and the
+        // client would see exactly the frozen app this is meant to fix. The
+        // hop lets one frame out first.
+        DispatchQueue.main.async {
+            self.openNow(photoURLs: photoURLs, initialSelection: initialSelection)
+        }
+    }
+
+    private func openNow(photoURLs: [URL], initialSelection: URL?) {
+        DevelopLaunchProgress.shared.report(0.25, "Opening LumenoLab…")
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1500, height: 940),
@@ -2197,6 +2688,8 @@ final class DevelopWindowController {
         let controller = NSWindowController(window: window)
         windowController = controller
 
+        DevelopLaunchProgress.shared.report(0.45, "Building the editor…")
+
         window.contentView = ClickThroughHostingView(
             rootView: DevelopView(
                 photoURLs: photoURLs,
@@ -2207,11 +2700,26 @@ final class DevelopWindowController {
             )
         )
 
+        DevelopLaunchProgress.shared.report(0.7, "Loading the photo…")
+
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // The card is taken down by DevelopView the moment the first photo is
+        // actually drawn (see loadImages). This is the backstop for the case
+        // where that never happens — an unreadable file, a decode that fails —
+        // so a failed open cannot leave the card on screen forever.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            DevelopLaunchProgress.shared.cancel()
+        }
     }
 
     func close() {
+        // Anything still sitting in the debounced write goes out now. The
+        // window that owns the edits must not be able to disappear with work
+        // unwritten, and this is also what makes ShowGrid's thumbnails correct
+        // the instant the editor is dismissed rather than half a second later.
+        PhotoEditStore.flushNow()
         windowController?.close()
         windowController = nil
     }
@@ -2285,12 +2793,25 @@ private let filmstripThumbnailQueue = DispatchQueue(
     qos: .utility
 )
 
-// How many decoded filmstrip thumbnails are kept. At 240px each is roughly a
-// quarter of a megabyte once decoded, so an uncapped cache on a few thousand
-// photos is hundreds of megabytes that never come back. Evicted oldest-first,
-// and a re-scroll simply decodes again — cheap now that it is one at a time
-// off the interactive path.
-private let filmstripThumbnailCacheLimit = 400
+// How many decoded filmstrip thumbnails are kept, and how big each one is
+// decoded. The two numbers are one decision: an uncapped cache on a few
+// thousand photos is hundreds of megabytes that never come back, so the budget
+// is held at roughly 100 MB and the count follows from the size.
+//
+// 384px, raised from 240px when the filmstrip became resizable. The strip used
+// to be a fixed 120pt with 100pt thumbnails, where 240px was exactly right on
+// a Retina screen (100pt × 2) with a little to spare. Now the client can drag
+// it taller, and a thumbnail drawn larger than its own pixels goes soft — so
+// the decode has to cover the tallest the strip can get. 384px covers a 192pt
+// thumbnail at 2x, which is what filmstripMaxHeight allows; the two must move
+// together or one of them is a lie.
+//
+// Cost: ~0.59 MB decoded (384 × 384 × 4), against ~0.25 MB at 240px. The count
+// drops from 400 to 180 to pay for it and the total is unchanged. Evicted
+// oldest-first, and a re-scroll simply decodes again — cheap, since it is one
+// at a time off the interactive path.
+private let filmstripThumbnailPixelSize: CGFloat = 384
+private let filmstripThumbnailCacheLimit = 180
 
 // Where the brush cursor is, held in a reference the parent deliberately does
 // NOT observe.
@@ -2621,12 +3142,44 @@ final class ToolCursor: ObservableObject {
 // every hover event and every drag event, so moving the mouse across the photo
 // rebuilt the image, the panel, the filmstrip and the histogram — before any
 // painting had even started.
+/// Where the clone stamp is reading pixels FROM.
+///
+/// A circle the same size as the brush, dashed, exactly as Photoshop draws it
+/// — because the thing worth knowing is not merely "somewhere over there" but
+/// how much is being lifted, and the brush size is the answer to that. It
+/// replaced a fixed 16-18pt "viewfinder" glyph that said nothing about size.
+///
+/// The dashes are what separate it at a glance from the solid brush ring that
+/// shows where paint LANDS: solid is where you are, dashed is where it comes
+/// from. The colour is the app's progress yellow, passed in rather than picked
+/// here so it follows the theme.
+///
+/// Nothing under the dashes — no second ring, no shadow. Both were tried and
+/// both were rejected for the same reason: they put a dark smudge on the
+/// client's photograph to make an overlay easier to see, which is the wrong
+/// trade on a tool for retouching pictures. The orange carries itself.
+private struct PatchSourceCircle: View {
+    let center: CGPoint
+    let diameter: CGFloat
+    let color: Color
+
+    var body: some View {
+        Circle()
+            .stroke(color, style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+            .frame(width: diameter, height: diameter)
+            .position(center)
+    }
+}
+
 private struct PatchStampLayer: View {
     @ObservedObject var cursor: ToolCursor
     let frame: CGRect
     let diameter: CGFloat
     let color: Color
     let sourceOffset: CGSize?
+    /// The dashed source ring's colour — the app's progress yellow, handed
+    /// down from the view that observes the theme.
+    let sourceColor: Color
 
     var body: some View {
         ZStack {
@@ -2644,33 +3197,38 @@ private struct PatchStampLayer: View {
                         style: StrokeStyle(lineWidth: diameter, lineCap: .round, lineJoin: .round))
             }
 
-            // While actively painting, a second yellow "twin cursor" tracks
-            // where content is being sampled FROM (last painted point plus
-            // this stroke's fixed offset) — the same live feedback a real
-            // clone stamp gives, so the user sees what's about to land
-            // before it does.
+            // The source ring shows up for exactly TWO moments, and is absent
+            // the rest of the time — Photoshop's own behaviour, and asked for
+            // directly after a version that kept it on screen permanently.
+            //
+            // A ring that is always visible stops being information: it sits
+            // over the photograph during every pause, every reposition, every
+            // look at what has been done so far. It matters while a source is
+            // being CHOSEN and while paint is being LAID DOWN. Between those,
+            // the offset is remembered perfectly well without drawing it.
             if let last = cursor.stroke.last, let sourceOffset {
-                Image(systemName: "viewfinder")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(.yellow)
-                    .shadow(radius: 1)
-                    .position(x: frame.minX + (last.x + sourceOffset.width) * frame.width,
-                              y: frame.minY + (last.y + sourceOffset.height) * frame.height)
+                // Painting. Last painted point plus this stroke's fixed
+                // offset, so the ring travels alongside the brush and the two
+                // circles move together — the offset was locked when the drag
+                // began and cannot drift mid-stroke.
+                //
+                // Goes away by itself on mouse-up: commitPatchStroke empties
+                // `cursor.stroke`, which is this branch's own condition.
+                PatchSourceCircle(
+                    center: CGPoint(x: frame.minX + (last.x + sourceOffset.width) * frame.width,
+                                    y: frame.minY + (last.y + sourceOffset.height) * frame.height),
+                    diameter: diameter, color: sourceColor)
+            } else if let hover = cursor.sourceHover, cursor.stroke.isEmpty {
+                // ⌥ held: the ring is under the cursor, showing exactly what
+                // would be picked up by clicking here. Released, sourceHover
+                // is cleared and the ring goes with it.
+                PatchSourceCircle(center: hover, diameter: diameter, color: sourceColor)
             }
 
-            // "Source will land here if you ⌥-click now" — only while ⌥ is
-            // held and nothing is mid-paint.
-            if let source = cursor.sourceHover, cursor.stroke.isEmpty {
-                Image(systemName: "viewfinder")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.yellow.opacity(0.7))
-                    .shadow(radius: 1)
-                    .position(source)
-            }
-
-            // Cursor-size ring — the brush diameter before painting. Hidden
-            // the instant ⌥ is held (the source ring above takes over) or a
-            // stroke is in progress (the stroke already shows its true width).
+            // Cursor-size ring — where paint LANDS. Solid, against the source
+            // ring's dashes. Hidden while ⌥ is held (that is a source pick,
+            // not a paint) and while a stroke is in progress (the stroke
+            // already draws itself at its true width).
             if let hover = cursor.brushHover, cursor.sourceHover == nil, cursor.stroke.isEmpty {
                 Circle()
                     .stroke(color.opacity(0.9), lineWidth: 1.5)
@@ -2686,15 +3244,16 @@ private struct PatchStampLayer: View {
 // overlay, which has no stroke and no brush ring to go with it.
 private struct PatchSourceRing: View {
     @ObservedObject var cursor: ToolCursor
+    /// The patch's own on-screen width, so the ring says how much would be
+    /// lifted rather than just where from — same rule as PatchSourceCircle in
+    /// the brush overlay, which this now shares.
+    let diameter: CGFloat
+    let color: Color
 
     var body: some View {
         Group {
             if let source = cursor.sourceHover {
-                Image(systemName: "viewfinder")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.yellow.opacity(0.7))
-                    .shadow(radius: 1)
-                    .position(source)
+                PatchSourceCircle(center: source, diameter: diameter, color: color)
             }
         }
         .allowsHitTesting(false)
@@ -2883,6 +3442,9 @@ struct DevelopView: View {
     // `fullBaseImage` — the untouched, full-resolution, full-quality decode
     // that export uses. Nothing extra is decoded for it.
     @State private var refineWorkItem: DispatchWorkItem?
+    // The refine once it is ON the render queue, so it can still be cancelled
+    // between being queued and being started — see scheduleRefinedRender.
+    @State private var refineQueueWorkItem: DispatchWorkItem?
     @State private var displayedImage: NSImage?
     @State private var histogramBins: [CGFloat] = []
     @State private var filmstripThumbnails: [URL: NSImage] = [:]
@@ -2947,6 +3509,64 @@ struct DevelopView: View {
         ExportFormat(rawValue: exportFormatRaw) ?? .jpeg
     }
 
+    // MARK: - Resizable layout
+
+    // The two edges the client drags. Persisted app-wide, like the export
+    // preferences above: a photographer sets the panel to the width they like
+    // once, not once per photo and not once per launch.
+    //
+    // Bounds are not decoration. The panel's floor is what "Generative Clean
+    // Up" beside "Quick Clean Up" needs before either starts truncating — the
+    // widest row in the panel, and the reason 300 rather than something
+    // smaller; the filmstrip's
+    // ceiling is set by `filmstripThumbnailPixelSize` — 384px covers a 192pt
+    // thumbnail at 2x, and 192 + the strip's own 20pt of padding is the 210
+    // below. Past that the thumbnails are drawn larger than their own pixels
+    // and go soft, so raising this number means raising the decode size in the
+    // same commit, not on its own.
+    @AppStorage("develop.layout.panelWidth") private var panelWidth: Double = 340
+    @AppStorage("develop.layout.filmstripHeight") private var filmstripHeight: Double = 120
+
+    // Whether the AI Manipulation section is unfolded. Closed by default: it
+    // sits above the tab bar now, where an open block would push Edit, Retouch
+    // and Layers down the panel for everyone, including the client who is
+    // simply grading a photo and never touches it. Closed it is one titled
+    // line — visible, so nobody has to know it is there, but not in the way.
+    @AppStorage("develop.layout.aiManipulationExpanded") private var aiManipulationExpanded: Bool = false
+
+    private static let panelMinWidth: Double = 300
+    private static let panelMaxWidth: Double = 560
+    private static let filmstripMinHeight: Double = 92
+    private static let filmstripMaxHeight: Double = 210
+
+    // Dragging an edge is TWO pieces of state, and the split is what stops the
+    // edge from shaking under the cursor.
+    //
+    // `…AtDragStart` is the anchor. A DragGesture reports translation
+    // cumulatively from where the drag began, so applying it to the CURRENT
+    // width on every .onChanged compounds it and the edge runs away. Same
+    // anchor pattern as `panStart` in centerPreview, for the same reason.
+    //
+    // `…Live` is where the edge is RIGHT NOW, mid-drag, and it exists because
+    // the stored value above is @AppStorage. Every write to @AppStorage is a
+    // synchronous UserDefaults write plus a defaults-changed notification that
+    // re-enters the view — sixty times a second while a drag is in flight.
+    // That was the shaking: the edge was being driven by a value that only
+    // caught up a frame or two later, so it lagged the cursor and snapped
+    // forward in bursts. Mid-drag nothing touches UserDefaults; the final
+    // position is committed once, in .onEnded.
+    @State private var panelWidthAtDragStart: Double?
+    @State private var filmstripHeightAtDragStart: Double?
+    @State private var panelWidthLive: Double?
+    @State private var filmstripHeightLive: Double?
+
+    // What the layout actually reads: the live drag value while a drag is in
+    // flight, the persisted one the rest of the time.
+    private var effectivePanelWidth: Double { panelWidthLive ?? panelWidth }
+    private var effectiveFilmstripHeight: Double { filmstripHeightLive ?? filmstripHeight }
+
+    @State private var isFlattening = false
+    @State private var flattenErrorMessage: String?
     @State private var showSyncDialog = false
     // Asked at the moment of exporting rather than set once in the panel:
     // "export all of these" is exactly when someone decides what kind of
@@ -3120,6 +3740,7 @@ struct DevelopView: View {
     // blemish at 4x, where the drag belongs to the brush.
     @State private var isSpaceHeld = false
     @State private var spaceKeyMonitor: Any?
+    @State private var optionKeyMonitor: Any?
     @AppStorage("develop.aiRemove.feather")
     private var aiRemoveFeather: Double = SDInpaintPipeline.defaultFeather
     // Hand-painted half of the Remove tool: paint over anything (a bin, a
@@ -3151,37 +3772,118 @@ struct DevelopView: View {
             : Color(red: 0.56, green: 0.56, blue: 0.58)
     }
 
+    // The Clean Up progress fill.
+    //
+    // Deliberately NOT accentColor: that is pale yellow only in dark mode — in
+    // light mode it is a neutral grey, because it doubles as the filmstrip's
+    // selection ring and a ring has to stay quiet. Grey is the one outcome a
+    // progress bar cannot have, since yellow is the whole point of it. So: the
+    // same pale yellow in dark, a deeper amber in light, where cream needs
+    // more weight behind it to read at 6pt tall.
+    private var signalYellow: Color {
+        themeManager.current == .dark
+            ? Color(red: 1.0, green: 0.94, blue: 0.62)
+            : Color(red: 0.93, green: 0.72, blue: 0.16)
+    }
+
+    // The clone stamp's dashed source ring. Orange rather than the progress
+    // yellow beside it: this ring is drawn ON the photograph, with no shadow
+    // or backing ring to hold it up, so it has to separate from skin, sand and
+    // sky by hue alone — and it also has to be told apart at a glance from the
+    // solid accent ring that marks where paint lands. Yellow against a bright
+    // frame did neither.
+    private var patchSourceColor: Color {
+        themeManager.current == .dark
+            ? Color(red: 1.0, green: 0.62, blue: 0.23)
+            : Color(red: 0.95, green: 0.45, blue: 0.10)
+    }
+
+    // Drives the indeterminate bar: 0...1, where the travelling segment sits
+    // along the track. One value on the view rather than one per bar, so both
+    // bars move together — they are showing the same job.
+    @State private var eraseProgressPulse: Double = 0
+
+    // Replaces the spinner-and-text pair. A spinner says "something is
+    // happening"; the generative path takes ~13s and reports a real fraction
+    // per diffusion step, so it can say how much is left instead.
+    //
+    // Determinate whenever there IS a fraction. LaMa's path has none, so that
+    // case slides a short segment along the track.
+    //
+    // It used to PULSE A FULL-WIDTH BAR instead, and that was a bad call of
+    // mine: a full bar reads as "100% and stuck", which is exactly how it was
+    // reported — "shows 100% and holds there another 20 seconds". A bar that
+    // is full is a bar that is finished, whatever it is doing with its
+    // opacity. A travelling segment cannot be misread that way.
+    private var eraseProgressBar: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(aiEraseProgress.map { "Cleaning up… \(Int($0 * 100))%" } ?? "Erasing…")
+                .font(.custom("Figtree", size: 11))
+                .foregroundColor(AppColors.muted)
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(AppColors.border.opacity(0.6))
+
+                    if let aiEraseProgress {
+                        Capsule()
+                            .fill(signalYellow)
+                            .frame(width: min(max(aiEraseProgress, 0), 1) * proxy.size.width)
+                    } else {
+                        // A third of the track, travelling. Never touches
+                        // either end, so it can never look like a finished bar.
+                        let segment = proxy.size.width / 3
+                        Capsule()
+                            .fill(signalYellow)
+                            .frame(width: segment)
+                            .offset(x: eraseProgressPulse * (proxy.size.width - segment))
+                    }
+                }
+            }
+            .frame(height: 6)
+            // Animated so the bar slides between diffusion steps instead of
+            // jumping: the generative path reports roughly every half second,
+            // and un-animated that is a visible stutter rather than progress.
+            .animation(.linear(duration: 0.25), value: aiEraseProgress)
+        }
+        .onAppear {
+            eraseProgressPulse = 0
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                eraseProgressPulse = 1
+            }
+        }
+    }
+
     private let histogramHeight: CGFloat = 56
 
     var body: some View {
+        // The picture owns the whole left side, floor to ceiling. Nothing sits
+        // above it any more: the file name, the tool strip and the Done button
+        // all moved into the right panel, which is now the only place chrome
+        // lives. On a 1470pt window that gave the photo back ~90pt of height —
+        // the two rows plus their dividers — and it is height that a landscape
+        // photo in a wide window is always short of.
+        //
+        // It also retires a whole class of bug the comments below used to
+        // guard against. The old top bar and tool strip sat ABOVE the picture
+        // in the same VStack, so anything in them that changed height — an
+        // erase progress spinner appearing, a notice wrapping to a second line
+        // — shoved the photo down and back up while the client was working on
+        // it. That is why cleanUpNotice was pinned to a fixed 30pt slot and
+        // why the erase progress was moved out of the tool strip. Beside the
+        // picture rather than above it, none of those can move it at all.
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    topBar
+                centerPreview
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    Divider()
-
-                    toolStrip
-
-                    // toolStripDetail is NOT here any more. As a row it changed
-                    // height whenever its text wrapped to a second line, and
-                    // every one of those changes pushed the picture down and
-                    // back up. It says the same things as an overlay on the
-                    // preview instead (cleanUpNoticeCard), where it costs no
-                    // layout at all — the same reason sliderToast is drawn that
-                    // way rather than docked.
-                    Divider()
-
-                    centerPreview
-                }
-                .frame(maxWidth: .infinity)
-
-                Divider()
+                panelResizeHandle
 
                 adjustmentPanel
             }
 
-            Divider()
+            filmstripResizeHandle
 
             filmstrip
         }
@@ -3209,10 +3911,18 @@ struct DevelopView: View {
         .onAppear {
             installEditingKeyMonitor()
             installSpaceKeyMonitor()
+            installOptionKeyMonitor()
         }
         .onDisappear {
             removeEditingKeyMonitor()
             removeSpaceKeyMonitor()
+            removeOptionKeyMonitor()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .photoEditsChanged)) { note in
+            guard let changed = note.userInfo?[photoEditsChangedURLsKey] as? Set<URL> else {
+                return
+            }
+            refreshFilmstripThumbnails(changed)
         }
         .sheet(isPresented: $showSyncDialog) {
             syncDialogView
@@ -3377,6 +4087,60 @@ struct DevelopView: View {
     // through untouched rather than swallowed. Holding Space is precisely
     // the case that generates a repeat storm, and item #15 is what happens
     // when one of those is swallowed and acted on.
+    /// Makes ⌥ show the clone stamp's source ring the moment it is PRESSED.
+    ///
+    /// The ring's position used to come only from `.onContinuousHover`, which
+    /// fires on mouse MOVEMENT — so holding ⌥ with the mouse still did
+    /// nothing, and the ring appeared only once the cursor was nudged. The
+    /// position is already known (the brush ring is tracking it), so this
+    /// simply moves it across on the key event instead of waiting for a mouse
+    /// event to do the same thing.
+    ///
+    /// Scoped to this window by title, per the rule at the top of
+    /// BRIEFSHOW_DEVELOP_NOTES.md: local monitors are APP-WIDE, and one whose
+    /// guard does not match its own window keeps acting while another window
+    /// is focused. `.flagsChanged` carries no isARepeat and swallows nothing —
+    /// the event is always returned, because ⌥ belongs to everything else too.
+    private func installOptionKeyMonitor() {
+        guard optionKeyMonitor == nil else {
+            return
+        }
+        optionKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in
+            guard NSApp.keyWindow?.title == DevelopWindowController.windowTitle else {
+                return event
+            }
+            let optionHeld = event.modifierFlags.contains(.option)
+            // Only while a patch is the live tool. Nothing else draws this
+            // ring, and moving another tool's hover state would be a bug.
+            guard selectedAdjustmentIndex.map({ settings.localAdjustments[$0].type == .patch }) ?? false else {
+                return event
+            }
+            // Mid-stroke ⌥ never reinterprets anything — same rule the drag
+            // gesture already follows.
+            guard patchCursor.stroke.isEmpty else {
+                return event
+            }
+
+            if optionHeld {
+                if let brushHover = patchCursor.brushHover {
+                    patchCursor.sourceHover = brushHover
+                    patchCursor.brushHover = nil
+                }
+            } else if let sourceHover = patchCursor.sourceHover {
+                patchCursor.brushHover = sourceHover
+                patchCursor.sourceHover = nil
+            }
+            return event
+        }
+    }
+
+    private func removeOptionKeyMonitor() {
+        if let optionKeyMonitor {
+            NSEvent.removeMonitor(optionKeyMonitor)
+        }
+        optionKeyMonitor = nil
+    }
+
     private func installSpaceKeyMonitor() {
         guard spaceKeyMonitor == nil else {
             return
@@ -3481,7 +4245,7 @@ struct DevelopView: View {
                     // Adjusts the brush for the NEXT stroke, same as
                     // brushSize above — strokes already painted keep
                     // whatever size they were drawn with.
-                    patchBrushSize = min(max(patchBrushSize * factor, 0.02), 0.3)
+                    patchBrushSize = min(max(patchBrushSize * factor, 0.001), 0.3)
                 } else if var geo = settings.localAdjustments[index].patch {
                     // Legacy Square data only.
                     geo.radiusX = min(max(geo.radiusX * factor, 0.02), 1)
@@ -3573,6 +4337,115 @@ struct DevelopView: View {
 
     // MARK: Filmstrip
 
+    // MARK: - Draggable edges
+
+    // The line between the picture and the panel, and the line between the
+    // picture and the filmstrip. Each one IS the divider that used to be
+    // there — the hairline is drawn at the same 1pt, so nothing looks
+    // different until the cursor reaches it.
+    //
+    // The hit area is deliberately wider than the hairline (7pt, centred on
+    // it). A 1pt drag target is a target the client hunts for; every app that
+    // does this — Lightroom, Xcode, Finder's column view — gives the edge a
+    // few points of slop in both directions. `.contentShape` is what makes the
+    // transparent padding draggable rather than just empty.
+
+    private var panelResizeHandle: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 7)
+            .overlay(
+                Rectangle()
+                    .fill(AppColors.border)
+                    .frame(width: 1)
+            )
+            .contentShape(Rectangle())
+            .onHover { inside in
+                // push/pop rather than .set: the cursor has to go back to
+                // whatever the tool underneath had (the brush circle, the crop
+                // handles), and .set would leave the resize arrows behind.
+                if inside {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            // .global, not the default local space. The gesture is attached
+            // to the handle, and the handle MOVES as a result of the drag —
+            // in local coordinates that is a feedback loop, because each
+            // frame's translation is measured from a view that the previous
+            // frame just displaced. Global coordinates are fixed to the
+            // window, so the translation means the same thing throughout.
+            // This was the other half of the shaking.
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .onChanged { value in
+                        let start = panelWidthAtDragStart ?? panelWidth
+                        panelWidthAtDragStart = start
+                        // Minus: the panel is on the RIGHT, so dragging the
+                        // edge left (negative translation) makes it wider.
+                        panelWidthLive = min(max(start - value.translation.width,
+                                                 Self.panelMinWidth),
+                                             Self.panelMaxWidth)
+                    }
+                    .onEnded { _ in
+                        if let live = panelWidthLive {
+                            panelWidth = live
+                        }
+                        panelWidthAtDragStart = nil
+                        panelWidthLive = nil
+                    }
+            )
+    }
+
+    private var filmstripResizeHandle: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(height: 7)
+            .overlay(
+                Rectangle()
+                    .fill(AppColors.border)
+                    .frame(height: 1)
+            )
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside {
+                    NSCursor.resizeUpDown.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .onChanged { value in
+                        let start = filmstripHeightAtDragStart ?? filmstripHeight
+                        filmstripHeightAtDragStart = start
+                        // Minus, same reason: the filmstrip is BELOW, so
+                        // dragging its top edge up (negative) grows it.
+                        filmstripHeightLive = min(max(start - value.translation.height,
+                                                      Self.filmstripMinHeight),
+                                                  Self.filmstripMaxHeight)
+                    }
+                    .onEnded { _ in
+                        if let live = filmstripHeightLive {
+                            filmstripHeight = live
+                        }
+                        filmstripHeightAtDragStart = nil
+                        filmstripHeightLive = nil
+                    }
+            )
+    }
+
+    // Thumbnails fill whatever height the client has dragged the strip to,
+    // rather than staying 100pt in a 260pt strip with 160pt of dead space
+    // under them — a drag that grew the container and not its contents would
+    // be a drag that does nothing worth doing.
+    //
+    // The 20 is the LazyHStack's own 10pt padding, top and bottom.
+    private var filmstripThumbnailSide: CGFloat {
+        max(56, CGFloat(effectiveFilmstripHeight) - 20)
+    }
+
     private var filmstrip: some View {
         HStack(spacing: 0) {
             ScrollView(.horizontal) {
@@ -3597,66 +4470,16 @@ struct DevelopView: View {
                 .padding(10)
             }
 
-            Divider()
-
-            // Kept OUTSIDE the horizontal ScrollView (not scrolled away with
-            // the thumbnails) so it's always reachable regardless of scroll
-            // position — a "Select All" that required first scrolling to
-            // find it would defeat its own purpose on a long filmstrip.
-            VStack(spacing: 8) {
-                Button {
-                    selectAllPhotos()
-                } label: {
-                    Text("Select All")
-                }
-                .buttonStyle(ShowHeaderButtonStyle())
-
-                Button {
-                    deselectAllPhotos()
-                } label: {
-                    Text("Deselect")
-                }
-                .buttonStyle(ShowHeaderButtonStyle())
-                .opacity(multiSelectedURLs.isEmpty ? 0.4 : 1)
-                .disabled(multiSelectedURLs.isEmpty)
-            }
-            .padding(.horizontal, 14)
-
-            // Sync and Export All belong beside the filmstrip, not two
-            // thirds of the way down the right panel: both act on the
-            // SELECTION made here, and both were previously reachable only
-            // by scrolling away from the thumbnails they operate on.
-            VStack(spacing: 8) {
-                let syncTargets = selectedURL.map { multiSelectedURLs.subtracting([$0]).count } ?? 0
-                let editedCount = photoURLs.filter { PhotoEditStore.hasEdits($0) }.count
-
-                Button {
-                    showSyncDialog = true
-                } label: {
-                    Text("Sync (\(syncTargets))")
-                }
-                .buttonStyle(ShowHeaderButtonStyle())
-                .opacity(syncTargets == 0 ? 0.4 : 1)
-                .disabled(syncTargets == 0)
-                .help(syncTargets == 0
-                      ? "Select other photos in the filmstrip to copy this one's settings to them."
-                      : "Copy the open photo's settings to \(syncTargets) other selected photo\(syncTargets == 1 ? "" : "s").")
-
-                Button {
-                    showExportAllOptions = true
-                } label: {
-                    Text("Export All (\(editedCount))")
-                }
-                .buttonStyle(ShowHeaderButtonStyle())
-                .opacity(editedCount == 0 ? 0.4 : 1)
-                .disabled(editedCount == 0)
-                .help(editedCount == 0
-                      ? "No photo in this folder has edits to export yet."
-                      : "Export every edited photo in this folder into one destination folder.")
-            }
-            .padding(.trailing, 14)
+            // Select All / Deselect / Sync / Export All used to stand here,
+            // in two columns pinned to the right end of the strip. They are on
+            // the right-click menu now, per request: they are four controls
+            // that are pressed occasionally, and they were permanently
+            // occupying the one row whose whole job is showing photographs.
+            // Every one of them acts on the SELECTION, and the selection is
+            // made by clicking thumbnails — so the menu on a thumbnail is
+            // where the hand already is.
         }
-        .frame(height: 120)
+        .frame(height: CGFloat(effectiveFilmstripHeight))
         .background(AppColors.panel)
     }
 
@@ -3672,10 +4495,20 @@ struct DevelopView: View {
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                 } else {
-                    Rectangle().fill(AppColors.panelAlt)
+                    // A spinner, not a flat plate. Decoding a strip of RAWs
+                    // takes real time — each one is a full decode before it is
+                    // scaled, and the edits are then rendered over it — and a
+                    // row of empty rectangles reads as photos that failed
+                    // rather than photos on their way.
+                    ZStack {
+                        Rectangle().fill(AppColors.panelAlt)
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                    }
                 }
             }
-            .frame(width: 100, height: 100)
+            .frame(width: filmstripThumbnailSide, height: filmstripThumbnailSide)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(
                 // The open-in-editor photo keeps the original full-opacity
@@ -3741,20 +4574,69 @@ struct DevelopView: View {
                     exportSelectedPhotos(Array(multiSelectedURLs))
                 }
                 // Sync's source is always whichever photo is open in the
-                // editor (selectedURL), same as the panel's "Syncing"
-                // button below — right-clicking a DIFFERENT thumbnail
-                // within the same selection still syncs FROM the open
-                // photo, not from the one under the cursor, so this reads
-                // the same regardless of which selected thumbnail you
+                // editor (selectedURL), same as the "Syncing" button that
+                // used to sit beside the strip — right-clicking a DIFFERENT
+                // thumbnail within the same selection still syncs FROM the
+                // open photo, not from the one under the cursor, so this
+                // reads the same regardless of which selected thumbnail you
                 // happen to right-click.
-                Button("Syncing…") {
+                //
+                // Count in the label because the menu is transient: the old
+                // button sat on screen where "Sync (0)" could be read at
+                // leisure, a menu item is seen for a second and has to say
+                // how many photos it is about to write to in that second.
+                let syncTargets = selectedURL.map { multiSelectedURLs.subtracting([$0]).count } ?? 0
+                Button("Sync to \(syncTargets) Selected…") {
                     showSyncDialog = true
                 }
+                .disabled(syncTargets == 0)
             } else {
                 Button("Export…") {
                     exportSinglePhoto(url)
                 }
             }
+
+            Divider()
+
+            // The other half of what stood beside the strip. Selection
+            // commands are in the same menu as the things that consume a
+            // selection, in the order they are used: select, then act.
+            Button("Select All") {
+                selectAllPhotos()
+            }
+
+            Button("Deselect") {
+                deselectAllPhotos()
+            }
+            .disabled(multiSelectedURLs.isEmpty)
+
+            // Select All then Reset here is how a whole folder goes back to
+            // its originals, which is the request this answers.
+            Button(multiSelectedURLs.count > 1
+                   ? "Reset \(multiSelectedURLs.count) Selected to Original"
+                   : "Reset to Original") {
+                if multiSelectedURLs.count > 1 {
+                    resetSelectedPhotos()
+                } else {
+                    PhotoEditStore.setSettings(PhotoEditSettings(), for: url)
+                    if url == selectedURL {
+                        resetAllSettings()
+                    }
+                    PhotoEditStore.flushNow()
+                }
+            }
+
+            Divider()
+
+            // Folder-wide, not selection-wide — it exports every EDITED photo
+            // in the folder regardless of what is selected, which is why it
+            // keeps its own count and sits below a divider rather than among
+            // the selection commands.
+            let editedCount = photoURLs.filter { PhotoEditStore.hasEdits($0) }.count
+            Button("Export All Edited (\(editedCount))…") {
+                showExportAllOptions = true
+            }
+            .disabled(editedCount == 0)
         }
     }
 
@@ -3814,14 +4696,41 @@ struct DevelopView: View {
         multiSelectedURLs = []
     }
 
-    private func loadFilmstripThumbnail(for url: URL) {
-        guard filmstripThumbnails[url] == nil, !filmstripThumbnailsInFlight.contains(url) else {
+    /// `force` re-decodes a thumbnail this view already has, for when the
+    /// photo's EDITS changed rather than the photo. The existing image is
+    /// deliberately left on screen until the new one is ready — clearing it
+    /// first would flash a spinner in the strip on every edit.
+    // The filmstrip is a view of the photos AS THEY ARE, so it has to hear
+    // when they change — not only when they are first decoded.
+    //
+    // Without this the strip kept whatever it decoded on open: resetting a
+    // photo back to its original left the strip still showing the edited
+    // version, disagreeing with the picture directly above it. The
+    // notification is already coalesced on the sending side (see
+    // PhotoEditStore.flushNow), so a slider drag produces one re-decode at the
+    // end of it, not one per frame.
+    private func refreshFilmstripThumbnails(_ changed: Set<URL>) {
+        for url in photoURLs where changed.contains(url) {
+            loadFilmstripThumbnail(for: url, force: true)
+        }
+    }
+
+    private func loadFilmstripThumbnail(for url: URL, force: Bool = false) {
+        guard force || filmstripThumbnails[url] == nil else {
+            return
+        }
+        guard !filmstripThumbnailsInFlight.contains(url) else {
             return
         }
         filmstripThumbnailsInFlight.insert(url)
 
         filmstripThumbnailQueue.async {
-            let image = makeShowGridThumbnail(from: url, maxPixelSize: 240)
+            // Edited, like ShowGrid's tiles. The filmstrip used to show the
+            // untouched original, so a photo already worked on looked
+            // unedited in the strip until it was clicked and the big preview
+            // rendered — the strip and the picture above it disagreeing about
+            // the same photograph.
+            let image = makeEditedShowGridThumbnail(from: url, maxPixelSize: filmstripThumbnailPixelSize)
 
             DispatchQueue.main.async {
                 filmstripThumbnailsInFlight.remove(url)
@@ -3855,74 +4764,77 @@ struct DevelopView: View {
 
     // MARK: Top bar
 
-    private var topBar: some View {
-        HStack(spacing: 14) {
+    // What used to be the top bar across the picture. It is a column now, not
+    // a row: 340pt cannot hold a file name, a status, Before/After and Done
+    // side by side, and squeezing them would truncate the one thing here that
+    // is not replaceable — the name of the photo being worked on.
+    //
+    // Erase progress and export status keep their old slot beside the name,
+    // for the reason they were put there: the generative path takes ~13s, long
+    // enough that the eye leaves the button, and it comes back to the top.
+    private var panelHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
             if let selectedURL {
-                Text(selectedURL.lastPathComponent)
-                    .font(.custom("Figtree", size: 13).weight(.semibold))
-                    .foregroundColor(AppColors.ink)
-                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    // .middle, not the default .tail: photographers' filenames
+                    // differ in the SHOT NUMBER at the end (_0473.CR2), so
+                    // truncating the tail makes every name in a folder read
+                    // identically. The middle is the disposable part.
+                    Text(selectedURL.lastPathComponent)
+                        .font(.custom("Figtree", size: 13).weight(.semibold))
+                        .foregroundColor(AppColors.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(selectedURL.lastPathComponent)
 
-                if PhotoEditRenderer.isRAW(selectedURL) {
-                    rawBadge
-                }
-
-                // Erase progress, beside the file name rather than in the tool
-                // strip where it used to live. Two reasons: it shifted every
-                // button after it while an erase ran, and the generative path
-                // takes ~13s, which is long enough that the eye leaves the
-                // button and comes back to the top of the window.
-                if isRemoving {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(aiEraseProgress.map { "Cleaning up… \(Int($0 * 100))%" } ?? "Erasing…")
-                            .font(.custom("Figtree", size: 11))
-                            .foregroundColor(AppColors.muted)
+                    if PhotoEditRenderer.isRAW(selectedURL) {
+                        rawBadge
                     }
+
+                    Spacer(minLength: 0)
+                }
+
+                if isRemoving {
+                    eraseProgressBar
                 }
             }
-
-            // The Clean Up tool's commentary, in the empty middle of the top
-            // bar. It was briefly drawn over the picture instead, which kept it
-            // out of the layout but put text on the client's photograph — the
-            // one place it must not be. This gap was already dead space.
-            //
-            // Two rules keep it from reintroducing the problem it was moved to
-            // avoid — a bar that changes height and shoves the picture around:
-            // a FIXED height, and a two-line cap. Whatever the text does, the
-            // bar is the same height it was when there is no text at all.
-            //
-            // maxWidth: .infinity is what "stretch it" means here: it takes the
-            // whole gap and the Spacer below collapses to nothing. With no
-            // notice, the Spacer takes it back and the bar looks untouched.
-            if let notice = cleanUpNotice {
-                Text(notice)
-                    .font(.custom("Figtree", size: 11))
-                    .foregroundColor(AppColors.muted)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(height: 30)
-            }
-
-            Spacer(minLength: 0)
 
             if let exportStatusText {
                 Text(exportStatusText)
                     .font(.custom("Figtree", size: 12).weight(.medium))
                     .foregroundColor(AppColors.muted)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            beforeAfterButton
+            HStack(spacing: 8) {
+                beforeAfterButton
 
-            Button("Done") {
-                onClose()
+                // Reset lives up here, beside Done, because it acts on the
+                // WHOLE photo — the same scope as Done — and because a client
+                // who wants the original back wants it now. It was only at the
+                // very bottom of the scroll, under every section, which is far
+                // enough down that it was missed entirely: the photo that
+                // prompted this was put back to its original by dragging every
+                // slider to zero by hand.
+                Button("Reset") {
+                    resetAllSettings()
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .opacity(settings.isNeutral ? 0.4 : 1)
+                .disabled(settings.isNeutral)
+                .help("Put this photo back to the original.")
+
+                Spacer(minLength: 0)
+
+                Button("Done") {
+                    onClose()
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
             }
-            .buttonStyle(ShowHeaderButtonStyle())
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 
     // The tools, over the photo instead of scattered down the right panel.
@@ -3934,185 +4846,246 @@ struct DevelopView: View {
     // different amount of scrolling, so picking a tool meant knowing which
     // section it had been filed under. Up here they are one row, always in
     // the same place, and each one lights up while it is the active tool.
-    private var toolStrip: some View {
-        HStack(spacing: 6) {
-            toolButton("Crop", systemImage: "crop", isActive: isCropping) {
-                toggleCropMode()
+    // Crop, Selection and Patch. They are NOT AI — nothing here calls a model
+    // — which is the whole reason they were split off from the block below
+    // when that block became "AI Manipulation". Grouping them under that title
+    // would have been the label lying about three of its own buttons.
+    // Patch alone. Crop and Selection were here too and are gone from this
+    // row — not removed from the app, just from their SECOND home: Crop is
+    // Edit's "Crop & Rotate" section and Selection is the "Selection" section
+    // a little further down this same tab. Three buttons whose only job was
+    // duplicating controls a few rows away cost more panel than they saved.
+    //
+    // Patch has no such other home — the Masks section's "Patch Circle" was
+    // the duplicate, and it is this button that survived — so the row stays
+    // for it.
+    private var toolsRowSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Tools")
+
+            HStack(spacing: 6) {
+                // Patch is a CIRCLE by default and that is deliberate. It is a
+                // clone stamp: the circle IS the tool, the brush you paint
+                // with, not an outline you have to correct first — so arriving
+                // ready to paint is the point of it. (Selection, by contrast,
+                // starts free-hand, because a selection goes around something
+                // that already has a shape.) The two were briefly made to
+                // match and that was wrong on this side; written down so they
+                // are not "made consistent" again by someone tidying up.
+                toolButton("Patch", systemImage: "bandage",
+                           isActive: selectedAdjustmentIndex.map { settings.localAdjustments[$0].type == .patch } ?? false) {
+                    addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .circle))
+                }
+
+                Spacer(minLength: 0)
             }
+        }
+    }
 
-            // Selection starts FREE-HAND; Patch stays a CIRCLE. The two look
-            // like the same choice and are not.
-            //
-            // A selection is drawn around something that already has a shape —
-            // a person, a sign — so a circle landing in the middle of the photo
-            // is never what was wanted and has to be dragged, resized and
-            // swapped for free-hand anyway.
-            //
-            // Patch is a clone stamp. Its circle IS the tool: it is the brush
-            // you paint with, not an outline you have to correct, so arriving
-            // ready to paint is the point of it. Both defaults were briefly set
-            // to free together and that was wrong on the Patch side —
-            // corrected on the spot, and written down here so the two are not
-            // "made consistent" again by someone tidying up.
-            toolButton("Selection", systemImage: "lasso", isActive: activeSelection != nil) {
-                addSelection(shape: .free)
+    // Everything that calls a model, behind one disclosure arrow.
+    //
+    // Collapsed it is a single line; open it is four rows plus whatever the
+    // brush needs. That is the point of making it fold: this is the tallest
+    // thing in the panel and it is only tall while it is being used, so the
+    // sections under it (Masks, Selection, Remove) are otherwise pushed a
+    // screen down for a client who is not cleaning anything up right now.
+    //
+    // The open/closed state is remembered app-wide, like the layout sizes —
+    // someone who never uses the AI path should close it once, not once per
+    // photo.
+    private var aiManipulationSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                // Animated so the sections below slide rather than teleport;
+                // without it a fold this tall reads as the panel flickering.
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    aiManipulationExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    // Rotated rather than swapped for a second glyph: the
+                    // rotation animates, and a chevron that turns is the
+                    // standard macOS disclosure the client already reads
+                    // everywhere else.
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(AppColors.muted.opacity(0.7))
+                        .rotationEffect(.degrees(aiManipulationExpanded ? 0 : -90))
+
+                    sectionTitle("AI Manipulation")
+
+                    Spacer(minLength: 0)
+                }
+                // Without this the row is only hit-testable on the glyphs
+                // themselves and the gap between them is dead — the same
+                // omission that was a real bug on the Crop/Rotate and
+                // aspect-ratio buttons (see a50776f).
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
-            toolButton("Patch", systemImage: "bandage",
-                       isActive: selectedAdjustmentIndex.map { settings.localAdjustments[$0].type == .patch } ?? false) {
-                addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .circle))
-            }
+            if aiManipulationExpanded {
+                // Label is just "Clean Up" — the AI badge to its left already says
+                // the other half, and "AI AI Clean Up" is what it read as before.
+                HStack(spacing: 6) {
+                    toolButton("Clean Up", systemImage: "paintbrush", textIcon: "AI",
+                               isActive: isRemoveBrushActive) {
+                        toggleRemoveBrush()
+                    }
 
-            toolStripDivider
+                    // Explicit way out. Select People is NOT gone — it lives on
+                    // in the Remove section below, which is its only entry
+                    // point now. It was moved rather than deleted because it
+                    // MAKES a selection, and the request was for a way to leave
+                    // the tool, not to lose a way into it.
+                    //
+                    // Disabled rather than hidden while the tool is off: a
+                    // button that appears and disappears reflows the row around
+                    // it, and these rows are meant to be muscle memory.
+                    toolButton("Exit Clean Up", systemImage: "xmark",
+                               isActive: false,
+                               isEnabled: isRemoveBrushActive) {
+                        toggleRemoveBrush()
+                    }
 
-            // These three are ONE workflow and now sit together, left to
-            // right in the order they are used: mark the area (by hand or by
-            // finding people), then clean it up. They were split across the
-            // strip before, with the two things that MAKE a selection at one
-            // end and the two that CONSUME it at the other — which read as
-            // four unrelated buttons.
-            // Label is just "Clean Up" — the AI badge to its left already says
-            // the other half, and "AI AI Clean Up" is what it read as before.
-            toolButton("Clean Up", systemImage: "paintbrush", textIcon: "AI",
-                       isActive: isRemoveBrushActive) {
-                toggleRemoveBrush()
-            }
+                    Spacer(minLength: 0)
+                }
 
-            // Explicit way out, in the slot "Select People" used to hold.
-            // Select People is NOT gone — it lives on in the Remove section of
-            // the Retouch tab, which is its only entry point now. It was moved
-            // rather than deleted because it MAKES a selection, and the request
-            // here was for a way to leave the tool, not to lose a way into it.
-            //
-            // Disabled rather than hidden while the tool is off: a button that
-            // appears and disappears shifts every other button in the strip
-            // sideways, and this row is meant to be muscle memory.
-            toolButton("Exit Clean Up", systemImage: "xmark",
-                       isActive: false,
-                       isEnabled: isRemoveBrushActive) {
-                toggleRemoveBrush()
-            }
+                HStack(spacing: 6) {
+                    toolButton("Quick Clean Up", systemImage: "wand.and.rays",
+                               isActive: false,
+                               isEnabled: cleanUpUnavailableReason(.quick) == nil,
+                               help: cleanUpUnavailableReason(.quick)) {
+                        eraseMaskedArea(using: .quick)
+                    }
 
-            toolButton("Quick Clean Up", systemImage: "wand.and.rays",
-                       isActive: false,
-                       isEnabled: cleanUpUnavailableReason(.quick) == nil,
-                       help: cleanUpUnavailableReason(.quick)) {
-                eraseMaskedArea(using: .quick)
-            }
+                    // "Generative Clean Up", not "AI Clean Up": the paint tool in
+                    // the row above now carries that name, and two buttons reading
+                    // the same in one strip is worse than either name on its own.
+                    // "Generative" is also the truer word — this is the Stable
+                    // Diffusion path (~13s), against LaMa's ~1s beside it.
+                    toolButton("Generative Clean Up", systemImage: "wand.and.stars",
+                               isActive: false,
+                               isEnabled: cleanUpUnavailableReason(.generative) == nil,
+                               help: cleanUpUnavailableReason(.generative)) {
+                        eraseMaskedArea(using: .generative)
+                    }
 
-            // "Generative Clean Up", not "AI Clean Up": the paint tool to the
-            // left now carries that name, and two buttons reading the same in
-            // one strip is worse than either name on its own. "Generative" is
-            // also the truer word — this is the Stable Diffusion path (~13s),
-            // against LaMa's ~1s next to it.
-            toolButton("Generative Clean Up", systemImage: "wand.and.stars",
-                       isActive: false,
-                       isEnabled: cleanUpUnavailableReason(.generative) == nil,
-                       help: cleanUpUnavailableReason(.generative)) {
-                eraseMaskedArea(using: .generative)
-            }
+                    Spacer(minLength: 0)
+                }
 
-            // Everything the Clean Up brush needs, in the SAME row rather than
-            // on a line of its own underneath. There is room: the seven buttons
-            // to the left end around a third of the way across a 1470pt window,
-            // and this fills the gap that was empty. Only the long explanatory
-            // sentence is not here at all: it floats over the preview as
-            // cleanUpNotice, because as a docked row it changed height when it
-            // wrapped and pushed the picture up and down.
-            if isRemoveBrushActive || hasRemovalArea {
-                toolStripDivider
-            }
-
-            if isRemoveBrushActive {
-                Text("Size")
-                    .font(.custom("Figtree", size: 11))
-                    .foregroundColor(AppColors.muted)
-                // Narrower than the 220 it had on its own line: it is sharing
-                // now, and the number beside it is what gets read anyway.
-                EditTrackSlider(value: $removalBrushSize, range: 0.01...0.3,
-                                step: 0.01, accent: accentColor)
-                    .frame(width: 130)
-                Text(String(format: "%.0f", removalBrushSize * 100))
-                    .font(.custom("Figtree", size: 11))
-                    .foregroundColor(AppColors.muted)
-                    .monospacedDigit()
-                    .frame(width: 20, alignment: .trailing)
-
-                // Add / Erase, Lightroom's own pairing: pick Erase and the
-                // brush takes area back OUT of what is already marked instead
-                // of adding to it — including anything Select People found.
+                // Everything the Clean Up brush needs, appearing under the rows
+                // only while the brush is in play.
                 //
-                // Two visible buttons rather than a held modifier key: "hold
-                // this to take some back" is the sort of thing only the person
-                // who wrote it remembers.
-                ForEach([false, true], id: \.self) { erasing in
+                // This block is allowed to change height freely, which it was
+                // NOT when the strip lived above the picture — back then every
+                // appear and disappear shoved the photo down and back up, which
+                // is why the notice below was pinned to a fixed 30pt slot and
+                // the size slider was crammed onto the end of a button row. In
+                // a column BESIDE the picture the photo cannot move, so both
+                // are now what they wanted to be: full width, as tall as they
+                // need.
+                if isRemoveBrushActive {
+                    HStack(spacing: 8) {
+                        Text("Size")
+                            .font(.custom("Figtree", size: 11))
+                            .foregroundColor(AppColors.muted)
+
+                        EditTrackSlider(value: $removalBrushSize, range: 0.01...0.3,
+                                        step: 0.01, accent: accentColor)
+                            .frame(maxWidth: .infinity)
+
+                        Text(String(format: "%.0f", removalBrushSize * 100))
+                            .font(.custom("Figtree", size: 11))
+                            .foregroundColor(AppColors.muted)
+                            .monospacedDigit()
+                            .frame(width: 20, alignment: .trailing)
+                    }
+
+                    // Add / Erase, Lightroom's own pairing: pick Erase and the
+                    // brush takes area back OUT of what is already marked instead
+                    // of adding to it — including anything Select People found.
+                    //
+                    // Two visible buttons rather than a held modifier key: "hold
+                    // this to take some back" is the sort of thing only the person
+                    // who wrote it remembers.
+                    HStack(spacing: 6) {
+                        ForEach([false, true], id: \.self) { erasing in
+                            Button {
+                                isRemoveBrushErasing = erasing
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: erasing ? "eraser" : "plus")
+                                        .font(.system(size: 10, weight: .semibold))
+                                    Text(erasing ? "Erase" : "Add")
+                                        .font(.custom("Figtree", size: 11))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(isRemoveBrushErasing == erasing ? AppColors.ink : AppColors.muted)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(isRemoveBrushErasing == erasing ? accentColor.opacity(0.18) : Color.clear)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .stroke(isRemoveBrushErasing == erasing ? accentColor.opacity(0.55) : AppColors.border,
+                                            lineWidth: 1)
+                            )
+                        }
+                    }
+                }
+
+                // Drops every mark on the photo — painted strokes and a Select
+                // People mask alike — without touching the picture itself. Shown
+                // whenever there IS something to drop, brush on or off, since a
+                // Select People mask is made with the brush off.
+                //
+                // Named "Clear", not "Clean": three buttons above say "Clean Up"
+                // and every one of them CHANGES the photo. This one only throws
+                // away the marking.
+                if hasRemovalArea {
                     Button {
-                        isRemoveBrushErasing = erasing
+                        clearRemovalMask()
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: erasing ? "eraser" : "plus")
+                        HStack(spacing: 5) {
+                            Image(systemName: "xmark.circle")
                                 .font(.system(size: 10, weight: .semibold))
-                            Text(erasing ? "Erase" : "Add")
+                            Text("Clear AI Area")
                                 .font(.custom("Figtree", size: 11))
                         }
-                        .padding(.horizontal, 9)
+                        .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .foregroundColor(isRemoveBrushErasing == erasing ? AppColors.ink : AppColors.muted)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(isRemoveBrushErasing == erasing ? accentColor.opacity(0.18) : Color.clear)
-                    )
+                    .foregroundColor(AppColors.muted)
                     .overlay(
                         RoundedRectangle(cornerRadius: 5)
-                            .stroke(isRemoveBrushErasing == erasing ? accentColor.opacity(0.55) : AppColors.border,
-                                    lineWidth: 1)
+                            .stroke(AppColors.border, lineWidth: 1)
                     )
                 }
-            }
 
-            // Drops every mark on the photo — painted strokes and a Select
-            // People mask alike — without touching the picture itself. Shown
-            // whenever there IS something to drop, brush on or off, since a
-            // Select People mask is made with the brush off.
-            //
-            // Named "Clear", not "Clean": three buttons to the left say "Clean
-            // Up" and every one of them CHANGES the photo. This one only throws
-            // away the marking.
-            if hasRemovalArea {
-                Button {
-                    clearRemovalMask()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "xmark.circle")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("Clear AI Area")
-                            .font(.custom("Figtree", size: 11))
-                    }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .contentShape(Rectangle())
+                // The Clean Up tool's commentary. It was briefly drawn over the
+                // picture, which kept it out of the layout but put text on the
+                // client's photograph — the one place it must not be. Then it was
+                // a fixed-height slot in the top bar, because a bar above the
+                // picture that grew a second line pushed the picture down.
+                //
+                // Neither constraint applies here: this is a column beside the
+                // photo, so the text can simply be as tall as it is.
+                if let notice = cleanUpNotice {
+                    Text(notice)
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.plain)
-                .foregroundColor(AppColors.muted)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(AppColors.border, lineWidth: 1)
-                )
             }
-
-            // The erase progress used to sit here. It moved to the top bar,
-            // beside the file name: appearing and disappearing inside this row
-            // shoved every button after it sideways mid-erase, and the strip is
-            // meant to be muscle memory.
-
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .background(AppColors.panel.opacity(0.4))
     }
 
     // Why a Clean Up button cannot be pressed right now, in one sentence, or
@@ -4162,13 +5135,6 @@ struct DevelopView: View {
             return reason
         }
         return [reason, painting].compactMap { $0 }.joined(separator: "  ")
-    }
-
-    private var toolStripDivider: some View {
-        Rectangle()
-            .fill(AppColors.border)
-            .frame(width: 1, height: 20)
-            .padding(.horizontal, 4)
     }
 
     // `textIcon` draws letters where the SF Symbol would go — used for "AI",
@@ -5062,7 +6028,10 @@ struct DevelopView: View {
     // cursor previews, then the transparent hit area last so its
     // gesture/hover modifiers stay on top.
     private func patchBrushOverlay(_ geo: PatchGeometry, frame: CGRect) -> some View {
-        let brushDiameter = max(patchBrushSize * max(frame.width, frame.height), 2)
+        // Floor of 1, not 2: the brush now goes down to 0.001 and a ring
+        // clamped at 2pt would stop shrinking well before the brush does,
+        // showing the client a size that is not the size they set.
+        let brushDiameter = max(patchBrushSize * max(frame.width, frame.height), 1)
 
         return ZStack {
             // Always mounted, drawing nothing when there is nothing to draw.
@@ -5070,7 +6039,8 @@ struct DevelopView: View {
             // DevelopView's own body on each hover and drag event.
             PatchStampLayer(
                 cursor: patchCursor, frame: frame, diameter: brushDiameter,
-                color: accentColor, sourceOffset: patchStrokeOffset)
+                color: accentColor, sourceOffset: patchStrokeOffset,
+                sourceColor: patchSourceColor)
 
             Color.clear
                 .contentShape(Rectangle())
@@ -5140,7 +6110,8 @@ struct DevelopView: View {
         let sourceCenter = CGPoint(x: center.x + geo.sourceOffsetX * frame.width, y: center.y + geo.sourceOffsetY * frame.height)
 
         return ZStack {
-            patchCanvasClickArea(frame: frame)
+            patchCanvasClickArea(frame: frame,
+                                 sourceDiameter: max(geo.radiusX * 2 * frame.width, 2))
 
             Path { path in
                 path.move(to: center)
@@ -5224,7 +6195,10 @@ struct DevelopView: View {
     // synchronously both on hover (to preview) and at tap time (to decide
     // what the tap means), so no separate event-monitor bookkeeping is
     // needed for ⌥'s current state.
-    private func patchCanvasClickArea(frame: CGRect) -> some View {
+    // `sourceDiameter` is the patch's own on-screen width — the ring has to
+    // say how much would be lifted, not just from where, and these two shapes
+    // carry their size in the mask rather than in a brush setting.
+    private func patchCanvasClickArea(frame: CGRect, sourceDiameter: CGFloat) -> some View {
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
@@ -5257,7 +6231,8 @@ struct DevelopView: View {
             // observe, reading it here would show whatever it happened to
             // hold when the body last ran — a ring frozen where the mouse
             // used to be.
-            PatchSourceRing(cursor: patchCursor)
+            PatchSourceRing(cursor: patchCursor, diameter: sourceDiameter,
+                            color: patchSourceColor)
         }
     }
 
@@ -5377,7 +6352,8 @@ struct DevelopView: View {
         let sourcePoints = scaledPoints.map { CGPoint(x: $0.x + sourceOffset.width, y: $0.y + sourceOffset.height) }
 
         return ZStack {
-            patchCanvasClickArea(frame: frame)
+            patchCanvasClickArea(frame: frame,
+                                 sourceDiameter: max(geo.radiusX * 2 * frame.width, 2))
 
             Path { path in
                 path.move(to: center)
@@ -6207,6 +7183,24 @@ struct DevelopView: View {
 
     private var adjustmentPanel: some View {
         VStack(spacing: 0) {
+            panelHeader
+
+            Divider()
+
+            // On the panel's main face, ABOVE the tabs, rather than filed
+            // inside Retouch. It is the one block that is not about a category
+            // of adjustment — it is the model doing work on the photo — and
+            // from up here it is reachable whichever tab is open.
+            //
+            // Folded shut by default, which is what earns it the position:
+            // closed it costs a single line, so being permanently available
+            // does not permanently cost the sections below it any room.
+            aiManipulationSection
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+
+            Divider()
+
             panelTabBar
 
             Divider()
@@ -6238,6 +7232,15 @@ struct DevelopView: View {
                         detailSection
 
                     case .retouch:
+                        // Tools stays here and is NOT repeated above the tab
+                        // bar beside AI Manipulation: Crop, Selection and
+                        // Patch belong to retouching, and a second copy of
+                        // three buttons in a panel this narrow costs more than
+                        // it saves.
+                        toolsRowSection
+
+                        Divider()
+
                         masksSection
 
                         Divider()
@@ -6259,7 +7262,7 @@ struct DevelopView: View {
                 .padding(18)
             }
         }
-        .frame(width: 300)
+        .frame(width: CGFloat(effectivePanelWidth))
         .background(AppColors.panel)
     }
 
@@ -6320,7 +7323,23 @@ struct DevelopView: View {
 
             Divider()
 
-            resetButton
+            VStack(alignment: .leading, spacing: 8) {
+                resetButton
+
+                // Only when there is actually a set to act on. A permanently
+                // visible "Reset 0 Selected" would be a button that spends
+                // most of its life meaning nothing.
+                if multiSelectedURLs.count > 1 {
+                    panelActionButton("Reset \(multiSelectedURLs.count) Selected",
+                                      systemImage: "arrow.counterclockwise.circle") {
+                        resetSelectedPhotos()
+                    }
+                }
+            }
+
+            Divider()
+
+            flattenSection
 
             Divider()
 
@@ -6650,17 +7669,17 @@ struct DevelopView: View {
                 }
             }
 
-            // Square dropped per explicit request — Patch is Circle
-            // (clone-stamp brush) or Free only now; Square remains a
-            // Selection-tool-only shape (see addSelection below).
-            HStack(spacing: 8) {
-                maskAddButton("Patch Circle", systemImage: "circle") {
-                    addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .circle))
-                }
-                maskAddButton("Patch Free", systemImage: "lasso") {
-                    addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .free))
-                }
-            }
+            // Patch is NOT here any more. "Patch Circle" and the Tools row's
+            // "Patch" were the same call with the same shape, so one of them
+            // had to go; it kept the Tools row, beside Crop and Selection,
+            // because Patch is a tool you pick up, not a kind of mask you add
+            // to a list. "Patch Free" went with it — Free is reachable on a
+            // Selection, and two entry points to the same tool differing only
+            // in a default shape was the sort of thing you have to already
+            // know to use.
+            //
+            // Square was dropped earlier, per explicit request, and remains a
+            // Selection-tool-only shape (see addSelection).
 
             if settings.localAdjustments.isEmpty {
                 Text("No masks yet")
@@ -6886,7 +7905,12 @@ struct DevelopView: View {
                     // brushSize/brushHardness) read when a NEW stroke is
                     // committed — nudging them never reshapes strokes
                     // already painted, same reasoning as the Brush tool.
-                    editSlider("Brush Size", key: "patchBrush.size", value: $patchBrushSize, range: 0.02...0.3) { String(format: "%.0f", $0 * 100) }
+                    // Floor is 0.001 — 0.1 on the dial — not 0.02. Retouching a
+                    // face works at sizes where 2 is already too coarse: an eyelash,
+                    // a stray hair, a sensor spot in a gradient sky. %.1f rather than
+                    // %.0f because at this end whole numbers are the wrong resolution
+                    // to report in; 0 and 0 would be two different brushes.
+                    editSlider("Brush Size", key: "patchBrush.size", value: $patchBrushSize, range: 0.001...0.3) { String(format: "%.1f", $0 * 100) }
                     editSlider("Feather", key: "patchBrush.feather", value: $patchBrushFeather, range: PhotoEditRenderer.patchMinimumFeather...1) { String(format: "%.0f", $0 * 100) }
                     editSlider("Opacity", key: "patchBrush.opacity", value: patchOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
                     Text("⌥-click to set the clone source, then drag on the photo to paint.")
@@ -7161,9 +8185,7 @@ struct DevelopView: View {
             }
 
             if isRemoving {
-                Text(aiEraseProgress.map { "Cleaning up… \(Int($0 * 100))%" } ?? "Erasing…")
-                    .font(.custom("Figtree", size: 11))
-                    .foregroundColor(AppColors.muted)
+                eraseProgressBar
             }
 
             if let removeNotice {
@@ -7288,6 +8310,28 @@ struct DevelopView: View {
     // mask or the Selection tool does — those overlays share one hit area,
     // so leaving another one active would mean two tools fighting over the
     // same drag.
+    /// Stops the Clean Up brush OWNING the canvas, without throwing away what
+    /// it has already marked.
+    ///
+    /// `removalPaintOverlay` is the first branch of the overlay chain, so
+    /// while the brush is on no other tool can receive a drag at all. Turning
+    /// the brush ON already cleared every other tool (see toggleRemoveBrush
+    /// below) but nothing did the reverse, so picking Patch while the brush
+    /// was still on added the patch mask and then left the client painting an
+    /// AI selection with an AI selection cursor — reported exactly that way.
+    ///
+    /// The painted AREA deliberately survives. It is the client's work and it
+    /// is what Quick and Generative Clean Up consume; only the brush is put
+    /// down.
+    private func deactivateRemoveBrush() {
+        guard isRemoveBrushActive else {
+            return
+        }
+        isRemoveBrushActive = false
+        isRemoveBrushErasing = false
+        activeRemovalStroke.points = []
+    }
+
     private func toggleRemoveBrush() {
         isRemoveBrushActive.toggle()
         if !isRemoveBrushActive {
@@ -8348,15 +9392,179 @@ struct DevelopView: View {
         .background(AppColors.panel)
     }
 
+    // Shared by the header's "Reset" and the footer's "Reset All" so the two
+    // cannot drift into clearing different things.
+    private func resetAllSettings() {
+        settings = PhotoEditSettings()
+        pendingCrop = .full
+        cropIsAutoFitted = false
+        selectedLocalAdjustmentID = nil
+        activeSelection = nil
+        activeSelectionDrawPoints.points = []
+        selectedLayerID = nil
+    }
+
+    /// Puts every photo in the filmstrip's multi-select back to its original.
+    ///
+    /// Reset used to reach exactly one photo — whichever was open — so undoing
+    /// a folder's worth of edits meant opening each one and pressing Reset,
+    /// which is the same work the client was trying to undo.
+    ///
+    /// The open photo, if it is in the set, is reset through `settings` rather
+    /// than through the store: that is the copy the sliders and the preview
+    /// are bound to, and writing only the store would leave the panel showing
+    /// edits that no longer exist.
+    private func resetSelectedPhotos() {
+        let targets = multiSelectedURLs
+        guard !targets.isEmpty else {
+            return
+        }
+
+        for url in targets where url != selectedURL {
+            PhotoEditStore.setSettings(PhotoEditSettings(), for: url)
+        }
+
+        if let selectedURL, targets.contains(selectedURL) {
+            resetAllSettings()
+        }
+
+        // The strip and the grid are told at once rather than waiting for the
+        // debounce: this is a deliberate, one-shot action on many photos, not
+        // a slider being dragged.
+        PhotoEditStore.flushNow()
+    }
+
+    // MARK: Flatten
+
+    /// Bakes the current render into the photo and clears the settings.
+    ///
+    /// Deliberately a BUTTON the client presses, not something Sync does on its
+    /// own: it is the one action here that changes what the photo IS rather
+    /// than how it is described, and that should never happen as a side effect
+    /// of pressing something else.
+    private func flattenPhoto() {
+        guard let selectedURL, let fullBaseImage else {
+            return
+        }
+        // The uncropped render, for the same reason layers are stored uncropped:
+        // the crop is a description of the photo and survives as a setting, so
+        // baking it in would make it impossible to open the crop back up.
+        let settingsSnapshot = settings
+        let cropToKeep = settings.crop
+        let photoAtActionTime = selectedURL
+
+        isFlattening = true
+        flattenErrorMessage = nil
+
+        developRenderQueue.async(qos: .userInitiated) {
+            let rendered = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage,
+                                                    applyCrop: false)
+            var failure: String?
+            do {
+                try FlattenedImageStore.flatten(rendered, settings: settingsSnapshot,
+                                                for: photoAtActionTime,
+                                                context: briefEditsCIContext)
+            } catch {
+                failure = error.localizedDescription
+            }
+
+            DispatchQueue.main.async {
+                isFlattening = false
+                guard selectedURL == photoAtActionTime else {
+                    return
+                }
+                if let failure {
+                    flattenErrorMessage = failure
+                    return
+                }
+                // Everything is in the pixels now. The crop is the one thing
+                // kept, because it was not baked.
+                var cleared = PhotoEditSettings()
+                cleared.crop = cropToKeep
+                settings = cleared
+                pendingCrop = cropToKeep ?? .full
+                selectedLocalAdjustmentID = nil
+                activeSelection = nil
+                selectedLayerID = nil
+                clearRemovalMask()
+                undoStack = []
+                redoStack = []
+                lastCommittedSettings = cleared
+                PhotoEditStore.setSettings(cleared, for: photoAtActionTime)
+                PhotoEditStore.flushNow()
+                // The base has changed on disk, so the decode has to happen
+                // again — nothing in memory describes the flattened file yet.
+                loadImages(for: photoAtActionTime)
+            }
+        }
+    }
+
+    private func unflattenPhoto() {
+        guard let selectedURL else {
+            return
+        }
+        let restored = FlattenedImageStore.unflatten(selectedURL)
+        let previous = restored ?? PhotoEditSettings()
+        settings = previous
+        pendingCrop = previous.crop ?? .full
+        selectedLocalAdjustmentID = nil
+        activeSelection = nil
+        selectedLayerID = nil
+        clearRemovalMask()
+        undoStack = []
+        redoStack = []
+        lastCommittedSettings = previous
+        PhotoEditStore.setSettings(previous, for: selectedURL)
+        PhotoEditStore.flushNow()
+        loadImages(for: selectedURL)
+    }
+
+    private var flattenSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let selectedURL, FlattenedImageStore.isFlattened(selectedURL) {
+                Text("This photo is flattened. Edits now apply to everything, "
+                     + "including the AI Clean Up.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                panelActionButton("Unflatten", systemImage: "arrow.uturn.backward") {
+                    unflattenPhoto()
+                }
+            } else {
+                // Offered whenever there is anything to bake. It is most needed
+                // after an AI Clean Up — that layer is the thing a later grade
+                // cannot reach — but a photo with only sliders flattens fine
+                // too, and refusing that would be a rule the client has to
+                // learn for no gain.
+                panelActionButton(isFlattening ? "Flattening…" : "Flatten Photo",
+                                  systemImage: "square.stack.3d.down.forward") {
+                    flattenPhoto()
+                }
+                .opacity(settings.isNeutral || isFlattening ? 0.4 : 1)
+                .disabled(settings.isNeutral || isFlattening)
+
+                Text("Bakes the grade, the masks and the AI Clean Up into the photo, "
+                     + "so anything applied afterwards — a synced grade included — "
+                     + "reaches all of it. Your original file is never touched, and "
+                     + "Unflatten puts this back.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let flattenErrorMessage {
+                Text(flattenErrorMessage)
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(.red.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     private var resetButton: some View {
         panelActionButton("Reset All", systemImage: "arrow.counterclockwise") {
-            settings = PhotoEditSettings()
-            pendingCrop = .full
-            cropIsAutoFitted = false
-            selectedLocalAdjustmentID = nil
-            activeSelection = nil
-            activeSelectionDrawPoints.points = []
-            selectedLayerID = nil
+            resetAllSettings()
         }
         .opacity(settings.isNeutral ? 0.4 : 1)
         .disabled(settings.isNeutral)
@@ -8685,6 +9893,7 @@ struct DevelopView: View {
         isCropping = false
         activeSelection = nil
         selectedLayerID = nil
+        deactivateRemoveBrush()
     }
 
     // Tapping the already-selected mask's row deselects it (back to
@@ -8696,6 +9905,7 @@ struct DevelopView: View {
             isCropping = false
             activeSelection = nil
             selectedLayerID = nil
+            deactivateRemoveBrush()
         }
         brushCursor.stroke = []
         activePatchDrawPoints.points = []
@@ -8752,6 +9962,7 @@ struct DevelopView: View {
         selectedLocalAdjustmentID = nil
         selectedLayerID = nil
         isCropping = false
+        deactivateRemoveBrush()
     }
 
     private func deselectSelection() {
@@ -8908,6 +10119,7 @@ struct DevelopView: View {
             activeSelection = nil
             selectedLayerID = nil
             selectedCropAspectRatio = .free
+            deactivateRemoveBrush()
             scheduleRender()
         }
     }
@@ -9048,6 +10260,11 @@ struct DevelopView: View {
                 previewBaseImage = preview
                 isLoadingPreview = false
                 renderNow()
+                // The photo is on screen — this is the moment LumenoLab is
+                // genuinely usable, so it is the moment the opening card comes
+                // down. A no-op on every later photo switch, since the card is
+                // only up during a launch.
+                DevelopLaunchProgress.shared.finish()
             }
         }
     }
@@ -9096,7 +10313,7 @@ struct DevelopView: View {
         let source = previewBaseImage
         let photoAtRenderTime = selectedURL
 
-        developRenderQueue.async(qos: .userInteractive) {
+        developPreviewRenderQueue.async(qos: .userInteractive) {
             // A NEWER renderNow() already landed while this one was sitting
             // in the queue — skip the expensive render entirely rather than
             // computing a result nobody will see (see renderGeneration's
@@ -9107,20 +10324,37 @@ struct DevelopView: View {
             let rendered = PhotoEditRenderer.render(effectiveSettings, on: source, applyCrop: cropEnabled)
             // Superseded WHILE rendering — still worth checking before the
             // (also non-trivial) CGImage conversion below.
-            guard generation == renderGeneration,
-                  let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) else {
+            guard generation == renderGeneration else {
+                return
+            }
+            guard let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent,
+                                                        context: briefEditsPreviewCIContext) else {
                 return
             }
             let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-            let bins = PhotoEditRenderer.luminanceHistogram(of: rendered)
 
+            // The PICTURE is committed first, on its own, before anything else
+            // is computed. It is what the client is waiting for, and nothing
+            // secondary gets to hold it up — the histogram did exactly that
+            // once and cost the editor its preview entirely.
             DispatchQueue.main.async {
                 guard selectedURL == photoAtRenderTime, generation == renderGeneration else {
                     return
                 }
                 displayedImage = image
-                histogramBins = bins
                 scheduleRefinedRender()
+            }
+
+            // Then the histogram, on the same queue, through the same context
+            // the picture was rendered with. It arrives a beat later, which is
+            // the right trade for a readout beside the photo.
+            let bins = PhotoEditRenderer.luminanceHistogram(of: rendered,
+                                                            context: briefEditsPreviewCIContext)
+            DispatchQueue.main.async {
+                guard selectedURL == photoAtRenderTime, generation == renderGeneration else {
+                    return
+                }
+                histogramBins = bins
             }
         }
     }
@@ -9149,17 +10383,64 @@ struct DevelopView: View {
     //
     // It shares developRenderQueue with export, the erases and the selection
     // extraction, which matters more than it looks: they all render through
-    // the SAME CIRAWFilter instance, and PhotoEditRenderer.render pushes
-    // Exposure/Temperature/Tint into it. One serial queue is what keeps two
-    // of them from writing that filter at the same time.
+    // the SAME full-resolution CIRAWFilter instance, and PhotoEditRenderer
+    // .render pushes Exposure/Temperature/Tint into it. One serial queue is
+    // what keeps two of them from writing that filter at the same time.
+    //
+    // The interactive preview is NOT on this queue — it renders through its
+    // own separate filter, so it has its own queue and never has to wait
+    // behind one of these. See developPreviewRenderQueue.
+    /// True while the client is mid-stroke — painting a patch, a Clean Up
+    /// brush, a mask, or drawing a selection outline.
+    private var isDrawingStroke: Bool {
+        !patchCursor.stroke.isEmpty
+            || !brushCursor.stroke.isEmpty
+            || !activePatchDrawPoints.points.isEmpty
+            || !activeSelectionDrawPoints.points.isEmpty
+    }
+
     private func scheduleRefinedRender() {
         refineWorkItem?.cancel()
-        guard fullBaseImage != nil else {
+        // A refine already sitting on the render queue but not yet started is
+        // dropped too. Cancelling only the main-thread timer left those to run
+        // — and on the SERIAL render queue a started refine blocks every
+        // interactive render behind it, however stale it has become.
+        refineQueueWorkItem?.cancel()
+        refineQueueWorkItem = nil
+
+        guard let fullBaseImage else {
             return
         }
+
+        // Not while a stroke is being drawn. The refine renders at FULL
+        // resolution — for a RAW that is a full-quality demosaic of the whole
+        // frame — and the client mid-stroke is looking at their brush, not at
+        // per-pixel sharpness.
+        guard !isDrawingStroke else {
+            return
+        }
+
+        // A RAW waits a little longer for silence than a JPEG, because its
+        // refine re-demosaics the whole frame rather than re-running a filter
+        // chain over an already-decoded image. A run of clicks collapses into
+        // ONE refine at the end instead of one per click.
+        //
+        // This was 1.2s, and that was an over-correction of mine. It was set
+        // while chasing a two-minute freeze that looked like refines piling
+        // up; the real cause turned out to be every render in the app sharing
+        // one CIContext and therefore one lock (see briefEditsPreviewCIContext).
+        // With that fixed, a long delay buys nothing and costs the client the
+        // sharp frame for over a second after every single change — which is
+        // most of what "the photo looks soft while I work on it" was.
+        let isRAW: Bool
+        switch fullBaseImage {
+        case .raw: isRAW = true
+        case .standard: isRAW = false
+        }
+
         let work = DispatchWorkItem { refinedRenderNow() }
         refineWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (isRAW ? 0.45 : 0.3), execute: work)
     }
 
     private func refinedRenderNow() {
@@ -9176,13 +10457,19 @@ struct DevelopView: View {
         let cropEnabled = !isCropping
         let photoAtRenderTime = selectedURL
 
-        developRenderQueue.async(qos: .utility) {
+        // Held so a later edit can cancel this before it starts. `isCancelled`
+        // is then checked again after the render, because the expensive part
+        // cannot be interrupted once it is under way — the check cannot save
+        // the work, but it does stop a stale sharp frame from replacing a
+        // newer fast one.
+        let work = DispatchWorkItem(qos: .utility) { [self] in
             guard generation == renderGeneration else {
                 return
             }
             let rendered = PhotoEditRenderer.render(effectiveSettings, on: fullBaseImage, applyCrop: cropEnabled)
             guard generation == renderGeneration,
-                  let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent) else {
+                  let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent,
+                                                         context: briefEditsCIContext) else {
                 return
             }
             let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
@@ -9196,8 +10483,11 @@ struct DevelopView: View {
                 // this path is meant to change what the picture LOOKS like,
                 // nothing else.
                 displayedImage = image
+                refineQueueWorkItem = nil
             }
         }
+        refineQueueWorkItem = work
+        developRenderQueue.async(execute: work)
     }
 
     private func exportEditedCopy() {

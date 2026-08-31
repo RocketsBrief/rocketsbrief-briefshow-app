@@ -909,7 +909,9 @@ final class SDInpaintPipeline {
             for channel in 0..<3 {
                 let (gain, offset) = correction[channel]
                 let value = gain * pixels[channel * pixelCount + index] + offset
-                buffers.pixels[index * 4 + channel] = UInt8(max(0, min(255, value.rounded())))
+                if let byte = InpaintPipeline.byteFromModel(value) {
+                    buffers.pixels[index * 4 + channel] = byte
+                }
             }
             buffers.pixels[index * 4 + 3] = 255
         }

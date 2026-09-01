@@ -14,6 +14,12 @@ import AppKit
 struct BriefShowApp: App {
     init() {
         Self.registerBundledFonts()
+
+        // The "one email, one computer" check runs from the app itself,
+        // not from a view: the client can be sitting in ShowGrid, the
+        // BriefShow editor, LumenoLab or a full-screen slideshow, and the
+        // seat has to keep being verified in all four.
+        Task { @MainActor in SeatManager.shared.start() }
     }
 
     // "Figtree" and "Unbounded" are only available on Macs where they

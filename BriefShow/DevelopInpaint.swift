@@ -1395,3 +1395,405 @@ enum InpaintPipeline {
 }
 
 private let briefInpaintColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+// MARK: - Sky masking (no Vision for this one)
+
+/// Finds the sky in a photograph.
+///
+/// ⚠️ **Apple gives us nothing here.** Vision segments people and nothing
+/// else; there is no sky request, no scene-parsing request, and no
+/// general "segment this class" API on macOS. The alternative to what
+/// follows was shipping a semantic-segmentation CoreML model — hundreds of
+/// megabytes on top of the 4.4 GB this app already carries, and a licence
+/// to clear for an app that is sold. This is the deliberate other choice:
+/// a heuristic that costs nothing, ships today, and is honest about being
+/// approximate.
+///
+/// **What it looks for**, all four at once, because no single one is
+/// enough:
+///
+/// 1. **Sky colour.** Blue skies read as B above both R and G. Bright
+///    overcast and blown-out skies read as high brightness with almost no
+///    colour. Either qualifies; a saturated red wall qualifies for neither.
+/// 2. **Flatness.** Sky has no fine detail. Anything that differs sharply
+///    from its own blur — foliage, brickwork, hair, text — is pushed out,
+///    which is what keeps a pale building from passing on brightness alone.
+/// 3. **Height in the frame.** Weighted toward the top, with a floor rather
+///    than a cut, so a sky reaching down between buildings still passes and
+///    a bright pavement at the bottom does not.
+/// 4. **Contiguity, approximately.** A heavy blur followed by a hard curve
+///    keeps large connected regions and drops scattered speckle. It is not
+///    a real connected-components pass; it behaves like one at this scale.
+///
+/// **Known to get wrong**, and worth telling the client rather than hiding:
+/// snow, calm water, white walls in the upper frame, and interiors with
+/// bright windows. All four are bright, flat and often high in the frame,
+/// which is the whole definition being used.
+enum SkyMasker {
+
+    /// White where sky is, black elsewhere, over `image`'s own extent.
+    ///
+    /// Returns nil when what it found is too small to be a sky — under 2%
+    /// of the frame is a gap between leaves, not something anybody wants to
+    /// replace, and handing back a mask like that would produce a Sky layer
+    /// that appears to do nothing.
+    static func skyMask(for image: CIImage, maxWorkingEdge: CGFloat = 900) -> CIImage? {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite else {
+            return nil
+        }
+
+        // Small on purpose. Every test below is about broad regions, none of
+        // them wants pixel detail, and the result is blurred hard at the end
+        // anyway — running this on a 45MP RAW would buy nothing at all.
+        let longEdge = max(extent.width, extent.height)
+        let scale = longEdge > maxWorkingEdge ? maxWorkingEdge / longEdge : 1
+        let working = scale < 1
+            ? image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            : image
+        let workingExtent = working.extent
+
+        guard let blueness = bluenessScore(working, extent: workingExtent),
+              let brightness = brightPaleScore(working, extent: workingExtent),
+              let flatness = flatnessScore(working, extent: workingExtent)
+        else {
+            return nil
+        }
+
+        // Either kind of sky counts, so the two colour tests are a MAXIMUM
+        // rather than a product — a deep blue sky scores nothing on
+        // "bright and pale", and a white overcast sky scores nothing on
+        // "blue". Multiplying them would reject both.
+        let colourScore = blueness.applyingFilter("CIMaximumCompositing", parameters: [
+            kCIInputBackgroundImageKey: brightness
+        ]).cropped(to: workingExtent)
+
+        // Flatness and height are both vetoes, so those DO multiply.
+        var score = colourScore.applyingFilter("CIMultiplyCompositing", parameters: [
+            kCIInputBackgroundImageKey: flatness
+        ]).cropped(to: workingExtent)
+
+        score = score.applyingFilter("CIMultiplyCompositing", parameters: [
+            kCIInputBackgroundImageKey: heightWeight(extent: workingExtent)
+        ]).cropped(to: workingExtent)
+
+        // Blur wide, then pull hard: this is what turns a noisy per-pixel
+        // score into regions. The blur radius is a fraction of the frame,
+        // not a pixel count, so the same picture at a different working
+        // size produces the same mask.
+        let smoothed = score
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: max(workingExtent.width, workingExtent.height) * 0.012)
+            .cropped(to: workingExtent)
+
+        // ⚠️ THE TEST THAT MATTERS, and the first version did not have it.
+        //
+        // Measured on a real beach photograph: colour + flatness + height
+        // alone marked the sky AND a wide strip of bright sand running down
+        // the left of the frame, plus speckles on every face. Sand is
+        // bright, flat and — at the left edge — reaches high enough for the
+        // height weight to let it through. Every individual test was
+        // working; the definition was simply not what a sky is.
+        //
+        // A sky is the part of the picture you reach by walking DOWN FROM
+        // THE TOP without crossing anything that is not sky. Sand fails
+        // that however bright it is, because the horizon is in the way.
+        let grown = growFromTop(smoothed, extent: workingExtent)
+
+        // And people are never sky. Vision knows exactly where they are, so
+        // there is no reason to leave the heuristic guessing about faces —
+        // skin in bright sun is pale and smooth, which is the definition
+        // being used, so it passed on merit.
+        let hardened = subtractingPeople(grown, from: image, extent: workingExtent)
+
+        guard coverage(hardened, extent: workingExtent) >= 0.02 else {
+            return nil
+        }
+
+        // Back up to the photo's own extent, the same way personMask does.
+        let sx = extent.width / workingExtent.width
+        let sy = extent.height / workingExtent.height
+        var mask = hardened.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+        mask = mask.transformed(by: CGAffineTransform(
+            translationX: extent.origin.x - mask.extent.origin.x,
+            y: extent.origin.y - mask.extent.origin.y
+        ))
+        return mask.cropped(to: extent)
+    }
+
+    /// How blue a pixel is, as `B - max(R, G)`, scaled up so an ordinary
+    /// sky lands near 1.
+    private static func bluenessScore(_ image: CIImage, extent: CGRect) -> CIImage? {
+        // max(R,G) in every channel.
+        guard let redGreen = CIFilter(name: "CIMaximumComponent", parameters: [
+            kCIInputImageKey: image.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: 1, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 1, z: 0, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+            ])
+        ])?.outputImage else {
+            return nil
+        }
+
+        let blueOnly = image.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: 0, y: 0, z: 1, w: 0),
+            "inputGVector": CIVector(x: 0, y: 0, z: 1, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: 1, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+        ])
+
+        // Subtract by adding the inverse and pulling the bias back — CI has
+        // no subtract-blend that clamps the way this needs.
+        let difference = blueOnly.applyingFilter("CISubtractBlendMode", parameters: [
+            kCIInputBackgroundImageKey: redGreen.cropped(to: extent)
+        ]).cropped(to: extent)
+
+        // A clear sky sits around 0.10-0.20 of separation; ×5 puts that at
+        // roughly 0.5-1.0, which is the range the vetoes below expect.
+        return difference.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: 5, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 5, y: 0, z: 0, w: 0),
+            "inputBVector": CIVector(x: 5, y: 0, z: 0, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+        ]).cropped(to: extent)
+    }
+
+    /// Bright AND colourless — the overcast and blown-out half of "sky".
+    private static func brightPaleScore(_ image: CIImage, extent: CGRect) -> CIImage? {
+        let grey = image.applyingFilter("CIColorControls", parameters: [
+            kCIInputSaturationKey: 0, kCIInputBrightnessKey: 0, kCIInputContrastKey: 1
+        ])
+
+        // Everything below 0.72 goes to nothing, 0.92 and up is full — the
+        // band where a pale sky lives and a mid-grey road does not.
+        let brightness = grey.applyingFilter("CIToneCurve", parameters: [
+            "inputPoint0": CIVector(x: 0.00, y: 0),
+            "inputPoint1": CIVector(x: 0.72, y: 0),
+            "inputPoint2": CIVector(x: 0.82, y: 0.5),
+            "inputPoint3": CIVector(x: 0.92, y: 1),
+            "inputPoint4": CIVector(x: 1.00, y: 1)
+        ]).cropped(to: extent)
+
+        // ...and colourless, so a bright yellow wall does not qualify. The
+        // same distance-from-grey measure the Colour Mixer uses, inverted.
+        guard let colourful = CIFilter(name: "CIMaximumComponent", parameters: [
+            kCIInputImageKey: image.applyingFilter("CIColorAbsoluteDifference", parameters: [
+                "inputImage2": grey
+            ])
+        ])?.outputImage else {
+            return brightness
+        }
+
+        let colourless = colourful
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 6, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 6, y: 0, z: 0, w: 0),
+                "inputBVector": CIVector(x: 6, y: 0, z: 0, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+            ])
+            .applyingFilter("CIColorInvert")
+            .cropped(to: extent)
+
+        return brightness.applyingFilter("CIMultiplyCompositing", parameters: [
+            kCIInputBackgroundImageKey: colourless
+        ]).cropped(to: extent)
+    }
+
+    /// 1 where the picture matches its own blur, 0 where it does not.
+    ///
+    /// This is the test that keeps buildings, foliage and text out. Sky is
+    /// the flattest thing in almost any frame.
+    private static func flatnessScore(_ image: CIImage, extent: CGRect) -> CIImage? {
+        let sigma = max(extent.width, extent.height) * 0.004
+        let blurred = image.clampedToExtent()
+            .applyingGaussianBlur(sigma: sigma)
+            .cropped(to: extent)
+
+        guard let detail = CIFilter(name: "CIMaximumComponent", parameters: [
+            kCIInputImageKey: image.applyingFilter("CIColorAbsoluteDifference", parameters: [
+                "inputImage2": blurred
+            ])
+        ])?.outputImage else {
+            return nil
+        }
+
+        // ×14 then inverted: a difference of about 0.07 is enough to veto a
+        // pixel outright, which is well below anything a real edge produces
+        // and well above sensor noise in a smooth sky.
+        return detail
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 14, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 14, y: 0, z: 0, w: 0),
+                "inputBVector": CIVector(x: 14, y: 0, z: 0, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+            ])
+            .applyingFilter("CIColorInvert")
+            .cropped(to: extent)
+    }
+
+    /// Full weight across the top, easing to a floor at the bottom.
+    ///
+    /// A floor of 0.25 rather than 0 on purpose: sky reaches all the way
+    /// down between buildings and behind a low horizon, and a hard cut
+    /// would slice those off in a straight line across the picture — the
+    /// single most obvious way a sky replacement announces itself as fake.
+    private static func heightWeight(extent: CGRect) -> CIImage {
+        let gradient = CIFilter.linearGradient()
+        gradient.point0 = CGPoint(x: extent.midX, y: extent.maxY)
+        gradient.point1 = CGPoint(x: extent.midX, y: extent.minY)
+        gradient.color0 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+        gradient.color1 = CIColor(red: 0.25, green: 0.25, blue: 0.25, alpha: 1)
+        return (gradient.outputImage ?? CIImage(color: .white)).cropped(to: extent)
+    }
+
+    /// Keeps, in each column, the run of sky that starts at the top of the
+    /// frame — and drops everything below the first thing that is not sky.
+    ///
+    /// This is a column walk on the CPU rather than a filter chain, because
+    /// "connected to the top" is not something a per-pixel filter can
+    /// answer. It runs on the working copy (under a megapixel), so the cost
+    /// is a few milliseconds once per button press.
+    ///
+    /// `runToStop` is 3 rather than 1 so a single dark row — a wire, a
+    /// branch, one noisy line of pixels — does not cut the sky off above
+    /// the horizon. Anything genuinely solid is thicker than three rows at
+    /// this working size.
+    private static func growFromTop(_ score: CIImage, extent: CGRect) -> CIImage {
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+        guard width > 1, height > 1 else {
+            return score
+        }
+
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        skyMeasurementContext.render(
+            score,
+            toBitmap: &pixels,
+            rowBytes: width * 4,
+            bounds: extent,
+            format: .RGBA8,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+
+        // Core Image hands the bitmap back top row first, which is the
+        // direction this wants anyway.
+        let threshold: UInt8 = 110
+        let runToStop = 3
+        var mask = [UInt8](repeating: 0, count: width * height)
+
+        for x in 0..<width {
+            var misses = 0
+            for y in 0..<height {
+                let value = pixels[(y * width + x) * 4]
+                if value < threshold {
+                    misses += 1
+                    if misses >= runToStop {
+                        break
+                    }
+                } else {
+                    misses = 0
+                }
+                mask[y * width + x] = 255
+            }
+        }
+
+        guard let provider = CGDataProvider(data: Data(mask) as CFData),
+              let cgImage = CGImage(
+                width: width, height: height,
+                bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false,
+                intent: .defaultIntent)
+        else {
+            return score
+        }
+
+        // The walk produces a hard, ragged column edge. A short blur turns
+        // it into something that can sit against a horizon without showing
+        // a staircase — the same softness the old hardenToMask produced,
+        // arrived at honestly.
+        let grown = CIImage(cgImage: cgImage)
+        let placed = grown.transformed(by: CGAffineTransform(
+            translationX: extent.origin.x - grown.extent.origin.x,
+            y: extent.origin.y - grown.extent.origin.y
+        ))
+        return placed
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: max(extent.width, extent.height) * 0.004)
+            .cropped(to: extent)
+    }
+
+    /// Takes people back out of a sky mask.
+    ///
+    /// Cheap insurance, and it fixes something the heuristic cannot: skin
+    /// in bright sun is pale, smooth and often high in the frame, so faces
+    /// score as sky ON MERIT. Vision already knows where the people are.
+    private static func subtractingPeople(_ mask: CIImage, from image: CIImage, extent: CGRect) -> CIImage {
+        guard let people = SubjectMasker.personMask(for: image, maxWorkingEdge: max(extent.width, extent.height)) else {
+            return mask
+        }
+
+        let scaled = people
+            .transformed(by: CGAffineTransform(scaleX: extent.width / people.extent.width,
+                                               y: extent.height / people.extent.height))
+        let aligned = scaled
+            .transformed(by: CGAffineTransform(translationX: extent.origin.x - scaled.extent.origin.x,
+                                               y: extent.origin.y - scaled.extent.origin.y))
+            .cropped(to: extent)
+            // Grown a little first: Vision traces a person tightly and the
+            // rim just outside that trace is the person's own light, which
+            // is exactly the halo that showed round the couple.
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: max(extent.width, extent.height) * 0.006)
+            .cropped(to: extent)
+
+        return mask.applyingFilter("CIMultiplyCompositing", parameters: [
+            kCIInputBackgroundImageKey: aligned.applyingFilter("CIColorInvert")
+        ]).cropped(to: extent)
+    }
+
+    /// Turns a soft score into something that behaves like a mask: a hard
+    /// S-curve, so the middle ground picks a side instead of leaving a
+    /// half-transparent sky.
+    private static func hardenToMask(_ image: CIImage, extent: CGRect) -> CIImage {
+        image.applyingFilter("CIToneCurve", parameters: [
+            "inputPoint0": CIVector(x: 0.00, y: 0),
+            "inputPoint1": CIVector(x: 0.35, y: 0),
+            "inputPoint2": CIVector(x: 0.50, y: 0.5),
+            "inputPoint3": CIVector(x: 0.65, y: 1),
+            "inputPoint4": CIVector(x: 1.00, y: 1)
+        ]).cropped(to: extent)
+    }
+
+    /// What fraction of the frame the mask covers, 0...1.
+    private static func coverage(_ mask: CIImage, extent: CGRect) -> Double {
+        let average = CIFilter.areaAverage()
+        average.inputImage = mask
+        average.extent = extent
+
+        guard let output = average.outputImage else {
+            return 0
+        }
+
+        var pixel = [UInt8](repeating: 0, count: 4)
+        skyMeasurementContext.render(
+            output,
+            toBitmap: &pixel,
+            rowBytes: 4,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBA8,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+        return Double(pixel[0]) / 255.0
+    }
+}
+
+/// Its own small context, for the one-pixel reads above.
+///
+/// Not the shared editing context: that one is configured for the editor's
+/// heavy renders, and reading a single averaged pixel through it drags a
+/// full pipeline setup along for no reason. Same reasoning as
+/// `sharedExtractionContext` in Develop.swift.
+private let skyMeasurementContext = CIContext(options: [.useSoftwareRenderer: false])

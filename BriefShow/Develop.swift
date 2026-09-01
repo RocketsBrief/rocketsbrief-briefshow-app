@@ -674,6 +674,338 @@ enum LayerBlendMode: String, Codable, CaseIterable {
 // unlike the mask geometries above) in the same unit-square (0...1,
 // top-down Y) space as EditCropRect — a layer is dragged/resized from its
 // bounding box like the crop tool, not from a radius around a center.
+/// The skies "Change Sky" can put behind a photo.
+///
+/// ⚠️ Every one of these is DRAWN, in code, at render time. Nothing is
+/// bundled and nothing is downloaded, which is the whole reason the list
+/// looks the way it does: there are no mountains here and there will not be
+/// any. A mountain is a photograph of a real place, it cannot be produced
+/// by a gradient and some noise, and a photograph means a licence to clear
+/// for an app that is sold. Skies are gradients, light and cloud — those a
+/// computer can draw convincingly. See BRIEFSHOW_DEVELOP_NOTES.md.
+enum SkyStyle: String, Codable, CaseIterable, Identifiable {
+    case clearBlue
+    case blueWithSun
+    case softClouds
+    case overcast
+    case goldenHour
+    case sunset
+    case dramatic
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .clearBlue: return "Clear Blue"
+        case .blueWithSun: return "Blue + Sun"
+        case .softClouds: return "Soft Clouds"
+        case .overcast: return "Overcast"
+        case .goldenHour: return "Golden Hour"
+        case .sunset: return "Sunset"
+        case .dramatic: return "Dramatic"
+        }
+    }
+}
+
+/// Draws a sky to fill any extent.
+///
+/// Two properties matter more than how pretty the result is, and both are
+/// easy to lose:
+///
+/// 1. **Deterministic.** `CIRandomGenerator` is a fixed function, not a
+///    seeded RNG, so the same sky is drawn every render. Anything that
+///    varied per call would mean the preview and the export were different
+///    pictures.
+/// 2. **Resolution-independent.** Every size in here is a fraction of the
+///    extent, never a pixel count. The preview renders at 2600px and the
+///    export at native, and a cloud measured in pixels would come out a
+///    different size in each — the same trap `layerBlur` documents.
+enum SkyPainter {
+
+    /// A small drawn sample for the picker, made once and kept.
+    ///
+    /// The picker shows the REAL thing rather than an illustration of it —
+    /// these are the same three steps `image` runs, at 220px. A hand-drawn
+    /// swatch would be a promise the renderer might not keep.
+    static func preview(_ style: SkyStyle) -> NSImage? {
+        if let cached = previewCache[style] {
+            return cached
+        }
+
+        let size = CGSize(width: 220, height: 140)
+        let extent = CGRect(origin: .zero, size: size)
+        guard let cgImage = previewContext.createCGImage(image(style, extent: extent), from: extent) else {
+            return nil
+        }
+
+        let rendered = NSImage(cgImage: cgImage, size: size)
+        previewCache[style] = rendered
+        return rendered
+    }
+
+    private static var previewCache: [SkyStyle: NSImage] = [:]
+    private static let previewContext = CIContext(options: [.useSoftwareRenderer: false])
+
+    static func image(_ style: SkyStyle, extent: CGRect) -> CIImage {
+        guard extent.width > 1, extent.height > 1 else {
+            return CIImage(color: .gray).cropped(to: extent)
+        }
+
+        var sky = gradient(style, extent: extent)
+
+        if let sun = sunPosition(style) {
+            sky = addSun(to: sky, style: style, at: sun, extent: extent)
+        }
+
+        if cloudAmount(style) > 0 {
+            sky = addClouds(to: sky, style: style, extent: extent)
+        }
+
+        return sky.cropped(to: extent)
+    }
+
+    // MARK: The base gradient
+
+    /// Top colour, horizon colour. Real skies get paler and warmer toward
+    /// the horizon — that gradient is most of what makes one read as sky
+    /// rather than as a flat fill.
+    private static func colours(_ style: SkyStyle) -> (top: CIColor, horizon: CIColor) {
+        switch style {
+        case .clearBlue:
+            return (CIColor(red: 0.16, green: 0.42, blue: 0.78),
+                    CIColor(red: 0.72, green: 0.85, blue: 0.95))
+        case .blueWithSun:
+            return (CIColor(red: 0.20, green: 0.46, blue: 0.80),
+                    CIColor(red: 0.80, green: 0.89, blue: 0.96))
+        case .softClouds:
+            return (CIColor(red: 0.30, green: 0.54, blue: 0.82),
+                    CIColor(red: 0.84, green: 0.90, blue: 0.95))
+        case .overcast:
+            return (CIColor(red: 0.55, green: 0.59, blue: 0.64),
+                    CIColor(red: 0.82, green: 0.84, blue: 0.86))
+        case .goldenHour:
+            return (CIColor(red: 0.35, green: 0.47, blue: 0.72),
+                    CIColor(red: 0.99, green: 0.80, blue: 0.52))
+        case .sunset:
+            return (CIColor(red: 0.24, green: 0.20, blue: 0.44),
+                    CIColor(red: 0.98, green: 0.53, blue: 0.32))
+        case .dramatic:
+            // Storm light, not night. The first pass at 0.12 top with dark
+            // cloud over it rendered as a black rectangle — a dramatic sky
+            // still has to be a sky somebody can see through.
+            return (CIColor(red: 0.30, green: 0.36, blue: 0.46),
+                    CIColor(red: 0.78, green: 0.79, blue: 0.80))
+        }
+    }
+
+    private static func gradient(_ style: SkyStyle, extent: CGRect) -> CIImage {
+        let palette = colours(style)
+        let filter = CIFilter.linearGradient()
+        filter.point0 = CGPoint(x: extent.midX, y: extent.maxY)
+        filter.point1 = CGPoint(x: extent.midX, y: extent.minY)
+        filter.color0 = palette.top
+        filter.color1 = palette.horizon
+        return (filter.outputImage ?? CIImage(color: palette.top)).cropped(to: extent)
+    }
+
+    // MARK: Sun
+
+    /// Where the sun sits, in unit coordinates measured from the bottom
+    /// left the way Core Image does. nil for the styles that have none.
+    private static func sunPosition(_ style: SkyStyle) -> CGPoint? {
+        switch style {
+        case .clearBlue, .overcast, .dramatic: return nil
+        case .blueWithSun: return CGPoint(x: 0.74, y: 0.80)
+        case .softClouds: return CGPoint(x: 0.28, y: 0.78)
+        case .goldenHour: return CGPoint(x: 0.68, y: 0.30)
+        case .sunset: return CGPoint(x: 0.62, y: 0.18)
+        }
+    }
+
+    private static func sunColour(_ style: SkyStyle) -> CIColor {
+        switch style {
+        case .goldenHour: return CIColor(red: 1.0, green: 0.88, blue: 0.62, alpha: 1)
+        case .sunset: return CIColor(red: 1.0, green: 0.74, blue: 0.42, alpha: 1)
+        default: return CIColor(red: 1.0, green: 0.98, blue: 0.90, alpha: 1)
+        }
+    }
+
+    /// A tight core inside a wide glow, screened over the gradient.
+    ///
+    /// Two radials rather than one: a single gradient big enough to glow
+    /// has no disc in it, and one small enough to be a disc lights nothing
+    /// around it. Screen rather than normal, so the sun brightens the sky
+    /// it sits in instead of punching a hole through it.
+    private static func addSun(to sky: CIImage, style: SkyStyle,
+                               at unit: CGPoint, extent: CGRect) -> CIImage {
+        let centre = CGPoint(x: extent.minX + unit.x * extent.width,
+                             y: extent.minY + unit.y * extent.height)
+        let shortEdge = min(extent.width, extent.height)
+        let colour = sunColour(style)
+        var output = sky
+
+        for (inner, outer, strength) in [(0.012, 0.055, 1.0), (0.05, 0.55, 0.55)] {
+            let glow = CIFilter.radialGradient()
+            glow.center = centre
+            glow.radius0 = Float(shortEdge * inner)
+            glow.radius1 = Float(shortEdge * outer)
+            glow.color0 = CIColor(red: colour.red, green: colour.green,
+                                  blue: colour.blue, alpha: strength)
+            glow.color1 = CIColor(red: colour.red, green: colour.green,
+                                  blue: colour.blue, alpha: 0)
+
+            guard let layer = glow.outputImage?.cropped(to: extent) else {
+                continue
+            }
+            output = layer.applyingFilter("CIScreenBlendMode", parameters: [
+                kCIInputBackgroundImageKey: output
+            ]).cropped(to: extent)
+        }
+
+        return output
+    }
+
+    // MARK: Clouds
+
+    private static func cloudAmount(_ style: SkyStyle) -> Double {
+        switch style {
+        // These are lower than they look like they should be, and that is
+        // from looking at the renders rather than from the arithmetic: the
+        // threshold has a soft edge either side, so a cloud reads as bigger
+        // than the fraction it is thresholded at. 0.45 came out as a white
+        // sheet with blue holes in it, which is not "soft clouds".
+        case .clearBlue: return 0
+        case .blueWithSun: return 0.18
+        case .softClouds: return 0.26
+        case .overcast: return 0.72
+        case .goldenHour: return 0.20
+        case .sunset: return 0.24
+        // Not 0.95. At near-total coverage the dark cloud colour simply
+        // becomes the picture, and a black rectangle is not a dramatic sky
+        // — the gradient has to show through the gaps for it to read as
+        // weather rather than as a fault.
+        // ⚠️ Low, and it has to be. A DARK cloud colour over a mid-grey sky
+        // is far less forgiving than a white one over blue: the soft
+        // threshold edge spreads, and at 0.72 and again at 0.55 this
+        // rendered as a black rectangle with a few grey holes. Measured by
+        // looking at it three times.
+        case .dramatic: return 0.30
+        }
+    }
+
+    /// White for daylight, a warm underlit tone at sunset, near-black for
+    /// the dramatic one — clouds are lit by the sky they are in, and a
+    /// white cloud in a sunset is the giveaway that it was pasted.
+    private static func cloudColour(_ style: SkyStyle) -> CIColor {
+        switch style {
+        case .dramatic: return CIColor(red: 0.31, green: 0.34, blue: 0.41, alpha: 1)
+        case .sunset: return CIColor(red: 0.99, green: 0.72, blue: 0.55, alpha: 1)
+        case .goldenHour: return CIColor(red: 1.0, green: 0.93, blue: 0.82, alpha: 1)
+        case .overcast: return CIColor(red: 0.93, green: 0.94, blue: 0.95, alpha: 1)
+        default: return CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+        }
+    }
+
+    private static func addClouds(to sky: CIImage, style: SkyStyle, extent: CGRect) -> CIImage {
+        guard let field = cloudField(extent: extent, amount: cloudAmount(style)) else {
+            return sky
+        }
+
+        let colour = CIImage(color: cloudColour(style)).cropped(to: extent)
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = colour
+        blend.backgroundImage = sky
+        blend.maskImage = field
+        return (blend.outputImage ?? sky).cropped(to: extent)
+    }
+
+    /// Two octaves of blurred noise, curved into billows.
+    ///
+    /// One octave alone is a smooth blob field that reads as fog; the
+    /// second, three times finer and at a third of the weight, is what
+    /// gives an edge something to break up on. `amount` moves the curve
+    /// rather than scaling the result, so "more cloud" means more of the
+    /// sky is covered, not that the same clouds get more opaque.
+    private static func cloudField(extent: CGRect, amount: Double) -> CIImage? {
+        guard let noise = CIFilter(name: "CIRandomGenerator")?.outputImage else {
+            return nil
+        }
+
+        let longEdge = max(extent.width, extent.height)
+        var field: CIImage?
+
+        // Weights sum to 1 so the two octaves average rather than pile up.
+        for (cells, weight) in [(14.0, 0.75), (42.0, 0.25)] {
+            let cell = longEdge / cells
+            let octave = noise
+                .transformed(by: CGAffineTransform(scaleX: cell, y: cell))
+                .applyingFilter("CIColorMonochrome", parameters: [
+                    kCIInputColorKey: CIColor(red: 1, green: 1, blue: 1, alpha: 1),
+                    kCIInputIntensityKey: 1
+                ])
+                .clampedToExtent()
+                .applyingGaussianBlur(sigma: cell * 0.85)
+                .cropped(to: extent)
+                .applyingFilter("CIColorMatrix", parameters: [
+                    "inputRVector": CIVector(x: weight, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: weight, y: 0, z: 0, w: 0),
+                    "inputBVector": CIVector(x: weight, y: 0, z: 0, w: 0),
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+                ])
+
+            field = field.map {
+                octave.applyingFilter("CIAdditionCompositing", parameters: [
+                    kCIInputBackgroundImageKey: $0
+                ]).cropped(to: extent)
+            } ?? octave
+        }
+
+        guard let summed = field else {
+            return nil
+        }
+
+        // ⚠️ MEASURED, TWICE, and wrong both of the first two times.
+        //
+        // Blurred CIRandomGenerator does not sit anywhere near 0...1. In
+        // LINEAR space — the space these filters actually work in — it runs
+        // p05 0.376, p50 0.494, p95 0.584. Narrow, and centred just under a
+        // half.
+        //
+        // Attempt one used a 0-to-1 curve: everything mapped to full cloud
+        // and five of seven skies came out a blank white sheet. Attempt two
+        // corrected the band, but from numbers read out of an sRGB bitmap —
+        // sRGB 0.73 is linear 0.49, so the band sat ABOVE the data and the
+        // clouds vanished entirely. Both looked like colour bugs and were
+        // the same distribution bug, measured in the wrong space.
+        //
+        // These two numbers come from a linear-space read (p05 and p95).
+        // With them, `amount` lands within a couple of points of the
+        // coverage it asks for: 0.18 → 0.16, 0.45 → 0.51, 0.85 → 0.88.
+        let gain = 4.81
+        let bias = -1.81
+        let normalised = summed.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: gain, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: gain, y: 0, z: 0, w: 0),
+            "inputBVector": CIVector(x: gain, y: 0, z: 0, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            "inputBiasVector": CIVector(x: bias, y: bias, z: bias, w: 0)
+        ]).cropped(to: extent)
+
+        // `amount` is now simply "how much of the sky is cloud": the
+        // threshold is 1 minus it, with a soft edge either side so cloud
+        // borders are billows rather than cut-outs. Clamped so the four
+        // curve points stay strictly increasing at both ends.
+        let threshold = min(max(1 - amount, 0.08), 0.88)
+        return normalised.applyingFilter("CIToneCurve", parameters: [
+            "inputPoint0": CIVector(x: 0.0, y: 0),
+            "inputPoint1": CIVector(x: max(threshold - 0.14, 0.01), y: 0),
+            "inputPoint2": CIVector(x: threshold, y: 0.5),
+            "inputPoint3": CIVector(x: min(threshold + 0.14, 0.99), y: 1),
+            "inputPoint4": CIVector(x: 1.0, y: 1)
+        ]).cropped(to: extent)
+    }
+}
+
 struct ImageLayer: Codable, Equatable, Identifiable {
     var id = UUID()
     var name: String
@@ -685,6 +1017,115 @@ struct ImageLayer: Codable, Equatable, Identifiable {
     var opacity: Double = 1     // 0...1
     var blendMode: LayerBlendMode = .normal
     var isEnabled: Bool = true
+
+    /// This layer's OWN tone and colour, applied to its pixels before it is
+    /// composited.
+    ///
+    /// The same struct the masks use, and for the same reason: it is
+    /// exactly the subset of PhotoEditSettings that means anything applied
+    /// to a region rather than to a whole photo — no geometry, no vignette.
+    /// A second, near-identical struct for layers would be one more place
+    /// for "which sliders are local" to drift.
+    var adjustments = LocalAdjustmentSettings()
+
+    /// Gaussian blur on this layer alone, 0...1, scaled to the picture
+    /// rather than to pixels — see `PhotoEditRenderer.layerBlur`.
+    var blur: Double = 0
+
+    /// A soft alpha matte. When this is set the layer holds NO pixels of its
+    /// own: it is a REGION of the photo underneath, and the renderer takes
+    /// its pixels from there at render time.
+    ///
+    /// ⚠️ This exists because of where edits are stored. Every edit in this
+    /// app lives in one JSON blob in UserDefaults, re-encoded on each flush
+    /// (see PhotoEditStore.flushNow). A full-frame "Background" layer held
+    /// as pixels would be tens of megabytes of PNG in there, rewritten
+    /// every time any slider settles — which is not a heavy feature, it is
+    /// a broken app. A mask is smooth and mostly flat, so a small one
+    /// (`maskPNG` caps it at 1024px) upscales back with no visible
+    /// difference and costs tens of KILObytes.
+    ///
+    /// It buys a second thing worth having: a derived layer is re-read from
+    /// the photo on every render, so global sliders moved afterwards carry
+    /// it along instead of leaving it behind as a frozen copy.
+    var maskData: Data?
+
+    /// A drawn sky put in place of this layer's region, or nil to leave
+    /// the photo's own sky where it is.
+    var skyStyle: SkyStyle?
+
+    /// Rotation about the layer's own centre, in degrees.
+    var rotationDegrees: Double = 0
+
+    /// Was this layer made by Select Sky? Kept as its own flag rather than
+    /// read off `skyStyle`, because a Sky layer exists BEFORE any sky has
+    /// been chosen — that is the whole point of it — and rather than off
+    /// the name, which the client can rename.
+    var isSky: Bool = false
+
+    /// Pixels of its own, or a region of the photo underneath.
+    var isDerived: Bool { maskData != nil }
+
+    init(id: UUID = UUID(), name: String, imageData: Data,
+         x: Double, y: Double, width: Double, height: Double,
+         opacity: Double = 1, blendMode: LayerBlendMode = .normal,
+         isEnabled: Bool = true, adjustments: LocalAdjustmentSettings = LocalAdjustmentSettings(),
+         blur: Double = 0, maskData: Data? = nil,
+         skyStyle: SkyStyle? = nil, isSky: Bool = false,
+         rotationDegrees: Double = 0) {
+        self.id = id
+        self.name = name
+        self.imageData = imageData
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.opacity = opacity
+        self.blendMode = blendMode
+        self.isEnabled = isEnabled
+        self.adjustments = adjustments
+        self.blur = blur
+        self.maskData = maskData
+        self.skyStyle = skyStyle
+        self.isSky = isSky
+        self.rotationDegrees = rotationDegrees
+    }
+
+    /// ⚠️ Hand-written for the same reason PhotoEditSettings' is, and the
+    /// stakes here are higher.
+    ///
+    /// A layer saved before `adjustments` existed carries no key for it, and
+    /// the SYNTHESIZED decoder throws on a missing key even when the
+    /// property has a default. `PhotoEditStore.allSettings` DROPS anything
+    /// that fails to decode — so relying on the synthesized one would have
+    /// silently deleted every pasted layer anybody has ever saved, with no
+    /// error anywhere. Every field added here from now on must be
+    /// `decodeIfPresent` with a fallback.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decode(String.self, forKey: .name)
+        imageData = try c.decode(Data.self, forKey: .imageData)
+        x = try c.decode(Double.self, forKey: .x)
+        y = try c.decode(Double.self, forKey: .y)
+        width = try c.decode(Double.self, forKey: .width)
+        height = try c.decode(Double.self, forKey: .height)
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1
+        blendMode = try c.decodeIfPresent(LayerBlendMode.self, forKey: .blendMode) ?? .normal
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        adjustments = try c.decodeIfPresent(LocalAdjustmentSettings.self, forKey: .adjustments)
+            ?? LocalAdjustmentSettings()
+        blur = try c.decodeIfPresent(Double.self, forKey: .blur) ?? 0
+        maskData = try c.decodeIfPresent(Data.self, forKey: .maskData)
+        skyStyle = try c.decodeIfPresent(SkyStyle.self, forKey: .skyStyle)
+        isSky = try c.decodeIfPresent(Bool.self, forKey: .isSky) ?? false
+        rotationDegrees = try c.decodeIfPresent(Double.self, forKey: .rotationDegrees) ?? 0
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, imageData, x, y, width, height, opacity, blendMode, isEnabled, adjustments
+        case blur, maskData, skyStyle, isSky, rotationDegrees
+    }
 }
 
 // DevelopView's in-memory Cut/Copy clipboard (see its `layerClipboard`
@@ -2801,6 +3242,93 @@ enum PhotoEditRenderer {
         return clamp.outputImage
     }
 
+    /// One derived layer: the photo underneath, graded and blurred on its
+    /// own, blended back through its matte.
+    ///
+    /// The stored matte is small on purpose (see `ImageLayer.maskData`), so
+    /// it is scaled up to whatever this render's extent is — preview or
+    /// native, the same way every layer's own geometry is resolved against
+    /// the current extent rather than assumed.
+    ///
+    /// `blendMode` is deliberately ignored here. It describes how a pasted
+    /// piece meets what is behind it, and for a region OF the photo there
+    /// is nothing behind it but itself — Multiply would just be a darker
+    /// version of the same pixels pretending to be a composite. The panel
+    /// hides the row for these layers to match.
+    private static func compositeDerivedLayer(_ layer: ImageLayer, maskData: Data,
+                                              onto image: CIImage, extent: CGRect) -> CIImage {
+        guard let stored = CIImage(data: maskData),
+              stored.extent.width > 0, stored.extent.height > 0 else {
+            return image
+        }
+
+        let scaled = stored
+            .transformed(by: CGAffineTransform(scaleX: extent.width / stored.extent.width,
+                                               y: extent.height / stored.extent.height))
+        let mask = scaled
+            .transformed(by: CGAffineTransform(translationX: extent.origin.x - scaled.extent.origin.x,
+                                               y: extent.origin.y - scaled.extent.origin.y))
+            .cropped(to: extent)
+
+        // A chosen sky REPLACES what is under the matte; everything else
+        // adjusts it. The layer's own sliders then run on whichever it is,
+        // so a drawn sky can still be darkened, cooled or blurred like any
+        // other layer rather than being a take-it-or-leave-it picture.
+        let base = layer.skyStyle.map { SkyPainter.image($0, extent: extent) } ?? image
+
+        var adjusted = layer.adjustments.isNeutral
+            ? base
+            : applyLocalToneColorDetail(layer.adjustments, to: base)
+        if layer.blur > 0 {
+            adjusted = layerBlur(adjusted, amount: layer.blur, extent: extent)
+        }
+
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = adjusted
+        blend.backgroundImage = image
+        blend.maskImage = layer.opacity < 1 ? scaleMaskOpacity(mask, by: layer.opacity) : mask
+        return blend.outputImage ?? image
+    }
+
+    /// Blur scaled to the PICTURE, not to pixels.
+    ///
+    /// ⚠️ A sigma in pixels would be wrong here and wrong invisibly: the
+    /// preview renders at 2600px and the export at native resolution, so
+    /// the same number would blur the two by visibly different amounts —
+    /// the client would approve one picture and receive another. 0.02 of
+    /// the short edge at full strength.
+    private static func layerBlur(_ image: CIImage, amount: Double, extent: CGRect) -> CIImage {
+        let sigma = min(max(amount, 0), 1) * 0.02 * min(extent.width, extent.height)
+        guard sigma > 0.3 else {
+            return image
+        }
+        // Clamped before blurring, cropped after: without the clamp the
+        // filter samples nothing outside the frame and darkens every edge.
+        return image.clampedToExtent()
+            .applyingGaussianBlur(sigma: sigma)
+            .cropped(to: extent)
+    }
+
+    /// A soft matte, stored small on purpose.
+    ///
+    /// A mask is smooth and mostly flat, so a 1024px copy upscales back to
+    /// a native-resolution frame with no visible difference — and it is the
+    /// difference between tens of KILObytes and tens of MEGABYTES sitting
+    /// in UserDefaults, which is where every edit in this app is kept.
+    static func maskPNG(_ mask: CIImage, extent: CGRect, maxEdge: CGFloat = 1024) -> Data? {
+        guard extent.width > 0, extent.height > 0 else {
+            return nil
+        }
+        let scale = min(1, maxEdge / max(extent.width, extent.height))
+        let scaled = mask.cropped(to: extent)
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let rect = scaled.extent.integral
+        guard rect.width >= 1, rect.height >= 1 else {
+            return nil
+        }
+        return pngData(for: scaled, pixelRect: rect)
+    }
+
     private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage) -> CIImage {
         var output = image
         let extent = image.extent
@@ -2812,6 +3340,18 @@ enum PhotoEditRenderer {
             guard layer.isEnabled, layer.width > 0, layer.height > 0 else {
                 continue
             }
+
+            // A derived layer holds no pixels — it is a region of the photo
+            // underneath, taken through its own matte. It gets its own
+            // tone, colour and blur and is blended straight back through
+            // that matte, which is the same shape applyLocalAdjustments
+            // uses for a mask. No cutout, so no edge artefacts, and it
+            // follows the photo when the global sliders move.
+            if let maskData = layer.maskData {
+                output = compositeDerivedLayer(layer, maskData: maskData, onto: output, extent: extent)
+                continue
+            }
+
             guard let source = CIImage(data: layer.imageData), source.extent.width > 0, source.extent.height > 0 else {
                 continue
             }
@@ -2834,8 +3374,38 @@ enum PhotoEditRenderer {
             // extent rather than a single point.
             let originY = extent.origin.y + (1 - layer.y - layer.height) * extent.height
 
-            var positioned = source.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
-            positioned = positioned.transformed(by: CGAffineTransform(translationX: originX, y: originY))
+            // The layer's own tone and colour, applied to ITS pixels — this
+            // is what makes "select a layer, then move a slider" mean that
+            // layer and nothing else. Before the transform rather than
+            // after: the piece is smaller than the photo, so it is cheaper
+            // here, and the result is the same either way.
+            var graded = layer.adjustments.isNeutral
+                ? source
+                : applyLocalToneColorDetail(layer.adjustments, to: source)
+            if layer.blur > 0 {
+                graded = layerBlur(graded, amount: layer.blur, extent: source.extent)
+            }
+
+            // Centre → scale → rotate → put the centre where it belongs.
+            // Built in that order because a rotation is only meaningful
+            // about a point, and the layer's own centre is the only point
+            // a client dragging a rotate handle is thinking about.
+            var positioned = graded.transformed(by: CGAffineTransform(
+                translationX: -source.extent.midX, y: -source.extent.midY))
+            positioned = positioned.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+
+            if layer.rotationDegrees != 0 {
+                // Negated: the handle turns clockwise on screen, where the
+                // y axis points down, and Core Image's turns anticlockwise
+                // in a y-up space. Without the sign the layer would spin
+                // the opposite way from the cursor.
+                positioned = positioned.transformed(by: CGAffineTransform(
+                    rotationAngle: -layer.rotationDegrees * .pi / 180))
+            }
+
+            positioned = positioned.transformed(by: CGAffineTransform(
+                translationX: originX + targetWidthPx / 2,
+                y: originY + targetHeightPx / 2))
 
             if layer.opacity < 1 {
                 let alphaScale = CIFilter.colorMatrix()
@@ -2941,6 +3511,33 @@ enum PhotoEditRenderer {
             return nil
         }
         return (png, bounds.unit)
+    }
+
+    /// The pixels under an arbitrary MASK, as a PNG cropped to `pixelRect`.
+    ///
+    /// The mask twin of `extractSelectionPNG`, for the same consumer: an
+    /// ImageLayer that can then be moved, scaled and rotated. PNG
+    /// specifically, because a Vision mask has soft edges and only PNG
+    /// carries the alpha that keeps them soft — a JPEG would hand back a
+    /// hard rectangle with the background baked in around the person.
+    static func extractMaskedPNG(mask: CIImage, from image: CIImage, pixelRect: CGRect) -> Data? {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0,
+              pixelRect.width >= 1, pixelRect.height >= 1 else {
+            return nil
+        }
+
+        let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: extent)
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = image
+        blend.backgroundImage = clear
+        blend.maskImage = mask
+
+        guard let masked = blend.outputImage else {
+            return nil
+        }
+
+        return pngData(for: masked, pixelRect: pixelRect.integral)
     }
 
     // The "hole" a Cut leaves behind: a solid-color, same-shaped-as-the-
@@ -3187,6 +3784,141 @@ private let developPreviewRenderQueue = DispatchQueue(
 // can never briefly flash on screen after a newer one — a small
 // correctness improvement for the non-RAW path too, not just RAW.
 private let developRenderQueue = DispatchQueue(label: "com.rocketsbrief.briefshow.develop.render")
+
+/// Baking a photo's render in, and duplicating a photo beside itself.
+///
+/// Lives here rather than inside `DevelopView` because BOTH menus need it —
+/// LumenoLab's filmstrip and ShowGrid's grid — and because the CIContext and
+/// the render queue it uses are private to this file. Two copies of this
+/// would be two places for "Duplicate" to come to mean different things.
+enum PhotoBakeService {
+
+    /// One photo's worth of work.
+    ///
+    /// `source` and `target` are the same photo for an in-place bake. For a
+    /// duplicate they differ on purpose: the render is taken from the
+    /// ORIGINAL — which is what honours its own flattened pixels — and
+    /// stored under the COPY, so the copy ends up carrying the picture the
+    /// client can see rather than the untouched file underneath it.
+    struct BakeJob {
+        let source: URL
+        let target: URL
+        let settings: PhotoEditSettings
+    }
+
+    /// Copies `url` beside itself and hands back the copy.
+    ///
+    /// The FILE is copied, not the flattened TIFF: the copy has to stay a
+    /// valid photo of its own type, and it is also what Unflatten falls
+    /// back to. The baked picture is written separately, by `bake`.
+    static func duplicate(_ url: URL, suffix: String) -> URL? {
+        guard let copyURL = duplicateURL(for: url, suffix: suffix) else {
+            return nil
+        }
+
+        do {
+            try FileManager.default.copyItem(at: url, to: copyURL)
+        } catch {
+            return nil
+        }
+
+        return copyURL
+    }
+
+    /// `Beach.jpg` → `Beach BW.jpg`, then `Beach BW 2.jpg`, and so on.
+    ///
+    /// The black-and-white copy is named for what it IS rather than
+    /// Finder's "copy": it stops being a copy the moment it is made, and a
+    /// folder full of "… copy" files says nothing about which one is the
+    /// black-and-white version. A plain duplicate keeps "copy", which is
+    /// the word Finder uses for exactly that.
+    ///
+    /// Gives up after 99 rather than looping forever if the filesystem
+    /// keeps reporting every candidate as taken.
+    static func duplicateURL(for url: URL, suffix: String) -> URL? {
+        let folder = url.deletingLastPathComponent()
+        let base = url.deletingPathExtension().lastPathComponent
+        let fileExtension = url.pathExtension
+
+        for attempt in 1...99 {
+            let name = attempt == 1 ? "\(base) \(suffix)" : "\(base) \(suffix) \(attempt)"
+            let candidate = fileExtension.isEmpty
+                ? folder.appendingPathComponent(name)
+                : folder.appendingPathComponent(name).appendingPathExtension(fileExtension)
+
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
+        return nil
+    }
+
+    /// Bakes each job's render in, writes the results to `PhotoEditStore`,
+    /// and reports what each photo was left carrying.
+    ///
+    /// On `developRenderQueue`, because this decodes and renders every photo
+    /// at full resolution — the same work an export does, and not something
+    /// to run on the main thread for a selection of forty. The completion
+    /// runs on the main thread, after the store has been written and
+    /// flushed, so a caller only has to reconcile its own view state.
+    static func bake(_ jobs: [BakeJob], desaturate: Bool,
+                     completion: @escaping (_ baked: [URL: PhotoEditSettings], _ failed: Int) -> Void) {
+        guard !jobs.isEmpty else {
+            completion([:], 0)
+            return
+        }
+
+        developRenderQueue.async(qos: .userInitiated) {
+            var baked: [URL: PhotoEditSettings] = [:]
+            var failed = 0
+
+            for job in jobs {
+                if let result = bakedSettings(for: job, desaturate: desaturate) {
+                    baked[job.target] = result
+                } else {
+                    failed += 1
+                }
+            }
+
+            DispatchQueue.main.async {
+                for (url, result) in baked {
+                    PhotoEditStore.setSettings(result, for: url)
+                }
+                PhotoEditStore.flushNow()
+                completion(baked, failed)
+            }
+        }
+    }
+
+    private static func bakedSettings(for job: BakeJob, desaturate: Bool) -> PhotoEditSettings? {
+        // loadBaseImage opens the SOURCE's flattened copy when it has one,
+        // so a photo that was already baked bakes again from the picture it
+        // actually shows rather than from the file underneath it.
+        guard let base = PhotoEditRenderer.loadBaseImage(from: job.source) else {
+            return nil
+        }
+
+        // `applyCrop: false` for exactly the reason flattenPhoto gives: the
+        // crop is a description of the photo and survives as a setting, so
+        // baking it in would make it impossible to open the crop back up.
+        let rendered = PhotoEditRenderer.render(job.settings, on: base, applyCrop: false)
+
+        do {
+            try FlattenedImageStore.flatten(rendered, settings: job.settings,
+                                            for: job.target, context: briefEditsCIContext)
+        } catch {
+            return nil
+        }
+
+        var result = PhotoEditSettings()
+        result.crop = job.settings.crop
+        if desaturate {
+            result.saturation = -1
+        }
+        return result
+    }
+}
 
 // MARK: - Window lifecycle
 
@@ -4171,9 +4903,26 @@ struct LayerDropDelegate: DropDelegate {
 }
 
 struct DevelopView: View {
-    let photoURLs: [URL]
+    /// The photos in the filmstrip.
+    ///
+    /// `@State` rather than a `let` because "Duplicate & BW" writes new
+    /// files into the folder while the editor is open, and they have to
+    /// show up in the strip beside the photo they came from — a `let` can
+    /// only be replaced by rebuilding the whole view, which would throw
+    /// away the open photo, its undo stack and its decoded base image.
+    ///
+    /// Seeded once, from what ShowGrid handed over. A window that is
+    /// reopened later is built fresh from the folder, which by then holds
+    /// the new files anyway.
+    @State private var photoURLs: [URL]
     let initialSelection: URL?
     let onClose: () -> Void
+
+    init(photoURLs: [URL], initialSelection: URL?, onClose: @escaping () -> Void) {
+        _photoURLs = State(initialValue: photoURLs)
+        self.initialSelection = initialSelection
+        self.onClose = onClose
+    }
 
     @ObservedObject private var themeManager = ThemeManager.shared
 
@@ -4351,6 +5100,13 @@ struct DevelopView: View {
     @State private var isFlattening = false
     @State private var flattenErrorMessage: String?
     @State private var showSyncDialog = false
+
+    // Right-click "Delete" / ⌫ in the filmstrip, routed through a
+    // confirmation the same way ShowGrid's is — the photos leave the
+    // client's folder, and a reflexive Backspace should not be enough on
+    // its own to do that.
+    @State private var pendingTrashPhotoURLs: [URL]?
+    @State private var isTrashPhotoConfirmationPresented = false
     // Asked at the moment of exporting rather than set once in the panel:
     // "export all of these" is exactly when someone decides what kind of
     // file they want out, and the panel's own picker is far from the button
@@ -4502,6 +5258,20 @@ struct DevelopView: View {
     // rather than found, and the user needs to be told that instead of
     // quietly getting a mask with somebody missing from it.
     @State private var removeNotice: String?
+
+    // The card that appears after Select People or Select Sky has actually
+    // made a layer. Separate from removeNotice, which belongs to the Remove
+    // section and says why an erase did or did not find anything — this one
+    // is about layers that now exist and what can be done with them.
+    @State private var newLayerNotice: String?
+
+    // The layers the last Select People / Select Sky made, so the card's
+    // Undo can take back exactly those. See removeNewLayers for why this is
+    // not the ordinary undo stack.
+    @State private var newLayerIDs: [UUID] = []
+
+    @State private var isFindingSky = false
+    @State private var isSkyPickerPresented = false
     // Which of the two find buttons produced the mask currently on screen,
     // so the line under them describes what was actually found.
     @State private var foundBackgroundOnly = false
@@ -4727,6 +5497,28 @@ struct DevelopView: View {
         .sheet(isPresented: $showExportAllOptions) {
             exportAllOptionsView
         }
+        .sheet(isPresented: $isSkyPickerPresented) {
+            skyPickerView
+        }
+        .confirmationDialog(
+            pendingTrashPhotoURLs?.count == 1
+                ? "Move this photo to the Trash?"
+                : "Move \(pendingTrashPhotoURLs?.count ?? 0) photos to the Trash?",
+            isPresented: $isTrashPhotoConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Move to Trash", role: .destructive) {
+                if let pendingTrashPhotoURLs {
+                    trashPhotos(pendingTrashPhotoURLs)
+                }
+                pendingTrashPhotoURLs = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingTrashPhotoURLs = nil
+            }
+        } message: {
+            Text("The photos go to the macOS Trash, and can be put back from there. The edits stay recorded, so a restored photo comes back with them.")
+        }
     }
 
     // Every Develop keyboard shortcut that isn't a plain SwiftUI Button's
@@ -4895,6 +5687,23 @@ struct DevelopView: View {
             if flags.isEmpty, (event.keyCode == 51 || event.keyCode == 117),
                selectedLayerID != nil || selectedLocalAdjustmentID != nil {
                 deleteSelectedItem()
+                return nil
+            }
+
+            // Nothing INSIDE the photo is selected, so Delete means the
+            // photo itself — the same action as the filmstrip's right-click
+            // Delete.
+            //
+            // ⚠️ The mask/layer branch above wins on purpose, and the order
+            // of these two is load-bearing: Delete pressed while a mask is
+            // armed must remove the mask, never the whole photograph. That
+            // is also why this one cannot be folded into the branch above.
+            if flags.isEmpty || flags == .command,
+               event.keyCode == 51 || event.keyCode == 117,
+               selectedLayerID == nil, selectedLocalAdjustmentID == nil,
+               !keyboardDeleteTargets.isEmpty {
+                pendingTrashPhotoURLs = keyboardDeleteTargets
+                isTrashPhotoConfirmationPresented = true
                 return nil
             }
 
@@ -5554,6 +6363,38 @@ struct DevelopView: View {
 
             Divider()
 
+            // Two one-press looks, on the same target rule as Export at the
+            // top of this menu: the whole selection when the right-clicked
+            // photo is part of one, otherwise just the photo under the
+            // cursor. One right-click must not mean two different sets
+            // depending on which item is picked.
+            //
+            // Counts in the labels for the same reason Sync's is there — a
+            // menu item is read for a second, and has to say how many
+            // photos it is about to change in that second.
+            let bwTargets = contextMenuTargets(for: url)
+
+            Button(bwTargets.count > 1 ? "Black & White (\(bwTargets.count))" : "Black & White") {
+                applyBlackAndWhite(to: bwTargets)
+            }
+
+            Button(bwTargets.count > 1 ? "Duplicate (\(bwTargets.count))" : "Duplicate") {
+                duplicatePhotos(bwTargets, blackAndWhite: false)
+            }
+
+            Button(bwTargets.count > 1 ? "Duplicate & BW (\(bwTargets.count))" : "Duplicate & BW") {
+                duplicatePhotos(bwTargets, blackAndWhite: true)
+            }
+
+            Divider()
+
+            Button(bwTargets.count > 1 ? "Delete (\(bwTargets.count))" : "Delete", role: .destructive) {
+                pendingTrashPhotoURLs = bwTargets
+                isTrashPhotoConfirmationPresented = true
+            }
+
+            Divider()
+
             // Folder-wide, not selection-wide — it exports every EDITED photo
             // in the folder regardless of what is selected, which is why it
             // keeps its own count and sits below a divider rather than among
@@ -5803,9 +6644,295 @@ struct DevelopView: View {
                     addLocalAdjustment(.patch(name: nextMaskName("Patch"), shape: .circle))
                 }
 
+                // Moved here from the Remove section, because what it does
+                // changed: it no longer finds people to ERASE, it lifts them
+                // onto a layer of their own so they can be graded apart from
+                // the rest of the frame. That is a tool, not a removal.
+                toolButton("Select People", systemImage: "person.crop.rectangle",
+                           isActive: isFindingPeople) {
+                    selectPeopleAsLayer()
+                }
+                .disabled(isFindingPeople || isFindingSky || isRemoving || selectedURL == nil)
+                .opacity((isFindingPeople || isFindingSky || isRemoving || selectedURL == nil) ? 0.4 : 1)
+
+                // Sky has no Vision request behind it — see SkyMasker for
+                // why, and for what it gets wrong.
+                toolButton("Select Sky", systemImage: "cloud.sun",
+                           isActive: isFindingSky) {
+                    selectSkyAsLayer()
+                }
+                .disabled(isFindingPeople || isFindingSky || isRemoving || selectedURL == nil)
+                .opacity((isFindingPeople || isFindingSky || isRemoving || selectedURL == nil) ? 0.4 : 1)
+
                 Spacer(minLength: 0)
             }
+
+            // Vision reports no progress, so this is an INDETERMINATE bar
+            // and not a percentage. A percentage here would be invented,
+            // and the one thing this has to do is be believed: the search
+            // takes long enough on a big frame that a still panel reads as
+            // a button that did nothing.
+            if isFindingPeople || isFindingSky {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(isFindingSky ? "Looking for sky…" : "Looking for people…")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(accentColor)
+                }
+            }
+
+            // Shown only once a layer actually exists, so it is a report of
+            // something that happened rather than a promise.
+            if let newLayerNotice {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(newLayerNotice)
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    // One way out, not two. "Remove Paint Selection" stood
+                    // here and was dropped on sight: the search leaves no
+                    // paint behind — it makes layers — so the button
+                    // offered to undo something that had not happened.
+                    //
+                    // ⚠️ This does NOT call undo(). It used to, and that was
+                    // the reported bug: undo() pops ONE step off the stack,
+                    // and by the time anybody presses this the top of the
+                    // stack is usually something else — moving the layer,
+                    // a slider — so the layers stayed and an unrelated edit
+                    // was taken back instead. This button has one job and
+                    // has to do that job whatever else has happened since.
+                    // It writes settings.layers like any other edit, so
+                    // Cmd+Z still puts them back.
+                    panelActionButton("Undo", systemImage: "arrow.uturn.backward") {
+                        removeNewLayers()
+                        self.newLayerNotice = nil
+                    }
+                }
+                .padding(10)
+                .background(AppColors.panelAlt)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(AppColors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
         }
+    }
+
+    /// Lifts the people in the frame onto a layer of their own.
+    ///
+    /// The same Vision mask "Select People" always used, put to a different
+    /// purpose: instead of handing the mask to the eraser, the pixels under
+    /// it are copied out as a PNG (alpha and all) and dropped straight back
+    /// at the same spot as an ImageLayer. On screen nothing moves — the
+    /// copy lands exactly over the people it came from — but there is now a
+    /// layer holding them, and the layer's own sliders reach only them.
+    ///
+    /// An active Selection still confines the search, the way it always
+    /// did: rope off the background, and only the people inside the rope
+    /// are lifted.
+    ///
+    /// ⚠️ Known, and inherent to a pixel layer: the copy is taken from the
+    /// render AS IT IS NOW. Global sliders moved afterwards change the photo
+    /// underneath and not the layer on top, which will show as the people
+    /// drifting away from the rest of the frame. That is how every pasted
+    /// layer in this app already behaves; it is worth knowing, not worth
+    /// pretending otherwise.
+    ///
+    /// ⚠️ Also known: one layer for everybody found, not one per person.
+    /// The mask is a single image and splitting it into connected
+    /// components is a separate piece of work.
+    private func selectPeopleAsLayer() {
+        guard let fullBaseImage, let selectedURL else {
+            return
+        }
+
+        isFindingPeople = true
+        removeNotice = nil
+        newLayerNotice = nil
+
+        let settingsSnapshot = settings
+        let photoAtActionTime = selectedURL
+        let confineTo = activeSelection
+
+        developRenderQueue.async(qos: .userInitiated) {
+            // applyCrop: false, because a layer's x/y/width/height live in
+            // the pre-crop unit space — the same reason compositeLayers runs
+            // before the crop.
+            let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
+            var mask = SubjectMasker.personMask(for: full)
+
+            if let found = mask, let confineTo,
+               !(confineTo.shape == .free && confineTo.points.count < 3) {
+                let shape = PhotoEditRenderer.selectionMask(confineTo, extent: full.extent)
+                mask = found.applyingFilter("CIMultiplyBlendMode", parameters: [
+                    kCIInputBackgroundImageKey: shape
+                ]).cropped(to: full.extent)
+            }
+
+            // ⚠️ The two layers are deliberately DIFFERENT KINDS, and the
+            // difference is what each one is for.
+            //
+            // People is a PIXEL layer — a real cut-out — because the client
+            // asked to move, scale and rotate them, and a matte cannot be
+            // moved: sliding a mask does not slide the people, it slides a
+            // hole and shows the photo through it somewhere else.
+            //
+            // Background is DERIVED — a matte over the photo, no pixels —
+            // because it covers the whole frame, and a full-frame PNG in
+            // UserDefaults is tens of megabytes rewritten on every flush
+            // (see ImageLayer.maskData). Nobody wants to drag the
+            // background anywhere either.
+            let box = mask.flatMap {
+                InpaintPipeline.maskBoundingBox($0, extent: full.extent, context: briefEditsCIContext)
+            }
+            let peoplePNG = (mask != nil && box != nil)
+                ? PhotoEditRenderer.extractMaskedPNG(mask: mask!, from: full, pixelRect: box!)
+                : nil
+
+            var placement: (x: Double, y: Double, width: Double, height: Double)?
+            if let box {
+                // A layer's y is its TOP edge measured downward; Core
+                // Image's is the bottom edge measured upward. maxY is the
+                // top, so the distance down to it is 1 minus that fraction.
+                let extent = full.extent
+                placement = (
+                    x: (box.minX - extent.minX) / extent.width,
+                    y: 1 - (box.maxY - extent.minY) / extent.height,
+                    width: box.width / extent.width,
+                    height: box.height / extent.height
+                )
+            }
+
+            let backgroundMask = mask
+                .flatMap { $0.applyingFilter("CIColorInvert").cropped(to: full.extent) }
+                .flatMap { PhotoEditRenderer.maskPNG($0, extent: full.extent) }
+
+            DispatchQueue.main.async {
+                isFindingPeople = false
+
+                guard selectedURL == photoAtActionTime else {
+                    return
+                }
+
+                guard let peoplePNG, let placement, let backgroundMask,
+                      placement.width > 0, placement.height > 0 else {
+                    removeNotice = "No people found in this photo. Anyone small enough in the frame is usually below what the detector can see — cut them out by hand with the Selection tool instead."
+                    return
+                }
+
+                // Background first, people second: layers composite in array
+                // order, so the people end up on top of the background the
+                // way the picture itself is arranged.
+                let background = ImageLayer(
+                    name: nextLayerName("Background"), imageData: Data(),
+                    x: 0, y: 0, width: 1, height: 1, maskData: backgroundMask
+                )
+                let people = ImageLayer(
+                    name: nextLayerName("People"), imageData: peoplePNG,
+                    x: placement.x, y: placement.y,
+                    width: placement.width, height: placement.height
+                )
+
+                settings.layers.append(background)
+                settings.layers.append(people)
+                newLayerIDs = [background.id, people.id]
+                selectedLayerID = people.id
+                newLayerNotice = "Two layers now: People and Background. The People layer is selected — drag it on the photo to move it, drag a corner to resize, or use the knob above it to rotate. Its own sliders change only them."
+            }
+        }
+    }
+
+    /// Lifts the sky onto a layer of its own.
+    ///
+    /// The twin of `selectPeopleAsLayer`, and derived for the same reasons
+    /// — no pixels stored, and it follows the photo when the global sliders
+    /// move. What differs is where the matte comes from: there is no Apple
+    /// API for sky, so this is our own heuristic. See `SkyMasker` for what
+    /// it looks for and, more usefully, what it gets wrong.
+    ///
+    /// One layer, not two. The people case makes a Background as well
+    /// because "everything that is not the subject" is a thing anybody
+    /// would want to grade; "everything that is not the sky" is the ground,
+    /// the buildings and the people all at once, which is not one subject
+    /// and not worth a layer nobody asked for.
+    private func selectSkyAsLayer() {
+        guard let fullBaseImage, let selectedURL else {
+            return
+        }
+
+        isFindingSky = true
+        removeNotice = nil
+        newLayerNotice = nil
+
+        let settingsSnapshot = settings
+        let photoAtActionTime = selectedURL
+        let confineTo = activeSelection
+
+        developRenderQueue.async(qos: .userInitiated) {
+            let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
+            var mask = SkyMasker.skyMask(for: full)
+
+            // An active Selection confines the search, exactly as it does
+            // for people: rope off the part of the frame that matters and
+            // only the sky inside it is lifted.
+            if let found = mask, let confineTo,
+               !(confineTo.shape == .free && confineTo.points.count < 3) {
+                let shape = PhotoEditRenderer.selectionMask(confineTo, extent: full.extent)
+                mask = found.applyingFilter("CIMultiplyBlendMode", parameters: [
+                    kCIInputBackgroundImageKey: shape
+                ]).cropped(to: full.extent)
+            }
+
+            let skyMask = mask.flatMap {
+                PhotoEditRenderer.maskPNG($0, extent: full.extent)
+            }
+
+            DispatchQueue.main.async {
+                isFindingSky = false
+
+                guard selectedURL == photoAtActionTime else {
+                    return
+                }
+
+                guard let skyMask else {
+                    removeNotice = "No sky found. This looks for something bright or blue, smooth, and high in the frame — an indoor shot, a heavy crop, or a sky that is mostly behind branches will not match. Rope the area with the Selection tool and try again."
+                    return
+                }
+
+                let sky = ImageLayer(
+                    name: nextLayerName("Sky"), imageData: Data(),
+                    x: 0, y: 0, width: 1, height: 1, maskData: skyMask, isSky: true
+                )
+
+                settings.layers.append(sky)
+                newLayerIDs = [sky.id]
+                selectedLayerID = sky.id
+                newLayerNotice = "The sky is on its own layer. Its own sliders change only the sky — and Change Sky puts a different one there altogether."
+            }
+        }
+    }
+
+    /// Takes back exactly the layers the last Select People / Select Sky made.
+    ///
+    /// By id, not by popping the undo stack — see the card's Undo button for
+    /// what went wrong when it was the other way round. Writes
+    /// settings.layers like any ordinary edit, so Cmd+Z still restores them.
+    private func removeNewLayers() {
+        let doomed = Set(newLayerIDs)
+        guard !doomed.isEmpty else {
+            return
+        }
+
+        if let selectedLayerID, doomed.contains(selectedLayerID) {
+            self.selectedLayerID = nil
+        }
+        settings.layers.removeAll { doomed.contains($0.id) }
+        newLayerIDs = []
     }
 
     // Everything that calls a model, behind one disclosure arrow.
@@ -6027,7 +7154,7 @@ struct DevelopView: View {
             return "Already cleaning up — wait for this one to finish."
         }
         if !hasRemovalArea {
-            return "Nothing is selected yet. Paint over what should go with AI Clean Up, or press Select People in the Retouch tab."
+            return "Nothing is selected yet. Paint over what should go with AI Clean Up. (Select People no longer feeds this — it lifts people onto a layer instead, in Tools.)"
         }
         if !removalAreaFits(engine) {
             return engine.oversizeReason
@@ -6255,7 +7382,13 @@ struct DevelopView: View {
                                 localAdjustmentOverlay(settings.localAdjustments[index], frame: fullImageFrame(from: fitted))
                             } else if let activeSelection {
                                 selectionOverlay(activeSelection, frame: fullImageFrame(from: fitted))
-                            } else if let index = selectedLayerIndex {
+                            // Derived layers (Sky, Background) have no
+                            // frame to draw: they are a matte over the whole
+                            // photo, so an outline would be a rectangle
+                            // round the picture, and there is nothing to
+                            // drag — moving a matte moves a hole, not what
+                            // is under it. Pixel layers get the full frame.
+                            } else if let index = selectedLayerIndex, !settings.layers[index].isDerived {
                                 layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
                             }
                         }
@@ -7637,6 +8770,20 @@ struct DevelopView: View {
     // own corner handles) — no aspect-ratio lock, unlike crop's optional
     // one, since a pasted layer has no equivalent "aspect ratio buttons" UI
     // to lock to; keeping it simple for v1.
+    /// The selected layer's frame on the canvas: an outline, four corner
+    /// handles, and a knob above it to turn it by.
+    ///
+    /// The outline and its handles are drawn INSIDE a container the size of
+    /// the layer and rotated with it, so the frame sits on the picture
+    /// rather than beside it. Two things follow from that and both are
+    /// load-bearing:
+    ///
+    /// - The rotation anchor is the container's centre, which is the
+    ///   layer's centre. Rotating the canvas-sized view instead would turn
+    ///   the frame about the corner of the PHOTO and send it off screen.
+    /// - The drag maths stays in unrotated space (see `unrotated`), because
+    ///   pulling a corner means "wider along this edge", not "wider along
+    ///   the screen".
     private func layerOverlay(_ layer: ImageLayer, frame: CGRect) -> some View {
         let rect = CGRect(
             x: frame.minX + layer.x * frame.width,
@@ -7644,45 +8791,126 @@ struct DevelopView: View {
             width: layer.width * frame.width,
             height: layer.height * frame.height
         )
+        let centre = CGPoint(x: rect.midX, y: rect.midY)
+        let angle = layer.rotationDegrees
+        let stem: CGFloat = 26
 
         return ZStack {
-            Rectangle()
-                .stroke(accentColor, lineWidth: 1.0)
-                .frame(width: rect.width, height: rect.height)
-                .position(x: rect.midX, y: rect.midY)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture()
-                        .onChanged { value in moveLayer(by: value.translation, frame: frame) }
-                        .onEnded { _ in layerDragStart = nil }
-                )
+            ZStack {
+                Rectangle()
+                    .stroke(layerSelectionColor, lineWidth: 1.4)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in moveLayer(by: value.translation, frame: frame) }
+                            .onEnded { _ in layerDragStart = nil }
+                    )
 
-            ForEach(LayerCorner.allCases, id: \.self) { corner in
-                layerHandleView(corner, rect: rect, frame: frame)
+                // The stem, drawn from the top edge up to the knob.
+                Path { path in
+                    path.move(to: CGPoint(x: rect.width / 2, y: 0))
+                    path.addLine(to: CGPoint(x: rect.width / 2, y: -stem))
+                }
+                .stroke(layerSelectionColor, lineWidth: 1.2)
+                .allowsHitTesting(false)
+
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(AppColors.background)
+                    .padding(4)
+                    .background(Circle().fill(layerSelectionColor))
+                    .shadow(radius: 1)
+                    .position(x: rect.width / 2, y: -stem)
+                    .gesture(
+                        // Named space, not the knob's own: the angle is
+                        // measured from the layer's centre, and the knob
+                        // is moving while it is measured.
+                        DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.layerCanvasSpace))
+                            .onChanged { value in
+                                rotateLayer(towards: value.location, centre: centre)
+                            }
+                            .onEnded { _ in layerDragStart = nil }
+                    )
+
+                ForEach(LayerCorner.allCases, id: \.self) { corner in
+                    layerHandleView(corner, size: rect.size, frame: frame, angle: angle)
+                }
             }
+            .frame(width: rect.width, height: rect.height)
+            .rotationEffect(.degrees(angle))
+            .position(centre)
         }
+        .coordinateSpace(name: Self.layerCanvasSpace)
     }
 
-    private func layerHandleView(_ corner: LayerCorner, rect: CGRect, frame: CGRect) -> some View {
+    private static let layerCanvasSpace = "briefshow.layerCanvas"
+
+    private func layerHandleView(_ corner: LayerCorner, size: CGSize, frame: CGRect, angle: Double) -> some View {
         let position: CGPoint
         switch corner {
-        case .topLeft: position = CGPoint(x: rect.minX, y: rect.minY)
-        case .topRight: position = CGPoint(x: rect.maxX, y: rect.minY)
-        case .bottomLeft: position = CGPoint(x: rect.minX, y: rect.maxY)
-        case .bottomRight: position = CGPoint(x: rect.maxX, y: rect.maxY)
+        case .topLeft: position = CGPoint(x: 0, y: 0)
+        case .topRight: position = CGPoint(x: size.width, y: 0)
+        case .bottomLeft: position = CGPoint(x: 0, y: size.height)
+        case .bottomRight: position = CGPoint(x: size.width, y: size.height)
         }
 
         return Circle()
             .fill(Color.white)
+            .overlay(Circle().stroke(layerSelectionColor, lineWidth: 1))
             .frame(width: 12, height: 12)
             .shadow(radius: 1)
             .position(position)
             .gesture(
                 DragGesture()
-                    .onChanged { value in resizeLayer(corner, by: value.translation, frame: frame) }
+                    .onChanged { value in
+                        resizeLayer(corner, by: unrotated(value.translation, by: angle), frame: frame)
+                    }
                     .onEnded { _ in layerDragStart = nil }
             )
     }
+
+    /// Points the layer at `location`, measured from its centre.
+    private func rotateLayer(towards location: CGPoint, centre: CGPoint) {
+        guard let index = selectedLayerIndex else {
+            return
+        }
+
+        let dx = location.x - centre.x
+        let dy = location.y - centre.y
+        guard abs(dx) > 1 || abs(dy) > 1 else {
+            return
+        }
+
+        // Measured from straight UP, because that is where the knob sits
+        // when the layer is unrotated — so "no rotation" is the knob at the
+        // top, not at the right.
+        var degrees = atan2(dx, -dy) * 180 / .pi
+        if degrees < 0 {
+            degrees += 360
+        }
+
+        // A 5° detent, so level stays level. Holding Shift is the usual way
+        // to ask for that, but this app has no modifier plumbing in its
+        // gestures and a photograph is almost never wanted at 37.4°.
+        settings.layers[index].rotationDegrees = (degrees / 5).rounded() * 5
+    }
+
+    /// Turns a screen-space drag back into the layer's own axes.
+    ///
+    /// Without this a corner drag on a rotated layer resizes along the
+    /// screen instead of along the edge the client is pulling, which reads
+    /// as the layer fighting the cursor.
+    private func unrotated(_ translation: CGSize, by degrees: Double) -> CGSize {
+        guard degrees != 0 else {
+            return translation
+        }
+        let radians = -degrees * .pi / 180
+        return CGSize(
+            width: translation.width * cos(radians) - translation.height * sin(radians),
+            height: translation.width * sin(radians) + translation.height * cos(radians)
+        )
+    }
+
 
     private func moveLayer(by translation: CGSize, frame: CGRect) {
         guard let index = selectedLayerIndex else {
@@ -9342,13 +10570,13 @@ struct DevelopView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Remove")
 
-            panelActionButton("Select People", systemImage: "person.crop.rectangle") {
-                findPeople()
-            }
-            .disabled(isFindingPeople || isRemoving || selectedURL == nil)
-            .opacity((isFindingPeople || isRemoving || selectedURL == nil) ? 0.4 : 1)
-
-
+            // Select People used to stand here, and it does not any more:
+            // it no longer FEEDS an erase. It makes a layer out of the
+            // people instead, which is a Tools job, so it moved to the
+            // Tools row beside Patch. What is left in this section is the
+            // manual half below, which is now the only way to build a
+            // removal mask.
+            //
             // The manual half, and the one that carries the tool: Vision
             // only knows people, and most of what anyone wants gone (a bin,
             // a sign, a cable, a mole, an insect) isn't one. Called "Select
@@ -9402,18 +10630,18 @@ struct DevelopView: View {
                     String(format: "%.0f", $0 * 100)
                 }
                 Text(isRemoveBrushErasing
-                     ? "Paint to take area back out of the selection — including anything Select People found. [ and ] resize it."
+                     ? "Paint to take area back out of the selection. [ and ] resize it."
                      : "Paint over what should go. [ and ] resize it.")
                     .font(.custom("Figtree", size: 11))
                     .foregroundColor(AppColors.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if isFindingPeople {
-                Text("Looking for people…")
-                    .font(.custom("Figtree", size: 11))
-                    .foregroundColor(AppColors.muted)
-            } else if hasRemovalArea {
+            // "Looking for people…" used to be here too. It moved to the
+            // Tools row with the button that causes it — a progress line in
+            // a section that no longer starts the work is a line nobody can
+            // connect to anything.
+            if hasRemovalArea {
                 Text(removalMask == nil
                      ? "Painted area ready. Quick is fast and matches the surroundings; AI Clean Up invents what belongs there."
                      : (activeSelection == nil
@@ -9711,6 +10939,16 @@ struct DevelopView: View {
     // ImageLayer's coordinates in, and the erase's output is an
     // ImageLayer. Using the cropped render here would land every repair at
     // the wrong place on any photo that has a crop.
+    /// ⚠️ CURRENTLY UNREACHABLE — nothing calls this.
+    ///
+    /// It was the old "Select People" behaviour: find people and hand the
+    /// mask to the eraser. That button now lifts people onto a layer
+    /// instead (see `selectPeopleAsLayer`), so this has no caller.
+    ///
+    /// Kept, not deleted, because it is the whole working find-then-erase
+    /// path including the `backgroundOnly` variant, and it is a lot of
+    /// measured behaviour to throw away on the assumption nobody wants it
+    /// back. Anything reading this: it does not run today.
     private func findPeople(backgroundOnly: Bool = false) {
         guard let fullBaseImage, let selectedURL else {
             return
@@ -10188,9 +11426,25 @@ struct DevelopView: View {
         .background(AppColors.panelAlt.opacity(isSelected ? 1 : 0.5))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(isSelected ? accentColor : Color.clear, lineWidth: 1.5)
+                .stroke(isSelected ? layerSelectionColor : Color.clear, lineWidth: 1.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// The Layers panel's own selection colour.
+    ///
+    /// Deliberately NOT `accentColor`. That yellow is the "this slider is
+    /// armed for the arrow keys" signal, and a list you scan down does not
+    /// need to shout the way one live control does — reported as too loud,
+    /// and it also made the panel read as if three things were armed at
+    /// once. A grey still reads as selected against panelAlt.
+    ///
+    /// Only the LAYER row. maskRow keeps the accent: nothing was reported
+    /// about it, and changing it here would be tidying by assumption.
+    private var layerSelectionColor: Color {
+        themeManager.current == .dark
+            ? Color(red: 0.46, green: 0.46, blue: 0.48)
+            : Color(red: 0.38, green: 0.38, blue: 0.40)
     }
 
     private func selectedLayerEditor(index: Int) -> some View {
@@ -10212,18 +11466,307 @@ struct DevelopView: View {
 
             editSlider("Opacity", key: "layer.opacity", value: layerOpacityBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
 
-            Picker("Blend Mode", selection: layerBlendModeBinding) {
-                ForEach(LayerBlendMode.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(mode)
+            // Black & White and Blur, as switches rather than sliders: both
+            // are things a client wants ON, and the amount is a detail they
+            // may never touch. B&W is saturation at its bottom stop — the
+            // same value the Saturation slider below already produces, so
+            // there is no second way to describe one state.
+            HStack(spacing: 6) {
+                layerToggleButton("Black & White", systemImage: "circle.lefthalf.filled",
+                                  isOn: layer.adjustments.saturation <= -1) {
+                    guard let i = selectedLayerIndex else { return }
+                    settings.layers[i].adjustments.saturation =
+                        settings.layers[i].adjustments.saturation <= -1 ? 0 : -1
+                }
+
+                layerToggleButton("Blur", systemImage: "drop.fill", isOn: layer.blur > 0) {
+                    guard let i = selectedLayerIndex else { return }
+                    // 0.35 rather than full strength: a background at 1.0 is
+                    // unrecognisable, and switching this on is usually about
+                    // separating the subject, not erasing what is behind them.
+                    settings.layers[i].blur = settings.layers[i].blur > 0 ? 0 : 0.35
+                }
+
+                // Back to the layer as it was MADE, without unmaking it —
+                // "I tried black and white on them, I don't like it". Not a
+                // toggle, so it is drawn as off and simply acts.
+                //
+                // Geometry is deliberately NOT reset. This undoes the LOOK;
+                // a pasted piece that was carefully placed should not jump
+                // back across the photo because somebody wanted its
+                // exposure back to zero.
+                layerToggleButton("Reset", systemImage: "arrow.counterclockwise", isOn: false) {
+                    guard let i = selectedLayerIndex else { return }
+                    settings.layers[i].adjustments = LocalAdjustmentSettings()
+                    settings.layers[i].blur = 0
+                    settings.layers[i].opacity = 1
+                    settings.layers[i].blendMode = .normal
+                    settings.layers[i].rotationDegrees = 0
+                    // ⚠️ The sky counts. It was left out of the first
+                    // version and reported straight away: black-and-white
+                    // came off a People layer and a replaced sky did not,
+                    // which made Reset look broken rather than partial.
+                    // "As it was made" means every choice made since,
+                    // including this one.
+                    settings.layers[i].skyStyle = nil
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
 
-            Text("Drag the layer on the photo to move it; drag a corner to resize.")
+            if layer.blur > 0 {
+                editSlider("Blur Amount", key: "layer.blur", value: layerBlurBinding, range: 0.01...1) {
+                    String(format: "%.0f", $0 * 100)
+                }
+            }
+
+            // Only on a Sky layer, and only because that is the only layer
+            // where "put a different one there" means anything. On the
+            // People layer it would be an offer to replace the client's
+            // subject with a gradient.
+            if layer.isSky {
+                panelActionButton(layer.skyStyle.map { "Change Sky — \($0.label)" } ?? "Change Sky",
+                                  systemImage: "cloud.sun.fill") {
+                    isSkyPickerPresented = true
+                }
+            }
+
+            // Our own row, not `.pickerStyle(.segmented)`.
+            //
+            // The native segmented control draws its labels with the SYSTEM
+            // appearance, not this app's theme, so on the dark theme the
+            // three unselected modes came out near-black on near-black and
+            // were reported as unreadable. Same class of problem the
+            // Stepper had (see ContentView), except a segmented control
+            // paints its own text and `.preferredColorScheme` cannot reach
+            // it. Built from the app's own colours instead — the same
+            // shape as the Add/Erase pair in the Remove section, so the
+            // panel has one way of drawing a choice rather than two.
+            // Blend mode and dragging belong to a PASTED piece: something
+            // that arrived from elsewhere, meets what is behind it, and can
+            // be put somewhere else. A derived layer is a region OF this
+            // photo — there is nothing behind it but itself, and moving it
+            // would only slide a matte off the thing it was cut around.
+            // Hidden rather than disabled: a row of dead controls invites
+            // the client to work out why.
+            if !layer.isDerived {
+                HStack(spacing: 6) {
+                    ForEach(LayerBlendMode.allCases, id: \.self) { mode in
+                        let isSelected = layer.blendMode == mode
+
+                        Button {
+                            layerBlendModeBinding.wrappedValue = mode
+                        } label: {
+                            Text(mode.label)
+                                .font(.custom("Figtree", size: 11).weight(isSelected ? .semibold : .regular))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(isSelected ? layerSelectionColor.opacity(0.30) : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(isSelected ? layerSelectionColor : AppColors.border, lineWidth: 1)
+                        )
+                    }
+                }
+
+                Text("Drag the layer on the photo to move it; drag a corner to resize.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+            } else {
+                Text("This layer is a part of the photo itself, so it stays where it is — and it follows the picture when the sliders above the panel move.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            // The same sliders the global Light/Colour sections have, bound
+            // through layerAdjustmentBinding instead of $settings — exactly
+            // how a selected MASK already works (see selectedMaskEditor).
+            //
+            // ⚠️ The global sliders are deliberately left alone. Retargeting
+            // THEM at the selected layer was the other way to read the
+            // request, and it is worse: it would silently change what the
+            // main panel means depending on a selection made somewhere else
+            // in the panel, and it would leave no way to adjust the whole
+            // photo while a layer happens to be selected. Here the rule is
+            // plain — sliders up there are the photo, sliders in this card
+            // are this layer, and with no layer selected there is only the
+            // photo.
+            Text("These change this layer only.")
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.muted)
+
+            editSlider("Exposure", key: "layer.exposure", value: layerAdjustmentBinding(\.exposure), range: -3...3, step: 0.05) { String(format: "%+.2f", $0) }
+            editSlider("Contrast", key: "layer.contrast", value: layerAdjustmentBinding(\.contrast), range: -1...1)
+            editSlider("Highlights", key: "layer.highlights", value: layerAdjustmentBinding(\.highlights), range: -1...1)
+            editSlider("Shadows", key: "layer.shadows", value: layerAdjustmentBinding(\.shadows), range: -1...1)
+            editSlider("Whites", key: "layer.whites", value: layerAdjustmentBinding(\.whites), range: -1...1)
+            editSlider("Blacks", key: "layer.blacks", value: layerAdjustmentBinding(\.blacks), range: -1...1)
+            editSlider("Temperature", key: "layer.temperature", value: layerAdjustmentBinding(\.temperature), range: -1...1)
+            editSlider("Tint", key: "layer.tint", value: layerAdjustmentBinding(\.tint), range: -1...1)
+            editSlider("Saturation", key: "layer.saturation", value: layerAdjustmentBinding(\.saturation), range: -1...1)
+            editSlider("Vibrance", key: "layer.vibrance", value: layerAdjustmentBinding(\.vibrance), range: -1...1)
+            editSlider("Sharpness", key: "layer.sharpness", value: layerAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
         }
+    }
+
+    /// The Change Sky picker.
+    ///
+    /// Every tile is the sky itself, drawn by the same code that will draw
+    /// it into the photo — not an illustration of it. A swatch that only
+    /// resembled the result would be a promise the renderer might not keep.
+    private var skyPickerView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Change Sky")
+                    .font(.custom("Figtree", size: 16).weight(.bold))
+                    .foregroundColor(AppColors.ink)
+
+                Text("Each of these is drawn, not a photograph — so it comes out at the photo's own resolution, and there are no mountains in the list.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
+                    // First tile, deliberately: the way back. Choosing a sky
+                    // is one click, and so should be changing your mind.
+                    skyTile(nil, isSelected: selectedLayerIndex.map { settings.layers[$0].skyStyle == nil } ?? true)
+
+                    ForEach(SkyStyle.allCases) { style in
+                        skyTile(style,
+                                isSelected: selectedLayerIndex.map { settings.layers[$0].skyStyle == style } ?? false)
+                    }
+                }
+            }
+            .frame(maxHeight: 420)
+
+            HStack {
+                Spacer()
+                Button("Done") {
+                    isSkyPickerPresented = false
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+        .background(AppColors.background)
+    }
+
+    /// One tile. `style` nil is "the photo's own sky".
+    private func skyTile(_ style: SkyStyle?, isSelected: Bool) -> some View {
+        Button {
+            guard let index = selectedLayerIndex else {
+                return
+            }
+            settings.layers[index].skyStyle = style
+            isSkyPickerPresented = false
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack {
+                    if let style, let preview = SkyPainter.preview(style) {
+                        Image(nsImage: preview)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        // No drawing for "keep the original" — there is
+                        // nothing to draw, and a picture here would look
+                        // like a seventh sky to choose from.
+                        AppColors.panelAlt
+                        Image(systemName: "photo")
+                            .font(.system(size: 20))
+                            .foregroundColor(AppColors.muted)
+                    }
+                }
+                .frame(height: 92)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isSelected ? layerSelectionColor : AppColors.border,
+                                lineWidth: isSelected ? 2 : 1)
+                )
+
+                Text(style?.label ?? "Original Sky")
+                    .font(.custom("Figtree", size: 11).weight(isSelected ? .semibold : .regular))
+                    .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// A switch in the layer editor: on, off, and it says which it is.
+    private func layerToggleButton(_ title: String, systemImage: String,
+                                   isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(title)
+                    .font(.custom("Figtree", size: 11).weight(isOn ? .semibold : .regular))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(isOn ? AppColors.ink : AppColors.muted)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(isOn ? layerSelectionColor.opacity(0.30) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(isOn ? layerSelectionColor : AppColors.border, lineWidth: 1)
+        )
+    }
+
+    private var layerBlurBinding: Binding<Double> {
+        Binding(
+            get: {
+                guard let index = selectedLayerIndex else {
+                    return 0
+                }
+                return settings.layers[index].blur
+            },
+            set: { newValue in
+                guard let index = selectedLayerIndex else {
+                    return
+                }
+                settings.layers[index].blur = newValue
+            }
+        )
+    }
+
+    /// Mirrors `localAdjustmentBinding`, resolved through
+    /// `selectedLayerIndex` every get and set because which array slot is
+    /// "selected" is tracked by UUID, not by index — a layer can be
+    /// reordered by a drag while its own editor is open.
+    private func layerAdjustmentBinding(_ keyPath: WritableKeyPath<LocalAdjustmentSettings, Double>) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let index = selectedLayerIndex else {
+                    return 0
+                }
+                return settings.layers[index].adjustments[keyPath: keyPath]
+            },
+            set: { newValue in
+                guard let index = selectedLayerIndex else {
+                    return
+                }
+                settings.layers[index].adjustments[keyPath: keyPath] = newValue
+            }
+        )
     }
 
     private var layerOpacityBinding: Binding<Double> {
@@ -10774,6 +12317,260 @@ struct DevelopView: View {
         // debounce: this is a deliberate, one-shot action on many photos, not
         // a slider being dragged.
         PhotoEditStore.flushNow()
+    }
+
+    // MARK: Black & White, Duplicate
+
+    /// What a filmstrip context-menu action acts on.
+    ///
+    /// The whole multi-selection when the right-clicked photo belongs to
+    /// one, and otherwise just the photo under the cursor — the rule the
+    /// Export items at the top of that menu already use. Returned in
+    /// `photoURLs` order rather than the Set's, so anything that reports a
+    /// count or inserts beside an original works in strip order.
+    private func contextMenuTargets(for url: URL) -> [URL] {
+        guard multiSelectedURLs.contains(url), multiSelectedURLs.count > 1 else {
+            return [url]
+        }
+        return photoURLs.filter { multiSelectedURLs.contains($0) }
+    }
+
+    /// The settings a photo is actually SHOWING.
+    ///
+    /// For the open photo that is the live `settings`, not the store's copy:
+    /// `renderNow` writes the store on a 0.02 s debounce, so it can be one
+    /// change behind what the client is looking at, and baking the store's
+    /// copy would bake a picture that is not on screen.
+    private func visibleSettings(for url: URL) -> PhotoEditSettings {
+        url == selectedURL ? settings : PhotoEditStore.settings(for: url)
+    }
+
+    /// Makes every target black and white, layers and masks included.
+    ///
+    /// **Why this bakes first, when `saturation = -1` alone looks like it
+    /// should be enough.** It is not, and the picture that proved it had a
+    /// row of orange retouch dots still in colour on an otherwise grey
+    /// portrait. `PhotoEditRenderer.render` composites local adjustments and
+    /// then layers AFTER the colour controls — deliberately, since a pasted
+    /// piece is new content sitting above the stack — so a global
+    /// desaturation never reaches them.
+    ///
+    /// Baking puts the layers INTO the pixels, and only then is the colour
+    /// taken out, which by that point reaches everything.
+    ///
+    /// **This section is the only place in the app that flattens without
+    /// being asked**, and `flattenPhoto`'s own comment says that should
+    /// never happen as a side effect. Done here because it was asked for
+    /// explicitly, and because it is cheap to undo: flatten NEVER touches
+    /// the client's file — it writes a TIFF into Application Support and
+    /// every decode goes through `FlattenedImageStore.sourceURL` — so the
+    /// original is still on disk and Unflatten puts it back.
+    private func applyBlackAndWhite(to targets: [URL]) {
+        guard !targets.isEmpty else {
+            return
+        }
+
+        let jobs = targets.map {
+            PhotoBakeService.BakeJob(source: $0, target: $0, settings: visibleSettings(for: $0))
+        }
+
+        runBake(jobs, desaturate: true, busyMessage: "Making black & white…") { done, failed in
+            showTransientStatus(failed == 0
+                                ? "\(done) in black & white"
+                                : "\(done) in black & white, \(failed) failed")
+        }
+    }
+
+    /// Copies each target beside itself and bakes the copy.
+    ///
+    /// **The copy is always baked, even without `blackAndWhite`.** That is
+    /// the whole point of a duplicate here: a plain file copy carries the
+    /// pixels of the ORIGINAL file, and every edit — including whatever was
+    /// already flattened into the photo — is keyed by URL, so the copy would
+    /// arrive as the untouched original. That is exactly what was reported.
+    /// Baking from the original's own render is what makes the copy look
+    /// like the photo it was copied from.
+    ///
+    /// The original is never touched either way; the bake lands on the copy.
+    private func duplicatePhotos(_ targets: [URL], blackAndWhite: Bool) {
+        guard !targets.isEmpty else {
+            return
+        }
+
+        var jobs: [PhotoBakeService.BakeJob] = []
+        var created: [URL] = []
+        var failures = 0
+
+        for target in targets {
+            guard let copyURL = PhotoBakeService.duplicate(target,
+                                                           suffix: blackAndWhite ? "BW" : "copy") else {
+                failures += 1
+                continue
+            }
+
+            jobs.append(PhotoBakeService.BakeJob(source: target, target: copyURL,
+                                                 settings: visibleSettings(for: target)))
+            created.append(copyURL)
+
+            // Right after the photo it came from, not at the end of the
+            // strip: the two are a pair, and a client who duplicates four
+            // photos out of two hundred should not have to scroll to the
+            // end to find out whether it worked.
+            if let index = photoURLs.firstIndex(of: target) {
+                photoURLs.insert(copyURL, at: photoURLs.index(after: index))
+            } else {
+                photoURLs.append(copyURL)
+            }
+        }
+
+        if !created.isEmpty {
+            // Select what was just made, but do NOT open it. The client is
+            // looking at a photo they were working on; moving the preview
+            // off it would take that away as a side effect of making a
+            // copy — the same reason Select All deliberately leaves
+            // selectedURL alone.
+            multiSelectedURLs = Set(created)
+            selectionAnchor = created.first
+        }
+
+        let copyFailures = failures
+        runBake(jobs, desaturate: blackAndWhite, busyMessage: "Duplicating…") { done, bakeFailures in
+            let total = copyFailures + bakeFailures
+            let what = blackAndWhite ? "Duplicated \(done) in B&W" : "Duplicated \(done)"
+            showTransientStatus(total == 0 ? what : "\(what), \(total) failed")
+        }
+    }
+
+    /// Runs a bake and puts the open photo's own state back in step with it.
+    private func runBake(_ jobs: [PhotoBakeService.BakeJob], desaturate: Bool,
+                         busyMessage: String,
+                         completion: @escaping (_ done: Int, _ failed: Int) -> Void) {
+        guard !jobs.isEmpty else {
+            completion(0, 0)
+            return
+        }
+
+        let openPhoto = selectedURL
+
+        isFlattening = true
+        exportStatusText = busyMessage
+
+        PhotoBakeService.bake(jobs, desaturate: desaturate) { baked, failed in
+            isFlattening = false
+
+            // Re-checked rather than remembered: the client can open a
+            // different photo while a selection of forty is baking, and
+            // `settings` would by then belong to that other photo. Writing
+            // the baked result into it would put one photo's settings onto
+            // another.
+            if let openPhoto, selectedURL == openPhoto, let result = baked[openPhoto] {
+                // Everything that was in the settings is in the pixels now,
+                // so the panel, the masks, the layers and the undo history
+                // all describe a picture that no longer exists. Same
+                // clean-up flattenPhoto does, for the same reason.
+                settings = result
+                pendingCrop = result.crop ?? .full
+                selectedLocalAdjustmentID = nil
+                activeSelection = nil
+                selectedLayerID = nil
+                clearRemovalMask()
+                undoStack = []
+                redoStack = []
+                lastCommittedSettings = result
+                // The base changed on disk, so the decode has to happen
+                // again — nothing in memory describes the baked file.
+                loadImages(for: openPhoto)
+            }
+
+            completion(baked.count, failed)
+        }
+    }
+
+    /// What ⌫ deletes: the multi-selection when there is one, otherwise
+    /// the photo currently open. In strip order, so the count and the
+    /// fallback below both work off the same sequence the client sees.
+    private var keyboardDeleteTargets: [URL] {
+        if !multiSelectedURLs.isEmpty {
+            return photoURLs.filter { multiSelectedURLs.contains($0) }
+        }
+        if let selectedURL {
+            return [selectedURL]
+        }
+        return []
+    }
+
+    /// Moves photos to the macOS Trash and takes them out of the strip.
+    ///
+    /// The edit records are deliberately NOT cleared. A photo put back from
+    /// the Trash lands at the same path with the same size, which is how
+    /// `PhotoEditStore` keys its entries — so it comes back with its edits
+    /// rather than as a stranger. ShowGrid's own trash does clear labels,
+    /// and that difference is on purpose: a label is a decision about a
+    /// photo you were sorting, an edit is work.
+    private func trashPhotos(_ urls: [URL]) {
+        guard !urls.isEmpty else {
+            return
+        }
+
+        // Where the open photo sits BEFORE anything is removed — after the
+        // removal that index means a different photo, which is exactly the
+        // one that should open next.
+        let openIndex = selectedURL.flatMap { photoURLs.firstIndex(of: $0) }
+
+        var removed: Set<URL> = []
+        for url in urls {
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                removed.insert(url)
+            } catch {
+                continue
+            }
+        }
+
+        guard !removed.isEmpty else {
+            showTransientStatus("Could not move to the Trash")
+            return
+        }
+
+        photoURLs.removeAll { removed.contains($0) }
+        multiSelectedURLs.subtract(removed)
+        for url in removed {
+            filmstripThumbnails.removeValue(forKey: url)
+        }
+        if let anchor = selectionAnchor, removed.contains(anchor) {
+            selectionAnchor = nil
+        }
+
+        if let current = selectedURL, removed.contains(current) {
+            if photoURLs.isEmpty {
+                // An editor with nothing to edit is not a state worth
+                // drawing. Closing is also what the client is about to do
+                // by hand anyway.
+                onClose()
+                return
+            }
+
+            let next = min(openIndex ?? 0, photoURLs.count - 1)
+            selectPhoto(photoURLs[next])
+        }
+
+        let failed = urls.count - removed.count
+        showTransientStatus(failed == 0
+                            ? "Moved \(removed.count) to the Trash"
+                            : "Moved \(removed.count) to the Trash, \(failed) failed")
+    }
+
+    /// A one-line message in the strip's status spot, gone after 1.6 s.
+    ///
+    /// The same show-then-dismiss the export and sync paths write out by
+    /// hand in five other places. Those are left alone here — they sit
+    /// inside background completions with their own timing — but the call
+    /// sites added in this section share one, rather than becoming four
+    /// more copies of it.
+    private func showTransientStatus(_ message: String) {
+        exportStatusText = message
+        let dismissWorkItem = DispatchWorkItem { exportStatusText = nil }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: dismissWorkItem)
     }
 
     // MARK: Flatten

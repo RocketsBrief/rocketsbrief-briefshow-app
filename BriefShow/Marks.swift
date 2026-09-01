@@ -156,5 +156,12 @@ struct BriefShowWordmark: View {
         // Keeping the same ratio is what makes the button's smaller copy read
         // as the same wordmark rather than as a looser relative of it.
         .tracking(-1.7 / 20 * size)
+        // A wordmark that wraps is not a wordmark — squeezed, this broke as
+        // "Brief Sho / w", with the W alone on a second line. Putting it on
+        // its own row in the header was meant to prevent that, and it does
+        // not: a row still hands out less width when the things beside it
+        // want more. This says the mark simply does not compress.
+        .lineLimit(1)
+        .fixedSize()
     }
 }

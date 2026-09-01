@@ -105,6 +105,7 @@ struct ProfileBadge: View {
 
 struct ProfileSettingsModal: View {
     @ObservedObject var accountManager = AccountManager.shared
+    @ObservedObject var seatManager = SeatManager.shared
     let onClose: () -> Void
 
     @State private var isIconPickerExpanded = false
@@ -189,6 +190,28 @@ struct ProfileSettingsModal: View {
                             .stroke(AppColors.border, lineWidth: 1.2)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                    // Both numbers come from the server, so a client who
+                    // has been given extra computers sees the real count
+                    // here without an app update — and a client on the
+                    // ordinary one-Mac plan sees WHY signing in elsewhere
+                    // will sign this Mac out, before it happens to them.
+                    if let limit = seatManager.deviceLimit {
+                        HStack(spacing: 10) {
+                            Image(systemName: "desktopcomputer")
+                                .font(.system(size: 13))
+                                .foregroundColor(AppColors.muted)
+
+                            Text(limit == 1
+                                 ? "Signed in on this computer. This account works on one computer at a time — signing in on another signs this one out."
+                                 : "Signed in on this computer — \(seatManager.seatsUsed ?? 1) of \(limit) computers in use.")
+                                .font(.custom("Figtree", size: 10.5).weight(.regular))
+                                .foregroundColor(AppColors.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Spacer(minLength: 0)
+                        }
+                    }
 
                     ProfileSettingsRow(icon: "globe", title: "RocketsBrief") {
                         if let url = URL(string: RocketsBriefConfig.webBaseURL) {
@@ -484,6 +507,14 @@ struct LockedAccessOverlay: View {
     @ObservedObject var accountManager = AccountManager.shared
     let lockMessage: String?
 
+    /// nil = this is the LOCK WALL: the app is locked, nobody is signed
+    /// in, and there is deliberately no way out of it. Non-nil = the
+    /// client opened this themselves from the home screen, so it gets an
+    /// X, a click-outside, and it closes itself the moment they are in.
+    /// One view for both, because they are the same form and the same
+    /// two-line validation — a second copy would drift.
+    var onClose: (() -> Void)? = nil
+
     @State private var mode: Mode = .signIn
     @State private var name = ""
     @State private var email = ""
@@ -496,21 +527,71 @@ struct LockedAccessOverlay: View {
         case signUp
     }
 
+    private var isDismissible: Bool {
+        onClose != nil
+    }
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.55)
                 .ignoresSafeArea()
+                .onTapGesture {
+                    onClose?()
+                }
 
             VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Continue using BriefShow")
-                        .font(.custom("Figtree", size: 18).weight(.bold))
-                        .foregroundColor(AppColors.ink)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(isDismissible ? "Sign in to RocketsBrief" : "Continue using BriefShow")
+                            .font(.custom("Figtree", size: 18).weight(.bold))
+                            .foregroundColor(AppColors.ink)
 
-                    Text(lockMessage ?? "Sign up for a free RocketsBrief account to keep using BriefShow.")
-                        .font(.custom("Figtree", size: 12.5).weight(.regular))
-                        .foregroundColor(AppColors.muted)
-                        .fixedSize(horizontal: false, vertical: true)
+                        Text(isDismissible
+                             ? "Your RocketsBrief account works here and on rocketsbrief.com — same email, same password."
+                             : (lockMessage ?? "Sign up for a free RocketsBrief account to keep using BriefShow."))
+                            .font(.custom("Figtree", size: 12.5).weight(.regular))
+                            .foregroundColor(AppColors.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if isDismissible {
+                        Spacer(minLength: 0)
+
+                        Button {
+                            onClose?()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(AppColors.muted)
+                                .padding(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                // Only shown when the server took this Mac's seat — i.e.
+                // the client is looking at a sign-in screen that appeared
+                // on its own, mid-work. Without this it reads as the app
+                // having simply forgotten them, which is the single most
+                // likely thing to be reported as a bug.
+                if let seatMessage = accountManager.forcedSignOutMessage {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
+                            .font(.system(size: 16))
+                            .foregroundColor(AppColors.hoverInk)
+
+                        Text(seatMessage)
+                            .font(.custom("Figtree", size: 12).weight(.medium))
+                            .foregroundColor(AppColors.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(12)
+                    .background(AppColors.panel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(AppColors.border, lineWidth: 1.2)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
 
                 if let pendingEmail = accountManager.pendingConfirmationEmail {
@@ -608,6 +689,13 @@ struct LockedAccessOverlay: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 24))
             .shadow(color: Color.black.opacity(0.3), radius: 30, y: 12)
+        }
+        // The lock wall has no onClose, so it correctly does nothing here
+        // and simply stops being shown once isSignedIn flips.
+        .onChange(of: accountManager.isSignedIn) { signedIn in
+            if signedIn {
+                onClose?()
+            }
         }
     }
 

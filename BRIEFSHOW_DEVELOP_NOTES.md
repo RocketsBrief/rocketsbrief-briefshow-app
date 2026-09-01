@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 31. avgust 2026.
+Beleška za nastavak rada. Poslednja izmena: 1. septembar 2026 (v10.1).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -170,6 +170,84 @@ Clean Up-a, koji je zaključan gore kao dobar.
 
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 1. septembar 2026, verzija 10.1
+
+`MARKETING_VERSION` podignut sa 6.0 na **10.1**. `CURRENT_PROJECT_VERSION` je
+namerno ostavljen na 17 — nije traženo.
+
+**⚠️ `latest_version` u BriefControl-u NIJE diran.** I dalje piše 6.0, dakle
+niko još ne dobija ekran „mora update". Kad se ovaj build okači, to je jedan
+upis — i tek tada ima smisla gledati na `is_locked` kao na završen posao.
+
+#### Urađeno u ovoj sesiji
+
+| | |
+|---|---|
+| 56 | **Jedan email, jedan kompjuter**, 22 za Vista Photography. `seats.sql` postavljen i proveren |
+| 57 | **Nalog na home screenu** — profil i prijava u app-i, ne na sajtu |
+| 58 | **Cmd+V u prijavi** — naš monitor ga je gutao |
+| 59 | **Brisanje tasterom** (⌫) i „Delete" umesto „Add to Bin" |
+| 60 | **Black & White i Duplicate & BW** u filmstrip meniju |
+| 61 | **B&W nije bio crno-beo** — slojevi se komponuju posle desaturacije; sad se prvo peče |
+| 62 | **Duplikat je vraćao original** — kopira se fajl, a slika nije bila u fajlu |
+| 63 | **Slajderi po sloju**, i Select People pravi sloj umesto da briše |
+| 64 | Nečitljiv blend mode, traka za AI, kartica sa jednim dugmetom |
+| 65 | **Background sloj, B&W i Blur po sloju**, popravljen Undo |
+| 66 | **Reset po sloju, Select Sky, Change Sky** — sedam nacrtanih neba |
+| 67 | **Maska neba izmerena na pravoj slici**, ručke i rotacija na sloju |
+
+#### ⚠️ SLEDEĆE — NEBO (dogovoreno za veče 1.09.)
+
+Sve ostalo iz ove sesije je potvrđeno na ekranu („super sve radi"). **Nebo nije.**
+
+Gde je stalo: `SkyMasker` posle KORAKA 67 tačno izbacuje lica, oreol oko ljudi i
+najveći deo peska. **Ostaje curenje niz ivicu tamo gde nebo, more i pesak prelaze
+jedno u drugo bez vidljivog horizonta** — na kontra-svetlo slici tu ni čovek ne
+bi povukao liniju bez konteksta.
+
+**Konkretan simptom, sa slike od 1.09. uveče:** granica maske je meka talasasta
+linija koja seče **preko** zgrada i palmi umesto da ih obiđe. Zamenjeno nebo zato
+pokrije gornji levi deo kadra i stane nasred hotela, a duž reza ostane svetao
+oreol. Dakle problem nije samo „koliko" nego **oblik granice**: hod po kolonama
+daje jednu tačku prekida po koloni i zatim se blura, što je po definiciji glatka
+kriva — a obris zgrade nije glatka kriva.
+
+To je najkorisniji trag za sledeći put: granica mora da prati ivice u slici, ne
+da bude izglačana. Ono što se nije probalo: umesto blura na kraju, provući masku
+kroz `CIEdgePreserveUpsampleFilter` ili je „prilepiti" na luminantne ivice
+originala (guided filter), što je tačno posao koji taj filter radi.
+
+Tri pravca, po ceni:
+
+1. **Zaokruživanje Selection alatom pre pritiska.** Radi već sada, ništa se ne
+   piše. Najjeftinije, i za tešku sliku verovatno jedino pošteno.
+2. **Još heuristike.** Ideje koje NISU probane: zaustavljanje hoda i na promeni
+   boje u odnosu na vrh iste kolone (ne samo na padu skora), i kazna za piksele
+   ispod najniže tačke na kojoj se većina kolona zaustavila — horizont je
+   uglavnom jedna linija preko cele slike, a to se trenutno nigde ne koristi.
+3. **Trenirani model.** Jedini način da bude „kao kad označi ljude" — ljude tako
+   dobro označava upravo zato što je Vision trenirana mreža. Stotine megabajta
+   povrh 4,4 GB i licenca koju treba raščistiti za app koja se PRODAJE.
+
+**Meriti `Tools/skymask.swift`-om, na pravim slikama, pre i posle.** Taj harness
+izvlači `SubjectMasker` i `SkyMasker` iz izvora u trenutku prevođenja, pa ne može
+da se raziđe sa kodom. Isto važi za `Tools/skytest.swift` (sedam neba na jedan
+list) i `Tools/linstat.swift` (raspodela šuma u linearnom prostoru).
+
+**⚠️ Ako se dira crtanje neba, čitati KORAK 66 pre toga** — tamo je zapisano
+kako je merenje u sRGB-u dvaput dalo pogrešan odgovor koji je izgledao kao
+merenje.
+
+### ⚠️ POLA PUŠTENO — jedan email, jedan kompjuter (KORAK 56)
+
+**Baza je gotova.** `Tools/seats.sql` je pokrenut 1.09. u RocketsBrief projektu
+(`gzbkpnogeegyntoznzzn`) i proveren sa obe strane — vidi „Izmereno posle
+postavljanja" u KORAKU 56.
+
+**Ostalo:** novi build sa `SeatManager`-om nije još poslat, pa ograničenje
+kompjutera niko još ne poštuje. Zaključavanje app-e (`is_locked`) ide
+POSLEDNJE, tek kad su svi na novom build-u. Redosled je na dnu KORAKA 56.
 
 ### ⚠️ PRVO ZA SLEDEĆU SESIJU — preimenovanje u „Afterburn Studio"
 
@@ -7300,3 +7378,870 @@ BriefShow (KORAK 43) — to je ime dela app-e, ne app-e. Ostaju i:
 5. build iz nove putanje, provera da SD radi
 6. `PRODUCT_NAME`, wordmark, naslov glavnog prozora
 7. README i ovaj dokument
+
+## KORAK 56 — jedan email, jedan kompjuter (i 22 za Vista Photography) (1. septembar 2026)
+
+Traženo: kad se app zaključa sa RocketsBrief-a, svako mora da se uloguje; ko se
+jednom uloguje ostaje ulogovan dok se **sam** ne izloguje — i posle update-a
+takođe. Jedan email = jedan kompjuter; kad se isti email uloguje na drugom
+kompjuteru, prvi se izloguje. Izuzetak: `vuk@vista-photography.com` sme na
+**22** kompjutera.
+
+### Ostajanje ulogovan posle update-a — već je radilo, i evo zašto
+
+Sesija stoji u Keychain-u (`KeychainStore`, servis
+`com.rocketsbrief.briefshow.session`), ne u `UserDefaults`. Keychain stavka je
+vezana za bundle identifier i potpis, a nijedno se pri update-u ne menja, pa
+nova verzija zatiče istu sesiju. Provereno i drugo mesto na kom se to moglo
+pokvariti: `refreshSessionIfNeeded()` prosleđuje `existingAvatarKey`, a
+`performAuthRequest` odjavljuje **samo** kad je taj parametar `nil` — dakle
+neuspeo refresh (nema mreže, istekao token) ne izbacuje nikoga. Ništa nije
+menjano na toj strani.
+
+### Gde se odluka o broju kompjutera zaista donosi — u bazi, ne u app-i
+
+**Broj nije zakucan u Swift-u i ne sme da bude.** App pita server i radi šta mu
+se kaže. Dve posledice, obe namerne:
+
+1. Podizanje nekog klijenta sa 1 na 3 kompjutera je jedan `UPDATE` na
+   `briefshow_seat_limits` — **bez novog build-a i bez slanja update-a.**
+2. Neko ko bi zakrpio app ne može sebi da doda mesta: izbacivanje se dešava u
+   Postgres funkciji sa `SECURITY DEFINER`, a same tabele imaju RLS uključen i
+   **nijednu policy** — dakle anon ključem se do njih ne može ni čitanjem ni
+   brisanjem, samo kroz te dve funkcije.
+
+Sve je u `Tools/seats.sql`. Pokrenuti **jednom** u Supabase SQL editoru.
+
+### ⚠️ FAIL-OPEN JE ODLUKA, NE PROPUST
+
+`SeatManager` odjavljuje **isključivo** kad server izričito kaže `"ok": false`.
+Svaki drugi ishod — nema mreže, DNS pao, funkcija još nije postavljena, 5xx —
+znači „ne znam" i sesija ostaje netaknuta. Fotograf na terenu bez signala mora
+da radi. Cena: Mac kome se iščupa kabl ostaje ulogovan dok se ne vrati na mrežu.
+To je ispravna zamena za plaćen alat, i mesto je na serveru ionako već oduzeto u
+trenutku kad se drugi Mac uloguje.
+
+**Izmereno danas, na živom backend-u, pre postavljanja SQL-a:**
+
+```
+POST /rest/v1/rpc/briefshow_seat_heartbeat → HTTP 404  (PGRST202)
+```
+
+Dakle dok se `seats.sql` ne pokrene, svaki heartbeat je 404 → `nil` → niko se ne
+odjavljuje. **Pokretanje tog fajla je ono što uključuje pravilo**, i nema
+prozora u kom je klijent zaključan zbog poluzavršenog podešavanja.
+
+### ⚠️ ZAMKA KOJA JE UMALO IZBACILA SVE POSTOJEĆE KORISNIKE
+
+Prva verzija SQL-a je na heartbeat-u vraćala `ok=false` čim za taj Mac nema
+reda u `briefshow_seats`. To bi odjavilo **svakoga ko je već bio ulogovan pre
+ovog posla**: njihova sesija je u Keychain-u, oni se nikad više nisu logovali,
+pa nikad nisu ni zauzeli mesto — i prvi heartbeat posle update-a bi ih izbacio.
+Tačno ono što je korisnik izričito tražio da se NE desi.
+
+Popravka je u `briefshow_seat_heartbeat`, u grani bez `p_claim`: ako reda za taj
+Mac nema, a nalog **nije popunjen**, red se tiho pojavi (slobodno mesto je
+slobodno mesto). `ok=false` je rezervisan za jedini slučaj koji zaista nešto
+znači: nalog je pun i ovaj Mac nije među vlasnicima mesta.
+
+### Identitet kompjutera — IOKit, ne slučajan UUID
+
+`MachineIdentity.deviceID` je `IOPlatformUUID`, **namerno ne** onaj slučajni
+UUID koji `DeviceCheckIn` drži u `UserDefaults`. Taj je po instalaciji: obriši
+plist ili reinstaliraj app i isti Mac dobija novi identitet, pa bi klijent tiho
+potrošio drugo mesto na istoj mašini. Platform UUID je mašina i preživljava
+reinstalaciju, update i selidbu foldera. `UserDefaults` fallback postoji samo za
+slučaj da sandbox odbije IOKit — tada se mesto i dalje broji, ali po
+instalaciji.
+
+### Zašto claim ide samo na pravi login, a ne na refresh
+
+`performAuthRequest` je dobio `claimsSeat`. Login i registracija **zauzimaju**
+mesto (zato novi Mac gura najstariji napolje — najnoviji pobeđuje, jer klijent
+sedi za tim kompjuterom). Refresh tokena **ne sme**: dešava se pri svakom
+pokretanju, i kad bi i on zauzimao, dva Maca bi se doveka smenjivala i
+izbacivala jedan drugog svaki put kad se bilo koji od njih otvori.
+
+### Šta je dodato
+
+| gde | šta |
+|---|---|
+| `RocketsBriefSeats.swift` (nov) | `MachineIdentity`, `SeatManager` — claim, heartbeat na 120 s, release, retry na 401 |
+| `RocketsBriefAccount.swift` | `forcedSignOutMessage`, `forceSignOut(message:)`, `signOut()` sad vraća mesto, `claimsSeat` |
+| `AccountUI.swift` | objašnjenje na ekranu za prijavu („izbačeni ste jer…"), i red u profilu: „x od 22 kompjutera" |
+| `BriefShowApp.swift` | `SeatManager.shared.start()` — iz app-a, ne iz pogleda, jer klijent može biti u bilo kom od četiri prozora |
+| `Tools/seats.sql` (nov) | tabele, dve funkcije, grant-ovi, i gotove komande za svakodnevnu administraciju |
+
+Heartbeat ide i na `didBecomeActiveNotification`, da izbačen Mac to sazna čim se
+klijent vrati u app, a ne za sledećih do dva minuta.
+
+### Browse iz BriefShow prozora — provereno, već je bilo tako
+
+`ContentView.swift:20968` — `onOpenShowScreen` poziva
+`ShowGridWindowController.shared.open(initialPhotoURLs:)` pa
+`BriefShowWindowController.shared.close()`. Prozor se zatvara ceo, i vraća se na
+**postojeći** ShowGrid (preko `registerIfNeeded`), ne otvara drugi. Ništa nije
+menjano.
+
+### Izmereno posle postavljanja (1. septembar 2026)
+
+`seats.sql` je pokrenut u Supabase SQL editoru — `Success. No rows returned`.
+Provereno, a ne pretpostavljeno:
+
+| provera | rezultat |
+|---|---|
+| `select … from briefshow_seat_limits` | 1 red: `vuk@vista-photography.com`, `device_limit = 22` |
+| `information_schema.routines` | `briefshow_seat_heartbeat` i `briefshow_seat_release` |
+| `POST /rpc/briefshow_seat_heartbeat` sa **anon** ključem | `42501 permission denied` (pre toga je bio `404`) |
+| `POST /rpc/briefshow_seat_release` sa anon ključem | `42501 permission denied` |
+| `GET /briefshow_seats` sa anon ključem | `[]` — RLS drži |
+
+Poslednja tri su ono što zaista treba znati: funkcije **postoje**, ali se anon
+ključem ne mogu ni pozvati ni zaobići čitanjem tabele. Da je bilo koji `grant`
+promašen, prvi red bi vratio podatke umesto odbijanja.
+
+### ⚠️ NEPROVERENO
+- Ceo tok sa dva Maca (login na drugom → prvi izbačen) nije viđen uživo, pošto
+  za to trebaju dva kompjutera i postavljen SQL.
+- Build je čist (`xcodebuild -scheme BriefShow -configuration Debug` →
+  `BUILD SUCCEEDED`), ali nijedan novi ekran nije viđen u pokrenutoj app-i.
+
+### Redosled kojim ovo treba pustiti
+
+1. Pokrenuti `Tools/seats.sql` u Supabase SQL editoru.
+2. Proveriti da je red za `vuk@vista-photography.com` sa `device_limit = 22`
+   zaista u `briefshow_seat_limits`.
+3. Napraviti build, potpisati, i **tek onda** dići `latest_version` u
+   BriefControl-u, da svi pređu na verziju koja poštuje mesta.
+4. **Zaključati app** (`is_locked`) tek kad su svi na novoj verziji. Zaključati
+   ranije nije opasno — stari build-ovi već traže login kad je zaključano — ali
+   oni ne poštuju ograničenje kompjutera, pa bi to bio poluuključen sistem.
+
+## KORAK 57 — nalog se vidi i na home screenu, i prijava je u app-i (1. septembar 2026)
+
+Prijavljeno na ekranu: profil se video **samo u Showcase prozoru**, a na home
+screenu (ShowGrid) ničega — ni slike, ni načina da se čovek uloguje osim odlaska
+na sajt.
+
+### Zašto je to bio pravi propust, a ne sitnica
+
+ShowGrid je prvi i, za većinu klijenata, **jedini** ekran. Profil koji se
+pojavljuje isključivo u prozoru koji možda nikad ne otvore je profil koji nemaju.
+Isto važi i u ogledalu: u Showcase-u je badge stajao pod `if remoteStatus.isLocked`,
+pa je ulogovanom klijentu profil iskakao i nestajao u zavisnosti od zastavice na
+serveru koju on ne vidi. Sad je uslov na oba mesta isti i jedini smislen —
+**postoji sesija ili ne postoji.**
+
+### Jedan modal za dva posla, ne dva modala
+
+`LockedAccessOverlay` je dobio `onClose: (() -> Void)?`:
+
+- **`nil` = zid.** App je zaključan, niko nije ulogovan, i izlaza namerno nema.
+  Ponaša se tačno kao pre.
+- **non-nil = klijent ga je sam otvorio** sa home screena. Dobija X, gasi se
+  klikom pored, i **sam se zatvori čim prijava prođe** (`onChange` na
+  `isSignedIn`).
+
+Namerno **nije** napravljena druga kopija forme. Ista su polja i ista ona
+dvolinijska provera unosa; dve kopije bi se razišle prvom sledećom izmenom.
+
+**⚠️ Redosled u `else if` lancu je nosiv:** zid je IZNAD zatvorivog modala, pa
+kad je app zaključan uvek pobeđuje zid. Zameni li im neko mesta, zaključan app
+dobija prozor za prijavu koji se može zatvoriti klikom pored — dakle zaključavanje
+prestaje da znači išta.
+
+### Nikoga ne šalje na sajt da bi se ulogovao
+
+Bio je izričit zahtev. Dugme „Sign In" na home screenu otvara modal **u app-i**;
+`auth.users` je ionako zajednička sa sajtom, pa je nalog isti — nema razloga da
+klijent izlazi iz app-e i vraća se.
+
+### Izmenjeno
+
+| gde | šta |
+|---|---|
+| `AccountUI.swift` | `LockedAccessOverlay.onClose`, X, klik pored, samozatvaranje po prijavi, drugačiji naslov kad je zatvoriv |
+| `ContentView.swift` (ShowGrid) | `ProfileBadge` / „Sign In" na kraju zaglavlja, `isProfileModalPresented` i `isSignInPresented`, oba modala u lancu |
+| `ContentView.swift` (`HeaderView`) | badge više ne zavisi od `isLocked`; `remoteStatus` ispao jer mu je to bila jedina upotreba |
+
+### Stanje na serveru u trenutku pisanja
+
+`app_config`: `is_locked = true`, `latest_version = 6.0`. Dakle app JESTE
+zaključan, ali `latest_version` je i dalje jednak onome što svi imaju — prijava
+se traži, ograničenje kompjutera se još ne poštuje nigde osim u ovom Debug
+build-u. Ostaje: dići `MARKETING_VERSION`, napraviti i okačiti build, pa
+`latest_version`.
+
+### ⚠️ NEPROVERENO
+
+Build je čist i app je pokrenuta, ali **nijedan od dva nova ekrana nije viđen**:
+badge na home screenu, i zatvoriv modal za prijavu. Isto i dalje stoji za ceo
+tok sa dva Maca iz KORAKA 56.
+
+## KORAK 58 — Cmd+V nije radio u prijavi: ShowGrid-ov monitor ga je gutao (1. septembar 2026)
+
+Prijavljeno: u modalu za prijavu na home screenu **paste ne radi**. Kucanje radi,
+paste ne.
+
+### Uzrok — nije SwiftUI, nego naš monitor
+
+`installKeyMonitor()` u ShowGrid-u se ograničava **samo** na naslov prozora
+(`NSApp.keyWindow?.title == "BriefShow"`) — a modal je u tom istom prozoru, pa
+guard prolazi. Cmd+V zato pada u `ShortcutStore.matches(event, .gridPaste)`,
+koji pozove `pasteIntoGrid()` i **vrati `nil`**. Vraćeno `nil` znači „događaj je
+pojeden": tastatura nikad ne stigne do polja.
+
+Lokalni `NSEvent` monitori rade **pre** responder lanca, pa polje nije imalo
+nikakve šanse. Kucanje je prolazilo samo slučajno: „x" i „v" imaju uslove
+(`!selectedURLs.isEmpty`, `hasLabelsOrRatings`) koji na praznom ekranu ne važe,
+pa ta slova propadnu dalje. Cmd+V nema nijedan uslov.
+
+**I nije bilo samo neprijatno:** ako je klijent ranije kopirao fotke u mreži,
+`clipboardURLs` je pun — pa taj isti Cmd+V, dok je modal otvoren, pokrene pravo
+kopiranje fajlova iza modala.
+
+### Popravka — guard koji LumenoLab ima od početka
+
+```swift
+if (NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false {
+    return event
+}
+```
+
+Odmah posle provere naslova. Isti izraz koji `Develop.swift` već koristi
+(`isTyping`) — nije izmišljan nov način, prepisan je onaj koji tamo radi.
+
+**Zašto ga ovaj monitor nikad nije imao:** do juče na ovom ekranu **nije bilo u
+šta da se kuca.** Modal za prijavu je prvo polje koje je stiglo na home screen.
+
+Pokriva i sve ostalo u tom prozoru u šta se kuca: „DELETE" u profilu i
+preimenovanje foldera.
+
+### ⚠️ PRAVILO ZA SVAKO BUDUĆE POLJE ZA UNOS
+
+Svaki `NSEvent` monitor u ovoj app-i mora da propusti događaj kad je fokus u
+polju. Guard po naslovu prozora **nije dovoljan** — modal je u istom prozoru kao
+i ekran koji pokriva. Ovo je isti razred incidenta kao MINA 2, samo iznutra:
+tamo dva prozora dele naslov, ovde jedan prozor deli naslov sam sa sobom.
+
+### ⚠️ NEPROVERENO
+
+Build je čist i app je pokrenuta, ali paste u polju **nije viđen kako radi.**
+
+## KORAK 59 — brisanje fotki tastaturom, i „Delete" umesto „Add to Bin" (1. septembar 2026)
+
+Traženo: selektovana fotka + ⌫ šalje je u kantu; i da desni klik piše samo
+**Delete**, crveno, umesto „Add to Bin".
+
+### Tastatura
+
+⌫ i ⌦ u mreži zovu **isti** put kao desni klik — `pendingTrashPhotoURLs` pa
+`isTrashPhotoConfirmationPresented`, i na kraju `trashPhotos()`. Jedno ponašanje,
+ne dva.
+
+**Potvrda je namerno zadržana.** Backspace je taster koji se pritiska refleksno,
+u uverenju da je kursor u nekom polju. Guard za kucanje iz KORAKA 58 pokriva
+prava polja; potvrda pokriva sve ostalo. Ako se ispostavi da smeta pri prebiranju
+stotina fotki, skida se u jednom redu — ali odluka da se počne sa potvrdom je
+svesna, a ne previd.
+
+Prima **prazan taster ili ⌘** (Finder-ov Move to Trash), i ništa drugo. Slučajan
+Shift ili Option ne sme da briše fotografije.
+
+**Nije prebacivo**, i stoji u `ShortcutAction.fixed`. Isto obrazloženje po kom su
+tamo već Esc i ocene 1–5: Delete koji znači delete određuje platforma. U toj
+listi je uostalom već stajao „Delete — Delete the selected mask or layer" za
+LumenoLab, pa je ovo samo drugi kraj istog pravila.
+
+### Meni
+
+„Add to Bin" → **„Delete"**, i na fotkama i na folderima u sidebar-u. Ista radnja
+ne sme da ima dva imena na jednom ekranu — isti razlog zbog kog na ovom ekranu
+piše „labeled" i „starred" svuda, a ne „liked" na jednom mestu.
+
+Boja ostaje na `role: .destructive`, kako je i bilo. **Da li ga macOS zaista
+crveno iscrtava u kontekstnom meniju nije provereno** — ako ne, popravka je ručno
+pravljen `NSMenu`, jer SwiftUI meniju ne može da se prosledi boja teksta.
+
+### Usput — zaglavlje se lomilo
+
+Na slici je wordmark stajao kao „Brief Sho / w", a dugme kao „LumenoLa / b".
+Verovatno posledica KORAKA 57: dodata je još jedna kontrola u isti red, pa je za
+ostale ostalo manje širine.
+
+Komentar iznad wordmarka tvrdi da mu je zaseban red dat baš zato da se to ne
+dešava — **a ne pomaže**: red i dalje deli širinu sa onim što stoji pored njega.
+Sad je rečeno izričito: `.lineLimit(1)` + `.fixedSize()` na wordmark, i isto na
+`ShowHeaderButtonStyle`, dakle na svih 37 mesta gde se taj stil koristi. Kad
+ponestane mesta, red postaje tesan umesto da se lomi.
+
+### ⚠️ NEPROVERENO
+
+Build je čist, app je pokrenuta, ali **ništa od ovoga nije viđeno na ekranu**:
+ni brisanje tasterom, ni crvena boja u meniju, ni da se zaglavlje više ne lomi.
+
+## KORAK 60 — „Black & White" i „Duplicate & BW" u filmstrip meniju (1. septembar 2026)
+
+Traženo: desni klik na filmstrip, tamo gde su Sync i ostalo — dugme koje
+selektovane slike pretvara u crno-bele, i drugo koje ih duplira pa duplikate
+pravi crno-belim.
+
+### B&W je `saturation = -1`, i to je odluka
+
+Nije dodato novo polje u `PhotoEditSettings`. Novo polje bi tražilo coding key,
+fallback u ručno pisanom `init(from:)` za sve što je snimljeno pre njega, granu u
+rendereru i kontrolu u panelu — **da bi opisalo stanje koje panel već ume da
+opiše.** Renderer saturaciju predaje CIColorControls-u kao `1 + saturation`,
+dakle -1 je tačno 0, prava siva. I klijent to poništava povlačenjem jednog
+slajdera, umesto da traži skriveno dugme.
+
+**Vibrance i Color Mixer se NE diraju, i to je provereno u kodu, ne
+pretpostavljeno:** oba rade POSLE desaturacije u `PhotoEditRenderer.render`
+(redosled: colorControls → vibrance → colorMixer), i nijedan ne može da vrati
+boju u neutralan piksel. CIVibrance množi saturaciju koja je sad nula, a mikser
+po dizajnu prikucava neutralnu osu — vidi `fullyColoured`, gde stoji da je
+mereno na tri praga. Nuliranje bi samo bacilo posao koji klijent dobija nazad čim
+podigne Saturation.
+
+### Duplikat je pravi fajl, i mora da bude
+
+Svaka izmena u ovoj app-i je vezana za URL (`PhotoEditStore`). Dve verzije jedne
+fotke zato traže **dva URL-a** — inače su to jedna fotka sa jednim podešavanjem,
+pa bi „original u boji" koji je klijent tražio da zadrži pocrneo zajedno sa
+kopijom.
+
+Kopija **nasleđuje izmene originala** pa tek onda gubi boju: fotka koja je već
+eksponirana, iseckana i retuširana ne vraća se kao sirov fajl koji treba raditi
+po drugi put.
+
+Ime: `Beach.jpg` → `Beach BW.jpg`, pa `Beach BW 2.jpg`. Ne Finder-ovo „copy" —
+prestaje da bude kopija istog trenutka, a folder pun „… copy" fajlova ne govori
+koji je koji. **Izmereno pravim fajlovima** (`Tools`-stil probni binarni fajl, 5
+imena × 3 uzastopne kopije): tačke u imenu (`my.photo.jpeg`), veliko slovo u
+ekstenziji (`.NEF`), fajl bez ekstenzije i naša slova (`Već ćirilica šđž.png`) —
+sve prolazi, brojač sudara radi.
+
+### ⚠️ `photoURLs` je prestao da bude `let`
+
+Bio je `let` u `DevelopView`. Duplikat mora da se pojavi u traci **odmah, pored
+originala**, a `let` se menja samo ponovnim pravljenjem cele view-e — što baca
+otvorenu fotku, njen undo stack i dekodovanu sliku.
+
+Sad je `@State` sa izričitim `init`-om koji ga seeduje jednom. Prozor koji se
+kasnije ponovo otvori pravi se iz foldera, koji tada ionako sadrži nove fajlove.
+
+### ⚠️ ZNANO OGRANIČENJE
+
+**ShowGrid ne vidi nove fajlove dok se folder ponovo ne otvori.** Obaveštenje
+`.photoEditsChanged` osvežava sličice postojećih fotki; ono nema pojam „u folder
+je stigao nov fajl". U traci LumenoLab-a se vide odmah, u mreži tek posle
+ponovnog otvaranja foldera.
+
+### Odabrano ponašanje
+
+Duplikati se **selektuju, ali se ne otvaraju.** Klijent gleda fotku na kojoj
+radi; pomeranje pregleda na kopiju bi mu to oduzelo kao usputnu posledicu pravljenja
+kopije — isti razlog zbog kog „Select All" namerno ne dira `selectedURL`.
+
+Meta je ista kao kod Export-a na vrhu istog menija: cela selekcija kad je
+kliknuta fotka deo nje, inače samo fotka pod kursorom. Jedan desni klik ne sme da
+znači dva različita skupa u zavisnosti od toga šta se klikne.
+
+### ⚠️ NEPROVERENO
+
+Build je čist i app je pokrenuta, ali **nijedna od dve stavke nije viđena u
+meniju**, niti je ijedan duplikat napravljen iz app-e. Imenovanje jeste izmereno,
+odvojeno; sve ostalo nije.
+
+## KORAK 61 — zašto B&W nije bio crno-beo, i „Duplicate" (1. septembar 2026)
+
+Prijavljeno slikom: posle „Black & White" portret jeste siv, ali je **red
+narandžastih tačaka na obrazu ostao u boji.** Traženo: da se slika automatski
+ispeče (flatten) pri B&W i pri Duplicate & BW, i da se doda još jedno dugme
+„Duplicate" koje samo duplira sliku kakva jeste.
+
+### ⚠️ UZROK — `saturation = -1` NE MOŽE da stigne do slojeva
+
+U KORAKU 60 stoji da je `saturation = -1` dovoljno. **Nije, i slika je to
+dokazala.** `PhotoEditRenderer.render` ide ovim redom:
+
+```
+colorControls (saturacija)  →  vibrance  →  colorMixer  →  ...
+→  applyLocalAdjustments  →  compositeLayers  →  crop  →  vignette
+```
+
+Maske i slojevi se komponuju **posle** kontrole boje, i to namerno — komentar uz
+`compositeLayers` kaže da je zalepljen komad novi sadržaj IZNAD celog steka, do
+kog maska ispod ne sme da dosegne. Posledica: globalna desaturacija ih nikad ne
+dotakne. Koliko god retuš tačaka, patch-eva ili zalepljenih slojeva — svi zadrže
+boju.
+
+Provera iz KORAKA 60 („mikser ne može da vrati boju u neutralan piksel") **jeste
+bila tačna, ali je gledala pogrešno mesto.** Mikser zaista ne može; slojevi
+nikad nisu ni bili desaturisani, pa nemaju šta da vraćaju.
+
+### Popravka — prvo peći, pa skidati boju
+
+Sad ide: `flatten` (slojevi ulaze U piksele) → pa `saturation = -1`. Na pečenoj
+slici iznad boje više nema ničega, pa desaturacija stiže svuda.
+
+### ⚠️ OVO JE JEDINO MESTO U APP-I KOJE PEČE BEZ PITANJA
+
+Komentar uz `flattenPhoto` izričito kaže da se to nikad ne sme desiti kao
+usputna posledica pritiska na nešto drugo. Prekršeno je ovde, svesno, iz dva
+razloga: traženo je izričito, i **jeftino se poništava.**
+
+Ključno, i proveravano u kodu a ne pretpostavljano: **flatten NIKAD ne dira
+klijentov fajl.** `FlattenedImageStore.flatten` upisuje TIFF u Application
+Support, a svaki dekod ide kroz `FlattenedImageStore.sourceURL`. Original stoji
+na disku netaknut, i Unflatten ga vraća. Da fajl biva prepisan, ovo se ne bi
+smelo uraditi.
+
+### Odabrana ponašanja
+
+**Peče se van glavne niti** (`developRenderQueue`) — dekodira i renderuje svaku
+fotku u punoj rezoluciji, isti posao koji radi export. Selekcija od četrdeset na
+glavnoj niti bi zamrzla prozor.
+
+**Otvorena fotka se proverava ponovo na kraju pečenja**, ne pamti se i veruje:
+klijent sme da otvori drugu dok se peče, a `settings` bi tada pripadao toj
+drugoj. Bez te provere se tuđa podešavanja upisuju preko otvorene fotke.
+
+**Žive `settings` se gurnu u store pre pečenja.** `renderNow` ih upisuje sa
+zadrškom od 0,02 s, pa store ume da bude jednu izmenu iza onoga što klijent
+GLEDA. Bez toga se peče slika koja nije na ekranu.
+
+**Duplikat nasleđuje izmene originala**, a kod „Duplicate & BW" pečenje pada
+**samo na kopiju** — original ostaje i neispečen i u boji.
+
+### Imena
+
+`Beach BW.jpg` za crno-belu, `Beach copy.jpg` za običan duplikat (reč koju
+Finder koristi za baš to). Brojač sudara na oba.
+
+### ⚠️ NEPROVERENO
+
+Build je čist i app je pokrenuta. **Nije viđeno na ekranu:** da narandžaste tačke
+sad zaista pocrne, da „Duplicate" radi, ni koliko pečenje traje na velikoj
+selekciji.
+
+## KORAK 62 — zašto je duplikat vraćao original, i ista tri dugmeta u mreži (1. septembar 2026)
+
+Prijavljeno: „duplicirao sam sliku a on mi je duplicirao original". Traženo:
+Duplicate uvek da peče, i da BW / Duplicate / Duplicate & BW postoje i u
+ShowGrid-u. Uz to: Delete u LumenoLab-u, meni i ⌫.
+
+### ⚠️ UZROK — kopiran je FAJL, a slika nije bila u fajlu
+
+Original je bio ispečen. Pečenje **ne dira klijentov fajl** — piše TIFF u
+Application Support, ključ `ime|veličina`. Kopija dobija **drugo ime**, dakle
+drugi ključ, dakle nema svoj pečeni TIFF; a nasleđena podešavanja su bila
+post-flatten, gotovo prazna. Rezultat: kopija se dekodira iz sirovog fajla i
+izgleda kao neobrađen original.
+
+To je bilo neizbežno sa „kopiraj fajl pa nasledi podešavanja". **Kopija mora da
+se ispeče** — i to renderom uzetim od ORIGINALA (koji poštuje svoj pečeni TIFF),
+a upisanim pod KOPIJU.
+
+Zato `PhotoBakeService.BakeJob` ima **odvojene `source` i `target`**. Za pečenje
+na mestu su ista fotka; za duplikat se namerno razlikuju. To je celo rešenje i
+jedini razlog zbog kog taj tip ima dva polja.
+
+### `PhotoBakeService` — jedna implementacija za oba prozora
+
+Izvučeno iz `DevelopView` i stavljeno pored renderera, jer su i `CIContext` i
+red za render privatni za `Develop.swift`. Zovu ga oba menija — filmstrip u
+LumenoLab-u i mreža u ShowGrid-u. Dve kopije bi bile dva mesta na kojima
+„Duplicate" počne da znači različite stvari.
+
+### Delete u LumenoLab-u
+
+**⚠️ Redosled u monitoru je nosiv.** Delete je u LumenoLab-u već značio „obriši
+izabranu masku ili sloj". Nova grana za fotku stoji ISPOD te, i pali se samo kad
+u fotki ništa nije izabrano. Delete dok je maska naoružana mora da skloni masku,
+a nikako celu fotografiju.
+
+Meta: multi-selekcija ako je ima, inače otvorena fotka. Ide kroz potvrdu, kao u
+mreži.
+
+**Zapisi o izmenama se NE brišu**, za razliku od ShowGrid-a koji briše lajkove.
+Fotka vraćena iz kante sleće na isti put iste veličine — što je tačno ključ
+`PhotoEditStore`-a — pa se vraća sa svojim izmenama. Lajk je odluka o fotki koju
+si sortirao, izmena je posao.
+
+Ako se obriše poslednja fotka, editor se zatvara. Prozor bez ičega za uređivanje
+nije stanje vredno crtanja.
+
+### Sitno
+
+Komentari koji su još pisali „Add to Bin" ispravljeni na pet mesta — ime je
+promenjeno u KORAKU 59, komentari nisu pratili.
+
+### ⚠️ NEPROVERENO
+
+Build je čist i app je pokrenuta. **Ništa nije viđeno na ekranu:** ni da duplikat
+sad zaista izgleda kao original sa izmenama, ni tri nova dugmeta u mreži, ni
+Delete u LumenoLab-u. Nije mereno ni koliko pečenje traje na velikoj selekciji —
+a u mreži je to sad moguće pokrenuti na svemu što je selektovano.
+
+## KORAK 63 — slojevi dobijaju svoje slajdere, i „Select People" pravi sloj (1. septembar 2026)
+
+Traženo: skloniti „Select People" iz sekcije Remove i staviti ga u Tools pored
+Patch-a; promeniti mu posao — da od ljudi napravi **sloj**, odmah zalepljen na
+istom mestu, spreman za obradu; da se svaki **selektovan sloj** obrađuje sam za
+sebe, a da bez selektovanog sloja obrada ide na celu sliku; i da posle pravljenja
+sloja iskoči kartica sa „Remove Paint Selection" i „Undo", pri čemu oba gase
+karticu.
+
+### ⚠️ ODLUKA — globalni slajderi se NE preusmeravaju
+
+Zahtev se mogao pročitati na dva načina. Drugi je bio: kad je sloj selektovan,
+neka **glavni** slajderi počnu da rade nad njim. To je **odbijeno**, i evo zašto:
+
+- glavni panel bi tiho menjao značenje u zavisnosti od selekcije napravljene
+  negde drugde u panelu;
+- ne bi ostalo načina da se dira cela slika dok je neki sloj slučajno selektovan.
+
+Umesto toga, selektovan sloj dobija **svoju karticu sa istim slajderima** —
+tačno onako kako selektovana **maska** već radi (`selectedMaskEditor`). Pravilo
+je time izgovorivo: slajderi gore su fotografija, slajderi u kartici su taj sloj,
+a bez selektovanog sloja postoji samo fotografija. To je i doslovno ono što je
+traženo, samo bez dvosmislenosti.
+
+Vrednosti sloja žive u `ImageLayer.adjustments`, tipa `LocalAdjustmentSettings` —
+**isti** tip koji koriste maske. To je već tačan podskup (tonovi i boja, bez
+geometrije i bez vinjete); drugi, skoro isti tip bio bi još jedno mesto na kom se
+„koji slajderi su lokalni" razilazi.
+
+Renderer ih primenjuje u `compositeLayers`, na piksele sloja, **pre** skaliranja
+— jeftinije je jer je komad manji od fotke, a rezultat je isti.
+
+### ⚠️ MINA KOJA JE IZBEGNUTA — `ImageLayer` je Codable
+
+Dodavanje polja u `ImageLayer` sa sintetizovanim dekoderom **tiho briše sve
+postojeće slojeve.** Sintetizovani `init(from:)` puca na ključu koji nedostaje
+čak i kad polje ima podrazumevanu vrednost, a `PhotoEditStore.allSettings`
+**odbacuje sve što ne dekodira** — bez greške, bez traga.
+
+Zato je `init(from:)` sad pisan ručno, svako polje `decodeIfPresent` sa
+fallback-om, plus izričit memberwise `init` (koji se gubi čim se u strukturi
+definiše bilo koji init). **Svako sledeće polje u `ImageLayer` mora isto tako.**
+
+### Select People → sloj
+
+Ista Vision maska koja je i pre nalažena, samo drugačije upotrebljena: pikseli
+ispod nje se iskopiraju kao PNG (sa alfom, zbog mekih ivica — JPEG bi vratio
+tvrd pravougaonik sa nebom okolo) i vrate na isto mesto kao `ImageLayer`. Na
+ekranu se ništa ne pomeri; razlika je što ljudi sad imaju svoj sloj.
+
+Aktivna Selekcija i dalje sužava pretragu, kao i pre.
+
+**Konverzija koordinata je nosiva:** `y` sloja je GORNJA ivica merena naniže,
+a Core Image meri donju ivicu naviše. Otud `1 - (maxY - minY_extenta)/visina`.
+Ista konverzija koju `compositeLayers` radi unazad.
+
+### ⚠️ Dva poznata ograničenja, oba svesna
+
+1. **Kopija je uzeta od rendera KAKAV JESTE.** Globalni slajderi pomereni posle
+   toga menjaju sliku ispod, a ne sloj iznad — ljudi će vizuelno „odlepiti" od
+   ostatka kadra. Tako se ponaša svaki zalepljen sloj u ovoj app-i; vredi znati,
+   ne vredi se pretvarati.
+2. **Jedan sloj za sve nađene ljude**, ne jedan po osobi. Maska je jedna slika;
+   deljenje na povezane komponente je zaseban posao.
+
+### ⚠️ `findPeople` je sad MRTAV KOD
+
+Nema više nijednog pozivaoca. Nije obrisan — to je ceo radan „nađi pa obriši"
+put, uključujući `backgroundOnly`, i previše izmerenog ponašanja da bi se bacilo
+na pretpostavku da niko ne želi nazad. **Ali ne izvršava se**, i tako piše iznad
+njega.
+
+Poruke na ekranu koje su upućivale na Select People kao deo brisanja su
+ispravljene — dve su bile vidljive klijentu i sad bi lagale.
+
+### ⚠️ NEPROVERENO
+
+Build je čist i app je pokrenuta. **Ništa nije viđeno na ekranu:** ni da Select
+People zaista napravi sloj koji sedi tačno preko ljudi, ni da slajderi sloja rade
+samo na njemu, ni kartica sa dva dugmeta. Konverzija koordinata je izvedena
+prepisivanjem postojeće u suprotnom smeru, **nije izmerena.**
+
+## KORAK 64 — nečitljiv blend mode, traka za AI, i kartica sa jednim dugmetom (1. septembar 2026)
+
+Tri sitnice prijavljene na slici i u tekstu, sve tri urađene.
+
+### Multiply / Screen / Overlay su bili crno na crnom
+
+Bio je `Picker(.pickerStyle(.segmented))`. **Native segmented control crta svoje
+natpise SISTEMSKIM izgledom, ne temom ove app-e**, pa su na tamnoj temi tri
+neselektovana režima ispadala skoro crna na skoro crnom.
+
+Isti razred problema koji je imao Stepper (vidi `ContentView`), sa jednom
+razlikom koja je ovde presudna: **`.preferredColorScheme` do njega ne dopire**,
+jer segmented control sam boji svoj tekst. Zato nije podešavan nego zamenjen —
+naš red dugmadi, u našim bojama, istog oblika kao par Add/Erase u sekciji
+Remove. Panel sad ima jedan način da nacrta izbor, a ne dva.
+
+### Traka dok AI traži
+
+`ProgressView(.linear)` pored dugmeta u Tools-u. **Neodređena, ne procenat** —
+Vision ne javlja napredak, pa bi procenat bio izmišljen; a jedina stvar koju ta
+traka mora da uradi jeste da joj se veruje.
+
+Isti tekst „Looking for people…" stajao je i dalje u sekciji Remove, iz vremena
+kad je dugme bilo tamo. Sklonjen odande: linija o napretku u sekciji koja taj
+posao više ne pokreće je linija koju niko ne može ni sa čim da poveže.
+
+### Kartica ima samo Undo
+
+„Remove Paint Selection" je sklonjen na prijavu, i s pravom: pretraga **ne
+ostavlja nikakav paint** — ona pravi sloj. To dugme je nudilo da poništi nešto
+što se nije ni dogodilo.
+
+### ⚠️ NEPROVERENO
+
+Build je čist i app je pokrenuta; nijedna od tri izmene nije viđena na ekranu.
+
+## KORAK 65 — Background sloj, B&W i Blur po sloju, i popravljen Undo (1. septembar 2026)
+
+Traženo: da selektovani ljudi mogu da budu crno-beli; da Select People napravi i
+drugi sloj **Background** koji se može zacrniti ili zamutiti; dugme Blur pored
+dugmeta Black & White; siva umesto žute za selekciju sloja. Uz to prijavljen bug:
+Undo posle pomeranja sloja nije vratio sliku pre selekcije.
+
+### ⚠️ NAJVAŽNIJE — sloj preko celog kadra NE SME da nosi piksele
+
+Ovo je otkriveno pre pisanja, i promenilo je ceo dizajn.
+
+**Svaka izmena u ovoj app-i živi u JEDNOM JSON blobu u `UserDefaults`**, koji se
+ponovo enkodira pri svakom flush-u (`PhotoEditStore.flushNow`). Sloj „Background"
+preko celog kadra, čuvan kao piksele, bio bi **desetine megabajta PNG-a** u
+`UserDefaults`, prepisivanih svaki put kad se bilo koji slajder smiri. To nije
+teška funkcija nego pokvarena app.
+
+Zato je uveden **izvedeni sloj** (`ImageLayer.maskData`): sloj koji ne nosi
+nikakve piksele, nego je REGION fotografije ispod, a renderer mu piksele uzima
+odande u trenutku rendera. Čuva se samo matica, i to smanjena na 1024 px
+(`maskPNG`) — maska je glatka i skoro ravna, pa se vraća naviše bez vidljive
+razlike, a razlika u ceni je desetine KILObajta prema desetinama MEGAbajta.
+
+**Usput je nestalo ograničenje iz KORAKA 63:** izvedeni sloj se čita iz fotke pri
+svakom renderu, pa ga globalni slajderi pomereni kasnije **nose sa sobom** umesto
+da ostane zamrznuta kopija. Ljudi više ne „odlepe" od kadra.
+
+Zato su i People i Background sad izvedeni slojevi.
+
+### ⚠️ BUG SA UNDO — kartica je zvala `undo()`
+
+`undo()` skida **jedan** korak sa steka. Dok klijent stigne da pritisne to dugme,
+na vrhu steka je obično nešto drugo — pomeranje sloja, pokret slajdera — pa su
+slojevi ostajali, a poništavala se nevezana izmena. Tačno ono što je prijavljeno.
+
+Dugme sad briše **tačno one slojeve koje je poslednji Select People napravio**,
+po id-u (`peopleLayerIDs`). Upisuje `settings.layers` kao svaka druga izmena, pa
+Cmd+Z i dalje može da ih vrati.
+
+**Pravilo:** dugme koje obećava da poništi jednu određenu radnju ne sme da bude
+implementirano kao „skini jedan korak sa steka". To dvoje se poklapa samo dok se
+između ništa ne dogodi.
+
+### Blur je skaliran na SLIKU, ne na piksele
+
+`layerBlur` računa sigmu kao `0.02 × kraća ivica`. Sigma u pikselima bila bi
+pogrešna **nevidljivo**: preview se renderuje na 2600 px a export u punoj
+rezoluciji, pa bi isti broj zamutio to dvoje različito — klijent bi odobrio jednu
+sliku a dobio drugu.
+
+Slika se `clampedToExtent()` pre zamućenja i seče posle; bez toga filter uzorkuje
+prazno van kadra i zatamni svaku ivicu.
+
+### Šta izvedeni sloj NEMA
+
+Blend mode i prevlačenje su sakriveni (ne onemogućeni — red mrtvih kontrola
+tera klijenta da se pita zašto). Oboje pripadaju **zalepljenom** komadu: nečemu
+što je došlo spolja, sreće ono iza sebe i može drugde. Iza regiona ove iste
+fotografije nema ničega osim nje same, a pomeranje bi samo skliznulo maticu sa
+onoga oko čega je isečena.
+
+### Boje
+
+Selekcija sloja je sad siva, ne žuta. Žuta je signal „ovaj slajder je naoružan za
+strelice"; spisak koji se pregleda ne mora da viče kao jedna živa kontrola, a i
+činilo je da izgleda kao da su tri stvari naoružane odjednom. **Maska (`maskRow`)
+je ostala žuta** — o njoj niko ništa nije prijavio, i menjati je bilo bi
+pospremanje po pretpostavci.
+
+### ⚠️ NEPROVERENO
+
+Build je čist i app je pokrenuta. **Ništa nije viđeno na ekranu**, a ovde ima
+više nego obično da se pogleda: da Background matica zaista pokriva sve osim
+ljudi, da se skaliranje matice sa 1024 px na punu rezoluciju ne vidi, da Blur
+izgleda isto u preview-u i u exportu, i da Undo sad briše oba sloja.
+
+## KORAK 66 — Reset po sloju, Select Sky, i Change Sky (1. septembar 2026)
+
+Traženo: dugme Reset u kartici sloja koje vraća sloj na izgled od pravljenja ali
+ga ne briše; dugme Select Sky pored Select People; i, kad se napravi Sky sloj,
+dugme Change Sky sa modalom neba za biranje.
+
+### Reset
+
+Vraća `adjustments`, `blur`, `opacity` i `blendMode`. **Geometriju NE dira** —
+ovo poništava IZGLED; zalepljen komad koji je pažljivo postavljen ne sme da
+odskoči preko fotografije zato što je neko hteo ekspoziciju nazad na nulu.
+
+### ⚠️ Select Sky — Apple nam ovde ne daje ništa
+
+Vision segmentira ljude i ništa drugo: nema zahteva za nebo, nema parsiranja
+scene, nema opšteg „segmentiraj ovu klasu" API-ja na macOS-u. Alternativa je
+bila pakovati semantički segmentacioni CoreML model — stotine megabajta povrh
+4,4 GB i licenca koju treba raščistiti za app koja se prodaje.
+
+Odabrano je drugo: **naša heuristika** (`SkyMasker`), koja gleda četiri stvari
+odjednom, jer nijedna sama nije dovoljna — boju neba (plavo ILI svetlo-bezbojno,
+kao MAKSIMUM a ne proizvod, jer duboko plavo nebo ne skoruje na „svetlo" i
+obrnuto), ravnost (nebo je najravnija stvar u kadru; ovo izbacuje zgrade i
+lišće), visinu u kadru (sa PODOM od 0,25, ne rezom — nebo silazi između zgrada, a
+ravan rez preko slike je najočigledniji način da zamena neba oda samu sebe) i
+grubu povezanost (jak blur pa tvrda kriva).
+
+**Greši na snegu, mirnoj vodi, belim zidovima u gornjem delu kadra i enterijerima
+sa svetlim prozorima.** Sve četiri su svetle, ravne i visoko — što je i cela
+definicija. Zapisano u kodu, i rečeno klijentu u poruci kad ne nađe ništa.
+
+### ⚠️ NEBA SU NACRTANA — i planina neće biti
+
+Nijedna slika se ne pakuje i ništa se ne preuzima. Zato u spisku nema planina i
+neće ih biti: planina je fotografija stvarnog mesta, ne može se dobiti gradijentom
+i šumom, a fotografija znači licencu za app koja se prodaje. Nebo je gradijent,
+svetlo i oblak — to računar ume ubedljivo.
+
+Sloj sa izabranim nebom **zamenjuje** ono ispod matice; svaki drugi sloj ga samo
+doteruje. Sopstveni slajderi sloja rade i na nacrtanom nebu, pa se ono može
+zatamniti, ohladiti ili zamutiti kao i sve ostalo.
+
+### ⚠️ TRI PUTA MERENO, DVA PUTA POGREŠNO — i zašto
+
+Ovo je najkorisniji deo ovog koraka.
+
+**Pokušaj 1:** kriva za oblake pisana za raspon 0–1. Zamućen `CIRandomGenerator`
+ne stoji tamo. Svih pet oblačnih neba se renderovalo kao **beo list.**
+
+**Pokušaj 2:** izmeren opseg — ali čitanjem bajtova iz **sRGB** bitmape. Filtri
+rade u **linearnom** prostoru; sRGB 0,73 je linearno 0,49, pa je opseg seo IZNAD
+podataka i oblaci su **potpuno nestali.**
+
+**Pokušaj 3:** čitano u linearnom prostoru (`CGColorSpace.linearSRGB`). Prava
+raspodela: p05 0,376, p50 0,494, p95 0,584. Sa `gain 4,81 / bias -1,81`,
+`amount` postaje bukvalno pokrivenost: 0,18 → 0,16, 0,45 → 0,51, 0,85 → 0,88.
+
+**Pouka, i ona se ne odnosi samo na nebo:** kad se meri išta što ulazi u
+CoreImage filter, mora se meriti u prostoru u kom filter radi. Merenje u sRGB-u
+je izgledalo kao merenje i bilo je pogrešno tiho.
+
+Harnesi su sačuvani: `Tools/linstat.swift` (raspodela u linearnom prostoru) i
+`Tools/skytest.swift` (renderuje svih sedam na jedan list). `skytest` izvlači
+`SkyPainter` iz `Develop.swift` u trenutku pokretanja, pa ne može da se raziđe sa
+kodom.
+
+**Brojke za oblake su namerno niže nego što aritmetika kaže**, i to iz gledanja u
+rendere: prag ima meku ivicu s obe strane, pa oblak izgleda veći od dela na kom
+je odsečen. `softClouds` na 0,45 je bio beo list sa plavim rupama.
+
+**Dramatic je posebno tvrdoglav:** taman oblak preko sivog neba je mnogo manje
+opraštajuć nego beo preko plavog. Na 0,72 i opet na 0,55 renderovao se kao crn
+pravougaonik. Sada je 0,30.
+
+### ⚠️ NEPROVERENO
+
+Neba **jesu** viđena, u pet iteracija, i sedmo od sedam sad izgleda kao nebo —
+ali **odvojeno, ne u app-i.** Nije viđeno: da `SkyMasker` na pravoj fotografiji
+nađe ono što treba, kako izgleda šav između nacrtanog neba i fotografije na
+horizontu, ni sam modal.
+
+Šav je prvo što treba pogledati. Heuristička maska sa mekom ivicom preko prave
+linije horizonta je tačno mesto na kom se ovakva stvar raspada.
+
+## KORAK 67 — maska neba izmerena na pravoj slici, i ručke na sloju (1. septembar 2026)
+
+Prijavljeno: Reset radi za B&W na ljudima ali ne i za nebo; maska neba je loša;
+i — najvažnije — nestala je linija oko selektovanog sloja, a tražena je samo
+promena BOJE te linije, ne uklanjanje. Uz to: svaki sloj mora da se može
+pomeriti, uvećati, suziti i **rotirati**.
+
+### Reset
+
+Nije čistio `skyStyle`, pa je crno-belo silazilo sa People sloja a zamenjeno
+nebo nije. Sad čisti i njega, i rotaciju. „Kako je napravljen" znači **svaki**
+izbor donet posle toga.
+
+### ⚠️ MASKA NEBA — izmereno na klijentovoj fotografiji, ne izrezonovano
+
+`Tools/skymask.swift` izvlači `SubjectMasker` i `SkyMasker` iz izvora i crta
+masku crveno preko prave slike. Na plaži sa porodicom prva verzija je markirala:
+nebo (tačno), **širok pojas peska niz levu ivicu**, i **mrlje po svakom licu**.
+
+Svaki pojedinačni test je radio. **Definicija je bila pogrešna.**
+
+**Dodato dvoje, oba mereno:**
+
+1. **Povezanost sa vrhom kadra** (`growFromTop`). Nebo je ono do čega se stigne
+   spuštanjem od vrha slike bez prelaska preko nečega što nije nebo. Pesak pada
+   na tom testu ma koliko bio svetao, jer je horizont na putu. To je hod po
+   kolonama na CPU-u, ne lanac filtera — „povezano sa vrhom" nije pitanje na
+   koje filter po pikselu može da odgovori. Radi na radnoj kopiji ispod
+   megapiksela, par milisekundi po pritisku dugmeta.
+   `runToStop = 3`, da jedan taman red — žica, grana — ne preseče nebo iznad
+   horizonta.
+2. **Oduzimanje ljudi.** Koža na jakom suncu je bleda, glatka i visoko u kadru —
+   dakle prolazi **po zasluzi**. Vision tačno zna gde su ljudi, pa nema razloga
+   da heuristika nagađa. Ovo je uklonilo i oreol oko para.
+
+**Prag zaustavljanja je 110, i to je izmereno:** na 140 i naviše maska se uruši
+skoro na ništa (140, 170 i 200 daju identičan fajl). Sweep je u istoriji ovog
+koraka.
+
+**Šta i dalje ne valja, i rečeno je klijentu:** na kontra-svetlo slici gde nebo,
+more i pesak prelaze jedno u drugo bez vidljivog horizonta, maska curi niz tu
+ivicu. Tu ni čovek ne bi povukao liniju bez konteksta. Rešenja su dva i oba su
+klijentova odluka: zaokružiti oblast Selection alatom pre pritiska (radi već
+sada), ili trenirani model — što je stotine megabajta i licenca.
+
+### ⚠️ People je VRAĆEN na piksel sloj
+
+U KORAKU 65 je prebačen na izveden (matica, bez piksela) zbog cene skladištenja.
+**To mu je oduzelo mogućnost pomeranja**, što je klijent odmah prijavio — i s
+pravom: pomeranje matice ne pomera ljude, pomera rupu i kroz nju pokaže sliku na
+drugom mestu.
+
+Sad su dva sloja **namerno različite vrste**:
+
+- **People — piksel sloj.** Pravi izrezan komad, pomerljiv, skalabilan, rotabilan.
+- **Background — izveden.** Pokriva ceo kadar, a PNG celog kadra u `UserDefaults`
+  je desetine megabajta na svaki upis. Niko ga ionako ne pomera nigde.
+
+Sky ostaje izveden, iz istog razloga. **Zato Sky i Background nemaju okvir na
+platnu** — okvir bi bio pravougaonik oko cele slike, a vući nema šta.
+
+### Ručke
+
+Okvir je sad `layerSelectionColor` (siva), ne žuta. Dodata je **rotacija**:
+`ImageLayer.rotationDegrees`, transformacija u `compositeLayers` (centar →
+skaliranje → rotacija → pozicija, jer rotacija ima smisla samo oko tačke), i
+kvaka na kratkoj drški iznad gornje ivice.
+
+**Dve stvari su nosive:**
+
+- **Rotira se kontejner veličine SLOJA, ne platna.** Prva verzija je rotirala
+  ceo pogled veličine fotografije oko njegovog gornjeg levog ugla i okvir bi
+  odletao van ekrana.
+- **Matematika prevlačenja ostaje u nerotiranom prostoru** (`unrotated`). Vučenje
+  ugla znači „šire duž OVE ivice", ne „šire duž ekrana"; bez toga sloj se opire
+  kursoru čim se zarotira.
+
+Ugao ima **detent od 5°**, da ravno ostane ravno.
+
+### ⚠️ NEPROVERENO
+
+Maska neba JESTE viđena, na pravoj fotografiji, pre i posle. **Nije viđeno:**
+ručke i rotacija na ekranu, i da Reset sad zaista skida nebo.

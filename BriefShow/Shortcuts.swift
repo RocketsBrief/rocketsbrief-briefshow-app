@@ -252,6 +252,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         ("⌥ (hold)", "Show the clone-stamp source ring", .lumenoLab),
         ("← ↑ → ↓", "Move through the grid", .showGrid),
         ("1 – 5", "Set a star rating", .showGrid),
+        ("⌫ / ⌦", "Move the selected photos to the Trash", .showGrid),
         ("Esc", "Close the preview", .showGrid),
     ]
 }

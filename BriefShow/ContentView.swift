@@ -11819,7 +11819,6 @@ func loadDroppedFileURLs(
 
 struct HeaderView: View {
     @ObservedObject private var accountManager = AccountManager.shared
-    @ObservedObject private var remoteStatus = AppRemoteStatus.shared
     @Binding var isProfileModalPresented: Bool
     let onOpenShowScreen: () -> Void
 
@@ -11848,7 +11847,13 @@ struct HeaderView: View {
                     }
                     .buttonStyle(HeaderLinkButtonStyle())
 
-                    if remoteStatus.isLocked, let session = accountManager.session {
+                    // Shown whenever there IS a session — not only while
+                    // the app is locked. Tying it to the lock meant a
+                    // signed-in client saw their own profile appear and
+                    // disappear depending on a remote flag they cannot
+                    // see, which is the same complaint as it missing from
+                    // the home screen, in mirror image.
+                    if let session = accountManager.session {
                         Button {
                             isProfileModalPresented = true
                         } label: {
@@ -21099,7 +21104,7 @@ struct PhotoShowSheet: View {
     @State private var ratingToastText: String?
     @State private var ratingToastDismissWorkItem: DispatchWorkItem?
 
-    // Right-click "Add to Bin" on a photo (in the grid) or a folder (in the
+    // Right-click "Delete" on a photo (in the grid) or a folder (in the
     // sidebar) — held here until the confirmation dialog is answered, since
     // moving something to the Trash isn't easily undone from inside
     // BriefShow itself.
@@ -21175,6 +21180,14 @@ struct PhotoShowSheet: View {
     // showing the same overlays restores that for ShowGrid itself.
     @ObservedObject private var remoteStatus = AppRemoteStatus.shared
     @ObservedObject private var accountManager = AccountManager.shared
+
+    @State private var isProfileModalPresented = false
+    @State private var isSignInPresented = false
+
+    // A one-line message where the photo counts sit, for the grid actions
+    // that take long enough to look broken without one (Black & White and
+    // the two Duplicates all decode and render at full resolution).
+    @State private var gridActionStatus: String?
 
     // Selection itself is no longer capped — a client can select as many
     // photos as they want. This instead caps how many of them the Space
@@ -21328,6 +21341,23 @@ struct PhotoShowSheet: View {
                     .ignoresSafeArea()
                     .zIndex(19000)
                     .transition(.opacity)
+            } else if isProfileModalPresented {
+                ProfileSettingsModal(onClose: {
+                    isProfileModalPresented = false
+                })
+                .ignoresSafeArea()
+                .zIndex(18000)
+                .transition(.opacity)
+            } else if isSignInPresented {
+                // The lock wall above wins this else-if whenever the app
+                // is locked, and that is the point: the wall has no way
+                // out, this one does, and they must never swap places.
+                LockedAccessOverlay(lockMessage: nil, onClose: {
+                    isSignInPresented = false
+                })
+                .ignoresSafeArea()
+                .zIndex(18000)
+                .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -21541,7 +21571,7 @@ struct PhotoShowSheet: View {
                     // would be a number that matches neither export button.
                     // Shown only when there is at least one, so a folder nobody
                     // has rated yet does not carry a "0 starred".
-                    Text(gridCountsSummary)
+                    Text(gridActionStatus ?? gridCountsSummary)
                         .font(.custom("Figtree", size: 12).weight(.medium))
                         .foregroundColor(AppColors.muted)
                 }
@@ -21666,6 +21696,36 @@ struct PhotoShowSheet: View {
                 } message: {
                     Text("This removes the label and star rating from every photo. It doesn't touch the photo files themselves.")
                 }
+            }
+
+            // The account belongs on THIS screen, not only in the Showcase
+            // window. ShowGrid is the app's first and, for most clients,
+            // its only screen — a profile that shows up solely in a window
+            // they may never open is a profile they do not have.
+            //
+            // Signing in happens right here too, in the same modal the
+            // lock wall uses, just closable. Nobody gets sent to the
+            // website to sign in and then back again; the account is the
+            // same one either way.
+            if let session = accountManager.session {
+                Button {
+                    isProfileModalPresented = true
+                } label: {
+                    ProfileBadge(session: session)
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 10)
+            } else {
+                Button {
+                    isSignInPresented = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.crop.circle")
+                        Text("Sign In")
+                    }
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .padding(.leading, 10)
             }
         }
         .padding(.horizontal, 24)
@@ -22117,7 +22177,29 @@ struct PhotoShowSheet: View {
 
         Divider()
 
-        Button("Add to Bin", role: .destructive) {
+        // The same three the LumenoLab filmstrip has, running the same
+        // PhotoBakeService — one implementation, so "Duplicate" cannot come
+        // to mean two different things depending on which window it was
+        // pressed in.
+        Button(targets.count > 1 ? "Black & White (\(targets.count))" : "Black & White") {
+            applyBlackAndWhiteInGrid(targets)
+        }
+
+        Button(targets.count > 1 ? "Duplicate (\(targets.count))" : "Duplicate") {
+            duplicateGridPhotos(targets, blackAndWhite: false)
+        }
+
+        Button(targets.count > 1 ? "Duplicate & BW (\(targets.count))" : "Duplicate & BW") {
+            duplicateGridPhotos(targets, blackAndWhite: true)
+        }
+
+        Divider()
+
+        // "Delete", not "Add to Bin". It is the same word the keyboard
+        // uses for the same action, and the confirmation it opens already
+        // says where the photos go ("Move to the Trash"), so the menu item
+        // does not have to carry that explanation in its name.
+        Button("Delete", role: .destructive) {
             pendingTrashPhotoURLs = targets
             isTrashPhotoConfirmationPresented = true
         }
@@ -22490,7 +22572,81 @@ struct PhotoShowSheet: View {
         PhotoLabelStore.setRating(ratings[url] ?? 0, for: url)
     }
 
-    // MARK: Trash (right-click "Add to Bin")
+    // MARK: Black & White, Duplicate
+
+    /// Bakes the render in and takes the colour out, for every target.
+    ///
+    /// The bake is not optional here — see `PhotoBakeService` and
+    /// `applyBlackAndWhite` in Develop.swift for why a plain
+    /// `saturation = -1` leaves masks and pasted layers in colour.
+    private func applyBlackAndWhiteInGrid(_ targets: [URL]) {
+        guard !targets.isEmpty else {
+            return
+        }
+
+        let jobs = targets.map {
+            PhotoBakeService.BakeJob(source: $0, target: $0,
+                                     settings: PhotoEditStore.settings(for: $0))
+        }
+
+        gridActionStatus = "Making black & white…"
+
+        PhotoBakeService.bake(jobs, desaturate: true) { baked, failed in
+            showGridStatus(failed == 0
+                           ? "\(baked.count) in black & white"
+                           : "\(baked.count) in black & white, \(failed) failed")
+        }
+    }
+
+    /// Copies each target beside itself and bakes the copy.
+    ///
+    /// Always baked, `blackAndWhite` or not: a plain file copy carries the
+    /// pixels of the ORIGINAL file, and edits are keyed by URL, so an
+    /// unbaked copy of an edited photo arrives looking untouched.
+    private func duplicateGridPhotos(_ targets: [URL], blackAndWhite: Bool) {
+        guard !targets.isEmpty else {
+            return
+        }
+
+        var jobs: [PhotoBakeService.BakeJob] = []
+        var failures = 0
+
+        for target in targets {
+            guard let copyURL = PhotoBakeService.duplicate(target,
+                                                           suffix: blackAndWhite ? "BW" : "copy") else {
+                failures += 1
+                continue
+            }
+
+            jobs.append(PhotoBakeService.BakeJob(source: target, target: copyURL,
+                                                 settings: PhotoEditStore.settings(for: target)))
+
+            // Beside the photo it came from, not at the end of the grid.
+            if let index = photoURLs.firstIndex(of: target) {
+                photoURLs.insert(copyURL, at: photoURLs.index(after: index))
+            } else {
+                photoURLs.append(copyURL)
+            }
+        }
+
+        gridActionStatus = "Duplicating…"
+
+        let copyFailures = failures
+        PhotoBakeService.bake(jobs, desaturate: blackAndWhite) { baked, bakeFailures in
+            let total = copyFailures + bakeFailures
+            let what = blackAndWhite ? "Duplicated \(baked.count) in B&W" : "Duplicated \(baked.count)"
+            showGridStatus(total == 0 ? what : "\(what), \(total) failed")
+        }
+    }
+
+    /// Puts a message where the photo counts are, and takes it away again.
+    private func showGridStatus(_ message: String) {
+        gridActionStatus = message
+        let dismissWorkItem = DispatchWorkItem { gridActionStatus = nil }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: dismissWorkItem)
+    }
+
+    // MARK: Trash (right-click "Delete", and ⌫)
 
     // Moves every URL to the macOS Trash (recoverable from there, same as
     // Finder's "Move to Trash") and drops it from every bit of in-memory
@@ -22516,7 +22672,7 @@ struct PhotoShowSheet: View {
         }
     }
 
-    // Called from FolderTreeSidebar's "Add to Bin" — routed back through a
+    // Called from FolderTreeSidebar's "Delete" — routed back through a
     // confirmation dialog here (rather than trashing immediately) since a
     // folder can hold a lot more than a single accidental click should be
     // able to remove.
@@ -22741,6 +22897,24 @@ struct PhotoShowSheet: View {
             guard NSApp.keyWindow?.title == "BriefShow" else {
                 return event
             }
+
+            // A text field has focus, so every key belongs to it — the
+            // sign-in form, the "DELETE" box in the profile modal, a
+            // folder rename. Cmd+V above all: `.gridPaste` below calls
+            // pasteIntoGrid() and then RETURNS NIL, so the keystroke never
+            // reached the field and pasting an email into the sign-in box
+            // was simply impossible. Worse if the client had copied photos
+            // in the grid earlier — that Cmd+V then ran a real file copy
+            // behind the open modal.
+            //
+            // LumenoLab's monitor has had exactly this guard all along
+            // (Develop.swift, `isTyping`); this one never got it, because
+            // until the sign-in modal arrived there was nothing on this
+            // screen to type into.
+            if (NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false {
+                return event
+            }
+
             let spaceKeyCode: UInt16 = 49
             let escapeKeyCode: UInt16 = 53
             let character = event.charactersIgnoringModifiers?.lowercased()
@@ -22904,6 +23078,34 @@ struct PhotoShowSheet: View {
             // The rest of the shortcuts (label toggle, clear all) only
             // apply back in the grid, not while previewing.
             if loupeURLs == nil {
+                // ⌫ / ⌦ — move the selected photos to the Trash. Same
+                // action, and the same confirmation, as the right-click
+                // "Delete" beside it; both end up in trashPhotos(), so
+                // there is one behaviour here rather than two.
+                //
+                // Goes through the confirmation rather than trashing on
+                // the spot because Backspace is the key clients hit by
+                // reflex when they believe they are in a text field. The
+                // typing guard at the top of this monitor keeps it out of
+                // real fields; this covers the reflex everywhere else.
+                //
+                // Plain or ⌘ (Finder's own Move to Trash), and nothing
+                // else: a stray Shift or Option should not delete photos.
+                // Not rebindable, and listed in ShortcutAction.fixed —
+                // Delete meaning delete is set by the platform, the same
+                // reason Esc and the 1-5 ratings are in that list.
+                let deleteKeyCode: UInt16 = 51
+                let forwardDeleteKeyCode: UInt16 = 117
+                let heldModifiers = event.modifierFlags.intersection(KeyCombo.relevantModifiers)
+
+                if event.keyCode == deleteKeyCode || event.keyCode == forwardDeleteKeyCode,
+                   heldModifiers.isEmpty || heldModifiers == [.command],
+                   !selectedURLs.isEmpty {
+                    pendingTrashPhotoURLs = photoURLs.filter { selectedURLs.contains($0) }
+                    isTrashPhotoConfirmationPresented = true
+                    return nil
+                }
+
                 // "x" toggles the liked label on every currently selected
                 // photo (same per-photo toggle as clicking its circle) —
                 // checked by character rather than key code so it still
@@ -23315,7 +23517,7 @@ struct PhotoShowSheet: View {
 // Copy. Cut writes identically: a genuine cross-app "Cut" (the source
 // vanishing only once it's pasted somewhere else) isn't something a
 // third-party app can trigger through public API, so nothing here deletes
-// anything — "Add to Bin" is the only action in either menu that touches
+// anything — "Delete" is the only action in either menu that touches
 // disk.
 private func writeURLsToPasteboard(_ urls: [URL]) {
     guard !urls.isEmpty else {
@@ -24000,7 +24202,7 @@ private struct OpenFolderShape: Shape {
     }
 
     // The root row is the client's whole granted home folder (see
-    // RootFolderAccess) — Copy/Cut, Color Label, and "Add to Bin" are left
+    // RootFolderAccess) — Copy/Cut, Color Label, and "Delete" are left
     // off it entirely (Copy/Cut/coloring it are pointless, and "Add to
     // Bin" on it would trash the client's entire home directory), leaving
     // just New Folder and Paste.
@@ -24068,7 +24270,7 @@ private struct OpenFolderShape: Shape {
         if !isRoot {
             Divider()
 
-            Button("Add to Bin", role: .destructive) {
+            Button("Delete", role: .destructive) {
                 onTrashFolder(node)
             }
         }
@@ -24112,6 +24314,13 @@ private struct ShowHeaderButtonLabel: View {
     var body: some View {
         configuration.label
             .font(.custom("Figtree", size: 12).weight(.semibold))
+            // "LumenoLab" was wrapping to "LumenoLa / b" once the header
+            // had one more control in it. A button label that wraps reads
+            // as a rendering fault, so these hold their width instead and
+            // the row gets tight, which is the honest way to run out of
+            // space. Shared style, so every header button gets it.
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink)
             .scaleEffect(configuration.isPressed ? 0.98 : (isHovered ? 1.1 : 1))
             .animation(.linear(duration: 0.1), value: isHovered)

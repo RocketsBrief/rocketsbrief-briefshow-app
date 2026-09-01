@@ -82,11 +82,29 @@ final class AccountManager: ObservableObject {
     @Published var pendingConfirmationEmail: String?
     @Published var credits: Int?
 
+    /// Set only when the SERVER took this Mac's seat away (the same
+    /// account signed in on another computer). Kept separate from
+    /// `errorMessage` because it isn't a failed action the client just
+    /// attempted — it's an explanation for a sign-in screen that appeared
+    /// on its own, and it has to survive the sign-out that clears
+    /// everything else.
+    @Published var forcedSignOutMessage: String?
+
     private init() {
         session = KeychainStore.load()
         if session != nil {
             Task { await refreshSessionIfNeeded() }
         }
+    }
+
+    /// Signed out by the server, not by the client. Everything local goes
+    /// (including the Keychain copy, or the next launch would restore a
+    /// session this Mac no longer owns), and the reason stays on screen.
+    func forceSignOut(message: String) {
+        session = nil
+        credits = nil
+        KeychainStore.clear()
+        forcedSignOutMessage = message
     }
 
     var isSignedIn: Bool {
@@ -95,6 +113,7 @@ final class AccountManager: ObservableObject {
 
     func signUp(name: String, email: String, password: String) async {
         errorMessage = nil
+        forcedSignOutMessage = nil
         pendingConfirmationEmail = nil
         isBusy = true
         defer { isBusy = false }
@@ -128,7 +147,7 @@ final class AccountManager: ObservableObject {
             }
 
             if json["access_token"] as? String != nil {
-                await performAuthRequest(request, fallbackName: name)
+                await performAuthRequest(request, fallbackName: name, claimsSeat: true)
                 return
             }
 
@@ -148,6 +167,7 @@ final class AccountManager: ObservableObject {
 
     func signIn(email: String, password: String) async {
         errorMessage = nil
+        forcedSignOutMessage = nil
         isBusy = true
         defer { isBusy = false }
 
@@ -161,11 +181,19 @@ final class AccountManager: ObservableObject {
         let body: [String: Any] = ["email": email, "password": password]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        await performAuthRequest(request, fallbackName: nil)
+        await performAuthRequest(request, fallbackName: nil, claimsSeat: true)
     }
 
     func signOut() {
+        // Hand the seat back before the token is thrown away — the
+        // release call needs it to authenticate, so this cannot be moved
+        // below the clear.
+        if let current = session {
+            Task { await SeatManager.shared.releaseSeat(session: current) }
+        }
+
         session = nil
+        credits = nil
         KeychainStore.clear()
     }
 
@@ -179,10 +207,16 @@ final class AccountManager: ObservableObject {
         request.setValue(RocketsBriefConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["refresh_token": current.refreshToken])
 
-        await performAuthRequest(request, fallbackName: current.name, existingAvatarKey: current.avatarKey)
+        await performAuthRequest(request, fallbackName: current.name, existingAvatarKey: current.avatarKey, claimsSeat: false)
     }
 
-    private func performAuthRequest(_ request: URLRequest, fallbackName: String?, existingAvatarKey: String? = nil) async {
+    /// `claimsSeat` separates the two reasons this runs. A real sign-in
+    /// CLAIMS a seat — that is what makes this Mac the newest one and
+    /// pushes the oldest Mac off when the email is at its limit. A token
+    /// refresh must not: it happens on every launch, and claiming there
+    /// would make two Macs take turns evicting each other forever, every
+    /// time either one was opened.
+    private func performAuthRequest(_ request: URLRequest, fallbackName: String?, existingAvatarKey: String? = nil, claimsSeat: Bool) async {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -230,6 +264,10 @@ final class AccountManager: ObservableObject {
             session = newSession
             KeychainStore.save(newSession)
             await fetchCredits()
+
+            if claimsSeat {
+                await SeatManager.shared.claimSeat()
+            }
         } catch {
             errorMessage = "Couldn't reach RocketsBrief. Check your internet connection."
         }

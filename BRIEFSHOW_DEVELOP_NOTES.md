@@ -197,6 +197,64 @@ upis — i tek tada ima smisla gledati na `is_locked` kao na završen posao.
 | 66 | **Reset po sloju, Select Sky, Change Sky** — sedam nacrtanih neba |
 | 67 | **Maska neba izmerena na pravoj slici**, ručke i rotacija na sloju |
 
+#### INTEL RADI OPET — `Float16` iza `#if arch(arm64)` (rešeno 1.09.)
+
+Napravljeno posle merenja ispod: ceo `DevelopSDInpaint.swift` je iza
+`#if arch(arm64)`, a `#else` grana daje stub sa imenima koja ostatak app-e čita
+(`defaultPrompt`, `defaultFeather`, `isDebugging`, `warmUp()`, `aiRemoval`).
+Stub je **namerno minimalan** — nova upotreba SD-a treba da PADNE na prevođenju
+za Intel, a ne da tamo tiho ne radi ništa.
+
+**⚠️ `squareRegion` je moralo VAN kapije.** Živi u tom fajlu ali ga koristi i
+LaMa put, i nema nikakve veze sa Float16 — prvi pokušaj je zato pao sa
+`cannot find 'squareRegion' in scope`. Sad stoji u zasebnom `extension`-u iznad
+`#if`, sa komentarom zašto.
+
+Provereno: `lipo -archs` → `x86_64 arm64`, verzija 10.1, 138 MB.
+
+Na Intelu otpada **samo Generative Clean Up**, i dugme to i kaže umesto da puca
+posle klika (`cleanUpUnavailableReason`). Quick AI Clean Up radi — LaMa je
+Float32 i u bundle-u, a CoreML na Intelu ide preko CPU/GPU.
+
+**Nije prepisivano u Float32 namerno:** SD 1.5 na dvanaest koraka kroz Radeon je
+dovoljno spor da bi ga bilo gore ponuditi nego nemati.
+
+#### ⚠️ ŠTA JE BILO — `Float16`, tvrda greška prevođenja
+
+Izmereno 1.09. pri pravljenju univerzalnog build-a:
+
+```
+DevelopSDInpaint.swift:509: error: 'Float16' is unavailable in macOS
++ još 6 grešaka na istom mestu
+```
+
+**`Float16` postoji samo na arm64.** `DevelopSDInpaint.swift` ga koristi na 8
+mesta za pakovanje tenzora. Dakle app se za `x86_64` **ne prevodi uopšte** — nije
+u pitanju „radiće sporije", nego se ne može ni napraviti.
+
+Posledica: 10.1 napravljen danas je **samo arm64**. Stara 6.0 arhiva
+(`build/UniversalRelease/`) JESTE univerzalna (`x86_64 arm64`) jer je starija od
+SD koda. **Ako se 10.1 okači ovakav, kompanijski Intel Mac ostaje bez app-e —
+neće se pokrenuti, ne sporo, nego nikako.**
+
+Dva izlaza:
+
+1. **`#if arch(arm64)` oko SD puta.** App opet univerzalna; Generative Clean Up
+   prosto ne postoji na Intelu, a sve ostalo radi — uključujući Quick AI Clean Up,
+   jer je LaMa u bundle-u i CoreML na Intelu radi preko CPU/GPU. Preporučeno.
+2. **Prepisati pakovanje tenzora u Float32.** Više posla, a SD na Intel Radeonu
+   bi ionako bio spor do neupotrebljivosti.
+
+**⚠️ I SD ionako ne radi ni na jednom klijentovom Mac-u.** `SDModelStore` traži
+modele u Application Support (`installedDirectory`) pa na Desktopu
+(`developmentDirectory`). Prvo mesto **niko ne popunjava** — preuzimanja nema,
+`installedDirectory` se u celom kodu samo čita. Drugo postoji samo na ovoj
+mašini. Klijent dobija „models missing".
+
+Brojke, mereno: app je **125 MB** (LaMa unutra, 99 MB). SD je **2,14 GB** i
+namerno nije u bundle-u. GitHub Releases prima do 2 GB po fajlu, pa SD ne može ni
+kao zaseban asset — mora da se deli ili da se hostuje drugde.
+
 #### ⚠️ SLEDEĆE — NEBO (dogovoreno za veče 1.09.)
 
 Sve ostalo iz ove sesije je potvrđeno na ekranu („super sve radi"). **Nebo nije.**

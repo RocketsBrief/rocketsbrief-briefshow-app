@@ -7159,6 +7159,18 @@ struct DevelopView: View {
         if !removalAreaFits(engine) {
             return engine.oversizeReason
         }
+        // Generative Clean Up does not exist on an Intel Mac: its tensor
+        // packing is Float16, which x86_64 macOS has no such type for, so
+        // the pipeline is compiled out entirely (see DevelopSDInpaint.swift).
+        // Said here, where the button already explains itself, rather than
+        // letting the client press it and read an error afterwards.
+        if engine == .generative, !SDInpaintPipeline.shared.isModelInstalled {
+            #if arch(arm64)
+            return "The Generative Clean Up model is not installed on this Mac. Quick AI Clean Up works without it."
+            #else
+            return "Generative Clean Up needs an Apple Silicon Mac. Quick AI Clean Up works here."
+            #endif
+        }
         return nil
     }
 

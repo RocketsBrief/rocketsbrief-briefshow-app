@@ -24,6 +24,80 @@ import Foundation
 // one-button path never loads the 235 MB text encoder at all. Editing the
 // prompt is what pulls it (and DevelopCLIPTokenizer.swift) into play.
 
+// ⚠️ APPLE SILICON ONLY, and the reason is a compiler error, not a policy.
+//
+// Everything below packs tensors as `Float16`, which is the layout the
+// converted UNet expects — and `Float16` DOES NOT EXIST on x86_64 macOS.
+// Building this file for Intel fails outright with seven copies of
+// "'Float16' is unavailable in macOS"; it is not a matter of running slower.
+//
+// So the whole file is arm64-only, and the `#else` at the bottom supplies the
+// handful of names the rest of the app reads — the defaults, the debug flag,
+// `warmUp()` and `aiRemoval` — as a stub that reports the feature as
+// unavailable. Everything else in the app is architecture-neutral: BriefShow,
+// ShowGrid, LumenoLab, and Quick AI Clean Up (LaMa is Float32 and ships inside
+// the bundle) all work on Intel, where CoreML falls back to CPU/GPU.
+//
+// Rewriting the packing in Float32 would make Generative Clean Up compile for
+// Intel, and it is deliberately NOT done: SD 1.5 at twelve steps through a
+// Radeon is slow enough that offering it would be worse than not having it.
+// If that changes, this is the one file to revisit.
+
+// MARK: - Shared with the LaMa path, so NOT behind the arm64 gate
+
+extension InpaintPipeline {
+    /// A square window around the hole, because the converted models only
+    /// accept 512x512 and a non-square region would be squashed into it.
+    ///
+    /// The side is twice the hole's longest edge — the prototype's ratio, and
+    /// enough surrounding photo for the model to see what it is continuing —
+    /// clamped to the frame and then slid (not shrunk) back inside it, so a
+    /// subject against the edge keeps its full context instead of losing half
+    /// of it to the crop.
+    static func squareRegion(around maskBox: CGRect, in extent: CGRect) -> CGRect? {
+        let limit = min(extent.width, extent.height)
+        guard limit >= 8 else { return nil }
+
+        // Never SMALLER than the 512 the models run at: a smaller window would
+        // be upscaled into them, and the model would be reading a blurred,
+        // detail-free version of the photo — which is exactly when SD stops
+        // continuing the scene and starts inventing. 512 is the floor.
+        //
+        // The context ratio was the prototype's 2.0 and is now 1.6, to answer
+        // "the generative tool leaves a blurry patch and Quick does not".
+        //
+        // The blur is arithmetic, not a prompt or a model failing. This region
+        // is resampled INTO a fixed 512 buffer — the checkpoint was converted
+        // at that size and its input shape is not flexible — and the fill comes
+        // back out scaled up by however much it was scaled down. At 2.0 a
+        // 800px hole meant a 1600px region, so every synthesized pixel was
+        // stretched over 3.1 real ones. Quick has no such problem for two
+        // reasons: it works at up to maxWorkingEdge = 1100, not 512, and it
+        // COPIES real pixels out of the surrounding photo instead of
+        // synthesizing them, so what it puts back is as sharp as what it took.
+        //
+        // 1.6 spends the 512 on the hole rather than on context: the same
+        // 800px hole now stretches 2.5x instead of 3.1x. It is a real trade —
+        // less surrounding photo for the model to read is exactly the
+        // direction that makes SD invent — so it was moved partway, not to
+        // the 1.0 that would sharpen it most.
+        //
+        // The only way to remove the stretch entirely is to run the model over
+        // overlapping 512 tiles at native resolution. That is the real fix and
+        // a much bigger one; nothing here approaches it.
+        let side = min(max(max(maskBox.width, maskBox.height) * 1.6, CGFloat(SDInpaintPipeline.imageSide)), limit).rounded()
+        let centre = CGPoint(x: maskBox.midX, y: maskBox.midY)
+        var origin = CGPoint(x: centre.x - side / 2, y: centre.y - side / 2)
+        origin.x = min(max(origin.x, extent.minX), extent.maxX - side)
+        origin.y = min(max(origin.y, extent.minY), extent.maxY - side)
+
+        let region = CGRect(x: origin.x, y: origin.y, width: side, height: side).integral
+        return region.width >= 8 && region.height >= 8 ? region : nil
+    }
+}
+
+#if arch(arm64)
+
 // MARK: - Where the weights live
 
 enum SDModelStore {
@@ -1004,52 +1078,74 @@ extension InpaintPipeline {
             blurRadius: InpaintPipeline.featherRadius(feather, originalKnown: originalKnown, side: side))
     }
 
-    /// A square window around the hole, because the converted models only
-    /// accept 512x512 and a non-square region would be squashed into it.
-    ///
-    /// The side is twice the hole's longest edge — the prototype's ratio, and
-    /// enough surrounding photo for the model to see what it is continuing —
-    /// clamped to the frame and then slid (not shrunk) back inside it, so a
-    /// subject against the edge keeps its full context instead of losing half
-    /// of it to the crop.
-    static func squareRegion(around maskBox: CGRect, in extent: CGRect) -> CGRect? {
-        let limit = min(extent.width, extent.height)
-        guard limit >= 8 else { return nil }
+}
 
-        // Never SMALLER than the 512 the models run at: a smaller window would
-        // be upscaled into them, and the model would be reading a blurred,
-        // detail-free version of the photo — which is exactly when SD stops
-        // continuing the scene and starts inventing. 512 is the floor.
-        //
-        // The context ratio was the prototype's 2.0 and is now 1.6, to answer
-        // "the generative tool leaves a blurry patch and Quick does not".
-        //
-        // The blur is arithmetic, not a prompt or a model failing. This region
-        // is resampled INTO a fixed 512 buffer — the checkpoint was converted
-        // at that size and its input shape is not flexible — and the fill comes
-        // back out scaled up by however much it was scaled down. At 2.0 a
-        // 800px hole meant a 1600px region, so every synthesized pixel was
-        // stretched over 3.1 real ones. Quick has no such problem for two
-        // reasons: it works at up to maxWorkingEdge = 1100, not 512, and it
-        // COPIES real pixels out of the surrounding photo instead of
-        // synthesizing them, so what it puts back is as sharp as what it took.
-        //
-        // 1.6 spends the 512 on the hole rather than on context: the same
-        // 800px hole now stretches 2.5x instead of 3.1x. It is a real trade —
-        // less surrounding photo for the model to read is exactly the
-        // direction that makes SD invent — so it was moved partway, not to
-        // the 1.0 that would sharpen it most.
-        //
-        // The only way to remove the stretch entirely is to run the model over
-        // overlapping 512 tiles at native resolution. That is the real fix and
-        // a much bigger one; nothing here approaches it.
-        let side = min(max(max(maskBox.width, maskBox.height) * 1.6, CGFloat(SDInpaintPipeline.imageSide)), limit).rounded()
-        let centre = CGPoint(x: maskBox.midX, y: maskBox.midY)
-        var origin = CGPoint(x: centre.x - side / 2, y: centre.y - side / 2)
-        origin.x = min(max(origin.x, extent.minX), extent.maxX - side)
-        origin.y = min(max(origin.y, extent.minY), extent.maxY - side)
+#else
 
-        let region = CGRect(x: origin.x, y: origin.y, width: side, height: side).integral
-        return region.width >= 8 && region.height >= 8 ? region : nil
+// MARK: - Intel stand-in
+
+/// What the rest of the app can still ask for on a Mac where the real
+/// pipeline above cannot be compiled. Every name here is one that something
+/// outside this file reads; nothing more is provided, on purpose, so that
+/// adding a new use of SD fails to build on Intel rather than silently
+/// doing nothing there.
+enum SDModelStore {
+    static var isAvailable: Bool { false }
+}
+
+final class SDInpaintPipeline {
+    static let shared = SDInpaintPipeline()
+
+    // The same values the real pipeline publishes, because they are read as
+    // plain defaults elsewhere (LaMa's feather, the panel's initial state)
+    // and have nothing to do with whether SD can run.
+    static let defaultPrompt = "empty background, plain continuous surface, uniform texture, seamless continuation"
+    static let defaultNegativePrompt = "person, people, human, face, body, animal, object, sign, text, letters, watermark, logo, ornament, duplicate"
+    static let defaultFeather = 0.35
+    static let defaultSteps = 12
+    // Read by squareRegion, which is shared with the LaMa path and so lives
+    // outside the gate.
+    static let imageSide = 512
+    static let defaultRefineStrength: Float? = 0.3
+    static let isDebugging = false
+
+    enum Failure: Error, LocalizedError {
+        case unsupportedArchitecture
+
+        var errorDescription: String? {
+            "Generative Clean Up needs an Apple Silicon Mac. Everything else, including Quick AI Clean Up, works here."
+        }
+    }
+
+    private init() {}
+
+    var isModelInstalled: Bool { false }
+
+    /// A no-op rather than a fatalError: the app warms the model up on launch
+    /// without asking whether it exists, and launching is not the moment to
+    /// find out this Mac is an Intel one.
+    func warmUp() {}
+}
+
+extension InpaintPipeline {
+    static func aiRemoval(
+        mask: CIImage,
+        from image: CIImage,
+        context: CIContext,
+        prompt: String = SDInpaintPipeline.defaultPrompt,
+        negativePrompt: String = SDInpaintPipeline.defaultNegativePrompt,
+        feather: Double = SDInpaintPipeline.defaultFeather,
+        steps: Int = SDInpaintPipeline.defaultSteps,
+        seed: UInt64 = 3,
+        refineStrength: Float? = SDInpaintPipeline.defaultRefineStrength,
+        progress: ((Int, Int) -> Void)? = nil,
+        shouldContinue: @escaping () -> Bool = { true }
+    ) throws -> Removal? {
+        // Throws rather than returning nil: nil means "there was nothing to
+        // do", and this is "this cannot be done here", which the client
+        // should be told in those words.
+        throw SDInpaintPipeline.Failure.unsupportedArchitecture
     }
 }
+
+#endif

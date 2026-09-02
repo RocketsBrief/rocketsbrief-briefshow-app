@@ -21107,11 +21107,35 @@ struct PhotoShowSheet: View {
     // on every frame was half of why that drag shook.
     @State private var sidebarWidthLive: Double?
     @State private var sidebarWidthAtDragStart: Double?
+    // How wide the sidebar+grid row actually is, measured. The drag needs it:
+    // 560 is the widest the tree is ALLOWED to be, not the widest it can be in
+    // a given window, and those two are different numbers on a small screen.
+    @State private var showGridRowWidth: Double = 0
 
     private static let sidebarMinWidth: Double = 180
     private static let sidebarMaxWidth: Double = 560
+    // What the grid keeps no matter how far the splitter is dragged. Roughly
+    // two thumbnails and their padding — below this the photos are not a grid
+    // any more, they are a column, and the header runs out of room first.
+    private static let sidebarMinGridWidth: Double = 460
 
-    private var effectiveSidebarWidth: Double { sidebarWidthLive ?? sidebarWidth }
+    // Clamped, not raw: a width stored on a big display would otherwise come
+    // back at 560 in a window half that size and squeeze the grid out from
+    // the first frame, before anyone touched the splitter. Only what is drawn
+    // is clamped — the stored preference keeps the client's number, so the
+    // panel returns to its full width on the big screen.
+    private var effectiveSidebarWidth: Double {
+        min(sidebarWidthLive ?? sidebarWidth, sidebarDragMaxWidth)
+    }
+
+    // The upper bound the splitter honours: never wider than the fixed cap,
+    // and never so wide that the grid is left with less than it needs. Falls
+    // back to the fixed cap until the row has been measured once.
+    private var sidebarDragMaxWidth: Double {
+        guard showGridRowWidth > 0 else { return Self.sidebarMaxWidth }
+        return max(Self.sidebarMinWidth,
+                   min(Self.sidebarMaxWidth, showGridRowWidth - Self.sidebarMinGridWidth))
+    }
 
     @State private var loupeImages: [URL: NSImage] = [:]
     // The pixel size each loupe image was decoded at. Without this, the first
@@ -21301,7 +21325,10 @@ struct PhotoShowSheet: View {
                             onNewFolder: { node in
                                 createNewFolder(in: node.url)
                             },
-                            onTrashFolder: requestTrashFolder
+                            onTrashFolder: requestTrashFolder,
+                            onDropItems: { urls, destination in
+                                handleDropOnFolder(urls, destination: destination)
+                            }
                         )
                     }
                     .frame(width: CGFloat(effectiveSidebarWidth))
@@ -21321,6 +21348,25 @@ struct PhotoShowSheet: View {
                     showGridFooter
                 }
             }
+            // Pinned to the LEADING edge and clipped, so the folder tree can
+            // never leave the window through the left side again. If this row
+            // ever asks for more width than it is given — one incompressible
+            // control too many in the header, a very narrow window — SwiftUI
+            // would otherwise centre the overflow and spend half of it on the
+            // left, where the sidebar is. Anchored here, a shortfall is spent
+            // on the right, where it is visible and where the header's own
+            // truncation absorbs it. The header no longer overflows at all
+            // (see ShowHeaderButtonLabel); this is the guarantee that it
+            // cannot matter if something in it starts to again.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { showGridRowWidth = proxy.size.width }
+                        .onChange(of: proxy.size.width) { showGridRowWidth = $0 }
+                }
+            )
 
             if let loupeURLs, !loupeURLs.isEmpty {
                 loupeOverlay(for: loupeURLs)
@@ -21490,6 +21536,27 @@ struct PhotoShowSheet: View {
         }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             loadDroppedFileURLs(from: providers) { urls in
+                // ⚠️ A photo that is ALREADY in this grid, dropped back onto
+                // this grid, is not an import — it is the grid's own photo
+                // coming home, and there is nothing to do.
+                //
+                // This is the bug reported as *„ako uhvatim sliku i pustim je u
+                // istom folderu ta slika ostaje sve se druge izgube"*, and it
+                // is worse than it sounds: importShowPhotos ASSIGNS photoURLs
+                // rather than adding to it, so releasing one photo over the
+                // grid it came from replaced all 101 of them with that one.
+                // Nothing was deleted from disk, but the folder emptied out on
+                // screen, which is indistinguishable at the moment it happens.
+                //
+                // The test is on the CONTENT, not on a "drag started inside
+                // BriefShow" flag: `onDrag` has no matching "drag ended", so
+                // such a flag has no honest moment to be cleared and would
+                // start swallowing real imports the first time a drag was
+                // abandoned.
+                if !urls.isEmpty, urls.allSatisfy({ photoURLs.contains($0) }) {
+                    return
+                }
+
                 // Dragging a single whole folder in opens it exactly like
                 // clicking it in the tree would — sets it as the current
                 // selection and lets the onChange below load its images,
@@ -21629,7 +21696,7 @@ struct PhotoShowSheet: View {
                         // LumenoLab's is minus for the mirror-image reason.
                         sidebarWidthLive = min(max(start + value.translation.width,
                                                    Self.sidebarMinWidth),
-                                               Self.sidebarMaxWidth)
+                                               sidebarDragMaxWidth)
                     }
                     .onEnded { _ in
                         if let live = sidebarWidthLive {
@@ -21721,6 +21788,11 @@ struct PhotoShowSheet: View {
                     Text(gridActionStatus ?? gridCountsSummary)
                         .font(.custom("Figtree", size: 12).weight(.medium))
                         .foregroundColor(AppColors.muted)
+                        // One line: "184 photos · 12 labeled · 5 starred · 9
+                        // rejected" is long enough to wrap in a narrow window,
+                        // and a wrapping status line makes the header taller
+                        // rather than tighter.
+                        .lineLimit(1)
                 }
             }
 
@@ -22319,6 +22391,87 @@ struct PhotoShowSheet: View {
             }
             .frame(width: cellWidth)
         }
+        // Pick a photo up out of the grid and drop it on a folder in the tree.
+        // The provider carries this ONE photo; if it turns out to be part of
+        // the current selection, the drop takes the whole selection — see
+        // handleDropOnFolder, which is where that has to be decided, since the
+        // provider is built before anyone knows where it will land.
+        //
+        // A `public.file-url` provider, so the same drag also works into
+        // Finder, where it copies. Inside BriefShow it MOVES, by the client's
+        // decision.
+        .onDrag {
+            NSItemProvider(object: url as NSURL)
+        } preview: {
+            dragPreview(for: url)
+        }
+    }
+
+    /// What the pointer carries while a photo is being dragged.
+    ///
+    /// Without a preview, macOS drags a full-size copy of the view — which at
+    /// this zoom is most of the window, and the client could not see the folder
+    /// they were aiming at underneath it. Reported exactly that way.
+    ///
+    /// One photo is one small card. A multi-selection is a fanned stack of at
+    /// most TWO, plus a count — two because even three read as a smear at this
+    /// size, and the number is what actually says how many are moving.
+    private func dragPreview(for url: URL) -> some View {
+        let isMultiDrag = selectedURLs.contains(url) && selectedURLs.count > 1
+        let ordered = photoURLs.filter { selectedURLs.contains($0) }
+        // The dragged photo on top of the pile, whatever its place in the grid:
+        // it is the one under the pointer, so it is the one the client expects
+        // to see.
+        let stack: [URL] = isMultiDrag
+            ? [url] + ordered.filter { $0 != url }.prefix(1)
+            : [url]
+        // 20% down from the 74 this started at: small enough that the folder
+        // being aimed at stays visible under it, which is the whole point of
+        // having a preview at all.
+        let side: CGFloat = 59
+
+        return ZStack {
+            // Drawn back to front, so `stack[0]` — the photo actually picked up
+            // — ends up on top. Each card behind it is turned a little further
+            // and pushed a little further out, which is what reads as a handful
+            // of pictures rather than one thick one.
+            ForEach(Array(stack.enumerated()).reversed(), id: \.element) { index, stackURL in
+                Group {
+                    if let image = gridThumbnails[stackURL] {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        Rectangle().fill(AppColors.panel)
+                    }
+                }
+                .frame(width: side, height: side)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.white.opacity(0.9), lineWidth: 1.5)
+                )
+                .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+                .rotationEffect(.degrees(Double(index) * 7))
+                .offset(x: CGFloat(index) * 7, y: CGFloat(index) * 4)
+            }
+
+            if isMultiDrag {
+                Text("\(ordered.count)")
+                    .font(.custom("Figtree", size: 12).weight(.bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.black.opacity(0.78)))
+                    .overlay(Capsule().stroke(Color.white.opacity(0.85), lineWidth: 1))
+                    // Pinned to the top-left corner of the front card, which is
+                    // the corner the fan does NOT spread into.
+                    .offset(x: -side / 2 + 4, y: -side / 2 + 4)
+            }
+        }
+        // Room for the fan and the badge to stick out. A preview is clipped to
+        // its own frame, and the turned cards reach past the front one.
+        .frame(width: side + 26, height: side + 22)
     }
 
     // Right-click menu on a grid thumbnail. Acts on the whole current
@@ -23020,6 +23173,87 @@ struct PhotoShowSheet: View {
         }
 
         let isMove = isPasteboardOurCut
+        transferItems(sourceURLs, into: destinationFolder, isMove: isMove)
+
+        // A cut clipboard is consumed by its first paste, same as Finder —
+        // pasting again would just fail since the originals are gone. A
+        // copied clipboard stays put so it can be pasted into several
+        // folders in a row.
+        if isMove {
+            clipboardURLs = []
+            clipboardIsCut = false
+        }
+    }
+
+    /// Moves photos or folders into `destinationFolder` and puts the screen
+    /// back in order afterwards.
+    ///
+    /// Split out of pasteClipboard so that dragging something onto a folder in
+    /// the tree and pasting it there are the SAME operation — the clean-up
+    /// after a move (dropping the moved files out of the grid, out of the
+    /// selection and out of the three thumbnail caches, reloading the
+    /// destination if it happens to be open, and coping with the open folder
+    /// itself having been moved) is fiddly enough that a second copy of it
+    /// would have drifted from this one within a week.
+    ///
+    /// ⚠️ Dropping onto a folder ALWAYS MOVES — chosen by the client, no ⌥ to
+    /// copy and no same-disk/other-disk branch. Which is why the drop target is
+    /// marked while dragging and the drop is only taken by the row actually
+    /// under the pointer: a move to the wrong folder is not undoable from here.
+    private func moveItems(_ sourceURLs: [URL], into destinationFolder: URL) {
+        transferItems(sourceURLs, into: destinationFolder, isMove: true)
+    }
+
+    /// What a drop on a folder row in the tree actually does.
+    ///
+    /// The dragged item is one photo or one folder. If it is a photo that is
+    /// part of the current selection, the WHOLE selection goes — the same
+    /// thing Finder does, and the only reading that makes sense when the
+    /// client has just selected twelve photos and picked one of them up.
+    ///
+    /// Refuses, rather than half-does, the two drops that would destroy
+    /// something: a folder onto itself, and a folder into its own descendant
+    /// (which would move a directory inside itself and lose it).
+    private func handleDropOnFolder(_ droppedURLs: [URL], destination: URL) -> Bool {
+        guard !droppedURLs.isEmpty else { return false }
+
+        let destinationPath = destination.standardizedFileURL.path
+
+        var sources = droppedURLs
+        if droppedURLs.count == 1,
+           let dragged = droppedURLs.first,
+           selectedURLs.contains(dragged),
+           selectedURLs.count > 1 {
+            // Ordered by the grid rather than by the Set, so the "1 of 12"
+            // counting and any name collisions resolve in the order the client
+            // sees on screen instead of an arbitrary one.
+            sources = photoURLs.filter { selectedURLs.contains($0) }
+        }
+
+        sources = sources.filter { source in
+            let sourcePath = source.standardizedFileURL.path
+            // Onto itself.
+            if sourcePath == destinationPath { return false }
+            // Already in there — nothing to do, and moveItem would fail
+            // trying to move something onto itself.
+            if source.deletingLastPathComponent().standardizedFileURL.path == destinationPath { return false }
+            // Into its own descendant. The trailing "/" matters: without it
+            // "/a/b" reads as a prefix of "/a/bc", which is a different folder.
+            if destinationPath.hasPrefix(sourcePath + "/") { return false }
+            return true
+        }
+
+        guard !sources.isEmpty else { return false }
+
+        moveItems(sources, into: destination)
+        return true
+    }
+
+    private func transferItems(_ sourceURLs: [URL], into destinationFolder: URL, isMove: Bool) {
+        guard !sourceURLs.isEmpty else {
+            return
+        }
+
         let fileManager = FileManager.default
 
         var movedAwayURLs: [URL] = []
@@ -23058,15 +23292,6 @@ struct PhotoShowSheet: View {
             } else {
                 try? fileManager.copyItem(at: sourceURL, to: destinationURL)
             }
-        }
-
-        // A cut clipboard is consumed by its first paste, same as Finder —
-        // pasting again would just fail since the originals are gone. A
-        // copied clipboard stays put so it can be pasted into several
-        // folders in a row.
-        if isMove {
-            clipboardURLs = []
-            clipboardIsCut = false
         }
 
         if !movedAwayURLs.isEmpty {
@@ -24211,6 +24436,10 @@ private struct FolderTreeSidebar: View {
     let onPasteIntoFolder: (FolderNode) -> Void
     let onNewFolder: (FolderNode) -> Void
     let onTrashFolder: (FolderNode) -> Void
+    /// Photos or folders dropped onto one of these rows. Returns whether the
+    /// drop was taken, which is what tells AppKit to draw the "accepted"
+    /// animation rather than the item springing back.
+    let onDropItems: (_ urls: [URL], _ destination: URL) -> Bool
 
     // Which folders' disclosure triangles are currently open. Unlike
     // OutlineGroup (which manages expansion internally with no outside
@@ -24226,6 +24455,13 @@ private struct FolderTreeSidebar: View {
     // can't hold since it's a plain function, not its own View struct)
     // works fine here since only one row is ever hovered at a time.
     @State private var hoveredURL: URL?
+
+    // Which row something is currently being dragged OVER. Kept apart from
+    // hoveredURL on purpose: hovering scales the name up a little, and that is
+    // the wrong signal for a drop — a drop MOVES files and cannot be undone
+    // from here, so the row it would land in has to be unmistakable rather
+    // than merely emphasised.
+    @State private var dropTargetURL: URL?
 
     // Which color (if any) each folder is tagged with, keyed by the
     // folder's standardized path (see the doc comment on
@@ -24430,6 +24666,7 @@ private struct OpenFolderShape: Shape {
     private func row(for node: FolderNode, depth: Int) -> some View {
         let isSelected = selectedURL == node.url
         let isHovered = hoveredURL == node.url
+        let isDropTarget = dropTargetURL == node.url
         // Only a folder that HAS children can be open; a leaf sitting in
         // expandedURLs (which can happen, since a plain tap inserts before
         // the children are known) must still draw as closed.
@@ -24511,9 +24748,48 @@ private struct OpenFolderShape: Shape {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? AppColors.panel : Color.clear)
+                .fill(isDropTarget ? AppColors.hoverInk.opacity(0.22)
+                                   : (isSelected ? AppColors.panel : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(AppColors.hoverInk, lineWidth: isDropTarget ? 2 : 0)
         )
         .contentShape(Rectangle())
+        // A folder can be picked up and dropped on another folder, which is
+        // the second half of "and everything else in BriefShow" — the tree
+        // was already a drop target for photos by the time this was added,
+        // and a tree you can drop into but not drag from is half a tree.
+        .onDrag {
+            NSItemProvider(object: node.url as NSURL)
+        }
+        .onDrop(
+            of: [UTType.fileURL],
+            isTargeted: Binding(
+                get: { dropTargetURL == node.url },
+                set: { targeted in
+                    if targeted {
+                        dropTargetURL = node.url
+                    } else if dropTargetURL == node.url {
+                        // Same stale-clear guard the hover above needs: the
+                        // pointer can already be over the next row by the time
+                        // this row's "false" arrives.
+                        dropTargetURL = nil
+                    }
+                }
+            )
+        ) { providers in
+            dropTargetURL = nil
+            // Reading a provider is asynchronous, so the answer here cannot
+            // depend on the move having happened. `true` says "this row takes
+            // file drops", which is what makes the drop animate into the row
+            // instead of springing back; whether any particular item survives
+            // the guards is decided in handleDropOnFolder a moment later.
+            loadDroppedURLs(from: providers) { urls in
+                _ = onDropItems(urls, node.url)
+            }
+            return true
+        }
         .onHover { hovering in
             // Guards against a stale clear: if the pointer has already
             // moved straight onto the next row by the time this row's
@@ -24543,6 +24819,32 @@ private struct OpenFolderShape: Shape {
         }
         .contextMenu {
             folderContextMenuItems(for: node, isRoot: node.url == rootNode.url)
+        }
+    }
+
+    /// Pulls the file URLs out of a drop's providers.
+    ///
+    /// Each provider answers on its own queue, so the collected list is guarded
+    /// by a serial queue rather than appended to from wherever each callback
+    /// lands — several photos dropped at once is exactly the case where an
+    /// unguarded array quietly loses one.
+    private func loadDroppedURLs(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
+        var urls: [URL] = []
+        let lock = DispatchQueue(label: "briefshow.folderdrop.collect")
+        let group = DispatchGroup()
+
+        for provider in providers {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url {
+                    lock.sync { urls.append(url) }
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            completion(urls)
         }
     }
 
@@ -24666,11 +24968,24 @@ private struct ShowHeaderButtonLabel: View {
             .font(.custom("Figtree", size: 12).weight(.semibold))
             // "LumenoLab" was wrapping to "LumenoLa / b" once the header
             // had one more control in it. A button label that wraps reads
-            // as a rendering fault, so these hold their width instead and
-            // the row gets tight, which is the honest way to run out of
-            // space. Shared style, so every header button gets it.
+            // as a rendering fault, so it stays on one line. Shared style,
+            // so every header button gets it.
+            //
+            // `.lineLimit(1)` is what stops the wrapping. The `.fixedSize`
+            // that used to stand next to it did something else, and that
+            // something else was a bug: it made every header button
+            // INCOMPRESSIBLE. With a folder open the ShowGrid header holds
+            // seven of them plus the zoom slider — together ~1230pt that
+            // could not give an inch — so the header, and with it the whole
+            // sidebar+grid row, reported a minimum WIDER than the window.
+            // A stack that overflows its parent gets centred in it, so the
+            // surplus hung off BOTH edges and the folder tree slid out
+            // through the left one, further with every point the client
+            // dragged the splitter. Truncating instead is the honest way to
+            // run out of space; at any width that fits, nothing truncates
+            // and nothing looks different.
             .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
+            .truncationMode(.tail)
             .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink)
             .scaleEffect(configuration.isPressed ? 0.98 : (isHovered ? 1.1 : 1))
             .animation(.linear(duration: 0.1), value: isHovered)

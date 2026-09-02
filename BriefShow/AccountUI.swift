@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct ProfileSettingsRow: View {
+    // Same reason as ProfileBadge: AppColors alone does not subscribe to
+    // anything, so without this the view keeps the theme it was first drawn in.
+    @ObservedObject private var themeManager = ThemeManager.shared
     let icon: String
     let title: String
     var tint: Color? = nil
@@ -60,6 +63,15 @@ struct ProfileSettingsRow: View {
 
 struct ProfileBadge: View {
     let session: RocketsBriefSession
+    // ⚠️ Without this subscription the view keeps whatever theme was current
+    // when it was FIRST drawn. AppColors are static computed properties that
+    // read ThemeManager.shared — reading one does not subscribe to anything,
+    // so SwiftUI has no reason to redraw a view whose own inputs have not
+    // changed, and this one's only input is the session. That is exactly what
+    // was reported: the profile pill stayed cream on the dark theme while the
+    // whole screen around it went dark. Every other themed view in the app
+    // already carries this line; this file was the one that did not.
+    @ObservedObject private var themeManager = ThemeManager.shared
 
     private var avatarURL: URL? {
         URL(string: "\(RocketsBriefConfig.profileIconBaseURL)/\(session.avatarKey).png")
@@ -105,6 +117,9 @@ struct ProfileBadge: View {
 
 struct ProfileSettingsModal: View {
     @ObservedObject var accountManager = AccountManager.shared
+    // Same reason as ProfileBadge: AppColors alone does not subscribe to
+    // anything, so without this the view keeps the theme it was first drawn in.
+    @ObservedObject private var themeManager = ThemeManager.shared
     @ObservedObject var seatManager = SeatManager.shared
     let onClose: () -> Void
 
@@ -385,6 +400,9 @@ struct ProfileSettingsModal: View {
 }
 
 struct UpdateRequiredOverlay: View {
+    // Same reason as ProfileBadge: AppColors alone does not subscribe to
+    // anything, so without this the view keeps the theme it was first drawn in.
+    @ObservedObject private var themeManager = ThemeManager.shared
     let latestVersion: String
     let downloadURL: String?
     let releaseNotes: String?
@@ -504,6 +522,9 @@ struct UpdateRequiredOverlay: View {
 }
 
 struct LockedAccessOverlay: View {
+    // Same reason as ProfileBadge: AppColors alone does not subscribe to
+    // anything, so without this the view keeps the theme it was first drawn in.
+    @ObservedObject private var themeManager = ThemeManager.shared
     @ObservedObject var accountManager = AccountManager.shared
     let lockMessage: String?
 

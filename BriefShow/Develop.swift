@@ -353,8 +353,82 @@ struct EditCropRect: Codable, Equatable {
     var y: Double
     var width: Double
     var height: Double
+    // How far the crop FRAME itself is turned, in degrees, positive =
+    // clockwise on screen. The photograph does NOT move: this turns the
+    // rectangle over a still picture, which is what was asked for —
+    // „da mogu da rotiram krop (ne sliku)" — and it is a different thing
+    // from `PhotoEditSettings.straightenDegrees`, which turns the picture
+    // and leaves the frame upright.
+    //
+    // The two are deliberately independent and may sit at different angles.
+    // A photograph straightened by 2° and then framed at a 5° tilt is a
+    // real thing a photographer asks for, and folding this into
+    // straightenDegrees would have made the second impossible to express.
+    //
+    // x/y/width/height stay the UNROTATED box; the angle turns it about its
+    // own centre. Every piece of code that only ever cared where the crop
+    // roughly is therefore still reads right, and the rotation lives in one
+    // place instead of being baked into four numbers.
+    //
+    // ⚠️ Turned in a space PROPORTIONAL TO PIXELS, never in fraction space.
+    // x/y/width/height are fractions of width and of height, and those two
+    // axes have different scales unless the photograph is square — a 45°
+    // turn of a fraction rectangle is not a 45° turn of the picture. See
+    // constrainedToImage and PhotoEditRenderer.render, both of which convert
+    // first.
+    var angle: Double = 0
 
     static let full = EditCropRect(x: 0, y: 0, width: 1, height: 1)
+
+    // Written out by hand because declaring ANY initializer in a struct's body
+    // takes the memberwise one away, and `EditCropRect(x:y:width:height:)` is
+    // called in a dozen places that have no opinion about the angle. The
+    // default on `angle:` is what keeps every one of them compiling unchanged.
+    init(x: Double, y: Double, width: Double, height: Double, angle: Double = 0) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.angle = angle
+    }
+
+    // Spelled out rather than synthesized so `angle`'s key is written down
+    // next to the decoder that has to survive its absence.
+    private enum CodingKeys: String, CodingKey {
+        case x, y, width, height, angle
+    }
+
+    // ⚠️ THIS IS THE MIGRATION, and it is the reason the client was asked
+    // before any of this was written. Every crop already on the client's disk
+    // was written without an `angle` key. Synthesized decoding THROWS on a
+    // missing key, and `PhotoEditStore.allSettings` drops any record that
+    // fails to decode — so the synthesized version would have silently
+    // deleted every existing crop on the first launch of the new build.
+    //
+    // ⚠️ IT LIVES IN THE BODY, NOT IN AN EXTENSION, and that is not a style
+    // choice. It was written in an extension first — where the memberwise
+    // initializer survives on its own, which is tidier — and
+    // `Tools/run-editsettings-decode-test.py` FAILED all 25 crops: that
+    // harness pulls named declarations out of this file by brace balance and
+    // never sees an extension. A decoder the test cannot reach is a decoder
+    // nobody checks again, and what it is guarding against is "every edit in
+    // the store is wiped". So it sits here, where the test reads it.
+    //
+    // Run that test after touching this. It decodes the client's own records,
+    // and it exists because this exact class of change has already cost a
+    // scare once (KORAK 69).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        x = try c.decode(Double.self, forKey: .x)
+        y = try c.decode(Double.self, forKey: .y)
+        width = try c.decode(Double.self, forKey: .width)
+        height = try c.decode(Double.self, forKey: .height)
+        // 0 is not just "a safe default" — it is what every old record MEANT.
+        // An unrotated frame is exactly how those photographs have always
+        // rendered, so an old edit decodes to the same picture it was, not
+        // merely to a picture that decodes.
+        angle = try c.decodeIfPresent(Double.self, forKey: .angle) ?? 0
+    }
 }
 
 // Quick aspect-ratio presets offered on the crop tool's own row of buttons.
@@ -678,351 +752,6 @@ enum LayerBlendMode: String, Codable, CaseIterable {
         }
     }
 }
-
-// A pasted cut/copied piece of a photo (from this photo or a DIFFERENT
-// one, via DevelopView's in-memory layerClipboard) composited as its own
-// positioned, resizable layer — the actual start of Photoshop-style image
-// layers (see BRIEFSHOW_DEVELOP_NOTES.md #12), reached here via the
-// Selection tool's Cut/Copy rather than importing a file.
-//
-// `imageData` is a PNG, never JPEG — a cut circle/free-lasso piece is
-// mostly transparent outside its own outline, and JPEG has no alpha
-// channel to hold that. x/y is the layer's TOP-LEFT corner (not center,
-// unlike the mask geometries above) in the same unit-square (0...1,
-// top-down Y) space as EditCropRect — a layer is dragged/resized from its
-// bounding box like the crop tool, not from a radius around a center.
-/// The skies "Change Sky" can put behind a photo.
-///
-/// ⚠️ Every one of these is DRAWN, in code, at render time. Nothing is
-/// bundled and nothing is downloaded, which is the whole reason the list
-/// looks the way it does: there are no mountains here and there will not be
-/// any. A mountain is a photograph of a real place, it cannot be produced
-/// by a gradient and some noise, and a photograph means a licence to clear
-/// for an app that is sold. Skies are gradients, light and cloud — those a
-/// computer can draw convincingly. See BRIEFSHOW_DEVELOP_NOTES.md.
-enum SkyStyle: String, Codable, CaseIterable, Identifiable {
-    case clearBlue
-    case blueWithSun
-    case softClouds
-    case overcast
-    case goldenHour
-    case sunset
-    case dramatic
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .clearBlue: return "Clear Blue"
-        case .blueWithSun: return "Blue + Sun"
-        case .softClouds: return "Soft Clouds"
-        case .overcast: return "Overcast"
-        case .goldenHour: return "Golden Hour"
-        case .sunset: return "Sunset"
-        case .dramatic: return "Dramatic"
-        }
-    }
-}
-
-/// Draws a sky to fill any extent.
-///
-/// Two properties matter more than how pretty the result is, and both are
-/// easy to lose:
-///
-/// 1. **Deterministic.** `CIRandomGenerator` is a fixed function, not a
-///    seeded RNG, so the same sky is drawn every render. Anything that
-///    varied per call would mean the preview and the export were different
-///    pictures.
-/// 2. **Resolution-independent.** Every size in here is a fraction of the
-///    extent, never a pixel count. The preview renders at 2600px and the
-///    export at native, and a cloud measured in pixels would come out a
-///    different size in each — the same trap `layerBlur` documents.
-enum SkyPainter {
-
-    /// A small drawn sample for the picker, made once and kept.
-    ///
-    /// The picker shows the REAL thing rather than an illustration of it —
-    /// these are the same three steps `image` runs, at 220px. A hand-drawn
-    /// swatch would be a promise the renderer might not keep.
-    static func preview(_ style: SkyStyle) -> NSImage? {
-        if let cached = previewCache[style] {
-            return cached
-        }
-
-        let size = CGSize(width: 220, height: 140)
-        let extent = CGRect(origin: .zero, size: size)
-        guard let cgImage = previewContext.createCGImage(image(style, extent: extent), from: extent) else {
-            return nil
-        }
-
-        let rendered = NSImage(cgImage: cgImage, size: size)
-        previewCache[style] = rendered
-        return rendered
-    }
-
-    private static var previewCache: [SkyStyle: NSImage] = [:]
-    private static let previewContext = CIContext(options: [.useSoftwareRenderer: false])
-
-    static func image(_ style: SkyStyle, extent: CGRect) -> CIImage {
-        guard extent.width > 1, extent.height > 1 else {
-            return CIImage(color: .gray).cropped(to: extent)
-        }
-
-        var sky = gradient(style, extent: extent)
-
-        if let sun = sunPosition(style) {
-            sky = addSun(to: sky, style: style, at: sun, extent: extent)
-        }
-
-        if cloudAmount(style) > 0 {
-            sky = addClouds(to: sky, style: style, extent: extent)
-        }
-
-        return sky.cropped(to: extent)
-    }
-
-    // MARK: The base gradient
-
-    /// Top colour, horizon colour. Real skies get paler and warmer toward
-    /// the horizon — that gradient is most of what makes one read as sky
-    /// rather than as a flat fill.
-    private static func colours(_ style: SkyStyle) -> (top: CIColor, horizon: CIColor) {
-        switch style {
-        case .clearBlue:
-            return (CIColor(red: 0.16, green: 0.42, blue: 0.78),
-                    CIColor(red: 0.72, green: 0.85, blue: 0.95))
-        case .blueWithSun:
-            return (CIColor(red: 0.20, green: 0.46, blue: 0.80),
-                    CIColor(red: 0.80, green: 0.89, blue: 0.96))
-        case .softClouds:
-            return (CIColor(red: 0.30, green: 0.54, blue: 0.82),
-                    CIColor(red: 0.84, green: 0.90, blue: 0.95))
-        case .overcast:
-            return (CIColor(red: 0.55, green: 0.59, blue: 0.64),
-                    CIColor(red: 0.82, green: 0.84, blue: 0.86))
-        case .goldenHour:
-            return (CIColor(red: 0.35, green: 0.47, blue: 0.72),
-                    CIColor(red: 0.99, green: 0.80, blue: 0.52))
-        case .sunset:
-            return (CIColor(red: 0.24, green: 0.20, blue: 0.44),
-                    CIColor(red: 0.98, green: 0.53, blue: 0.32))
-        case .dramatic:
-            // Storm light, not night. The first pass at 0.12 top with dark
-            // cloud over it rendered as a black rectangle — a dramatic sky
-            // still has to be a sky somebody can see through.
-            return (CIColor(red: 0.30, green: 0.36, blue: 0.46),
-                    CIColor(red: 0.78, green: 0.79, blue: 0.80))
-        }
-    }
-
-    private static func gradient(_ style: SkyStyle, extent: CGRect) -> CIImage {
-        let palette = colours(style)
-        let filter = CIFilter.linearGradient()
-        filter.point0 = CGPoint(x: extent.midX, y: extent.maxY)
-        filter.point1 = CGPoint(x: extent.midX, y: extent.minY)
-        filter.color0 = palette.top
-        filter.color1 = palette.horizon
-        return (filter.outputImage ?? CIImage(color: palette.top)).cropped(to: extent)
-    }
-
-    // MARK: Sun
-
-    /// Where the sun sits, in unit coordinates measured from the bottom
-    /// left the way Core Image does. nil for the styles that have none.
-    private static func sunPosition(_ style: SkyStyle) -> CGPoint? {
-        switch style {
-        case .clearBlue, .overcast, .dramatic: return nil
-        case .blueWithSun: return CGPoint(x: 0.74, y: 0.80)
-        case .softClouds: return CGPoint(x: 0.28, y: 0.78)
-        case .goldenHour: return CGPoint(x: 0.68, y: 0.30)
-        case .sunset: return CGPoint(x: 0.62, y: 0.18)
-        }
-    }
-
-    private static func sunColour(_ style: SkyStyle) -> CIColor {
-        switch style {
-        case .goldenHour: return CIColor(red: 1.0, green: 0.88, blue: 0.62, alpha: 1)
-        case .sunset: return CIColor(red: 1.0, green: 0.74, blue: 0.42, alpha: 1)
-        default: return CIColor(red: 1.0, green: 0.98, blue: 0.90, alpha: 1)
-        }
-    }
-
-    /// A tight core inside a wide glow, screened over the gradient.
-    ///
-    /// Two radials rather than one: a single gradient big enough to glow
-    /// has no disc in it, and one small enough to be a disc lights nothing
-    /// around it. Screen rather than normal, so the sun brightens the sky
-    /// it sits in instead of punching a hole through it.
-    private static func addSun(to sky: CIImage, style: SkyStyle,
-                               at unit: CGPoint, extent: CGRect) -> CIImage {
-        let centre = CGPoint(x: extent.minX + unit.x * extent.width,
-                             y: extent.minY + unit.y * extent.height)
-        let shortEdge = min(extent.width, extent.height)
-        let colour = sunColour(style)
-        var output = sky
-
-        for (inner, outer, strength) in [(0.012, 0.055, 1.0), (0.05, 0.55, 0.55)] {
-            let glow = CIFilter.radialGradient()
-            glow.center = centre
-            glow.radius0 = Float(shortEdge * inner)
-            glow.radius1 = Float(shortEdge * outer)
-            glow.color0 = CIColor(red: colour.red, green: colour.green,
-                                  blue: colour.blue, alpha: strength)
-            glow.color1 = CIColor(red: colour.red, green: colour.green,
-                                  blue: colour.blue, alpha: 0)
-
-            guard let layer = glow.outputImage?.cropped(to: extent) else {
-                continue
-            }
-            output = layer.applyingFilter("CIScreenBlendMode", parameters: [
-                kCIInputBackgroundImageKey: output
-            ]).cropped(to: extent)
-        }
-
-        return output
-    }
-
-    // MARK: Clouds
-
-    private static func cloudAmount(_ style: SkyStyle) -> Double {
-        switch style {
-        // These are lower than they look like they should be, and that is
-        // from looking at the renders rather than from the arithmetic: the
-        // threshold has a soft edge either side, so a cloud reads as bigger
-        // than the fraction it is thresholded at. 0.45 came out as a white
-        // sheet with blue holes in it, which is not "soft clouds".
-        case .clearBlue: return 0
-        case .blueWithSun: return 0.18
-        case .softClouds: return 0.26
-        case .overcast: return 0.72
-        case .goldenHour: return 0.20
-        case .sunset: return 0.24
-        // Not 0.95. At near-total coverage the dark cloud colour simply
-        // becomes the picture, and a black rectangle is not a dramatic sky
-        // — the gradient has to show through the gaps for it to read as
-        // weather rather than as a fault.
-        // ⚠️ Low, and it has to be. A DARK cloud colour over a mid-grey sky
-        // is far less forgiving than a white one over blue: the soft
-        // threshold edge spreads, and at 0.72 and again at 0.55 this
-        // rendered as a black rectangle with a few grey holes. Measured by
-        // looking at it three times.
-        case .dramatic: return 0.30
-        }
-    }
-
-    /// White for daylight, a warm underlit tone at sunset, near-black for
-    /// the dramatic one — clouds are lit by the sky they are in, and a
-    /// white cloud in a sunset is the giveaway that it was pasted.
-    private static func cloudColour(_ style: SkyStyle) -> CIColor {
-        switch style {
-        case .dramatic: return CIColor(red: 0.31, green: 0.34, blue: 0.41, alpha: 1)
-        case .sunset: return CIColor(red: 0.99, green: 0.72, blue: 0.55, alpha: 1)
-        case .goldenHour: return CIColor(red: 1.0, green: 0.93, blue: 0.82, alpha: 1)
-        case .overcast: return CIColor(red: 0.93, green: 0.94, blue: 0.95, alpha: 1)
-        default: return CIColor(red: 1, green: 1, blue: 1, alpha: 1)
-        }
-    }
-
-    private static func addClouds(to sky: CIImage, style: SkyStyle, extent: CGRect) -> CIImage {
-        guard let field = cloudField(extent: extent, amount: cloudAmount(style)) else {
-            return sky
-        }
-
-        let colour = CIImage(color: cloudColour(style)).cropped(to: extent)
-        let blend = CIFilter.blendWithMask()
-        blend.inputImage = colour
-        blend.backgroundImage = sky
-        blend.maskImage = field
-        return (blend.outputImage ?? sky).cropped(to: extent)
-    }
-
-    /// Two octaves of blurred noise, curved into billows.
-    ///
-    /// One octave alone is a smooth blob field that reads as fog; the
-    /// second, three times finer and at a third of the weight, is what
-    /// gives an edge something to break up on. `amount` moves the curve
-    /// rather than scaling the result, so "more cloud" means more of the
-    /// sky is covered, not that the same clouds get more opaque.
-    private static func cloudField(extent: CGRect, amount: Double) -> CIImage? {
-        guard let noise = CIFilter(name: "CIRandomGenerator")?.outputImage else {
-            return nil
-        }
-
-        let longEdge = max(extent.width, extent.height)
-        var field: CIImage?
-
-        // Weights sum to 1 so the two octaves average rather than pile up.
-        for (cells, weight) in [(14.0, 0.75), (42.0, 0.25)] {
-            let cell = longEdge / cells
-            let octave = noise
-                .transformed(by: CGAffineTransform(scaleX: cell, y: cell))
-                .applyingFilter("CIColorMonochrome", parameters: [
-                    kCIInputColorKey: CIColor(red: 1, green: 1, blue: 1, alpha: 1),
-                    kCIInputIntensityKey: 1
-                ])
-                .clampedToExtent()
-                .applyingGaussianBlur(sigma: cell * 0.85)
-                .cropped(to: extent)
-                .applyingFilter("CIColorMatrix", parameters: [
-                    "inputRVector": CIVector(x: weight, y: 0, z: 0, w: 0),
-                    "inputGVector": CIVector(x: weight, y: 0, z: 0, w: 0),
-                    "inputBVector": CIVector(x: weight, y: 0, z: 0, w: 0),
-                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
-                ])
-
-            field = field.map {
-                octave.applyingFilter("CIAdditionCompositing", parameters: [
-                    kCIInputBackgroundImageKey: $0
-                ]).cropped(to: extent)
-            } ?? octave
-        }
-
-        guard let summed = field else {
-            return nil
-        }
-
-        // ⚠️ MEASURED, TWICE, and wrong both of the first two times.
-        //
-        // Blurred CIRandomGenerator does not sit anywhere near 0...1. In
-        // LINEAR space — the space these filters actually work in — it runs
-        // p05 0.376, p50 0.494, p95 0.584. Narrow, and centred just under a
-        // half.
-        //
-        // Attempt one used a 0-to-1 curve: everything mapped to full cloud
-        // and five of seven skies came out a blank white sheet. Attempt two
-        // corrected the band, but from numbers read out of an sRGB bitmap —
-        // sRGB 0.73 is linear 0.49, so the band sat ABOVE the data and the
-        // clouds vanished entirely. Both looked like colour bugs and were
-        // the same distribution bug, measured in the wrong space.
-        //
-        // These two numbers come from a linear-space read (p05 and p95).
-        // With them, `amount` lands within a couple of points of the
-        // coverage it asks for: 0.18 → 0.16, 0.45 → 0.51, 0.85 → 0.88.
-        let gain = 4.81
-        let bias = -1.81
-        let normalised = summed.applyingFilter("CIColorMatrix", parameters: [
-            "inputRVector": CIVector(x: gain, y: 0, z: 0, w: 0),
-            "inputGVector": CIVector(x: gain, y: 0, z: 0, w: 0),
-            "inputBVector": CIVector(x: gain, y: 0, z: 0, w: 0),
-            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
-            "inputBiasVector": CIVector(x: bias, y: bias, z: bias, w: 0)
-        ]).cropped(to: extent)
-
-        // `amount` is now simply "how much of the sky is cloud": the
-        // threshold is 1 minus it, with a soft edge either side so cloud
-        // borders are billows rather than cut-outs. Clamped so the four
-        // curve points stay strictly increasing at both ends.
-        let threshold = min(max(1 - amount, 0.08), 0.88)
-        return normalised.applyingFilter("CIToneCurve", parameters: [
-            "inputPoint0": CIVector(x: 0.0, y: 0),
-            "inputPoint1": CIVector(x: max(threshold - 0.14, 0.01), y: 0),
-            "inputPoint2": CIVector(x: threshold, y: 0.5),
-            "inputPoint3": CIVector(x: min(threshold + 0.14, 0.99), y: 1),
-            "inputPoint4": CIVector(x: 1.0, y: 1)
-        ]).cropped(to: extent)
-    }
-}
-
 struct ImageLayer: Codable, Equatable, Identifiable {
     var id = UUID()
     var name: String
@@ -1067,17 +796,15 @@ struct ImageLayer: Codable, Equatable, Identifiable {
     /// it along instead of leaving it behind as a frozen copy.
     var maskData: Data?
 
-    /// A drawn sky put in place of this layer's region, or nil to leave
-    /// the photo's own sky where it is.
-    var skyStyle: SkyStyle?
-
     /// Rotation about the layer's own centre, in degrees.
     var rotationDegrees: Double = 0
 
-    /// Was this layer made by Select Sky? Kept as its own flag rather than
-    /// read off `skyStyle`, because a Sky layer exists BEFORE any sky has
-    /// been chosen — that is the whole point of it — and rather than off
-    /// the name, which the client can rename.
+    /// ⚠️ VESTIGIAL, and kept on purpose. Sky replacement was removed on
+    /// 2.09.2026 (see SKY_ARCHIVE/BRIEFSHOW_SKY_NOTES.md), but this key is in
+    /// records already on the client's disk. Decoding it and carrying it means
+    /// a photo edited before the removal still round-trips unchanged instead of
+    /// quietly losing a field — and if the feature ever comes back, the layers
+    /// it made are still marked.
     var isSky: Bool = false
 
     /// Pixels of its own, or a region of the photo underneath.
@@ -1088,7 +815,7 @@ struct ImageLayer: Codable, Equatable, Identifiable {
          opacity: Double = 1, blendMode: LayerBlendMode = .normal,
          isEnabled: Bool = true, adjustments: LocalAdjustmentSettings = LocalAdjustmentSettings(),
          blur: Double = 0, maskData: Data? = nil,
-         skyStyle: SkyStyle? = nil, isSky: Bool = false,
+         isSky: Bool = false,
          rotationDegrees: Double = 0) {
         self.id = id
         self.name = name
@@ -1103,7 +830,6 @@ struct ImageLayer: Codable, Equatable, Identifiable {
         self.adjustments = adjustments
         self.blur = blur
         self.maskData = maskData
-        self.skyStyle = skyStyle
         self.isSky = isSky
         self.rotationDegrees = rotationDegrees
     }
@@ -1134,14 +860,13 @@ struct ImageLayer: Codable, Equatable, Identifiable {
             ?? LocalAdjustmentSettings()
         blur = try c.decodeIfPresent(Double.self, forKey: .blur) ?? 0
         maskData = try c.decodeIfPresent(Data.self, forKey: .maskData)
-        skyStyle = try c.decodeIfPresent(SkyStyle.self, forKey: .skyStyle)
         isSky = try c.decodeIfPresent(Bool.self, forKey: .isSky) ?? false
         rotationDegrees = try c.decodeIfPresent(Double.self, forKey: .rotationDegrees) ?? 0
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, imageData, x, y, width, height, opacity, blendMode, isEnabled, adjustments
-        case blur, maskData, skyStyle, isSky, rotationDegrees
+        case blur, maskData, isSky, rotationDegrees
     }
 }
 
@@ -2425,6 +2150,30 @@ enum PhotoEditRenderer {
                 width: crop.width * extent.width,
                 height: crop.height * extent.height
             ).integral
+
+            // A TURNED crop frame is rendered by turning the PICTURE the other
+            // way about the frame's own centre, and then taking the ordinary
+            // upright rectangle. The two are the same thing: what comes out is
+            // the tilted frame's contents, upright, at exactly the frame's own
+            // size. Doing it this way means `rect` below is untouched — the
+            // centre is the one point a rotation about the centre leaves where
+            // it is, and the size does not change.
+            //
+            // ⚠️ Sign checked against the straighten path twenty lines up, not
+            // guessed. There, a POSITIVE straightenDegrees turns the picture
+            // clockwise through `rotationAngle: -radians`; so `+radians` turns
+            // it counter-clockwise, which is what stands the frame back up when
+            // the frame itself is turned clockwise. A rotation that goes the
+            // wrong way is the kind of thing that gets "fixed" twice.
+            if crop.angle != 0 {
+                let radians = CGFloat(crop.angle * .pi / 180)
+                let centre = CGPoint(x: rect.midX, y: rect.midY)
+                let turn = CGAffineTransform(translationX: centre.x, y: centre.y)
+                    .rotated(by: radians)
+                    .translatedBy(x: -centre.x, y: -centre.y)
+                output = output.transformed(by: turn)
+            }
+
             output = output.cropped(to: rect)
         }
 
@@ -3287,11 +3036,10 @@ enum PhotoEditRenderer {
                                                y: extent.origin.y - scaled.extent.origin.y))
             .cropped(to: extent)
 
-        // A chosen sky REPLACES what is under the matte; everything else
-        // adjusts it. The layer's own sliders then run on whichever it is,
-        // so a drawn sky can still be darkened, cooled or blurred like any
-        // other layer rather than being a take-it-or-leave-it picture.
-        let base = layer.skyStyle.map { SkyPainter.image($0, extent: extent) } ?? image
+        // A derived layer adjusts the photo under its own matte — it never
+        // replaces it. Replacement existed once, for sky, and went with it
+        // (see SKY_ARCHIVE/BRIEFSHOW_SKY_NOTES.md).
+        let base = image
 
         var adjusted = layer.adjustments.isNeutral
             ? base
@@ -3306,7 +3054,6 @@ enum PhotoEditRenderer {
         blend.maskImage = layer.opacity < 1 ? scaleMaskOpacity(mask, by: layer.opacity) : mask
         return blend.outputImage ?? image
     }
-
     /// Blur scaled to the PICTURE, not to pixels.
     ///
     /// ⚠️ A sigma in pixels would be wrong here and wrong invisibly: the
@@ -3670,7 +3417,6 @@ enum PhotoEditRenderer {
 }
 
 private let briefEditsSRGBColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-
 /// CISharpenLuminance's own default radius, in pixels.
 ///
 /// Written down because `sharpenRadius` is expressed as a MULTIPLE of it, so
@@ -4986,16 +4732,14 @@ struct DevelopView: View {
     @State private var isCropping = false
     @State private var pendingCrop: EditCropRect = .full
     @State private var dragStartCrop: EditCropRect?
-    // Whether the closed-hand cursor is currently pushed for a crop move.
-    // Tracked rather than pushed blind, because NSCursor is a STACK: a push on
-    // every onChanged is one push per mouse-move frame, and the single pop on
-    // onEnded would leave hundreds of closed hands stacked up — after which
-    // every other cursor in the app is wrong until relaunch.
-    @State private var isPushingCropMoveCursor = false
     // Where the rotation drag began: the pointer's angle around the crop's
-    // centre, and the straighten value at that moment. Both nil between drags.
+    // centre, and the whole crop at that moment. Both nil between drags, which
+    // is also how the cursor knows a turn is in progress (see cropCursor).
     @State private var rotateDragStartAngle: Double?
-    @State private var rotateDragStartDegrees: Double?
+    // The WHOLE crop as it stood when the rotation drag began, not just its
+    // angle — see rotateCropFrame for why keeping only the angle would ratchet
+    // the frame smaller.
+    @State private var rotateDragStartCrop: EditCropRect?
     // Which aspect-ratio button (if any) is highlighted on the crop tool's
     // own row — purely a UI highlight, not enforced during handle drags
     // (see moveCrop/resizeCrop, which reset it back to .free since a
@@ -5091,12 +4835,33 @@ struct DevelopView: View {
     @AppStorage("develop.layout.panelWidth") private var panelWidth: Double = 340
     @AppStorage("develop.layout.filmstripHeight") private var filmstripHeight: Double = 120
 
-    // Whether the AI Manipulation section is unfolded. Closed by default: it
-    // sits above the tab bar now, where an open block would push Edit, Retouch
-    // and Layers down the panel for everyone, including the client who is
-    // simply grading a photo and never touches it. Closed it is one titled
-    // line — visible, so nobody has to know it is there, but not in the way.
-    @AppStorage("develop.layout.aiManipulationExpanded") private var aiManipulationExpanded: Bool = false
+    // Whether the AI Manipulation block is unfolded.
+    //
+    // ⚠️ @State, NOT @AppStorage, and that is the fix for a real report: opening
+    // a photo came up with the block already unfolded — *„kada uđem, dva puta
+    // kliknem na sliku, AI sekcija je otvorena; neka bude zatvorena pa klijent
+    // neka izabere šta hoće"*. Remembering it made sense while it was a titled
+    // disclosure line that cost nothing closed. It stopped making sense in
+    // KORAK 87, when this button started picking up the BRUSH as well: a
+    // remembered "open" then meant a photo opening with the clean-up brush live
+    // on a photograph somebody meant only to look at.
+    //
+    // So every fresh open of the editor starts closed, and the client chooses.
+    // Within one session it stays as they left it, which is what someone
+    // working through a batch wants.
+    @State private var aiManipulationExpanded: Bool = false
+
+    /// Whether the AI Manipulation block is on the panel.
+    ///
+    /// The header button's own state, OR the brush being live — and the second
+    /// half is not belt-and-braces, it closes a hole. There is a THIRD way into
+    /// this tool ("AI Clean Up" in the Remove section, which predates the header
+    /// button), and it only switches the brush on. Without this the client
+    /// could be painting with Quick and Generative Clean Up nowhere on screen —
+    /// the two buttons that act on what they just painted.
+    private var isAIManipulationVisible: Bool {
+        aiManipulationExpanded || isRemoveBrushActive
+    }
 
     private static let panelMinWidth: Double = 300
     private static let panelMaxWidth: Double = 560
@@ -5296,19 +5061,22 @@ struct DevelopView: View {
     // quietly getting a mask with somebody missing from it.
     @State private var removeNotice: String?
 
-    // The card that appears after Select People or Select Sky has actually
+    // The card that appears after Select People has actually
     // made a layer. Separate from removeNotice, which belongs to the Remove
     // section and says why an erase did or did not find anything — this one
     // is about layers that now exist and what can be done with them.
     @State private var newLayerNotice: String?
 
-    // The layers the last Select People / Select Sky made, so the card's
+    // The layers the last Select People made, so the card's
     // Undo can take back exactly those. See removeNewLayers for why this is
     // not the ordinary undo stack.
     @State private var newLayerIDs: [UUID] = []
 
-    @State private var isFindingSky = false
-    @State private var isSkyPickerPresented = false
+    // Tinted mattes for selected derived (Background) layers, built once each.
+    // Keyed by layer id, and a layer's matte never changes after it is made —
+    // A layer's matte never changes after it is made, so there is nothing to
+    // invalidate.
+    @State private var matteOverlayCache: [UUID: NSImage] = [:]
     // Which of the two find buttons produced the mask currently on screen,
     // so the line under them describes what was actually found.
     @State private var foundBackgroundOnly = false
@@ -5573,9 +5341,6 @@ struct DevelopView: View {
         }
         .sheet(isPresented: $showExportAllOptions) {
             exportAllOptionsView
-        }
-        .sheet(isPresented: $isSkyPickerPresented) {
-            skyPickerView
         }
         .confirmationDialog(
             pendingTrashPhotoURLs?.count == 1
@@ -6691,7 +6456,17 @@ struct DevelopView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 8) {
+            // FLOWS rather than sits in one HStack. Five buttons at this font
+            // are wider than a 340pt panel, and the panel is draggable from 300
+            // to 560 — so on one width they fit and on another they would all
+            // truncate to "Origi…", "Res…". Wrapping to a second line is the
+            // honest way to run out of width for a row of NAMED buttons: the
+            // names are the point, and at 560 they are all on one line anyway.
+            //
+            // Same FlowLayout the ShowGrid thumbnails use. No Spacer before
+            // Done any more — a spacer means nothing to a flow, and Done now
+            // simply follows the button before it.
+            FlowLayout(spacing: 8, lineSpacing: 8) {
                 beforeAfterButton
 
                 // Crop lives up here for the same reason Reset does, and it
@@ -6715,20 +6490,47 @@ struct DevelopView: View {
                 // enough down that it was missed entirely: the photo that
                 // prompted this was put back to its original by dragging every
                 // slider to zero by hand.
-                Button("Reset") {
+                Button {
                     resetAllSettings()
+                } label: {
+                    HStack(spacing: 6) {
+                        // The undo arrow, not "arrow.uturn.backward": this puts
+                        // back EVERY setting at once, and a full circle says
+                        // "all the way round to where it started" where a
+                        // u-turn says "one step back".
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Reset")
+                    }
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
                 .opacity(settings.isNeutral ? 0.4 : 1)
                 .disabled(settings.isNeutral)
                 .help("Put this photo back to the original.")
 
-                Spacer(minLength: 0)
+                // The way in to AI Clean Up, and now the ONLY way in — the
+                // block below is no longer a permanently visible titled line,
+                // it appears when this is pressed. Up here for the same reason
+                // Crop is: a tool you reach by pressing a named button in a row
+                // that never scrolls away.
+                aiCleanUpHeaderButton
 
-                Button("Done") {
+                // "Grid", not "Done", and named after where it goes rather
+                // than after finishing something: it closes LumenoLab and puts
+                // the client back in ShowGrid. "Done" also implied a commit,
+                // which is not what happens — edits are saved as they are made,
+                // and nothing here is waiting to be confirmed.
+                Button {
                     onClose()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.grid.2x2")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Grid")
+                    }
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
+                .help("Back to the grid.")
             }
         }
         .padding(.horizontal, 14)
@@ -6783,17 +6585,8 @@ struct DevelopView: View {
                            isActive: isFindingPeople) {
                     selectPeopleAsLayer()
                 }
-                .disabled(isFindingPeople || isFindingSky || isRemoving || selectedURL == nil)
-                .opacity((isFindingPeople || isFindingSky || isRemoving || selectedURL == nil) ? 0.4 : 1)
-
-                // Sky has no Vision request behind it — see SkyMasker for
-                // why, and for what it gets wrong.
-                toolButton("Select Sky", systemImage: "cloud.sun",
-                           isActive: isFindingSky) {
-                    selectSkyAsLayer()
-                }
-                .disabled(isFindingPeople || isFindingSky || isRemoving || selectedURL == nil)
-                .opacity((isFindingPeople || isFindingSky || isRemoving || selectedURL == nil) ? 0.4 : 1)
+                .disabled(isFindingPeople || isRemoving || selectedURL == nil)
+                .opacity((isFindingPeople || isRemoving || selectedURL == nil) ? 0.4 : 1)
 
                 Spacer(minLength: 0)
             }
@@ -6803,9 +6596,9 @@ struct DevelopView: View {
             // and the one thing this has to do is be believed: the search
             // takes long enough on a big frame that a still panel reads as
             // a button that did nothing.
-            if isFindingPeople || isFindingSky {
+            if isFindingPeople {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(isFindingSky ? "Looking for sky…" : "Looking for people…")
+                    Text("Looking for people…")
                         .font(.custom("Figtree", size: 11))
                         .foregroundColor(AppColors.muted)
 
@@ -6977,78 +6770,7 @@ struct DevelopView: View {
             }
         }
     }
-
-    /// Lifts the sky onto a layer of its own.
-    ///
-    /// The twin of `selectPeopleAsLayer`, and derived for the same reasons
-    /// — no pixels stored, and it follows the photo when the global sliders
-    /// move. What differs is where the matte comes from: there is no Apple
-    /// API for sky, so this is our own heuristic. See `SkyMasker` for what
-    /// it looks for and, more usefully, what it gets wrong.
-    ///
-    /// One layer, not two. The people case makes a Background as well
-    /// because "everything that is not the subject" is a thing anybody
-    /// would want to grade; "everything that is not the sky" is the ground,
-    /// the buildings and the people all at once, which is not one subject
-    /// and not worth a layer nobody asked for.
-    private func selectSkyAsLayer() {
-        guard let fullBaseImage, let selectedURL else {
-            return
-        }
-
-        isFindingSky = true
-        removeNotice = nil
-        newLayerNotice = nil
-
-        let settingsSnapshot = settings
-        let photoAtActionTime = selectedURL
-        let confineTo = activeSelection
-
-        developRenderQueue.async(qos: .userInitiated) {
-            let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
-            var mask = SkyMasker.skyMask(for: full)
-
-            // An active Selection confines the search, exactly as it does
-            // for people: rope off the part of the frame that matters and
-            // only the sky inside it is lifted.
-            if let found = mask, let confineTo,
-               !(confineTo.shape == .free && confineTo.points.count < 3) {
-                let shape = PhotoEditRenderer.selectionMask(confineTo, extent: full.extent)
-                mask = found.applyingFilter("CIMultiplyBlendMode", parameters: [
-                    kCIInputBackgroundImageKey: shape
-                ]).cropped(to: full.extent)
-            }
-
-            let skyMask = mask.flatMap {
-                PhotoEditRenderer.maskPNG($0, extent: full.extent)
-            }
-
-            DispatchQueue.main.async {
-                isFindingSky = false
-
-                guard selectedURL == photoAtActionTime else {
-                    return
-                }
-
-                guard let skyMask else {
-                    removeNotice = "No sky found. This looks for something bright or blue, smooth, and high in the frame — an indoor shot, a heavy crop, or a sky that is mostly behind branches will not match. Rope the area with the Selection tool and try again."
-                    return
-                }
-
-                let sky = ImageLayer(
-                    name: nextLayerName("Sky"), imageData: Data(),
-                    x: 0, y: 0, width: 1, height: 1, maskData: skyMask, isSky: true
-                )
-
-                settings.layers.append(sky)
-                newLayerIDs = [sky.id]
-                selectedLayerID = sky.id
-                newLayerNotice = "The sky is on its own layer. Its own sliders change only the sky — and Change Sky puts a different one there altogether."
-            }
-        }
-    }
-
-    /// Takes back exactly the layers the last Select People / Select Sky made.
+    /// Takes back exactly the layers the last Select People made.
     ///
     /// By id, not by popping the undo stack — see the card's Undo button for
     /// what went wrong when it was the other way round. Writes
@@ -7077,46 +6799,21 @@ struct DevelopView: View {
     // The open/closed state is remembered app-wide, like the layout sizes —
     // someone who never uses the AI path should close it once, not once per
     // photo.
+    // ⚠️ NO TITLE ROW ANY MORE, and no chevron. This used to be a disclosure
+    // whose closed state was still one titled line in the panel, and that line
+    // is what the client asked to be rid of: the way in is the "AI Clean Up"
+    // button in the header, and when it is off this block is not there at all.
+    //
+    // `aiManipulationExpanded` is unchanged and still the same @AppStorage key,
+    // so a client who left it open keeps it open across this build.
     private var aiManipulationSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button {
-                // Animated so the sections below slide rather than teleport;
-                // without it a fold this tall reads as the panel flickering.
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    aiManipulationExpanded.toggle()
-                }
-            } label: {
+            if isAIManipulationVisible {
+                // ⚠️ NO "Clean Up" BUTTON HERE ANY MORE. It moved to the panel
+                // header, where one press both opens this block and picks up
+                // the brush; leaving a copy behind would be leaving the second
+                // step of the two-step that was just removed.
                 HStack(spacing: 6) {
-                    // Rotated rather than swapped for a second glyph: the
-                    // rotation animates, and a chevron that turns is the
-                    // standard macOS disclosure the client already reads
-                    // everywhere else.
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(AppColors.muted.opacity(0.7))
-                        .rotationEffect(.degrees(aiManipulationExpanded ? 0 : -90))
-
-                    sectionTitle("AI Manipulation")
-
-                    Spacer(minLength: 0)
-                }
-                // Without this the row is only hit-testable on the glyphs
-                // themselves and the gap between them is dead — the same
-                // omission that was a real bug on the Crop/Rotate and
-                // aspect-ratio buttons (see a50776f).
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if aiManipulationExpanded {
-                // Label is just "Clean Up" — the AI badge to its left already says
-                // the other half, and "AI AI Clean Up" is what it read as before.
-                HStack(spacing: 6) {
-                    toolButton("Clean Up", systemImage: "paintbrush", textIcon: "AI",
-                               isActive: isRemoveBrushActive) {
-                        toggleRemoveBrush()
-                    }
-
                     // Explicit way out. Select People is NOT gone — it lives on
                     // in the Remove section below, which is its only entry
                     // point now. It was moved rather than deleted because it
@@ -7402,7 +7099,17 @@ struct DevelopView: View {
     // interaction Lightroom's own "\\" before/after key gives you, just on
     // a button since this has no keyboard shortcut plumbing yet.
     private var beforeAfterButton: some View {
-        Text(showOriginal ? "Original" : "Before / After")
+        // "Original", not "Before / After", by request — and it is the better
+        // name for what the button does: it does not show two things side by
+        // side, it shows the original for as long as it is held. The label no
+        // longer changes while held either; the highlight already says that,
+        // and a word that swaps under the pointer is a word that has to be read
+        // twice.
+        HStack(spacing: 6) {
+            Image(systemName: "photo")
+                .font(.system(size: 11, weight: .semibold))
+            Text("Original")
+        }
             .font(.custom("Figtree", size: 12).weight(.semibold))
             .foregroundColor(showOriginal ? AppColors.hoverInk : AppColors.ink)
             .padding(.horizontal, 14)
@@ -7423,8 +7130,9 @@ struct DevelopView: View {
             )
     }
 
-    // Named, not a bare icon: this sits in a row of words (Before / After,
-    // Reset, Done) and an unlabelled glyph among them reads as decoration.
+    // Named, not a bare icon: this sits in a row of words (Original, Reset,
+    // AI Clean Up, Grid) and an unlabelled glyph among them reads as
+    // decoration.
     // The icon stays alongside the word so it is still findable by shape.
     private var cropHeaderButton: some View {
         Button {
@@ -7443,6 +7151,66 @@ struct DevelopView: View {
                 .fill(isCropping ? AppColors.panelAlt : Color.clear)
         )
         .help("Crop and straighten this photo.")
+    }
+
+    // Opens and closes the AI Manipulation block above the tabs.
+    //
+    // ⚠️ That block used to be a titled disclosure line sitting there whether
+    // or not anyone wanted it. It is gone from the panel now and appears only
+    // while this is on — asked for in exactly those terms: *„ai manipulation
+    // nestaje dole jer kad kliknem AI onda otvara ai manipulation deo"*.
+    //
+    // The letters "AI" rather than a glyph, framed to a fixed width — the same
+    // badge the Clean Up button inside the block uses, so the way in and the
+    // thing it opens carry the same mark. There is no SF Symbol that says AI,
+    // and a wand would say the same thing as the two Clean Up buttons it sits
+    // above (see KORAK 28).
+    private var aiCleanUpHeaderButton: some View {
+        Button {
+            // ONE press puts the brush in your hand. It used to only unfold the
+            // block, leaving a second press on a second "Clean Up" button
+            // before anything could be painted — reported as exactly that:
+            // *„kada kliknem na AI Clean Up odmah da mi da da mogu da paintujem
+            // a ne da opet kliknem ispod"*. The button inside the block is gone
+            // for the same reason: it was the second half of a two-step that
+            // should never have been two steps.
+            //
+            // Off turns the brush off with it. On stays on even if the brush is
+            // later switched off from "Exit Clean Up" — Quick and Generative
+            // live in that block and act on paint that is ALREADY down, so
+            // folding it away the moment painting stops would put them out of
+            // reach at the one moment they are wanted.
+            withAnimation(.easeInOut(duration: 0.18)) {
+                if isAIManipulationVisible {
+                    aiManipulationExpanded = false
+                    if isRemoveBrushActive {
+                        toggleRemoveBrush()
+                    }
+                } else {
+                    aiManipulationExpanded = true
+                    if !isRemoveBrushActive {
+                        toggleRemoveBrush()
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text("AI")
+                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                    .frame(width: 14, height: 12)
+                Text("Clean Up")
+            }
+        }
+        .buttonStyle(ShowHeaderButtonStyle())
+        // Lit whenever the block is on the panel, however it got there —
+        // including from the Remove section's own button, which does not touch
+        // aiManipulationExpanded.
+        .foregroundColor(isAIManipulationVisible ? AppColors.hoverInk : AppColors.ink)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isAIManipulationVisible ? AppColors.panelAlt : Color.clear)
+        )
+        .help("Paint over what should go, then let the model fill it in.")
     }
 
     // MARK: Center preview + crop overlay
@@ -7547,14 +7315,16 @@ struct DevelopView: View {
                                 localAdjustmentOverlay(settings.localAdjustments[index], frame: fullImageFrame(from: fitted))
                             } else if let activeSelection {
                                 selectionOverlay(activeSelection, frame: fullImageFrame(from: fitted))
-                            // Derived layers (Sky, Background) have no
-                            // frame to draw: they are a matte over the whole
+                            // A derived layer has no frame to draw: it is a
+                            // matte over the whole
                             // photo, so an outline would be a rectangle
                             // round the picture, and there is nothing to
                             // drag — moving a matte moves a hole, not what
                             // is under it. Pixel layers get the full frame.
                             } else if let index = selectedLayerIndex, !settings.layers[index].isDerived {
                                 layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
+                            } else if let index = selectedLayerIndex {
+                                derivedLayerMatteOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
                             }
                         }
                         .frame(width: proxy.size.width, height: proxy.size.height)
@@ -7776,6 +7546,10 @@ struct DevelopView: View {
         // the bottom".
         case top, bottom, left, right
 
+        var isCorner: Bool {
+            self == .topLeft || self == .topRight || self == .bottomLeft || self == .bottomRight
+        }
+
         // Which edges of the crop this handle drags. A corner moves two of
         // them; an edge handle moves one, and the perpendicular axis is
         // either left alone (Free) or follows from the locked ratio.
@@ -7796,11 +7570,133 @@ struct DevelopView: View {
     ///
     /// Built once and held: NSCursor(image:) rasterises, and doing that on
     /// every hover would be per-frame work for a picture that never changes.
-    private static let rotateCursor: NSCursor = {
+    /// The white curved double-headed arrow that means "drag here to turn the
+    /// crop frame" — an arc with an arrowhead at each end, asked for in exactly
+    /// those words: *„bela kriva sa strelicama na point a i b"*.
+    ///
+    /// Hand-drawn, like OpenFolderShape and LumenoLabMark elsewhere in this
+    /// app, because SF Symbols has no double-headed arc on any macOS version.
+    ///
+    /// ⚠️ PURE WHITE, no outline, by request. It is therefore faint over a
+    /// bright sky — that is the trade the client chose when they asked for it
+    /// half the size and without the black.
+    ///
+    /// Drawn into an explicit 2× bitmap rather than through `lockFocus`, since
+    /// at 14pt a 1× cursor is visibly ragged on a Retina display.
+    private static func makeRotateCursorImage(rotatedBy screenDegrees: CGFloat) -> NSImage {
+        let side: CGFloat = 14
+        let pixelScale: CGFloat = 2
+        let centre = NSPoint(x: side / 2, y: side / 2)
+        let radius: CGFloat = 4.25
+        // A shallow arc. Wide enough to read as an arc rather than a hook,
+        // short enough that the two heads are clearly two ends of one stroke.
+        //
+        // ⚠️ AppKit draws with y UP, so 90° here is the top of the picture and
+        // this is a TOP arc — which is the pose for a pointer ABOVE the crop's
+        // centre, exactly as the client described it: *„strelice na dole… to
+        // treba da bude kad je cursor na gornjem delu slike"*. Turning the
+        // glyph CLOCKWISE on screen therefore means SUBTRACTING here.
+        let startDegrees: CGFloat = 20 - screenDegrees
+        let endDegrees: CGFloat = 160 - screenDegrees
+
+        func point(atDegrees degrees: CGFloat, distance: CGFloat) -> NSPoint {
+            let radians = degrees * .pi / 180
+            return NSPoint(x: centre.x + cos(radians) * distance,
+                           y: centre.y + sin(radians) * distance)
+        }
+
+        // An arrowhead sitting ON the arc, pointing along the tangent — away
+        // from the arc's middle, so the two heads point in opposite directions
+        // and the whole thing says "either way".
+        func head(atDegrees degrees: CGFloat, clockwise: Bool) -> NSBezierPath {
+            let radians = degrees * .pi / 180
+            let onArc = point(atDegrees: degrees, distance: radius)
+            let tangent = radians + (clockwise ? -.pi / 2 : .pi / 2)
+            let normal = tangent + .pi / 2
+
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: onArc.x + cos(tangent) * 3, y: onArc.y + sin(tangent) * 3))
+            path.line(to: NSPoint(x: onArc.x + cos(normal) * 1.9, y: onArc.y + sin(normal) * 1.9))
+            path.line(to: NSPoint(x: onArc.x - cos(normal) * 1.9, y: onArc.y - sin(normal) * 1.9))
+            path.close()
+            return path
+        }
+
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(side * pixelScale), pixelsHigh: Int(side * pixelScale),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        )!
+        rep.size = NSSize(width: side, height: side)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+
+        NSColor.white.setStroke()
+        NSColor.white.setFill()
+
+        let arc = NSBezierPath()
+        arc.appendArc(withCenter: centre, radius: radius,
+                      startAngle: startDegrees, endAngle: endDegrees)
+        arc.lineWidth = 1.2
+        arc.lineCapStyle = .round
+        arc.stroke()
+
+        head(atDegrees: startDegrees, clockwise: true).fill()
+        head(atDegrees: endDegrees, clockwise: false).fill()
+
+        NSGraphicsContext.restoreGraphicsState()
+
+        let image = NSImage(size: NSSize(width: side, height: side))
+        image.addRepresentation(rep)
+        return image
+    }
+
+    /// One cursor per 15° of turn, built once and held.
+    ///
+    /// The glyph follows the pointer AROUND the crop's centre — arrowheads down
+    /// when the pointer is above it, up when it is below, tilted at the corners
+    /// — because that is what a rotation handle is: a tangent to the circle the
+    /// drag will travel along. Asked for in those terms: *„kada je kursor dole
+    /// onda strelice da pokazuju na gore… za svaki ćošak strelice da budu
+    /// nagnute"*.
+    ///
+    /// 24 pictures rather than one drawn per mouse-move: `NSCursor(image:)`
+    /// rasterises, and this cursor is set on EVERY move (see cropCursor), so
+    /// drawing per move would be a rasterised image per frame. 15° is finer
+    /// than the eye reads on a 14pt glyph.
+    private static let rotateCursorSteps = 24
+
+    private static let rotateCursors: [NSCursor] = (0..<rotateCursorSteps).map { step in
+        let degrees = CGFloat(step) * (360 / CGFloat(rotateCursorSteps))
+        let image = makeRotateCursorImage(rotatedBy: degrees)
+        return NSCursor(image: image, hotSpot: NSPoint(x: image.size.width / 2,
+                                                      y: image.size.height / 2))
+    }
+
+    /// The rotate cursor turned to match where `point` sits around `centre`.
+    private static func rotateCursor(at point: CGPoint, around centre: CGPoint) -> NSCursor {
+        // Screen angle from the centre to the pointer: 0 is to the right, 90 is
+        // DOWN (screen y grows downward). +90 puts the zero of the glyph's own
+        // turn where the pointer is directly ABOVE the centre, which is the
+        // pose makeRotateCursorImage draws at 0.
+        let screenDegrees = atan2(point.y - centre.y, point.x - centre.x) * 180 / .pi + 90
+        let stepSize = 360 / Double(rotateCursorSteps)
+        var step = Int((screenDegrees / stepSize).rounded()) % rotateCursorSteps
+        if step < 0 { step += rotateCursorSteps }
+        return rotateCursors[step]
+    }
+
+    /// Draws a cursor from an SF Symbol: white glyph, black outline, centred
+    /// hot spot. Built once by each caller and held — NSCursor(image:)
+    /// rasterises, and doing that per hover would be per-frame work for a
+    /// picture that never changes.
+    private static func makeSymbolCursor(_ symbolName: String) -> NSCursor {
         let side: CGFloat = 26
         let canvas = NSImage(size: NSSize(width: side, height: side))
         let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .bold)
-        let symbol = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)?
+        let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
             .withSymbolConfiguration(config)
 
         canvas.lockFocus()
@@ -7829,180 +7725,371 @@ struct DevelopView: View {
         canvas.unlockFocus()
 
         return NSCursor(image: canvas, hotSpot: NSPoint(x: side / 2, y: side / 2))
-    }()
+    }
 
-    /// Everything OUTSIDE the crop, as one even-odd shape.
+    /// The crop frame itself — the upright box `rect`, turned `degrees` about
+    /// its own centre. One place builds this outline; the darkening, the drawn
+    /// border and the move area all take it from here, so they cannot drift
+    /// apart into three rectangles that nearly agree.
+    private static func cropFramePath(_ rect: CGRect, degrees: Double) -> Path {
+        var path = Path()
+        let centre = CGPoint(x: rect.midX, y: rect.midY)
+        // Screen Y grows DOWNWARD, so this matrix turns clockwise for a
+        // positive angle — the same direction `EditCropRect.angle` is
+        // documented to mean, and the same one the renderer undoes.
+        let radians = degrees * .pi / 180
+        let c = cos(radians)
+        let sn = sin(radians)
+        let corners = [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY)
+        ].map { p -> CGPoint in
+            let dx = p.x - centre.x
+            let dy = p.y - centre.y
+            return CGPoint(x: centre.x + dx * c - dy * sn,
+                           y: centre.y + dx * sn + dy * c)
+        }
+
+        path.move(to: corners[0])
+        path.addLine(to: corners[1])
+        path.addLine(to: corners[2])
+        path.addLine(to: corners[3])
+        path.closeSubpath()
+        return path
+    }
+
+    /// A point of the crop frame's own space (origin at the frame's centre,
+    /// axes along the frame's own sides) placed into container space.
+    private static func cropFramePoint(_ offset: CGPoint, centre: CGPoint, degrees: Double) -> CGPoint {
+        let radians = degrees * .pi / 180
+        let c = cos(radians)
+        let sn = sin(radians)
+        return CGPoint(x: centre.x + offset.x * c - offset.y * sn,
+                       y: centre.y + offset.x * sn + offset.y * c)
+    }
+
+    /// A drag measured on SCREEN, expressed along the crop frame's own two
+    /// sides. The inverse of `cropFramePoint`'s rotation.
     ///
-    /// Used as the rotation layer's `contentShape`, so that layer takes hover
-    /// and drags only where the crop is not. A plain full-size rectangle would
-    /// overlap the move area and the handles, and two views both claiming the
-    /// same hover means two cursors pushed and one popped — after which every
-    /// cursor in the app is wrong.
+    /// Every crop gesture is read in container coordinates and converted here,
+    /// rather than letting SwiftUI hand back already-rotated numbers from
+    /// inside a `.rotationEffect`. The conversion is then written down and
+    /// checkable, instead of resting on an assumption about what a gesture
+    /// reports underneath a transform.
+    private static func cropFrameTranslation(_ translation: CGSize, degrees: Double) -> CGSize {
+        let radians = degrees * .pi / 180
+        let c = cos(radians)
+        let sn = sin(radians)
+        return CGSize(width: translation.width * c + translation.height * sn,
+                      height: -translation.width * sn + translation.height * c)
+    }
+
+    /// Everything OUTSIDE the crop frame, as one even-odd shape — the rotation
+    /// zone.
+    ///
+    /// It was a 24pt band hugging the edges for one round, and that was wrong
+    /// twice over. It was hard to find, and worse, it fought the corner
+    /// handles for the same few points: *„kada dođem mišem na ćošak tačku, on
+    /// mi pokaže ruku i krene rotacija, pa onda opet pokušavam da smanjim crop,
+    /// opet rotacija"*.
+    ///
+    /// The rule is now the simple one the client stated: **on a handle, only
+    /// resize; anywhere outside the crop, rotate.** There is nothing else out
+    /// there to compete with — outside the frame is the darkened area — and the
+    /// eight handles are declared AFTER this in the ZStack, so they keep their
+    /// own points outright.
     private struct CropOutsideShape: Shape {
-        let hole: CGRect
+        let frame: CGRect
+        let degrees: Double
 
         func path(in rect: CGRect) -> Path {
             var path = Path()
             path.addRect(rect)
-            path.addRect(hole)
+            path.addPath(DevelopView.cropFramePath(frame, degrees: degrees))
             return path
         }
     }
 
     private func cropOverlay(frame: CGRect, containerSize: CGSize) -> some View {
+        // The UNROTATED box, in container coordinates. The angle is applied on
+        // top of it by cropFramePath — the stored rectangle stays the upright
+        // box everywhere, and only the drawing and the hit areas are turned.
         let rect = CGRect(
             x: frame.minX + pendingCrop.x * frame.width,
             y: frame.minY + pendingCrop.y * frame.height,
             width: pendingCrop.width * frame.width,
             height: pendingCrop.height * frame.height
         )
+        let angle = pendingCrop.angle
+        let centre = CGPoint(x: rect.midX, y: rect.midY)
+        let framePath = Self.cropFramePath(rect, degrees: angle)
 
         return ZStack {
-            // Even-odd fill of [full canvas, crop rect] darkens everything
-            // outside the crop rect while leaving the rect itself clear.
+            // Even-odd fill of [full canvas, crop frame] darkens everything
+            // outside the crop while leaving the frame itself clear. Takes the
+            // TURNED outline, so the clear area is the frame that is actually
+            // on screen rather than the upright box behind it.
             Path { path in
                 path.addRect(CGRect(origin: .zero, size: containerSize))
-                path.addRect(rect)
+                path.addPath(framePath)
             }
             .fill(Color.black.opacity(0.55), style: FillStyle(eoFill: true))
             .allowsHitTesting(false)
 
-            // Drag anywhere OUTSIDE the crop to straighten, the way Lightroom
-            // does it. Nothing is drawn here — the darkening above already
-            // shows what this region is — it only takes the cursor and the
-            // drag.
+            // Rotation: everywhere outside the crop — see CropOutsideShape.
             //
-            // Placed BEFORE the crop rectangle and the handles: a ZStack gives
-            // a gesture to the last view that claims it, so those two win where
-            // they overlap, and the even-odd contentShape below keeps this one
-            // from claiming their area in the first place.
+            // Declared BEFORE the move area and the handles: a ZStack gives a
+            // gesture to the last view that claims it, so those two win where
+            // they overlap.
             Color.clear
-                .contentShape(CropOutsideShape(hole: rect), eoFill: true)
-                .onHover { inside in
-                    if inside {
-                        Self.rotateCursor.push()
-                    } else {
-                        NSCursor.pop()
-                    }
-                }
+                .contentShape(CropOutsideShape(frame: rect, degrees: angle), eoFill: true)
                 .gesture(
                     // Named space, not local: this view is the whole container,
-                    // and the angle is measured from the crop's centre to the
+                    // and the angle is measured from the frame's centre to the
                     // pointer — both of which have to be in the same
                     // coordinates as `rect`.
                     DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.cropOverlaySpace))
                         .onChanged { value in
-                            rotateCrop(to: value.location, around: CGPoint(x: rect.midX, y: rect.midY))
+                            rotateCropFrame(to: value.location, around: centre)
                         }
                         .onEnded { _ in
                             rotateDragStartAngle = nil
-                            rotateDragStartDegrees = nil
+                            rotateDragStartCrop = nil
                         }
                 )
 
-            Rectangle()
-                .stroke(Color.white, lineWidth: 1.0)
-                .frame(width: rect.width, height: rect.height)
-                .position(x: rect.midX, y: rect.midY)
-                .contentShape(Rectangle())
-                // Open hand over the crop, closed hand while it is being
-                // dragged — the same pair the Space-to-pan layer uses further
-                // up this file, and the same thing every other editor does with
-                // a box you can pick up and move.
-                //
-                // push/pop rather than .set, so the cursor goes back to
-                // whatever it was instead of leaving a hand behind over the
-                // rest of the photo.
-                .onHover { inside in
-                    if inside {
-                        NSCursor.openHand.push()
-                    } else {
-                        NSCursor.pop()
-                    }
-                }
+            // The frame's own area: the drawn border, and the drag that picks
+            // the whole frame up and moves it.
+            Color.clear
+                .contentShape(framePath)
                 .gesture(
-                    DragGesture()
+                    // Container space, like every other crop gesture here, so
+                    // the translation arrives in SCREEN terms and the code that
+                    // needs it along the frame's own sides converts it once,
+                    // in the open — see cropFrameTranslation.
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.cropOverlaySpace))
                         .onChanged { value in
-                            // Pushed ONCE per drag, guarded — see
-                            // isPushingCropMoveCursor for what pushing per
-                            // frame would do to the cursor stack.
-                            if !isPushingCropMoveCursor {
-                                isPushingCropMoveCursor = true
-                                NSCursor.closedHand.push()
-                            }
                             moveCrop(by: value.translation, frame: frame)
                         }
                         .onEnded { _ in
-                            if isPushingCropMoveCursor {
-                                isPushingCropMoveCursor = false
-                                NSCursor.pop()
-                            }
                             dragStartCrop = nil
                         }
                 )
 
+            framePath
+                .stroke(Color.white, lineWidth: 1.0)
+                .allowsHitTesting(false)
+
             ForEach(CropHandle.allCases, id: \.self) { handle in
-                cropHandleView(handle, rect: rect, frame: frame)
+                cropHandleView(handle, rect: rect, angle: angle, centre: centre, frame: frame)
             }
         }
         .coordinateSpace(name: Self.cropOverlaySpace)
+        // ⚠️ ONE place decides the cursor for the whole crop tool, and it SETS
+        // rather than pushes.
+        //
+        // Every layer here used to push its own on `.onHover(true)` and pop on
+        // `.onHover(false)`. Four overlapping layers — outside, the frame, the
+        // handles, and the tool overlays underneath — means pushes and pops
+        // interleave in an order nobody controls: cross from a handle straight
+        // onto the outside area and the pop for the handle can arrive AFTER the
+        // push for the outside, leaving the stack holding the wrong picture.
+        // That is why the rotate cursor never appeared even once the zone
+        // underneath it was correct and its gesture worked: *„nema ikonica kada
+        // je cursor na mestu za rotaciju"*. The push/pop hazard is written down
+        // twice elsewhere in this file; this is what it looks like when it
+        // actually happens.
+        //
+        // `.set()` on every mouse-move is the fix, not a workaround: AppKit
+        // resets the cursor from its own tracking areas as the pointer moves,
+        // and setting it again on each move is how a view holds one. There is
+        // no stack left to unbalance.
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let point):
+                cropCursor(at: point, rect: rect, angle: angle).set()
+            case .ended:
+                NSCursor.arrow.set()
+            }
+        }
+    }
+
+    /// Which cursor belongs at `point`, in the crop overlay's own coordinates.
+    ///
+    /// The order is the same order the ZStack gives its gestures away in, and
+    /// it has to be: a cursor that disagrees with what a press will do is worse
+    /// than no cursor at all — that disagreement is exactly what made the
+    /// corner unusable two rounds ago.
+    private func cropCursor(at point: CGPoint, rect: CGRect, angle: Double) -> NSCursor {
+        // A drag in progress keeps its own cursor wherever the pointer wanders.
+        // Turning the frame swings the pointer well outside the handle it
+        // started on, and a cursor that changed halfway through would read as
+        // the tool having let go.
+        if rotateDragStartAngle != nil {
+            return Self.rotateCursor(at: point, around: CGPoint(x: rect.midX, y: rect.midY))
+        }
+        if dragStartCrop != nil {
+            return .closedHand
+        }
+
+        // Handles first, and with the SAME reach their hit areas have — 30pt
+        // for a corner, 24 for an edge bar, so the picture and the press agree
+        // to the point.
+        let centre = CGPoint(x: rect.midX, y: rect.midY)
+        for handle in CropHandle.allCases {
+            let position = Self.cropHandlePosition(handle, rect: rect, centre: centre, degrees: angle)
+            let reach: CGFloat = handle.isCorner ? 15 : 12
+            if abs(point.x - position.x) <= reach + 4, abs(point.y - position.y) <= reach + 4 {
+                return .openHand
+            }
+        }
+
+        if Self.cropFramePath(rect, degrees: angle).contains(point) {
+            return .openHand
+        }
+
+        return Self.rotateCursor(at: point, around: centre)
+    }
+
+    /// Where a handle sits, in the overlay's coordinates. Shared by the handle
+    /// views and by the cursor above, so the two cannot drift apart.
+    private static func cropHandlePosition(_ handle: CropHandle, rect: CGRect, centre: CGPoint, degrees: Double) -> CGPoint {
+        let halfWidth = rect.width / 2
+        let halfHeight = rect.height / 2
+        let offset: CGPoint
+        switch handle {
+        case .topLeft: offset = CGPoint(x: -halfWidth, y: -halfHeight)
+        case .topRight: offset = CGPoint(x: halfWidth, y: -halfHeight)
+        case .bottomLeft: offset = CGPoint(x: -halfWidth, y: halfHeight)
+        case .bottomRight: offset = CGPoint(x: halfWidth, y: halfHeight)
+        case .top: offset = CGPoint(x: 0, y: -halfHeight)
+        case .bottom: offset = CGPoint(x: 0, y: halfHeight)
+        case .left: offset = CGPoint(x: -halfWidth, y: 0)
+        case .right: offset = CGPoint(x: halfWidth, y: 0)
+        }
+        return cropFramePoint(offset, centre: centre, degrees: degrees)
     }
 
     private static let cropOverlaySpace = "develop.cropOverlay"
 
-    /// Straightens by dragging outside the crop.
+    /// Turns the crop FRAME, by dragging the band along its edges.
     ///
-    /// Measures the ANGLE from the crop's centre to the pointer and moves
-    /// `straightenDegrees` by however much that angle has turned since the drag
-    /// began — so the photograph follows the hand rather than following how far
-    /// the hand moved, which is what makes a rotation drag feel like a rotation
-    /// and not like a slider.
-    private func rotateCrop(to location: CGPoint, around centre: CGPoint) {
+    /// Measures the ANGLE from the frame's centre to the pointer and moves the
+    /// frame by however much that angle has turned since the drag began — so
+    /// the frame follows the hand rather than following how far the hand
+    /// moved, which is what makes a rotation drag feel like a rotation and not
+    /// like a slider.
+    ///
+    /// ⚠️ This turns the RECTANGLE, not the photograph. It was built the other
+    /// way round in KORAK 77 and reported as wrong: *„da mogu da rotiram krop
+    /// (ne sliku)"*. The Straighten slider still turns the photograph, and the
+    /// two are independent on purpose — see EditCropRect.angle.
+    private func rotateCropFrame(to location: CGPoint, around centre: CGPoint) {
         let dx = location.x - centre.x
         let dy = location.y - centre.y
         // Too close to the centre and the angle is noise — a pixel of movement
         // swings it through ninety degrees.
         guard dx * dx + dy * dy > 400 else { return }
 
-        // Screen Y grows downward, so atan2 here increases CLOCKWISE. The
-        // renderer applies `rotationAngle: -radians`, which also turns the
-        // picture clockwise for a positive value — so this maps straight
-        // across with no sign flip. Checked against PhotoEditRenderer rather
-        // than guessed, because a rotation that goes the wrong way is the kind
-        // of thing that gets "fixed" twice.
         let angle = atan2(dy, dx) * 180 / .pi
 
+        // The whole crop is remembered at the start of the drag, not just the
+        // angle it had. Turning a frame can force it to shrink to stay on the
+        // photograph, and recomputing every frame FROM THE START means turning
+        // out and back returns the frame to the size it was. Keeping only the
+        // angle would ratchet it smaller each way the hand moved.
         guard let startAngle = rotateDragStartAngle,
-              let startDegrees = rotateDragStartDegrees else {
+              let startCrop = rotateDragStartCrop else {
             rotateDragStartAngle = angle
-            rotateDragStartDegrees = settings.straightenDegrees
+            rotateDragStartCrop = pendingCrop
             return
         }
 
         // Normalised into -180...180 so a drag across the ±180 seam does not
-        // snap the photo through half a turn.
+        // snap the frame through half a turn.
         var delta = angle - startAngle
         while delta > 180 { delta -= 360 }
         while delta < -180 { delta += 360 }
 
-        // Through the same binding the Straighten slider uses, so the crop
-        // auto-fit runs here too — see straightenBinding for why that is a
-        // binding rather than a blanket onChange.
-        straightenBinding.wrappedValue = min(max(startDegrees + delta, -45), 45)
+        var next = startCrop
+        next.angle = min(max(startCrop.angle + delta, -45), 45)
+        pendingCrop = constrainedToImage(next)
+        // The client has taken the crop into their own hands, so a later
+        // Straighten drag must not auto-fit over it — same reason commitCrop
+        // clears this.
+        cropIsAutoFitted = false
     }
 
-    private func cropHandleView(_ handle: CropHandle, rect: CGRect, frame: CGRect) -> some View {
-        let position: CGPoint
-        switch handle {
-        case .topLeft: position = CGPoint(x: rect.minX, y: rect.minY)
-        case .topRight: position = CGPoint(x: rect.maxX, y: rect.minY)
-        case .bottomLeft: position = CGPoint(x: rect.minX, y: rect.maxY)
-        case .bottomRight: position = CGPoint(x: rect.maxX, y: rect.maxY)
-        case .top: position = CGPoint(x: rect.midX, y: rect.minY)
-        case .bottom: position = CGPoint(x: rect.midX, y: rect.maxY)
-        case .left: position = CGPoint(x: rect.minX, y: rect.midY)
-        case .right: position = CGPoint(x: rect.maxX, y: rect.midY)
+    /// Keeps a crop frame — turned or not — inside the photograph.
+    ///
+    /// ⚠️ Works in a space PROPORTIONAL TO PIXELS (width `ratio`, height 1),
+    /// never in fraction space. Fractions of width and fractions of height are
+    /// different units, and a rotation that mixes the two axes is only
+    /// meaningful once they share a scale. Everything below is homogeneous in
+    /// (width, height), so any space proportional to pixels gives the same
+    /// answer — which is why the aspect ratio alone is enough and the pixel
+    /// dimensions are not needed.
+    ///
+    /// A turned rectangle lies inside an upright one exactly when its bounding
+    /// box does, because the bounding box is made of its own extreme corners.
+    /// So this is the containment test itself, not a conservative stand-in for
+    /// one.
+    ///
+    /// At angle 0 it is the plain clamp that was here before: A and B collapse
+    /// to the half-width and half-height, and a crop already inside comes back
+    /// untouched.
+    private func constrainedToImage(_ crop: EditCropRect) -> EditCropRect {
+        guard let ratio = currentImagePixelRatio, ratio > 0 else {
+            // No image measured yet — better to leave the numbers alone than
+            // to clamp them against a shape that has not been established.
+            return crop
         }
+
+        let imageWidth = ratio
+        let imageHeight = 1.0
+        var halfWidth = crop.width * imageWidth / 2
+        var halfHeight = crop.height * imageHeight / 2
+        guard halfWidth > 0, halfHeight > 0 else { return crop }
+
+        let radians = crop.angle * .pi / 180
+        let c = abs(cos(radians))
+        let sn = abs(sin(radians))
+
+        var boundsHalfWidth = halfWidth * c + halfHeight * sn
+        var boundsHalfHeight = halfWidth * sn + halfHeight * c
+        guard boundsHalfWidth > 0, boundsHalfHeight > 0 else { return crop }
+
+        // Too big to fit at this angle: shrink about the centre. BOTH sides by
+        // the same factor, so a locked aspect ratio still holds exactly.
+        if boundsHalfWidth > imageWidth / 2 || boundsHalfHeight > imageHeight / 2 {
+            let scale = min(imageWidth / 2 / boundsHalfWidth, imageHeight / 2 / boundsHalfHeight)
+            halfWidth *= scale
+            halfHeight *= scale
+            boundsHalfWidth *= scale
+            boundsHalfHeight *= scale
+        }
+
+        var centreX = (crop.x + crop.width / 2) * imageWidth
+        var centreY = (crop.y + crop.height / 2) * imageHeight
+        centreX = min(max(centreX, boundsHalfWidth), imageWidth - boundsHalfWidth)
+        centreY = min(max(centreY, boundsHalfHeight), imageHeight - boundsHalfHeight)
+
+        var next = crop
+        next.width = 2 * halfWidth / imageWidth
+        next.height = 2 * halfHeight / imageHeight
+        next.x = (centreX - halfWidth) / imageWidth
+        next.y = (centreY - halfHeight) / imageHeight
+        return next
+    }
+
+    private func cropHandleView(_ handle: CropHandle, rect: CGRect, angle: Double, centre: CGPoint, frame: CGRect) -> some View {
+        // Placed in the frame's OWN space and turned into container space in
+        // one step, so a handle sits on its corner at every angle without eight
+        // separate pieces of trigonometry. Through the same helper the cursor
+        // uses — see cropHandlePosition.
+        let position = Self.cropHandlePosition(handle, rect: rect, centre: centre, degrees: angle)
 
         // Edge handles are bars lying ALONG their edge rather than dots:
         // the shape says which way it moves before it is touched, and a
@@ -8014,17 +8101,37 @@ struct DevelopView: View {
         default: size = CGSize(width: 12, height: 12)
         }
 
+        // ⚠️ CENTRED ON THE HANDLE, and generously sized. Not offset inward,
+        // which is what it was for one round and what produced the worst report
+        // yet: the drawn dot sat on the corner while what actually caught the
+        // pointer sat 11pt inside it, so aiming at the dot landed in the
+        // rotation zone. Hover said hand, press said rotate — *„pa onda jedan
+        // nekako ubodem da smanjim krop"*.
+        //
+        // 30pt for a corner (the dot is 12) so that anywhere on or immediately
+        // around the dot resizes, which is the client's rule: on the corner,
+        // ONLY narrowing and widening, never rotation. Being declared last in
+        // the ZStack is what makes that hold — the rotation zone underneath
+        // covers these same points and loses them.
+        let hitWidth = max(size.width, handle.isCorner ? 30 : 24)
+        let hitHeight = max(size.height, handle.isCorner ? 30 : 24)
+
         return Capsule()
             .fill(Color.white)
             .frame(width: size.width, height: size.height)
             .shadow(radius: 1)
             // Hit area larger than the drawn bar in both directions, so a
             // thin 7pt edge handle is still catchable without pixel-hunting.
-            .frame(width: max(size.width, 22), height: max(size.height, 22))
+            .frame(width: hitWidth, height: hitHeight)
             .contentShape(Rectangle())
+            // The bar lies along its own edge, so it turns with the frame. The
+            // hit area turns with it, which is the point — a bar drawn on a
+            // tilted edge with an upright hit box is a handle that is caught
+            // next to itself.
+            .rotationEffect(.degrees(angle))
             .position(position)
             .gesture(
-                DragGesture()
+                DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.cropOverlaySpace))
                     .onChanged { value in resizeCrop(handle, by: value.translation, frame: frame) }
                     .onEnded { _ in dragStartCrop = nil }
             )
@@ -8042,9 +8149,21 @@ struct DevelopView: View {
         let dy = translation.height / frame.height
 
         var next = start
-        next.x = min(max(0, start.x + dx), 1 - start.width)
-        next.y = min(max(0, start.y + dy), 1 - start.height)
-        pendingCrop = next
+        next.x = start.x + dx
+        next.y = start.y + dy
+
+        if next.angle == 0 {
+            // Untouched from before the frame could turn: at zero this is the
+            // whole constraint, and leaving it in place keeps the ordinary
+            // case exactly as it was rather than routing it through new maths.
+            next.x = min(max(0, next.x), 1 - next.width)
+            next.y = min(max(0, next.y), 1 - next.height)
+            pendingCrop = next
+        } else {
+            // A turned frame runs off the picture sooner than its upright box
+            // does, so the limit is the turned frame's own bounding box.
+            pendingCrop = constrainedToImage(next)
+        }
     }
 
     // The image's own pixel width/height ratio (post-rotation) — needed to
@@ -8118,8 +8237,13 @@ struct DevelopView: View {
             return
         }
 
-        let dx = translation.width / frame.width
-        let dy = translation.height / frame.height
+        // The drag arrives in SCREEN terms; a resize happens along the frame's
+        // own two sides. At angle 0 this conversion is the identity, so the
+        // free-form and ratio-locked maths below are reached with exactly the
+        // numbers they were written against.
+        let alongFrame = Self.cropFrameTranslation(translation, degrees: start.angle)
+        let dx = alongFrame.width / frame.width
+        let dy = alongFrame.height / frame.height
         let minSize = 0.05
 
         // What stays fixed while the handle moves, per axis. A corner pins
@@ -8224,7 +8348,10 @@ struct DevelopView: View {
             finalHeight = max(min(rawHeight, maxHeightAllowed), minSize)
         }
 
-        var next = EditCropRect(x: 0, y: 0, width: finalWidth, height: finalHeight)
+        // `angle: start.angle` and not the default — the memberwise initializer
+        // would quietly put the frame back upright, which is a resize silently
+        // undoing a rotation.
+        var next = EditCropRect(x: 0, y: 0, width: finalWidth, height: finalHeight, angle: start.angle)
         if handle.movesLeftEdge {
             next.x = anchorX - finalWidth
         } else if handle.movesRightEdge {
@@ -8247,7 +8374,58 @@ struct DevelopView: View {
         // the anchored branches are already inside by construction.
         next.x = min(max(next.x, 0), max(0, 1 - next.width))
         next.y = min(max(next.y, 0), max(0, 1 - next.height))
+
+        if next.angle != 0 {
+            next = anchoredAfterResize(handle, start: start, resized: next)
+            next = constrainedToImage(next)
+        }
+
         pendingCrop = next
+    }
+
+    /// Puts a resized frame back so that the side or corner the drag did NOT
+    /// touch stays exactly where it is ON SCREEN.
+    ///
+    /// The block above anchors in the UNROTATED box, which is the same thing
+    /// while the frame is upright. Once it is turned it is not: the frame
+    /// rotates about its own centre, so changing the size moves the centre,
+    /// and the corner that was supposed to be pinned swings away from the
+    /// pointer. Reported as an easy thing to miss and an obvious thing to see.
+    ///
+    /// ⚠️ Only called when the frame is turned. At angle 0 this computes
+    /// exactly what the block above already did, and running it there would be
+    /// the same answer through more arithmetic — with a chance of differing in
+    /// the last bits of a Double for no gain.
+    private func anchoredAfterResize(_ handle: CropHandle, start: EditCropRect, resized: EditCropRect) -> EditCropRect {
+        guard let ratio = currentImagePixelRatio, ratio > 0 else { return resized }
+
+        let imageWidth = ratio
+        let imageHeight = 1.0
+
+        // Which point of the frame the drag leaves alone, as a sign per axis:
+        // dragging the left edge pins the right one (+1), dragging the right
+        // pins the left (-1), and an axis the handle does not touch keeps its
+        // centre (0) — the same three cases the anchoring above has.
+        let signX: Double = handle.movesLeftEdge ? 1 : (handle.movesRightEdge ? -1 : 0)
+        let signY: Double = handle.movesTopEdge ? 1 : (handle.movesBottomEdge ? -1 : 0)
+
+        let startCentre = CGPoint(x: (start.x + start.width / 2) * imageWidth,
+                                  y: (start.y + start.height / 2) * imageHeight)
+        let startOffset = CGPoint(x: signX * start.width * imageWidth / 2,
+                                  y: signY * start.height * imageHeight / 2)
+        let resizedOffset = CGPoint(x: signX * resized.width * imageWidth / 2,
+                                    y: signY * resized.height * imageHeight / 2)
+
+        // Where the pinned point is on screen, and where the new centre has to
+        // go for the pinned point to land back on it.
+        let pinned = Self.cropFramePoint(startOffset, centre: startCentre, degrees: resized.angle)
+        let turnedBack = Self.cropFramePoint(resizedOffset, centre: .zero, degrees: resized.angle)
+        let centre = CGPoint(x: pinned.x - turnedBack.x, y: pinned.y - turnedBack.y)
+
+        var next = resized
+        next.x = (centre.x - resized.width * imageWidth / 2) / imageWidth
+        next.y = (centre.y - resized.height * imageHeight / 2) / imageHeight
+        return next
     }
 
     // MARK: Mask overlays (local adjustments)
@@ -9154,6 +9332,78 @@ struct DevelopView: View {
     /// - The drag maths stays in unrotated space (see `unrotated`), because
     ///   pulling a corner means "wider along this edge", not "wider along
     ///   the screen".
+    /// What a selected derived layer shows on the photograph.
+    ///
+    /// ⚠️ THE MATTE ITSELF, not a frame. Reported as *„kliknem na layer ali mi
+    /// ne pokazuje da je selektovan na slici"* — and the reason there was
+    /// nothing to see is a decision that is still right: an outline round a
+    /// derived layer would be a rectangle round the whole picture, saying
+    /// nothing about which part of it the layer is. What is actually needed is
+    /// to see WHERE the region is, which is exactly what the matte is.
+    ///
+    /// Tinted rather than outlined because the matte has no outline worth
+    /// drawing: its edge runs around every palm frond, and vectorising that to
+    /// stroke it would cost more than showing the region does.
+    ///
+    /// The colour is deliberately unnatural: magenta cannot be mistaken for
+    /// anything in the photograph.
+    /// ⚠️ AN INDICATOR THAT SHOWS WHERE SOMETHING WAS FOUND MUST GET OUT OF
+    /// THE WAY THE MOMENT THERE IS A RESULT TO LOOK AT. This wash was once
+    /// left on top of a finished result and did real damage on sight — the
+    /// picture came back a colour it was not. Written down here because the
+    /// mistake is cheap to repeat: see SKY_ARCHIVE/BRIEFSHOW_SKY_NOTES.md §8.
+    @ViewBuilder
+    private func derivedLayerMatteOverlay(_ layer: ImageLayer, frame: CGRect) -> some View {
+        if let matte = matteOverlayImage(for: layer) {
+            Image(nsImage: matte)
+                .resizable()
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Its own small context, like PhotoEditRenderer's extraction one. Not the editor's heavy render
+    /// context: this draws a flat tint a handful of times per session, and
+    /// dragging a pipeline built for 45MP renders into that would be waste.
+    private static let overlayContext = CIContext()
+
+    /// The tinted matte, built once per layer and kept.
+    ///
+    /// Built here rather than in the render pipeline: this is a thing the
+    /// client looks at while choosing, not part of the photograph, and it must
+    /// never end up in an export.
+    private func matteOverlayImage(for layer: ImageLayer) -> NSImage? {
+        if let cached = matteOverlayCache[layer.id] {
+            return cached
+        }
+        guard let data = layer.maskData, let mask = CIImage(data: data) else {
+            return nil
+        }
+
+        // Luminance to alpha: the stored matte is a grey PNG, white where the
+        // layer is, and SwiftUI masks by ALPHA, not by brightness — without
+        // this the whole rectangle would come out solid.
+        let alpha = mask.applyingFilter("CIMaskToAlpha")
+        let tinted = alpha.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0.34),
+            "inputBiasVector": CIVector(x: 0.95, y: 0.25, z: 0.55, w: 0)
+        ])
+
+        let extent = tinted.extent
+        guard extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite,
+              let cgImage = Self.overlayContext.createCGImage(tinted, from: extent) else {
+            return nil
+        }
+
+        let image = NSImage(cgImage: cgImage, size: NSSize(width: extent.width, height: extent.height))
+        matteOverlayCache[layer.id] = image
+        return image
+    }
+
     private func layerOverlay(_ layer: ImageLayer, frame: CGRect) -> some View {
         let rect = CGRect(
             x: frame.minX + layer.x * frame.width,
@@ -9767,11 +10017,17 @@ struct DevelopView: View {
             // Folded shut by default, which is what earns it the position:
             // closed it costs a single line, so being permanently available
             // does not permanently cost the sections below it any room.
-            aiManipulationSection
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+            // Padding and divider live INSIDE the condition too. Left outside
+            // they would leave a 20pt empty stripe and a stray line across the
+            // panel with nothing between them — which is the titled line the
+            // client wanted gone, only worse for being blank.
+            if isAIManipulationVisible {
+                aiManipulationSection
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
 
-            Divider()
+                Divider()
+            }
 
             panelTabBar
 
@@ -11889,30 +12145,15 @@ struct DevelopView: View {
                     settings.layers[i].opacity = 1
                     settings.layers[i].blendMode = .normal
                     settings.layers[i].rotationDegrees = 0
-                    // ⚠️ The sky counts. It was left out of the first
-                    // version and reported straight away: black-and-white
-                    // came off a People layer and a replaced sky did not,
-                    // which made Reset look broken rather than partial.
-                    // "As it was made" means every choice made since,
-                    // including this one.
-                    settings.layers[i].skyStyle = nil
+                    // "As it was made" means every choice made since — the
+                    // first version left one of them out and Reset read as
+                    // broken rather than partial.
                 }
             }
 
             if layer.blur > 0 {
                 editSlider("Blur Amount", key: "layer.blur", value: layerBlurBinding, range: 0.01...1) {
                     String(format: "%.0f", $0 * 100)
-                }
-            }
-
-            // Only on a Sky layer, and only because that is the only layer
-            // where "put a different one there" means anything. On the
-            // People layer it would be an offer to replace the client's
-            // subject with a gradient.
-            if layer.isSky {
-                panelActionButton(layer.skyStyle.map { "Change Sky — \($0.label)" } ?? "Change Sky",
-                                  systemImage: "cloud.sun.fill") {
-                    isSkyPickerPresented = true
                 }
             }
 
@@ -12003,95 +12244,6 @@ struct DevelopView: View {
             editSlider("Sharpness", key: "layer.sharpness", value: layerAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
         }
     }
-
-    /// The Change Sky picker.
-    ///
-    /// Every tile is the sky itself, drawn by the same code that will draw
-    /// it into the photo — not an illustration of it. A swatch that only
-    /// resembled the result would be a promise the renderer might not keep.
-    private var skyPickerView: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Change Sky")
-                    .font(.custom("Figtree", size: 16).weight(.bold))
-                    .foregroundColor(AppColors.ink)
-
-                Text("Each of these is drawn, not a photograph — so it comes out at the photo's own resolution, and there are no mountains in the list.")
-                    .font(.custom("Figtree", size: 11))
-                    .foregroundColor(AppColors.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
-                    // First tile, deliberately: the way back. Choosing a sky
-                    // is one click, and so should be changing your mind.
-                    skyTile(nil, isSelected: selectedLayerIndex.map { settings.layers[$0].skyStyle == nil } ?? true)
-
-                    ForEach(SkyStyle.allCases) { style in
-                        skyTile(style,
-                                isSelected: selectedLayerIndex.map { settings.layers[$0].skyStyle == style } ?? false)
-                    }
-                }
-            }
-            .frame(maxHeight: 420)
-
-            HStack {
-                Spacer()
-                Button("Done") {
-                    isSkyPickerPresented = false
-                }
-                .buttonStyle(ShowHeaderButtonStyle())
-            }
-        }
-        .padding(20)
-        .frame(width: 560)
-        .background(AppColors.background)
-    }
-
-    /// One tile. `style` nil is "the photo's own sky".
-    private func skyTile(_ style: SkyStyle?, isSelected: Bool) -> some View {
-        Button {
-            guard let index = selectedLayerIndex else {
-                return
-            }
-            settings.layers[index].skyStyle = style
-            isSkyPickerPresented = false
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                ZStack {
-                    if let style, let preview = SkyPainter.preview(style) {
-                        Image(nsImage: preview)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        // No drawing for "keep the original" — there is
-                        // nothing to draw, and a picture here would look
-                        // like a seventh sky to choose from.
-                        AppColors.panelAlt
-                        Image(systemName: "photo")
-                            .font(.system(size: 20))
-                            .foregroundColor(AppColors.muted)
-                    }
-                }
-                .frame(height: 92)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(isSelected ? layerSelectionColor : AppColors.border,
-                                lineWidth: isSelected ? 2 : 1)
-                )
-
-                Text(style?.label ?? "Original Sky")
-                    .font(.custom("Figtree", size: 11).weight(isSelected ? .semibold : .regular))
-                    .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
     /// A switch in the layer editor: on, off, and it says which it is.
     private func layerToggleButton(_ title: String, systemImage: String,
                                    isOn: Bool, action: @escaping () -> Void) -> some View {
@@ -13915,11 +14067,19 @@ struct DevelopView: View {
             cropWidthFraction = ratio / imagePixelRatio
         }
 
-        pendingCrop = EditCropRect(
-            x: (1 - cropWidthFraction) / 2,
-            y: (1 - cropHeightFraction) / 2,
-            width: cropWidthFraction,
-            height: cropHeightFraction
+        // The angle rides along: picking 4:3 is a decision about SHAPE, and
+        // taking the frame's rotation away at the same time would be a second
+        // decision nobody asked for. Constrained afterwards because the
+        // largest centred rectangle is computed as though the frame were
+        // upright, and a turned one needs more room than that.
+        pendingCrop = constrainedToImage(
+            EditCropRect(
+                x: (1 - cropWidthFraction) / 2,
+                y: (1 - cropHeightFraction) / 2,
+                width: cropWidthFraction,
+                height: cropHeightFraction,
+                angle: pendingCrop.angle
+            )
         )
         cropIsAutoFitted = false
     }

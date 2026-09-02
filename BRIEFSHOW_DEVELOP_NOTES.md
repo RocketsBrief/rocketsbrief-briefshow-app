@@ -323,7 +323,10 @@ Time je ceo talas B napisan. **Ostaje talas C: kamera (C1) i SD na Intelu (C2).*
 da se kamera priključi. **KORAK 74** — `CFBundleVersion` je bio 17 u svakom
 build-u, zbog čega nova ikonica ne bi bila viđena posle zamene app-a.
 
-**C2 je u toku.** Odlučeno 2.09: težine idu na **GitHub Releases**, jedan fajl.
+**C2 je ODLOŽEN ZA KRAJ.** Klijent je 2.09. odredio da je C2 poslednji korak i
+da se do tada ne pravi build niti se išta pušta — v. „REDOSLED I KAPIJA" u
+spisku od 2. septembra uveče. Ono što je o njemu izmereno stoji i dalje:
+odlučeno 2.09, težine idu na **GitHub Releases**, jedan fajl.
 Izmereno: SD15-Inpainting je 1,99 GB sirovo, **1,84 GB kao zip i 1,85 GB kao
 Apple Archive** — dakle STAJE ispod GitHub-ovog limita od 2 GiB, bez deljenja.
 ⚠️ Time pada ono što je ranije pisalo u ovom dokumentu („2,14 GB, ne može ni kao
@@ -8635,6 +8638,9 @@ prima do 2 GB po fajlu — dakle ni kao zaseban prilog.
 dobije isti „models missing" kao i svi ostali, i uložen posao ne isporuči ništa.
 Redosled je: **prvo hosting i preuzimanje težina, pa tek onda Intel.**
 
+**⚠️ Ovo je redosled UNUTAR C2, ne u projektu.** Ceo C2 je klijentovom odlukom
+od 2.09. **poslednji** — v. „REDOSLED I KAPIJA" u spisku od 2. septembra uveče.
+
 **Čega još nema, a mora:** SD put ide na 512 px radno platno
 (`SDInpaintPipeline.imageSide`, zaključano) i 12 koraka. Na Radeon Pro 560X to
 je realno **minuti, ne sekundi**. Broj se ne sme pogađati — meri se na
@@ -9437,7 +9443,48 @@ ni da se pojavljuje kao kamera ni da folder put radi na pravoj kartici.
 
 Zapisano na klijentov zahtev, pre commit-a. Redosled je klijentov.
 
-### 1. ⚠️ ROTACIJA CROP-A NE RADI — i specifikacija je bila POGREŠNO shvaćena
+### ⚠️ REDOSLED I KAPIJA — potvrđeno od klijenta 2. septembra
+
+Dve stvari, izričito, i one nadjačavaju svaki raniji predlog redosleda u ovom
+dokumentu:
+
+1. **C2 (tačka 4, AI Generative na Intelu — i njegov prvi korak, hosting i
+   preuzimanje težina) je POSLEDNJI.** Sve ostalo ide ispred njega. Ranije je u
+   ovom dokumentu na dva mesta pisalo da hosting težina ide PRVI, jer je SD
+   mrtav na svakoj klijentskoj mašini — to ostaje tačno kao **opis**, ali NE kao
+   redosled. Klijent je odlučio drugačije i to je odluka, ne nesporazum.
+2. **Ne pravi se build i ne pušta se ništa dok se ne završi sve prijavljeno.**
+   Dakle ni `CURRENT_PROJECT_VERSION`, ni `latest_version` u BriefControl-u, ni
+   arhiva. Klijent doslovno: *„necemo jos da build i push dok ne zavrsimo sta
+   treba da se ispopravlja od juce"*.
+
+Redosled rada je time: **1 (rotacija crop-a) → 2 (SD kartica sama) → 3
+(prevlačenje u folder) → 5 (nebo) → 4 (C2)**.
+
+**Stanje: URAĐENE su tačka 1 (KORAK 79, pa 82–84) i tačka 3 (KORAK 80–81).
+Tačka 2 je ⛔ BLOKIRANA — klijent nema ni čitač ni karticu, isto kao C1
+(kamera). Redosled se time pomera na: 5 (nebo) → 4 (C2), a 2 se ubacuje čim se
+kartica nađe.**
+
+**⚠️ Dve tačke su tražile odgovor klijenta pre pisanja koda. ODGOVORENO 2.09:**
+
+- **Tačka 1 — crop dobija SOPSTVENI ugao.** Novo polje na `EditCropRect`, ne
+  preslikavanje u `straightenDegrees`. Klijent je izabrao poštenije rešenje uz
+  punu cenu: **još jedna Codable migracija**, dakle
+  `Tools/run-editsettings-decode-test.py` se pokreće posle izmene, na 25 pravih
+  zapisa. Posledica koja se bira zajedno sa ovim: rotacija crop-a i Straighten
+  slajder su od sada **dve nezavisne stvari** i mogu da stoje na različitim
+  uglovima — to je namerno, ne propust.
+- **Tačka 3 — prevlačenje UVEK PREMEŠTA.** Bez `⌥` modifikatora, bez grananja na
+  isti/drugi disk. Jedno ponašanje. **⚠️ Premeštanje je nepovratno ako se promaši
+  folder**, pa ovo traži da promašaj bude težak: cilj se vidno označava dok se
+  vuče, i pušta se samo na red koji je stvarno pod pokazivačem.
+
+**Van ovog spiska, a takođe neviđeno na ekranu:** KORACI 68–78. Svi se prevode,
+nijedan nije potvrđen gledanjem. To nije nova stavka nego dug — v. „NEPROVERENO"
+na dnu svakog od tih koraka.
+
+### 1. ✅ ROTACIJA CROP-A — URAĐENO, v. KORAK 79
 
 Isporučeno u KORAKU 77, **prijavljeno kao neispravno.** Dve odvojene greške:
 
@@ -9468,13 +9515,24 @@ trošiti vreme dok se ne izmeri:
 
 Prvo reprodukovati sa jednim `print`-om u `onHover`, pa tek onda menjati.
 
-### 2. SD kartica da se čita SAMA kad se ubaci
+### 2. ⛔ SD kartica da se čita SAMA kad se ubaci — BLOKIRANO HARDVEROM (2.09.)
 
 Danas: `ImportSource.folder` postoji i **File ▸ Import… radi ručno** (KORAK 77),
 ali app **ne prati montiranje diskova uopšte** — nema nijednog
 `didMountNotification`. Kamera iskače sama; kartica ne.
 
 Traženo: kartica ubačena dok BriefShow radi otvara isti prozor sama, kao kamera.
+
+**⛔ Klijent 2.09: „nemam ovde čitač kartice ni karticu."** Ista prepreka koju
+ima i C1 (kamera). Ovo se **ne piše na slepo**, i to nije opreznost nego
+računica: od dva neizmerena pitanja ispod, jedno (da li ImageCaptureCore
+prijavljuje čitač kao `ICCameraDevice`) može da učini **ceo posao nepotrebnim**,
+a drugo (sandbox i `/Volumes/…`) odlučuje da li napisano uopšte radi — i mora se
+proveriti na POTPISANOM build-u. Pisati kod koji možda ne treba i koji se ne može
+ni pokrenuti je najslabija vrsta posla.
+
+**Čim se kartica nađe:** `swift Tools/camtest.swift` sa ubačenom karticom
+odgovara na oba pitanja odjednom. Tek posle toga se piše.
 
 Šta to traži: posmatrač `NSWorkspace.didMountNotification`, provera da li na
 novom disku postoji `DCIM`, pa `ImportWindowRequest.shared.pending = .folder(url)`.
@@ -9491,7 +9549,7 @@ Xcode-u — ista klasa greške kao KORAK 35.
 kartica kao `ICCameraDevice`. Ako da, prozorčić već radi i posao otpada.
 `Tools/camtest.swift` to rešava jednim pokretanjem, čim se kartica ubaci.
 
-### 3. Prevlačenje fotografija iz mreže u folder u levom drvetu
+### 3. ✅ PREVLAČENJE U FOLDER — URAĐENO, v. KORAK 80
 
 Traženo: izabrati fotografije u mreži i **prevući ih na bilo koji folder levo**,
 unutar same app-e.
@@ -9521,7 +9579,8 @@ prepreka — ali RAM neće nadoknaditi grafičku i to ne treba prodavati.
 
 **Redosled, i on je nosiv:**
 
-1. **Hosting težina — PRVI, i nije Intel posao.** `installedDirectory` se u celom
+1. **Hosting težina — PRVI unutar C2** (ali ceo C2 je poslednji u projektu, v.
+   „REDOSLED I KAPIJA" na vrhu ovog spiska)**, i nije Intel posao.** `installedDirectory` se u celom
    projektu **samo čita** (dve linije), nema nijednog `downloadTask`. Dakle SD je
    mrtav na SVAKOJ klijentskoj mašini, ne samo na Intelu. Ako se uradi samo Intel
    deo, Intel Mac dobije isti „models missing" kao i svi ostali.
@@ -9553,3 +9612,1108 @@ Dogovoreno da se o njemu odlučuje tek kad se ovo završi. Stanje i tri pravca s
 `CURRENT_PROJECT_VERSION` podignut **17 → 18** (KORAK 74). `MARKETING_VERSION`
 je 10.1, nedirano. **`latest_version` u BriefControl-u je i dalje 6.0** — niko
 još ne dobija „mora update".
+
+## KORAK 78 — levi panel je bežao kroz LEVU ivicu prozora, ali samo u folderu (2. septembar 2026)
+
+Prijava: „onaj tab sa leve strane kad se udje u briefshow gde su folderi radi
+normalno kad se rasteze i suzava, ali cim udjem u neki folder kada restezem odma
+ide u levo jos vise i izlazi iz ekrana".
+
+Ključ je u „**samo kad se uđe u folder**". Vučenje nije bilo krivo — ono je od
+KORAKA 68 ispravno (`.global` koordinate, `sidebarWidthLive` odvojen od
+`@AppStorage`). Krivo je bilo **zaglavlje ShowGrid-a**, i to samo dok u njemu ima
+fotografija.
+
+### Ono što se stvarno dešavalo
+
+`ShowHeaderButtonLabel` je nosio `.fixedSize(horizontal: true, vertical: false)`
+**pored** `.lineLimit(1)`. To dvoje nije isto:
+
+- `.lineLimit(1)` je ono što je popravilo staru prijavu da se „LumenoLab" lomio
+  na „LumenoLa / b";
+- `.fixedSize(horizontal:)` je uz to zabranio **svako** sabijanje. Dugme više
+  nije moglo da se skrati ni za tačku.
+
+Prazan ShowGrid ima tri takva dugmeta. Čim se uđe u folder, `!photoURLs.isEmpty`
+dodaje još četiri (Export Labeled, Export Starred, Add Photos, Clear All) **plus**
+zoom kontrolu čiji je `Slider` na `.frame(width: 110)`. Zbir minimuma pređe
+**~1230 pt**, a sa panelom (260) i ručicom (7) to je **~1500 pt** — više od
+prozora, koji se otvara na 1400.
+
+A kad `HStack` traži više nego što mu je ponuđeno, SwiftUI ga **centrira** u
+roditelju. Višak se onda troši na **obe** ivice — i leva polovina viška je tačno
+folder stablo. Zato je izlazilo levo, i zato je svaka tačka razvlačenja panela
+gurala još 1 pt napolje.
+
+### Popravka — tri sloja, i svaki radi sam za sebe
+
+1. **Uzrok:** `.fixedSize(horizontal:)` uklonjen iz `ShowHeaderButtonLabel`,
+   `.lineLimit(1)` + `.truncationMode(.tail)` ostaju. Prelamanje je i dalje
+   nemoguće (to je radio `lineLimit`), ali red sada ume da se stisne. **Na svakoj
+   širini na kojoj sve staje ništa se ne skraćuje i ništa ne izgleda drugačije.**
+   Stil je deljen, na 38 mesta — pa ovo važi i za LumenoLab zaglavlje.
+2. **Ograda:** ceo red `panel + ručica + mreža` dobio je
+   `.frame(maxWidth: .infinity, alignment: .leading)` i `.clipped()`. Ako ikad
+   opet nešto zatraži previše, manjak se troši **desno**, gde se vidi. Kroz levu
+   ivicu se ne izlazi više strukturno, ne po računici.
+3. **Gornja granica vučenja se meri, ne pogađa.** 560 je koliko panel *sme* da
+   bude, ne koliko *može* u datom prozoru. `showGridRowWidth` (GeometryReader nad
+   redom) sad daje `sidebarDragMaxWidth = rowWidth - 460`, gde je 460 ono što
+   mreža zadržava. Isto se primenjuje i na `effectiveSidebarWidth`, pa širina
+   zapamćena na velikom ekranu **ne** dolazi kao 560 u prozor upola manji —
+   `@AppStorage` i dalje čuva klijentov broj, kleše se samo ono što se crta.
+
+Uz to `Text(gridActionStatus ?? gridCountsSummary)` je dobio `.lineLimit(1)`:
+„184 photos · 12 labeled · 5 starred · 9 rejected" ume da se prelomi u uskom
+prozoru, a status koji se prelama čini zaglavlje **višim** umesto tešnjim.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+**Prevodi se** (`BUILD SUCCEEDED`, Debug). App je pokrenuta, ali je na mašini u
+tom trenutku bio video poziv preko celog ekrana i BriefShow je odmah tražio
+keychain lozinku preko njega — pa je zatvorena bez gledanja. Dakle nije viđeno:
+
+- da panel ostaje unutar prozora dok se vuče **u otvorenom folderu** (ovo je sama
+  prijava);
+- da se dugmad u zaglavlju skraćuju umesto da guraju, i da na širokom prozoru
+  izgledaju nepromenjeno;
+- da širina i dalje preživi gašenje app-e.
+
+Računica koja je dovela do popravke je proverljiva na oko: uđi u folder, suzi
+prozor — pre je panel klizio levo, sad zaglavlje treba da otrpi.
+
+## KORAK 79 — crop dobija SVOJ ugao, i rotacija je na ivicama (2. septembar 2026)
+
+Tačka 1 sa spiska od 2.09. Ono što je isporučeno u KORAKU 77 bilo je pogrešno na
+oba kraja — pogrešan okidač i pogrešan predmet — pa je zamenjeno, nije dopunjeno.
+
+### Odluka klijenta pre pisanja
+
+Pitano je i odgovoreno: **crop dobija sopstveni ugao**, ne preslikavanje u
+`straightenDegrees`. Time su rotacija okvira i Straighten slajder **dve
+nezavisne stvari** i smeju da stoje na različitim uglovima. To je izabrano
+svesno, sa punom cenom — još jedna Codable migracija.
+
+### Model
+
+`EditCropRect` dobija `angle: Double = 0`, u stepenima, pozitivno = okvir
+okrenut **u smeru kazaljke na ekranu**. `x/y/width/height` ostaju **neokrenuta**
+kutija; ugao je okreće oko njenog centra. Sav kod koji je samo hteo da zna gde
+je crop otprilike i dalje čita tačno, a rotacija stoji na jednom mestu umesto da
+bude zapečena u četiri broja.
+
+**⚠️ Okretanje ide u prostoru PROPORCIONALNOM PIKSELIMA, nikad u prostoru
+razlomaka.** `x/width` su razlomci širine, `y/height` razlomci visine — dve ose
+sa različitim merilom. Okretanje razlomačkog pravougaonika za 45° nije okretanje
+fotografije za 45° osim ako je fotografija kvadratna. Zato `constrainedToImage`
+prvo prelazi u prostor `(širina = odnos, visina = 1)`. Sve u toj funkciji je
+homogeno po (širini, visini), pa je **odnos stranica dovoljan** i prave dimenzije
+u pikselima nisu potrebne.
+
+### ⚠️ Migracija — i test koji je uhvatio grešku koju bih inače isporučio
+
+`init(from:)` je prvo napisan u **extension**-u, jer tamo memberwise inicijalizator
+preživi sam od sebe i to je urednije.
+`Tools/run-editsettings-decode-test.py` je odmah pao na **svih 25 crop-ova**:
+
+```
+FAIL C4S_9018.NEF: keyNotFound: Key 'angle' not found. Path: crop.
+RESULT: FAILED — the app would wipe every edit in the store
+```
+
+Taj harness vadi imenovane deklaracije iz `Develop.swift` po balansu zagrada i
+**ne vidi extension** — dakle prevodio je sintetisani dekoder. Dekoder koji test
+ne može da dohvati je dekoder koji niko neće proveriti sledeći put, a ono od čega
+čuva je „obrisano je svako podešavanje u bazi". Zato sad stoji **u telu
+strukture**, uz ručno napisan memberwise inicijalizator (`angle: Double = 0`, pa
+svih desetak postojećih poziva `EditCropRect(x:y:width:height:)` prolazi
+nedirnuto). Posle toga: **126 zapisa dekodirano, nijedan broj se nije pomerio.**
+
+Ovo je zapisano i kao upozorenje u samom `run-crop-rotation-test.py` — ista
+zamka čeka svaku sledeću izmenu.
+
+### Renderer
+
+Okrenut okvir se crta tako što se **slika okrene na drugu stranu oko centra
+okvira**, pa se uzme običan uspravan pravougaonik. To dvoje je isto: izlazi
+sadržaj nagnutog okvira, uspravan, tačno u veličini okvira. Zato `rect` ostaje
+netaknut — centar je jedina tačka koju rotacija oko centra ostavlja gde jeste, a
+veličina se ne menja.
+
+**⚠️ Znak je proveren prema straighten putu dvadeset linija iznad, ne pogođen.**
+Tamo pozitivan `straightenDegrees` okreće sliku u smeru kazaljke kroz
+`rotationAngle: -radians`; dakle `+radians` je suprotno, što je tačno ono što
+uspravlja okvir okrenut u smeru kazaljke.
+
+### Okidač — traka uz ivice, ne „bilo gde izvan"
+
+Ovo je cela prijava (a). Napravljeno je bilo po ugledu na Lightroom: vuci bilo
+gde izvan crop-a. Traženo je uže i doslovnije — kursor dolazi do **linija koje se
+vide dok je alat otvoren** i tu postaje rotacija.
+
+`CropRotateBandShape` je traka širine **24 pt, strogo IZVAN okvira**, nikad preko
+njega: površina za pomeranje počinje tačno na liniji, a dva pogleda koja polažu
+pravo na isti `onHover` znače dva gurnuta kursora i jedan skinut — posle čega je
+svaki kursor u app-i pogrešan. Osam ručica za razvlačenje je deklarisano POSLE
+trake, pa one zadržavaju uglove i sredine ivica; traci ostaje deo ivice između
+njih, a to je tačno mesto gde ruka hvata da nešto okrene.
+
+### Šta je moralo da se prepravi, a nije se videlo unapred
+
+**Okvir se ne skuplja dok se vrti.** `rotateCropFrame` pamti **ceo crop** na
+početku vučenja, ne samo ugao, i svaki kadar računa **od početka**. Okretanje ume
+da natera okvir da se smanji da bi ostao na fotografiji; da se pamtio samo ugao,
+svako pomeranje ruke tamo-amo bi ga smanjivalo za još malo, kao čegrtaljka.
+
+**Ograničenje je tačan test, ne procena.** Okrenut pravougaonik je unutar
+uspravnog **tačno onda kada je njegov granični okvir unutra**, jer je granični
+okvir sastavljen od njegovih sopstvenih krajnjih uglova. Skupljanje je uvek
+**obe stranice istim činiocem**, da zaključan odnos (4:3) ostane tačan.
+
+**Razvlačenje okrenutog okvira pomera centar.** Postojeća matematika sidri u
+neokrenutoj kutiji — što je isto dok je okvir uspravan, a nije čim se nagne:
+okvir se vrti oko svog centra, pa promena veličine pomera centar i ugao koji je
+trebalo da stoji odleti od pokazivača. `anchoredAfterResize` posle toga vraća
+centar tako da **strana koju vučenje NIJE dodirnulo ostane tačno gde je bila na
+ekranu**. Poziva se samo kad je okvir nagnut: na uglu 0 računa isto što i
+postojeći blok, samo kroz više aritmetike.
+
+**Vučenje stiže u ekranskim koordinatama, razvlačenje se dešava duž stranica
+okvira.** Sve tri geste čitaju `.named(cropOverlaySpace)` i pretvaranje se radi
+jednom, na vidnom mestu (`cropFrameTranslation`) — umesto da se osloni na to šta
+SwiftUI prijavljuje ispod `.rotationEffect`. Pretpostavka bi bila neproverljiva;
+ovako je zapisana.
+
+**Odnos stranica nosi ugao sa sobom.** Klik na 4:3 je odluka o OBLIKU; oduzeti
+istovremeno i rotaciju bila bi druga odluka koju niko nije tražio.
+
+### Merenje — `Tools/run-crop-rotation-test.py`
+
+Nov harness, po ugledu na `run-layer-reorder-test.py`: vadi `EditCropRect`,
+`CropHandle` i četiri funkcije iz `Develop.swift` po balansu zagrada, pa ih
+prevodi zajedno sa `Tools/test-crop-rotation.swift`. Test **ne može da se raziđe
+sa kodom** — ako se funkcija preimenuje, ili izvadi novo telo ili padne glasno.
+
+Provereno: **3600 uklopljenih crop-ova** (4 odnosa × 9 uglova × mreža položaja i
+veličina) — nijedan ugao ne izlazi sa fotografije, nijedno uklapanje ne menja
+odnos stranica niti uvećava crop; **svih 8 ručica na 5 uglova** drži svoju
+sidrenu tačku; pretvaranja ekran↔okvir su međusobno inverzna i čuvaju dužinu; i
+pozitivan ugao **jeste** u smeru kazaljke na ekranu.
+
+**Test je namerno pokvaren pa vraćen** (obrnut znak u `cropFramePoint`) — pao je
+sa 25 prijava. Prolaz iz prve inače ne znači ništa.
+
+### ⚠️ Poznato ograničenje, nije popravljeno ovde
+
+Maske (`localAdjustmentOverlay`) se preko isečene fotografije postavljaju kroz
+`fullImageFrame`, koja obrće **samo crop**, ne i rotaciju. Nagnut crop tu pomera
+maske — **ali to nije novo:** `straightenDegrees` ima istu rupu i imao ju je i
+pre ovog koraka. Zaključeno **čitanjem koda, nije viđeno na ekranu**; ako se
+bude popravljalo, popravlja se za oba ugla odjednom.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Geometrija jeste izmerena, ekran nije. Nije viđeno:
+
+- da kursor postaje rotacija kad se priđe ivici, a šaka ostaje unutar okvira;
+- da vučenje po traci okreće **okvir** dok fotografija stoji;
+- da se okvir ne skuplja pri vrćenju tamo-amo unutar istog vučenja;
+- da razvlačenje nagnutog okvira drži suprotnu stranu na mestu;
+- da fotografija izvezena sa nagnutim crop-om izlazi uspravna i bez providnih
+  uglova.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 80 — tri prijave sa prvog gledanja na ekranu (2. septembar 2026)
+
+Prva prava provera KORAKA 79 na ekranu. **Rotacija radi** — potvrđeno od
+klijenta. Uz to tri prijave, od kojih je jedna cela tačka 3 sa spiska.
+
+### 1. Ćošak nije pokazivao rotaciju
+
+Prijava: *„kad sam na ćošku da mi pokaže rotation symbol umesto ruke i kursora"*.
+
+Uzrok je bio u tome kako je ručica hvatala pokazivač. Ručica je bila kutija
+22×22 **centrirana NA ćošku**, dakle polovina je ležala **izvan** okvira — preko
+trake za rotaciju — a sama nije gurala nikakav kursor. Prilaz ćošku spolja je
+zato davao golu strelicu umesto ikonice rotacije, a traka koju je pokrivala nije
+ni dobijala hover.
+
+**Odluka klijenta, pitano pre pisanja:** *ćošak spolja rotira, sam ćošak
+razvlači.* Dakle:
+
+- Površina koja hvata pokazivač je **uvučena UNUTAR okvira** — dijagonalno za
+  ćoškove, upravno za sredine ivica. Nacrtana bela tačkica ostaje gde je bila,
+  centrirana na ćošku; pomerena je samo osetljiva zona. Sve preko linije je
+  traka za rotaciju.
+- Ručice **guraju pravi kursor**, po prvi put. Nikad više gola strelica.
+
+**⚠️ Strelice prate ugao okvira.** Osa ručice se računa na EKRANU, pa okvir
+nagnut 45° pokazuje dijagonalne strelice duž nagnutog ćoška, a ne duž uspravnog
+koji tu više ne postoji. Zaokruženo na najbližu četvrtinu od 45°, jer postoje
+samo četiri slike — kursor po uglu bi značio rasterizovanu sliku po kadru.
+
+**AppKit nema dijagonalne kursore.** Ima `resizeLeftRight` i `resizeUpDown`, a
+dijagonalni koje sistem koristi na uglovima prozora su privatni. Zato su
+nacrtani iz SF Symbols-a, jednom i zadržani, **istim postupkom kojim je već
+nacrtan `rotateCursor`** (`makeSymbolCursor`) — nije pisan drugi način da se
+uradi ista stvar.
+
+### 2. Prevlačenje fotografija i foldera — tačka 3 sa spiska
+
+Prijava: *„selektovao sam jednu sliku i ne mogu da je prevučem u neki drugi
+folder… taj drag and drop da radi za sve i fajlove i slike i sve što je u
+BriefShow-u"*.
+
+**Odluka klijenta: UVEK PREMEŠTA.** Bez `⌥`, bez grananja isti/drugi disk.
+
+- **Sličica u mreži** dobija `onDrag` sa `public.file-url`. Isto prevlačenje radi
+  i u Finder, gde kopira; unutar BriefShow-a premešta.
+- **Red u drvetu** je i izvor i odredište: folder se može prevući na drugi
+  folder. Drvo u koje se može pustiti a iz koga se ne može povući je pola drveta.
+- **Selekcija ide cela.** Provajder nosi jednu fotografiju — ne zna se unapred
+  gde će sleteti — pa se u `handleDropOnFolder` proverava da li je ta fotografija
+  deo selekcije, i ako jeste, ide cela selekcija, redosledom **iz mreže**, ne iz
+  Set-a. Isto što Finder radi, i jedino čitanje koje ima smisla kad je klijent
+  upravo označio dvanaest fotografija pa uzeo jednu.
+
+**⚠️ Premeštanje je nepovratno odavde, pa su dva drop-a odbijena a ne
+polu-urađena:** folder na samog sebe, i folder u sopstvenog potomka (što bi
+direktorijum premestilo u sebe i izgubilo ga). Kod poređenja putanja **kosa crta
+na kraju je bitna** — bez nje „/a/b" ispada prefiks „/a/bc", a to je drugi
+folder.
+
+**Ništa nije pisano dvaput.** Premeštanje ide kroz `moveItems`, izdvojen iz
+`pasteClipboard` — pospremanje posle premeštanja (izbacivanje iz mreže, iz
+selekcije i iz tri keša sličica, ponovno učitavanje odredišta ako je otvoreno, i
+slučaj kad se premesti sam otvoreni folder) je dovoljno zamršeno da bi se druga
+kopija razišla za nedelju dana. Prevlačenje i Paste su sad **ista radnja**.
+
+**Cilj se vidi dok se vuče** — red pod pokazivačem dobija ispunu i okvir u boji
+akcenta, odvojeno od hover-a koji samo uveća ime. Za radnju koja premešta fajlove
+„naglašeno" nije dovoljno.
+
+Čitanje provajdera ide kroz `loadDroppedURLs`, sa serijskim redom oko liste:
+svaki provajder odgovara na svojoj niti, a više fotografija pušteno odjednom je
+tačno slučaj u kome nezaštićen niz tiho izgubi jednu.
+
+### 3. Profil nije pratio temu
+
+Prijava, sa slike: profilna pilula ostaje krem dok je ceo ekran oko nje taman.
+
+**Uzrok:** `AppColors` su statička izračunata svojstva koja čitaju
+`ThemeManager.shared`. **Čitanje ne pretplaćuje ni na šta.** SwiftUI nema razlog
+da ponovo iscrta pogled čiji se ulazi nisu promenili, a jedini ulaz
+`ProfileBadge`-a je `session`. Zato je zadržao temu u kojoj je prvi put nacrtan.
+
+Ceo `AccountUI.swift` je imao istu rupu — **nijedna od pet struktura** nije
+imala pretplatu, dok je svaki drugi tematizovan pogled u app-i nosi (v. komentar
+u `FolderTreeSidebar`, koji je taj obrazac već zapisao). Dodato svima pet, ne
+samo prijavljenoj: `ProfileBadge`, `ProfileSettingsRow`, `ProfileSettingsModal`,
+`UpdateRequiredOverlay`, `LockedAccessOverlay`.
+
+**Sama sličica (emodži) ostaje u svojoj boji** — to je ikonica koju je klijent
+izabrao, i prebojiti je u temu značilo bi je uništiti. Tema nosi pilulu oko nje.
+
+### Merenje
+
+`Tools/run-crop-rotation-test.py` i `Tools/run-editsettings-decode-test.py` oba
+ponovo pokrenuta posle svih izmena: **3600 uklopljenih crop-ova prolazi**, i
+**126 zapisa dekodirano, nijedan broj se nije pomerio.**
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+- da ćošak spolja daje rotaciju, a sama tačkica dijagonalne strelice — i da te
+  strelice prate nagib okvira;
+- da se fotografija prevlači na folder i da stiže tamo;
+- da klik na sličicu i dalje **odmah** bira. `onDrag` sedi na istom pogledu kao
+  postojeća gesta za klik, a odlaganje klika je već jednom bilo prijavljeno
+  (KORAK 42) — ako se vrati, uzrok je ovde;
+- da folder pušten na svog potomka bude **odbijen**, ne premešten;
+- da profilna pilula pocrni kad se prebaci na tamnu temu, **uživo**, bez
+  restarta.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 81 — drugi krug gledanja: ruka na ćošku, sličica dok se vuče, i jedan pravi bug (2. septembar 2026)
+
+### 1. Ručice dobijaju RUKU, a dijagonalne strelice su izbačene
+
+Klijent, o ćošku: *„kad sam na ćošku baš ćošku na tački onda ruka i da mogu da
+smanjujem i povećavam crop… kada sam van te tačke i slike ali na ćošku onda da se
+pojavi strelica u luku bela"*.
+
+Dijagonalne dvostruke strelice iz KORAKA 80 su tako izbačene posle jednog
+gledanja. Dva razloga zašto ne vrede zadržavanja: AppKit **nema** dijagonalni
+kursor (sistemski su privatni, pa je svaki bio rasterizovan SF Symbol), a
+nacrtana ručica ionako već kaže kuda se pomera — štapić leži duž svoje ivice,
+tačkica sedi na svom ćošku. **Ruka kaže ono što oblik ne kaže: ovo je stvar koju
+možeš da uhvatiš.** Sada je na svih osam.
+
+Usput: `rotateCursor` je prebačen na `makeSymbolCursor`, isti crtač koji je
+napravljen u prošlom koraku — bio je drugi primerak istog posla.
+
+**⚠️ Ostavljena je i rotacija duž IVICA, ne samo na ćoškovima.** Klijentova
+rečenica u zagradi (*„samo kada sam van slike – van kropa ali blizu ćoška onda
+rotacija na sva četiri ćoška"*) čita se na dva načina, a u prethodnom krugu je
+za ivice rečeno *„rotacija radi"*. Ako je mislio da ivice više ne rotiraju,
+skida se izbacivanjem trake i ostavljanjem četiri ćoškasta polja — jedna izmena
+u `CropRotateBandShape`.
+
+### 2. ⚠️ BUG — fotografija puštena nazad u istu mrežu brisala je sve ostale
+
+Prijava: *„ako uhvatim sliku i pustim je u istom folderu ta slika ostaje sve se
+druge izgube"*.
+
+Gore je nego što zvuči. `PhotoShowSheet` ima `.onDrop` na celom ekranu koji
+uvozi fotografije prevučene spolja, a `importShowPhotos` **DODELJUJE**
+`photoURLs`, ne dodaje na njega. Dakle otpuštanje jedne fotografije iznad mreže
+iz koje je uzeta zamenilo je svih 101 tom jednom. **Ništa nije obrisano sa
+diska**, ali se folder na ekranu ispraznio — što je u tom trenutku
+nerazlučivo od brisanja.
+
+Popravka: drop čije su SVE putanje već u `photoURLs` nije uvoz, nego povratak
+kući, i ne radi ništa.
+
+**⚠️ Provera je na SADRŽAJU, ne na zastavici „vučenje je počelo unutar
+BriefShow-a".** `onDrag` nema parnjaka „vučenje je završeno", pa takva zastavica
+nema pošten trenutak da se obriše i počela bi da guta prave uvoze prvi put kad
+se vučenje napusti na pola.
+
+### 3. Sličica dok se vuče — mala, i lepeza kad ih je više
+
+Prijava: *„čim uhvatim sliku ona je isti size i onda ne vidim sa leve strane gde
+je vučem"*. Bez `preview:` macOS vuče kopiju pogleda u punoj veličini, a na ovom
+zumu je to veći deo prozora — folder u koji se cilja je bukvalno ispod nje.
+
+Sad: jedna fotografija je **jedna mala karta (74 pt)**; više njih je **lepeza od
+najviše tri**, plus **broj**. Tri zato što je lepeza od dvanaest mrlja, a broj je
+ono što stvarno kaže koliko ih se seli. Uhvaćena fotografija je **na vrhu**
+gomile bez obzira na svoje mesto u mreži — ona je pod pokazivačem, pa se nju i
+očekuje.
+
+### Merenje
+
+Oba harness-a ponovo: **3600 uklopljenih crop-ova OK**, **126 zapisa dekodirano,
+nijedan broj se nije pomerio.**
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+- ruka na sve četiri tačkice i na četiri štapića, i da razvlačenje odatle radi;
+- bela strelica u luku odmah izvan tačkice, na sva četiri ćoška;
+- mala sličica dok se vuče jedna, lepeza sa brojem dok se vuče više;
+- da puštanje fotografije nazad u istu mrežu **ne dira** ostale.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 82 — ćošak je SAMO razvlačenje, rotacija je svuda van kropa (2. septembar 2026)
+
+Treći krug gledanja. Prijava je bila oštra i zaslužena: *„kada dođem mišem na
+ćošak (angle) tačku, on mi pokaže ruku i krene rotacija, pa onda opet pokušavam
+da smanjim crop, opet rotacija, ne valja, pa onda jedan nekako ubodem da smanjim
+krop"*.
+
+### Uzrok — hover i pritisak nisu gledali istu tačku
+
+U KORAKU 80 je osetljiva zona ručice **uvučena unutar okvira** za 11 pt, dok je
+nacrtana bela tačkica ostala centrirana NA ćošku. Dakle: prelaz mišem preko
+unutrašnje polovine tačkice → ruka; pritisak na samu tačkicu → traka za rotaciju.
+Pogled i ruka su gledali dve različite stvari, a to je najgora vrsta greške u
+alatu koji se koristi mišem.
+
+To je bio pokušaj da se zadovolji „ćošak spolja rotira" iz prethodnog kruga.
+**Odbačeno.** Klijentovo pravilo je jednostavnije i ono važi:
+
+> **Na ručici — SAMO sužavanje i širenje. Van kropa — rotacija.**
+
+### Šta je promenjeno
+
+- **Osetljiva zona je opet centrirana na ručici**, i veća: **30 pt za ćošak**
+  (tačkica je 12), 24 za sredine ivica. Bilo gde na tačkici ili tik oko nje —
+  razvlačenje. Ručice su deklarisane **poslednje** u ZStack-u, pa uzimaju te
+  tačke od zone ispod sebe.
+- **Zona rotacije je sve van okvira** (`CropOutsideShape`), ne više traka od
+  24 pt. Traka je bila pogrešna dvaput: teško se nalazila, i tukla se sa
+  ćoškovima oko istih nekoliko tačaka. Van okvira ionako nema ničega drugog —
+  to je zatamnjeni deo.
+
+### Kursor rotacije je NACRTAN, i VIĐEN
+
+Traženo doslovno: *„bela kriva sa strelicama na point a i b"*. `arrow.clockwise`
+koji je stajao dotad je **jednostrani krug** — čita se kao „redo", ne kao „okreni
+na obe strane". SF Symbols nema dvostranu krivu ni na jednoj verziji macOS-a, pa
+je nacrtana rukom, kao `OpenFolderShape` i `LumenoLabMark` u istoj app-i: luk sa
+strelicom na svakom kraju, belo sa crnim obrubom.
+
+**⚠️ Renderovan u PNG i pogledan pre isporuke**, uvećan 10× preko svetle i preko
+tamne podloge — jer se koristi isključivo preko fotografija, a bela kriva bez
+obruba nestaje na nebu. Crn obrub je tu i drži na obe podloge. Ovo je prvi
+kursor u projektu koji je **viđen** pre nego što je isporučen.
+
+### Sličica dok se vuče — dve, i 20% manja
+
+Klijent: *„maksimum dve da pokaže… i ako može još manje thumbnails, recimo za još
+20%"*. Lepeza je sad **najviše dve karte**, strana **74 → 59 pt**. Broj u uglu
+ostaje — on je ono što stvarno kaže koliko ih se seli.
+
+### Merenje
+
+Oba harness-a ponovo: **3600 uklopljenih crop-ova OK**, **126 zapisa dekodirano,
+nijedan broj se nije pomerio.**
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+- da ćošak sada **uvek** razvlači, iz prvog pokušaja, i da rotacija tu nikad ne
+  kreće;
+- da van kropa svuda stoji nacrtana dvostrana kriva;
+- da lepeza pokazuje dve karte i da je manja.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 83 — kursor rotacije se nije video, i zašto: `push`/`pop` (2. septembar 2026)
+
+Klijent: *„super radi sve, samo sada nema ikonica kada je cursor na mestu za
+rotaciju"*. Zona je bila tačna, gesta je radila, slika kursora je bila nacrtana i
+**viđena** u KORAKU 82 — a na ekranu je nije bilo.
+
+### Uzrok — četiri sloja koja se otimaju o isti stek
+
+`NSCursor` je **stek**. Svaki sloj crop alata je gurao svoju sliku na
+`.onHover(true)` i skidao je na `.onHover(false)`: površina van kropa, sam okvir,
+osam ručica, plus slojevi alata ispod. Kad pokazivač pređe sa ručice pravo na
+površinu van kropa, `pop` za ručicu ume da stigne **posle** `push`-a za spoljnu
+površinu — i stek ostaje da drži pogrešnu sliku. Nema redosleda na koji se može
+osloniti, jer ga niko ne kontroliše.
+
+**Ovo upozorenje je u ovom fajlu zapisano dvaput** (uz `CropOutsideShape` i uz
+Space-to-pan sloj). Ovo je kako izgleda kad se stvarno desi.
+
+### Popravka — jedno mesto odlučuje, i POSTAVLJA umesto da gura
+
+Sve `.onHover` gurаnje je uklonjeno iz crop alata. Umesto njega jedan
+`.onContinuousHover` na celom sloju računa iz položaja pokazivača u kojoj je zoni
+i poziva `.set()`.
+
+**`.set()` na svaki pomeraj miša nije zaobilaznica nego rešenje:** AppKit ionako
+vraća kursor iz svojih tracking area na svaki pomeraj, i ponovno postavljanje je
+način na koji pogled drži svoj kursor. **Steka više nema, pa nema ni šta da se
+razbalansira.**
+
+`cropCursor(at:rect:angle:)` ide **istim redosledom kojim ZStack deli geste** — i
+mora: kursor koji se ne slaže sa onim što će pritisak uraditi gori je od nikakvog
+kursora, a upravo to neslaganje je učinilo ćošak neupotrebljivim u KORAKU 82.
+
+- vučenje u toku → zadržava svoj kursor gde god pokazivač odlutao (okretanje
+  odvede pokazivač daleko od ručice na kojoj je počelo, a promena kursora na pola
+  čita se kao da je alat pustio);
+- ručica → ruka, sa **istim dosegom koji ima i njena osetljiva zona** (30 pt
+  ćošak, 24 ivica);
+- unutar okvira → ruka;
+- sve ostalo → nacrtana dvostrana kriva.
+
+Usput izvučen `cropHandlePosition` — položaje ručica sad računa **jedno** mesto,
+koje koriste i pogledi i kursor, pa ne mogu da se raziđu. I obrisano je
+`isPushingCropMoveCursor`, koje je postojalo samo da čuva stek koga više nema.
+
+### Merenje
+
+**3600 uklopljenih crop-ova OK**, **126 zapisa dekodirano, nijedan broj se nije
+pomerio.**
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Da se kriva sada vidi van kropa, ruka na ručicama i unutar okvira, i da se pri
+vučenju kursor ne menja.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 84 — kursor rotacije se okreće za pokazivačem (2. septembar 2026)
+
+Klijent: *„imam ikonicu rotacije sada i radi, samo je napravi da bude još manja
+nekih 50%, bez black stroke, samo bela… i trenutno je ikonica sa strelicama na
+dole, okay, ali to treba da bude kad je cursor na gornjem delu slike, a kada je
+kursor dole onda strelice da pokazuju na gore… za svaki ćošak strelice da budu
+nagnute"*.
+
+### Šta je traženo, jednom rečenicom
+
+**Kursor je tangenta na krug po kome će vučenje putovati.** Zato strelice gledaju
+nadole kad je pokazivač iznad kropa, nagore kad je ispod, i nagnute su na
+ćoškovima. To i jeste ono što ručica za rotaciju jeste — sve tri klijentove
+rečenice su isti zahtev.
+
+### Kako
+
+24 slike, po jedna na 15°, **napravljene jednom i zadržane**. Ne crta se po
+kadru: `NSCursor(image:)` rasterizuje, a ovaj kursor se **postavlja na SVAKI
+pomeraj miša** (KORAK 83), pa bi crtanje po pomeraju bilo rasterizovana slika po
+kadru. 15° je finije nego što oko pročita na glifu od 14 pt.
+
+`rotateCursor(at:around:)` bira sliku iz ugla između centra kropa i pokazivača.
+Nula glifa je **pokazivač tačno iznad centra** — otud `+90` u računu, jer ekranski
+ugao meri 0 udesno a 90 nadole.
+
+**⚠️ AppKit crta sa y NAGORE**, pa je luk od 20° do 160° gornji luk — što jeste
+poza za pokazivač iznad centra. Okretanje glifa **u smeru kazaljke na ekranu**
+zato znači **oduzimanje** tih stepeni. Zapisano jer je znak ovde suprotan od
+intuicije.
+
+### Manje, i bez obruba
+
+Strana **28 → 14 pt**, sve mere prepolovljene. Crn obrub uklonjen, ostala je
+čista bela linija.
+
+**⚠️ Time je kursor slabije vidljiv preko svetlog neba** — to je trampa koju je
+klijent izabrao tražeći ga upola manjeg i bez crne. Ako se ikad vrati kao
+prijava, obrub je jedan `setStroke` nazad.
+
+Crta se u **izričit 2× bitmap**, ne kroz `lockFocus`: na 14 pt je 1× kursor
+vidno zupčast na Retina ekranu.
+
+### Provereno gledanjem, ne rezonovanjem
+
+Osam poza renderovano u jednu sliku, raspoređenih tamo gde bi pokazivač stajao
+oko kropa, sa nacrtanim okvirom u sredini. Pitanje „da li strelice gledaju nagore
+kad je pokazivač ispod" je odgovoreno **gledanjem**, a ne razmišljanjem o
+znacima — a znak je ovde bio suprotan od očekivanog. Sve osam su tangencijalne i
+tačne.
+
+### Merenje
+
+**3600 uklopljenih crop-ova OK**, **126 zapisa dekodirano, nijedan broj se nije
+pomerio.**
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Da se kursor okreće glatko dok se pokazivač vodi oko kropa, i da je na 14 pt
+dovoljno vidljiv preko stvarne fotografije.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 85 — C1 je POTVRĐEN, i zašto čitač kartice verovatno već radi (2. septembar 2026)
+
+### ✅ Kamera radi — prijavljeno od klijenta
+
+*„kameru smo rešili, radi sada, kad sam je povezao radila je i videla slike sa
+kartice"*. Time je **C1 zatvoren** i KORAK 73 potvrđen na ekranu: dupli red je
+bio poređenje po `device ===` umesto po `id`, a prazan ekran koji je lagao bio je
+`emptyState` bez treće grane. Hod kroz `contents` kao unija je ostao kao dodatak;
+da li je on doprineo ne zna se i ne treba tvrditi.
+
+### Pitanje klijenta: isti sistem za SD karticu iz čitača na USB-u?
+
+**Verovatno već radi, bez ijednog reda novog koda.** Razlog, iz koda:
+
+`CameraBrowser.start()` traži uređaje maskom `camera | local`. To **nije** „samo
+fotoaparati": ImageCaptureCore pod `ICCameraDevice` prijavljuje i čitač kartice
+sa karticom koja ima `DCIM` folder, preko transporta *mass storage*. Isto radi i
+Apple-ov Image Capture — ubačena SD kartica se pojavi pod Devices, pored
+fotoaparata. A naš put je već pisan tako da ne zna ni za Nikon ni za telo
+(KORAK 35, dopuna), i `Item.Origin` već ima obe grane (KORAK 77).
+
+Dakle očekivano ponašanje: čitač u USB → kartica u **DEVICES** → prozor za import
+iskače sam, istom kapijom kojom iskače kamera.
+
+**⚠️ NIJE POTVRĐENO — klijent nema ni čitač ni karticu.** Ovo je zaključak iz
+koda i iz toga kako se Image Capture ponaša, ne merenje.
+
+### Provera koja ovo zatvara, kad se čitač nađe
+
+1. Priključi čitač sa karticom i pogledaj levu traku. **Pojavi se → tačka 2 sa
+   spiska otpada**, posla nema.
+2. Ne pojavi se → `swift Tools/camtest.swift` ispisuje svaki uređaj sa
+   `transportType`. Ako čitača nema ni tu, sistem ga ne nudi kao `ICCameraDevice`
+   i **tek tada** se piše posmatrač `NSWorkspace.didMountNotification` — sa svim
+   što uz njega ide, uključujući entitlement za prenosive diskove koji se mora
+   videti na POTPISANOM build-u.
+
+**Zato se posmatrač ne piše sada.** Ne iz opreznosti: pola je verovatnoće da je
+posao nepotreban, a druga polovina ne može ni da se pokrene bez hardvera.
+
+## KORAK 86 — dug je proveren, i zaglavlje panela je prepravljeno (2. septembar 2026)
+
+### ✅ NEPROVERENI DUG JE ZATVOREN
+
+Klijent, posle klikanja: *„ovo sam proverio, sve lepo radi"* — za KORAKE 68–78.
+Dakle **potvrđeno na ekranu**: levi panel se razvlači i ne beži kroz levu ivicu
+(68, 78), sinhronizovan 4:3 se zadrži (69), crop ne lagira (70), odbačene
+fotografije i `X`/`.`/`,` (71), folder na ikonicu (72), import iz menija sa
+izborom izvora i rotacija (77). Uz KORAK 85 (kamera) i KORAKE 79–84 (rotacija
+crop-a, prevlačenje, tema profila), **ništa iz ove sesije više ne stoji
+neviđeno.**
+
+### Zaglavlje panela — pet dugmadi umesto četiri, i AI seli gore
+
+Traženo, sa slike: „Before / After" da se zove **Original** i da ima ikonicu
+slike; Crop ostaje; Reset ostaje ali dobija ikonicu; u praznom prostoru da stoji
+**AI Clean Up**; **AI MANIPULATION nestaje dole** jer ga otvara to dugme; Done
+dobija ikonicu.
+
+- **Original** — bolje ime za ono što dugme radi: ne pokazuje dve stvari jednu
+  pored druge, nego original dok se drži. Natpis se više ne menja dok se drži;
+  to već govori isticanje, a reč koja se menja pod pokazivačem je reč koja se
+  čita dvaput.
+- **Reset** dobija `arrow.counterclockwise`, ne `arrow.uturn.backward`: vraća
+  SVE odjednom, a pun krug kaže „skroz unazad" gde polukrug kaže „jedan korak".
+- **Done** dobija kvačicu.
+- **AI Clean Up** nosi slova „AI" uokvirena na fiksnu širinu — isti znak koji
+  nosi i dugme Clean Up unutar bloka, pa ulaz i ono što otvara imaju istu oznaku.
+  Glifa za AI nema, a čarobni štapić bi rekao isto što i dva Clean Up dugmeta
+  ispod njega (KORAK 28).
+
+### ⚠️ Red se PRELAMA, ne sabija
+
+Pet dugmadi na ovom fontu je **šire od panela od 340 pt**, a panel se vuče od 300
+do 560. Na jednoj širini bi stali, na drugoj bi se svi skratili u „Origi…",
+„Res…". Zato red više nije `HStack` nego **`FlowLayout`** — isti koji koriste
+sličice u ShowGrid-u. Prelamanje u drugi red je pošten način da redu imenovanih
+dugmadi ponestane širine: imena su ovde ceo smisao, a na 560 ionako svi stanu u
+jedan red. `Spacer` pre Done je uklonjen — u toku ne znači ništa.
+
+### AI Manipulation više nema svoju liniju u panelu
+
+Blok je bio disclosure čije je zatvoreno stanje i dalje bila jedna naslovljena
+linija u panelu. Ta linija je ono što je traženo da nestane. Sad bloka nema
+uopšte dok se ne pritisne dugme u zaglavlju.
+
+**⚠️ Padding i `Divider()` su ušli UNUTAR uslova.** Ostavljeni napolju dali bi
+praznu traku od 20 pt i samostalnu crtu preko panela bez ičega između — što je
+ista ta naslovljena linija, samo gora jer je prazna.
+
+`aiManipulationExpanded` je isti `@AppStorage` ključ kao pre, pa klijent koji ga
+je ostavio otvorenog zatiče ga otvorenog i u ovom build-u.
+
+### Merenje
+
+**3600 uklopljenih crop-ova OK**, **126 zapisa dekodirano, nijedan broj se nije
+pomerio.**
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Kako se red prelama na 340 pt — koliko dugmadi stane u prvi red — i da li je
+prelom čitljiv ili traži kraća imena.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 87 — jedan pritisak stavlja četkicu u ruku (2. septembar 2026)
+
+Klijent: *„kada kliknem na AI Clean Up u toj gornjoj tabeli odmah da mi da da
+mogu da paintujem, a ne da opet kliknem ispod na AI Clean Up (to dugme dole u AI
+Manipulation obriši jer ga ima gore)"*.
+
+Tačno — u KORAKU 86 je dugme u zaglavlju samo **rasklapalo blok**, a četkica se
+uzimala drugim pritiskom na drugo dugme. Dva koraka tamo gde je smisao jedan.
+
+- Dugme u zaglavlju sad **rasklapa blok i uzima četkicu odjednom**. Ugašeno gasi
+  i jedno i drugo.
+- Dugme „Clean Up" **unutar bloka je obrisano.** Ostaviti kopiju značilo bi
+  ostaviti drugi korak dvokoraka koji je upravo uklonjen.
+- „Exit Clean Up" **ostaje**: ono spušta četkicu ali **ne sklapa blok**, jer
+  Quick i Generative rade nad bojom koja je već položena. Sklopiti blok čim
+  se prestane sa slikanjem značilo bi skloniti ta dva dugmeta u trenutku kad su
+  jedino i potrebna.
+
+### ⚠️ Rupa koju je KORAK 86 napravio, i koja je ovde zatvorena
+
+Postoji **TREĆI** ulaz u ovaj alat — „AI Clean Up" u sekciji Remove, stariji od
+dugmeta u zaglavlju — i on samo pali četkicu, ne dira `aiManipulationExpanded`.
+Otkad je blok uslovan (KORAK 86), taj put je vodio u stanje u kome klijent slika
+a **Quick i Generative Clean Up nisu nigde na ekranu** — dva dugmeta koja rade
+tačno nad onim što je upravo naslikao.
+
+Zato je uveden `isAIManipulationVisible` = dugme u zaglavlju **ILI** živa
+četkica. Druga polovina nije opreznost nego popravka.
+
+**Ovo nije prijavljeno** — nađeno je čitanjem koda posle izmene, dok se tražilo
+ko sve pali `isRemoveBrushActive`.
+
+### Merenje
+
+**3600 uklopljenih crop-ova OK**, **126 zapisa dekodirano, nijedan broj se nije
+pomerio.**
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Da jedan pritisak stvarno odmah slika; da gašenje sve pospremi; i da blok bude
+tu i kad se četkica upali iz sekcije Remove.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 88 — AI sekcija se otvara zatvorena (2. septembar 2026)
+
+Klijent: *„kada uđem, dva puta kliknem na sliku, AI sekcija je otvorena; neka
+bude zatvorena pa klijent neka izabere šta hoće"*.
+
+Uzrok: `aiManipulationExpanded` je bio **`@AppStorage`**, dakle pamćen između
+pokretanja. To je imalo smisla dok je blok bio naslovljena disclosure linija koja
+zatvorena ne košta ništa. **Prestalo je da ima smisla u KORAKU 87**, kad je isto
+dugme počelo da uzima i ČETKICU: zapamćeno „otvoreno" je od tada značilo da se
+fotografija otvara sa živom četkicom za čišćenje — na slici koju je neko hteo
+samo da pogleda.
+
+Sad je `@State`. Svako novo otvaranje editora kreće zatvoreno; unutar jedne
+sesije ostaje kako je ostavljeno, što je ono što hoće neko ko radi seriju.
+
+Stari ključ `develop.layout.aiManipulationExpanded` ostaje u UserDefaults-u
+neiskorišćen — bezopasno, i briše se sam kad se profil resetuje.
+
+### Merenje
+
+**3600 uklopljenih crop-ova OK**, **126 zapisa dekodirano, nijedan broj se nije
+pomerio.**
+
+Prevodi se (`BUILD SUCCEEDED`, Debug). Neprovereno na ekranu.
+
+## KORAK 89 — „Done" postaje „Grid" (2. septembar 2026)
+
+Klijent: *„ovo Done dugme bih nazvao Grid, sa ikonicom grida, jer to i radi —
+baca na grid"*.
+
+Tačno, i ime je bilo lošije od toga na dva načina: nije govorilo **kuda** vodi, a
+„Done" povrh toga sugeriše da se nešto potvrđuje — što se ne dešava. Izmene se
+upisuju kako se prave, ništa ne čeka potvrdu. Sad `square.grid.2x2` + **Grid**,
+sa tooltipom „Back to the grid."
+
+Usput ispravljen komentar iznad `cropHeaderButton`, koji je i dalje nabrajao stari
+red („Before / After, Reset, Done"). Zaglavlje je sad **Original · Crop · Reset ·
+AI Clean Up · Grid**.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 90 — nebo: dve prave greške nađene, i izmeren zid (2. septembar 2026)
+
+Mereno `Tools/run-skymask.py`-em na tri najteža klijentova kadra iz
+`BriefShow RAW Check/2026-09-01`: **8947** (zgrade + more), **8987** (beli hotel
++ palme), **8991** (plaža bez horizonta).
+
+### ⚠️ 1. Alat NIJE izvlačio kod — beleške su tvrdile da jeste
+
+`Tools/skymask.swift` je nosio **ručnu kopiju** `SubjectMasker`-a i
+`SkyMasker`-a, dok je u ovom dokumentu pisalo da ih „izvlači iz izvora u trenutku
+prevođenja". Kopija je slučajno još bila identična, pa ništa dosad nije bilo
+pogrešno izmereno — ali **prva izmena `SkyMasker`-a bila bi merena nad starim
+kodom, i rezultat bi izgledao kao merenje.** Ista klasa greške koju je KORAK 66
+platio tri puta.
+
+Zamenjeno: `Tools/run-skymask.py` + `Tools/skymask-driver.swift`. Vadi oba
+maskera po balansu zagrada, kao `run-crop-rotation-test.py`. Stari fajl obrisan.
+
+### ⚠️ 2. Hod je merio ARTEFAKT RENDERA, ne fotografiju
+
+`.RGBA8` vraća **premultiplikovanu** boju, a skalirana radna kopija ima razlomljen
+extent — pa je **prvi red bitmape poluprekriven**: izmereno alpha 141, boja
+133/137/141, dok je isto to nebo u punoj vrednosti 241/249/255.
+
+Čitano sirovo, skok sa reda 0 na red 1 je **114** — granica po svakom pragu. Kad
+je dodat test „zaustavi se na ivici", **svaka kolona je pucala na redu 1** i maska
+je dolazila prazna. Izgledalo je tačno kao pretesna granica, i **nikakvo
+popuštanje granice to ne bi našlo** — brojevi su opisivali render, ne sliku.
+
+Sad se čita **un-premultiplikovano**, i skor i boja. Ovo je bilo tiho pogrešno i
+pre ovog koraka; samo nije imalo posledicu dok niko nije poredio redove.
+
+Usput nađena i moja greška: na „promašenom" redu (žica, grana) referenca je
+ažurirana na taj tamni piksel, pa je povratak u nebo bio ogroman skok i
+`runToStop` je bio potpuno obesmišljen.
+
+### 3. Dodato — zaustavljanje na ivici, i medijan protiv pruga
+
+- **Korak nadole**, mereno: unutar neba je 0 (p50), 1 (p90), 1–4 (p98), 2–26
+  (p99,9). Granica **40** stoji čisto iznad svega toga.
+- **`withoutStripes`** — medijan filtar nad profilom dubine. Kolona koja prođe
+  kroz zgradu je **impuls** u tom profilu; medijan je klasičan način da se impuls
+  ukloni i, za razliku od blura koji je svaka ranija verzija posezala, **ne
+  zaobljava pravi stepenik** — a krov JESTE stepenik, i pritužba koja je ovo i
+  pokrenula bila je granica koja glatko seče preko zgrada.
+
+### ⚠️ ZID — izmeren, i treba ga znati
+
+**Beli hotel ispod belog neba se lokalno NE MOŽE razlikovati od neba.** Izmereno:
+nebo 241/249/255, fasada praktično isto. Nema koraka koji se traži, nema boje
+koja se razlikuje, a ravna je čim se skor zamuti u regione. Medijan skraćuje
+**usamljene** pruge (desna u 8987 je prepolovljena), ali **ne pomaže kad je ceo
+blok zgrade širi od prozora** — a jeste, na 8987.
+
+Isto važi za 8991: more i pesak bez horizonta prolaze iz istog razloga.
+
+**Zaključak, pošten:** heuristika radi na kadru sa vidljivim horizontom (8947 je
+dobar) i **ne radi** kad veliko svetlo telo stoji pod svetlim nebom. To nije
+podešavanje koje fali — to je kraj onoga što lokalni test može.
+
+### KORAK 90, nastavak — granica od ivice do ivice, i app koja prizna da ne vidi
+
+Klijent: *„granica mora da bude od jednog kraja slike do drugog"*. Iza toga stoji
+prijava od 1.09: zamenjeno nebo pokrije gornji levi deo i **stane nasred hotela**.
+
+**Kolona može da stane na samom vrhu iz dva potpuno različita razloga**, a hod to
+sam ne može da razluči: nešto ZAKLANJA nebo (palma, banderа, žica) — horizont je
+i dalje iza toga, tamo gde ga stavljaju susedi; ili je horizont stvarno tu gore
+(zgrada do vrha kadra).
+
+Zato `continuousHorizon` **interpolira** horizont preko plitkih kolona, a
+**skor se onda primenjuje iznad njega** po pikselu. Palma zadrži svoje piksele
+van maske jer ih skor odbija, dok nebo IZA nje, iznad horizonta, ulazi — što je
+tačno ono što zamena neba mora da radi. Na ivicama kadra se najbliža poznata
+kolona iznosi napolje: ivica nije razlog da horizont propadne.
+
+**Izmereno posle izmene:** 9011 sad daje **neprekidnu traku od leve do desne
+ivice** (pre je bila samo mrlja u sredini). 8947 nepromenjen. **8987 sada
+ODBIJA** umesto da vrati pruge — `isPlausibleHorizon` ga zaustavi, i klijent
+dobije poruku koja imenuje oba razloga i kaže da zaokruži Selection alatom.
+
+### ⚠️ SD NE MOŽE DA ODREDI MASKU — činjenica, ne mišljenje
+
+Klijent je tražio: *„daj SD AI modelu da izabere, da vidi i odredi masku"*.
+
+**Stable Diffusion inpainting POPUNJAVA već zadatu masku. On je ne pravi.** To je
+druga vrsta posla — semantička segmentacija — i za nju u ovom projektu nema
+modela: Vision segmentira samo ljude (KORAK 66), a segmentacioni model je
+stotine megabajta povrh 4,4 GB plus licenca za app koja se prodaje.
+
+Uz to: **SD danas ne radi ni na jednoj klijentskoj mašini.** Težine se nigde ne
+preuzimaju (C2), a C2 je klijentovom odlukom poslednji korak. Vezati nebo za SD
+znači da nebo ne radi nikome dok se C2 ne završi.
+
+Dakle masku i dalje pravi `SkyMasker`, a SD — kad C2 bude gotov — može da bude
+DODATAK koji uskladi zalepljeno nebo sa kadrom, ne ono što masku određuje.
+
+## KORAK 91 — klijentova neba u app-i, i feather na horizontu (2. septembar 2026)
+
+Klijent je dao `~/Downloads/Skies` — 15 fotografija. Uz to: *„slike isto sadrže
+plaže… nemoj plažu da stavlja, samo nebo… može planine kao u pozadini"*.
+
+### Neba su ISEČENA pre pakovanja
+
+Originali su fotografije cele scene; devet ih ima more ili plažu u donjoj
+polovini. Zalepiti plažu u nečije nebo nije funkcija.
+
+Rez je **očitan sa svake slike posebno**, ne nađen detektorom horizonta:
+petnaest brojeva pogledanih odjednom vredi više od detektora koji pogreši na dve
+a niko ne gleda. Planine u sky-11 su **zadržane**, po klijentu — planinski venac
+na horizontu je pejzaž, plaža je druga plaža. Provereno gledanjem: kontakt-list
+svih 15 rezova pre i posle.
+
+2400 px po širini, JPEG 0,86 → **8,5 MB za svih petnaest**, na app od 125 MB.
+
+### Model — `SkyChoice`, i migracija koja se nije desila
+
+`ImageLayer.skyStyle` je od `SkyStyle?` postao `SkyChoice?` — `.drawn(SkyStyle)`
+ili `.photo(ime)`.
+
+**⚠️ Kodira se kao OBIČAN STRING.** U svakom dosad zapisanom slogu to polje je
+bilo goli raw value (`"sunset"`), i ti slogovi su na klijentovom disku.
+Dekodiranje prima taj oblik nepromenjen, a string tretira kao fotografiju samo
+ako nosi prefiks `photo:`. **Nijedan postojeći slog se ne migrira i nijedan ne
+menja značenje.** Nepoznato ime iz nekog budućeg build-a pada na `clearBlue`
+umesto da baci — bacanje bi oborilo ceo slog (v. `PhotoEditStore.allSettings`).
+
+`Tools/run-editsettings-decode-test.py` je odmah pao sa `cannot find 'SkyChoice'`
+— tačno svoj posao — pa je tip dodat na spisak. Posle toga: **125 slogova
+dekodirano, nijedan broj se nije pomerio.**
+
+### ⚠️ Bundle spljošti podfolder
+
+Fajlovi stoje u `BriefShow/Skies/`, ali je to unutar file system synchronized
+grupe i Xcode ih kopira u `Contents/Resources` **bez foldera** — provereno u
+napravljenom bundle-u, ne pretpostavljeno. Zato `SkyPhoto.url` traži **ravno
+prvo**, a podfolder samo kao rezervu. Obrnut redosled bi promašivao na svakom
+pozivu i svejedno radio — vrsta stvari koja se otkrije za tri godine.
+
+### Feather — samo na horizontu, ne svuda
+
+Traženo: *„sa donjim delom kao feather"*.
+
+Šav sa horizontom mora da se stapa ili je nacrtana linija preko fotografije. Ali
+tamo gde nebo dodiruje **palmu ili krov**, mekoća je tačno suprotno od željenog —
+meka ivica tamo pusti staro nebo da svetli oko svakog lista.
+
+Te dve ivice dolaze sa **različitih mesta**, i to je ono što ovo omogućava:
+horizont je `horizon[x]`, a list je test skora. Zato se rampa (2,5% visine kadra,
+~90 px na 3448) primenjuje **samo po redovima ka horizontu**, a skor zadržava
+tvrdo da/ne.
+
+### Šta u ovom koraku NIJE urađeno
+
+**Automatsko usklađivanje neba sa kadrom** (svetlo i temperatura iz same
+fotografije) — druga polovina dogovorenog koraka 1. Sloj ima svoje slajdere pa se
+može doterati rukom dok toga nema.
+
+## KORAK 92 — izabran Sky sloj se sada VIDI na fotografiji (2. septembar 2026)
+
+Prijava: *„kliknem na layer Sky ali mi ne pokazuje da je selektovan na slici"*.
+
+Razlog zašto nije bilo ničega je odluka iz KORAKA 67 i ona i dalje stoji: okvir
+oko izvedenog sloja bio bi **pravougaonik oko cele slike** — ne kaže ništa o tome
+koji je deo slike taj sloj, a vući nema šta.
+
+Ali ono što klijentu stvarno treba da vidi je **GDE je nebo nađeno**, a to je
+tačno maska. Zato se sad, dok je Sky ili Background izabran, maska crta preko
+fotografije.
+
+- **Tonirana, ne uokvirena.** Ivica te maske ide oko svakog lista palme;
+  vektorizovati je da bi se iscrtala koštalo bi više nego pokazati oblast.
+- **Boja NIJE nebeska.** Plava koprena preko maske neba čita se kao nebo koje je
+  već tu; magenta se ne može pomešati sa fotografijom.
+- **Luminansa → alpha.** Zapamćena maska je siv PNG, a SwiftUI maskira po
+  **alfa** kanalu, ne po svetlini — bez `CIMaskToAlpha` bi ceo pravougaonik
+  izašao pun.
+- Gradi se **jednom po sloju** i pamti. Maska se posle pravljenja ne menja —
+  Select Sky pravi NOV sloj umesto da prekraja stari — pa nema šta da se
+  poništava.
+- `allowsHitTesting(false)`: ovo je nešto što se gleda, ne dira, i nikad ne sme
+  da završi u izvozu.
+
+Prevodi se (`BUILD SUCCEEDED`, Debug).
+
+## KORAK 93 — prvi pravi test zamene neba: ljubičasto je bila MOJA maska (2. septembar 2026)
+
+Klijent, sa slikom: *„izgleda užas!"* — nebo ljubičasto, debeo beo oreol oko oba
+čoveka i duž palmi.
+
+### ⚠️ 1. Ljubičasto nije bilo nebo — bila je magenta koprena iz KORAKA 92
+
+Izmereno pre nego što je bilo šta dirano: `sky-7.jpg` u traci koja se vidi
+prosečno **R110 G170 B222** — plavo. Dakle nebo je nevino. Ljubičasto je
+**plavo ispod 34% magente**: koprena koja pokazuje masku ostaje da stoji i pošto
+je nebo izabrano, jer sloj ostaje izabran.
+
+Ta koprena je isporučena u KORAKU 92 **bez uslova**, i to je nanelo štetu na prvi
+pogled. Sad se crta **samo dok nebo NIJE izabrano** — odgovara na pitanje „gde je
+našao nebo" i sklanja se čim postoji nebo koje se gleda, što na to pitanje
+odgovara bolje nego bilo koja boja.
+
+### 2. Beo oreol — dva izvora, oba popravljena
+
+Nad prebeljenim nebom **svaka meka ivica maske pusti staro belo nebo** kroz novo.
+
+- **Oduzimanje ljudi je bilo naduvano 0,006** ≈ 31 px na kadru od 5176. Svaki taj
+  piksel je piksel na kome ostaje ORIGINALNO nebo — dakle debeo beo sjaj oko
+  svakog čoveka, povrh novog neba. Spušteno na **0,0015**. Naduvavanje je i samo
+  bilo popravka oreola (KORAK 67, rim light), pa je trampa neizbežna: sa
+  prebeljenim nebom nesavršena maska negde pokaže belo. Nekoliko piksela u kosi
+  je porub; trideset je oreol.
+- **Blur na kraju hoda (0,004 ≈ 20 px) je UKLONJEN.** Postao je i suvišan i
+  štetan: suvišan jer horizont sad nosi sopstvenu rampu, štetan jer je omekšavao
+  i ivicu oko **palmi i krovova** — a to je 20 px trake starog neba koja prati
+  svaki list. Stepenice koje je krio su artefakt radne rezolucije i mnogo manje
+  vidljive od oreola.
+
+### 3. „Da se ne vidi da je dodato" — usklađivanje sa svetlom
+
+Klijent: *„u suštini treba da se pripoji slici da se ne vidi da je dodato… sa
+transparencijom isto"*.
+
+**Šav nije ono što odaje zalepljeno nebo — SVETLO jeste.** Nebo zalepljeno u
+sopstvenoj svetlini i boji čita se kao drugi dan nalepljen preko slike, i nikakvo
+omekšavanje šava to ne rešava.
+
+`matchedToScene`: izmeri se nebo koje se zamenjuje, izmeri se novo, i novo se
+pomeri **deo puta** ka starom (`skyMatchStrength = 0,45`). Deo puta, ne ceo —
+ceo bi reprodukovao baš ono nebo koje se menja.
+
+**⚠️ Mereno POD MASKOM, ne preko celog kadra.** Bitna je svetlost u nebu koje se
+menja; kadar koji je četiri petine pesak inače povlači svako nebo ka boji peska.
+
+**Pojačanje po kanalu**, ne pomeranje temperature: mora da nosi i svetlinu i boju
+u jednom potezu, a pojačanje ostavlja crno na crnom — tamni oblak ostaje tamni
+oblak. Ograničeno na 0,6–1,7 da prebeljeno nebo ne zatraži da novo bude svetlije
+od belog.
+
+**⚠️ Sopstveni CIContext.** Usklađivanje čita prosek jednim pikselom *unutar*
+rendera koji već drži jedan od tri konteksta — čitanje kroz isti kontekst bilo bi
+zaključavanje rendera protiv samog sebe.
+
+**Transparencija koju klijent traži JE rampa na horizontu**, i podignuta je sa
+2,5% na **4,5%** visine kadra: pri horizontu novo nebo istanji i kroz njega
+prođe izmaglica same slike — tamo gde i pravo nebo gubi boju.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Sve četiri izmene. Prevodi se, 125 slogova dekodirano bez pomeranja.
+
+## KORAK 94 — NEBO JE IZVAĐENO IZ APP-E (2. septembar 2026)
+
+Klijentova odluka posle prvog pravog testa. Razlog je u KORAKU 93 i, detaljno, u
+**`SKY_ARCHIVE/BRIEFSHOW_SKY_NOTES.md`** — ukratko: SD može da POPUNI zadatu
+masku ali ne može da je NAPRAVI, a nebo koje bi izmislio dolazi sa 512 px platna,
+mekano posle uvećanja. Umesto polovičnog rešenja, funkcija je izvađena cela.
+
+### ⚠️ NIŠTA NIJE IZGUBLJENO — `SKY_ARCHIVE/` pored ovog fajla
+
+```
+SKY_ARCHIVE/
+  BRIEFSHOW_SKY_NOTES.md   255 linija — sve što je urađeno, izmereno i pogrešeno
+  code/SkyTypes.swift      1233 linije — SkyMasker, SkyStyle, SkyPhoto,
+                           SkyChoice, SkyPainter, matchedToScene i pomoćne
+  skies/                   15 klijentovih neba, isečenih na nebo (8,5 MB)
+  tools/                   run-skymask.py, skymask-driver.swift, skytest.swift
+```
+
+**Namerno je van `BriefShow/BriefShow/`** — taj folder je file system
+synchronized grupa i sve u njemu bi završilo u bundle-u.
+
+Dokument ima i odeljak **„Kako se vraća"**, sa upozorenjem koje bi inače koštalo
+sat vremena: `SkyChoice` mora nazad i na spisak u
+`run-editsettings-decode-test.py`, inače taj test pada sa `cannot find`.
+
+### Šta je uklonjeno
+
+`SkyMasker`, `SkyStyle`, `SkyPhoto`, `SkyChoice`, `SkyPainter`, `matchedToScene`
+i njegove pomoćne, dva `CIContext`-a, dugme **Select Sky**, modal **Change Sky**,
+`selectSkyAsLayer`, `isFindingSky`, sve slike iz bundle-a, i tri alata iz
+`Tools/`.
+
+### ⚠️ Šta je NAMERNO ostavljeno
+
+- **`ImageLayer.isSky`** — vestigijalno polje. Ključ postoji u slogovima koji su
+  već na klijentovom disku; dekodirati ga i nositi dalje znači da fotografija
+  uređena pre uklanjanja i dalje prolazi kroz round-trip **nepromenjena** umesto
+  da tiho izgubi polje. Ako se nebo vrati, slojevi koje je napravilo su i dalje
+  označeni.
+- **`derivedLayerMatteOverlay`** — obojena maska za izabran izvedeni sloj. Nije
+  bila sky-specifična; Background slojevi postoje i dalje i sada je to jedini
+  način da se vidi gde je taj sloj.
+- **Pouka iz KORAKA 93**, kao komentar na tom overlay-u: indikator koji pokazuje
+  GDE je nešto nađeno mora da nestane čim postoji rezultat koji se gleda.
+
+### Provereno
+
+`BUILD SUCCEEDED`. **Nula** pominjanja `SkyMasker`/`SkyPainter`/`SkyStyle`/
+`SkyChoice`/`SkyPhoto`/`skyStyle`/`Select Sky`/`Change Sky` u kodu. **Nula**
+`sky-*.jpg` u bundle-u. **125 slogova dekodirano, nijedan broj se nije pomerio.**
+Harness za rotaciju crop-a i dalje prolazi.
+
+## ⚠️ SLEDEĆE — PAKOVANJE I RELEASE 10.67 (nije počelo, 2.09. uveče)
+
+Kod je spreman: `BUILD SUCCEEDED`, nebo izvađeno (KORAK 94), oba harness-a
+prolaze, 125 slogova dekodirano bez pomeranja.
+
+**Nije počelo namerno** — ostalo je 5% sesije, a release koji stane na pola je
+gori od nijednog: verzija podignuta a artefakt ne postoji.
+
+### Redosled, i ništa se ne preskače
+
+1. **`MARKETING_VERSION` 10.1 → 10.67.**
+2. **`CURRENT_PROJECT_VERSION` 18 → 19.** Bez ovoga macOS ne vidi novi build kao
+   noviji i ikonica/verzija se ne osvežavaju — KORAK 74, već plaćeno jednom.
+3. **Release build, UNIVERZALAN.** Provera je `lipo -archs` → mora da vrati
+   `x86_64 arm64`. Poslednji put je 10.1 ispao samo arm64 i to se videlo tek pri
+   pakovanju.
+4. **Potpis i notarizacija.** ⚠️ Debug build radi „Sign to Run Locally"; to na
+   tuđem Mac-u ne prolazi. Ovo je jedini korak koji se ne može isprobati lokalno
+   — v. KORAK 35, ista klasa greške (radilo u Xcode-u, palo potpisano).
+5. **Arhiva + `gh release create` v10.67**, ~140 MB.
+6. **TEK NA KRAJU: `latest_version` u BriefControl-u.**
+
+### ⚠️ ODLUKA KOJA ČEKA KLIJENTA — tačka 6
+
+`latest_version` je i dalje **6.0**. Dva ishoda i oba su njegov izbor:
+
+- **ne dira se** → niko ne dobija „mora update", novi build je dostupan ali ne
+  nameće se;
+- **diže se na 10.67** → **svi na starijem odmah dobijaju ekran da moraju da
+  update-uju.**
+
+Ovo je jedini korak koji odmah pogađa klijente, i **radi se poslednji** — posle
+toga što je release već gore i preuzimljiv. Obrnut redosled znači ekran „mora
+update" koji upućuje na nešto što ne postoji.

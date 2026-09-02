@@ -58,7 +58,6 @@ DECLARATIONS = [
     "struct PatchStroke:",
     "struct LocalAdjustment:",
     "enum LayerBlendMode:",
-    "enum SkyStyle:",
     "struct ImageLayer:",
     "struct PhotoEditSettings:",
 ]

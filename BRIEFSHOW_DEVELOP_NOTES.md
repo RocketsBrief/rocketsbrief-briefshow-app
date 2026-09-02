@@ -169,6 +169,111 @@ odgovor bude „ne". Odgovor nije „ne". Retreniranje bi promenilo rezultat AI
 Clean Up-a, koji je zaključan gore kao dobar.
 
 
+## 🟢 ZAKLJUČANO — DISTRIBUCIJA: NE IDEMO NA APP STORE
+
+**Odluka klijenta, 2. septembar 2026.** App se **ne objavljuje na Mac App
+Store-u.** Pristup se daje **po mašini**, kroz sistem koji već postoji. Ako neka
+buduća sesija počne da priprema App Store (sandbox pod njihovim pravilima,
+review, receipt validacija, In-App Purchase umesto naših mesta) — ne radi to,
+nego prvo pitaj.
+
+### Kako se app isporučuje, i to je ceo lanac
+
+1. Universal Release build (`lipo -archs` → `x86_64 arm64`).
+2. Arhiva na **GitHub release** (`gh release create`), klijent je preuzima sam.
+3. Prijava je **u app-i** (KORAK 57), nikoga ne šalje na sajt.
+4. Ko sme da je pokrene odlučuje **BriefControl baza**, ne app: jedan email,
+   jedan kompjuter, identitet mašine iz IOKit-a (KORAK 56). Broj mesta se menja
+   u bazi, bez novog build-a.
+
+Znači: dozvola se daje mašini, a ne kupuje se u prodavnici. Zato App Store ovde
+ne rešava nijedan problem koji imamo, a doneo bi svoja pravila.
+
+### ⚠️ Šta ovo znači za potpis — jedina cena, i treba je znati
+
+- Na ovoj mašini **nema nijednog Developer ID sertifikata**
+  (`security find-identity -v -p codesigning` → *0 valid identities*, mereno
+  2.09.), i **v10.1 je otišla ad-hoc potpisana** (`Signature=adhoc`,
+  `TeamIdentifier=not set`, provereno na samom paketu).
+- Ad-hoc znači da korisnik na svom Mac-u mora **ručno da dozvoli** app pri prvom
+  pokretanju (desni klik ▸ Open, a na novijim macOS-ima kroz
+  System Settings ▸ Privacy & Security ▸ Open Anyway). To je i dalje „dozvola
+  mašini", samo je daje macOS, a ne mi.
+- **Notarizacija NIJE vezana za App Store.** Developer ID + notarizacija bi ovu
+  frikciju uklonila i pritom nas ne bi uvela ni u kakvu prodavnicu. Nije
+  odbačena — samo se **ne može uraditi bez sertifikata** i zato ne stoji na putu
+  release-u.
+- ⚠️ Ovo nije provereno na tuđem Mac-u u ovoj sesiji. Ista klasa greške kao
+  KORAK 35: radilo je u Xcode-u, palo potpisano.
+
+### Posledica za plan release-a 10.67
+
+Korak 4 („Potpis i notarizacija") se **preskače dok stoji ova odluka i dok nema
+sertifikata** — pakuje se ad-hoc, isto kao 10.1. Koraci 1, 2, 3, 5 i 6 ostaju
+nepromenjeni. Nijedan drugi deo plana ovo ne dira.
+
+
+## 🟢 ZAKLJUČANO — SVAKI UPDATE IDE ČIST: NIŠTA SA OVE MAŠINE
+
+**Zahtev klijenta, 3. septembar 2026, doslovno:** *„kada pravimo novi update
+nikada ne ubacujemo odavde slike ili nešto — samo čist app update!"*
+
+Ovo važi za **svaki** build, release i push, bez izuzetka i bez pitanja svaki
+put. Ne ide gore: nijedna njegova fotografija, nijedan sloj, nijedan njegov
+edit, nijedan test fajl, nijedan build keš.
+
+### Gde njegovi podaci ZAISTA žive — i zašto nisu u app-u
+
+| šta | gde | ide li u build |
+|---|---|---|
+| izmene (slajderi, maske, kropovi, slojevi) | `UserDefaults`, `com.rocketsbrief.BriefShow` | **ne** |
+| pikseli slojeva | `…/Containers/…/Application Support/BriefShow/LayerPixels` | **ne** |
+| flatten kopije (1,5 GB) | `…/Application Support/BriefShow/Flattened` | **ne** |
+| originalne fotografije | njegov folder (`~/Downloads/RAW` i sl.) | **ne** |
+
+Ništa od toga nije u repou niti u paketu. App se instalira prazna i puni se
+radom korisnika — tako i treba.
+
+### ⚠️ Provera pre svakog release-a, i nije opciona
+
+Ne „verujem da je čisto" nego izmereno, svaki put:
+
+```
+# 1. u paketu nema nijedne fotografije
+find <build>/BriefShow.app -iname "*.nef" -o -iname "*.cr2" -o -iname "*.arw" \
+     -o -iname "*C4S*" -o -iname "*.tiff" | head      # mora biti PRAZNO
+
+# 2. u repou se ne prati ništa lično ni izgrađeno
+git status --short                                     # bez ličnih fajlova
+git ls-files | awk -F/ '{print $1}' | sort | uniq -c | sort -rn | head
+```
+
+Provereno 3.09.2026: **nula** `.nef`, **nula** `C4S*`, **nula** `.tiff` u
+paketu.
+
+### ⚠️ Šta je 3.09. NAĐENO da se pušta, a nije trebalo
+
+`build_universal/` je bio **praćen u git-u**: **327 fajlova, 214 MB** keša
+prevođenja, objektnih fajlova i izgrađenog `.app`-a, uz **svaki** push. Nije
+sadržao ništa lično, ali release push nosi **izvor** app-a, ne keš jedne mašine.
+Dodat u `.gitignore` i skinut sa praćenja.
+
+**⚠️ Istorija commit-ova i dalje nosi tih 214 MB.** Čišćenje istorije je
+prepisivanje (`filter-repo`/force push) i **nije urađeno** — traži se odluka
+klijenta jer menja svaki postojeći commit hash.
+
+### Šta SME da bude u repou
+
+Izvor, `Tools/`, `SKY_ARCHIVE/` (arhiva iz KORAKA 94, namerno van bundle-a),
+licence, ikonice i `dist-universal/` (već isporučen build, namerno praćen).
+Model težine su ignorisane jer GitHub odbija fajl preko 100 MB — v. `.gitignore`.
+
+### Ako neka buduća sesija bude u nedoumici
+
+Odgovor je uvek: **ne ubacuj**. Ako nešto izgleda kao da treba da ide uz app a
+lično je — pitaj klijenta pre nego što uđe u build.
+
+
 ## TL;DR — gde smo stali
 
 ### GDE SMO STALI — 1. septembar 2026, verzija 10.1
@@ -10673,6 +10778,9 @@ i njegove pomoćne, dva `CIContext`-a, dugme **Select Sky**, modal **Change Sky*
 - **`derivedLayerMatteOverlay`** — obojena maska za izabran izvedeni sloj. Nije
   bila sky-specifična; Background slojevi postoje i dalje i sada je to jedini
   način da se vidi gde je taj sloj.
+  ⚠️ **Prevaziđeno istog dana:** klijent je prijavio da ta ispuna pokriva
+  fotografiju koju upravo podešava, i zamenjena je obrisom — v. KORAK 95. Pouka
+  iz KORAKA 93, zapisana dva reda niže, odnosila se baš na nju.
 - **Pouka iz KORAKA 93**, kao komentar na tom overlay-u: indikator koji pokazuje
   GDE je nešto nađeno mora da nestane čim postoji rezultat koji se gleda.
 
@@ -10683,27 +10791,815 @@ i njegove pomoćne, dva `CIContext`-a, dugme **Select Sky**, modal **Change Sky*
 `sky-*.jpg` u bundle-u. **125 slogova dekodirano, nijedan broj se nije pomerio.**
 Harness za rotaciju crop-a i dalje prolazi.
 
+## KORAK 95 — Background se vidi kao selekcija, ne kao koprena (2. septembar 2026)
+
+Tri zahteva iz jedne poruke, sa dve slike uz nju.
+
+### ⚠️ 1. Magenta koprena preko Background sloja — i zašto je to bila ista greška iz KORAKA 93
+
+Prijava: *„kada kliknem na background ne treba da mi pokazuje paint mask over,
+samo selection kao recimo sada za ljude... da znam da je selektovan bez maske"*.
+
+Na slici koju je klijent poslao vidi se tačno u čemu je problem: izabran je
+Background, cela pozadina je pod magentom, a **ispod u panelu stoje njegovi
+slajderi** — Exposure +0,62, Black & White, Blur. Znači klijent podešava
+piksele koje **više ne vidi**, jer ih pokriva indikator koji mu je samo rekao
+gde su.
+
+To je doslovno pouka iz KORAKA 93, zapisana kao komentar na tom istom overlay-u:
+*indikator koji pokazuje GDE je nešto nađeno mora da nestane čim postoji
+rezultat koji se gleda*. Overlay je preživeo KORAK 94 kao „jedini način da se
+vidi gde je taj sloj" — i onda je ponovio grešku zbog koje je pouka i pisana.
+
+**Popravka:** `derivedLayerMatteOverlay` → `derivedLayerOutlineOverlay`. Umesto
+ispune, crta se **obris** — morfološki gradijent (dilate minus erode) nad
+matte-om ostavlja svetlu traku tačno na granici i crno svuda drugde; to postaje
+alfa, pa se boji. Uz to ide **okvir sloja**, isti kao kod piksel sloja, jer
+izvedeni sloj pokriva ceo kadar i to je istina o njegovom dometu.
+
+### ⚠️ Ručke NISU dodate, i to je odluka
+
+Klijent je uz sliku People sloja rekao „da mi pokaže da mogu da ga pomeram".
+**Background se ne može pomeriti** — to nije propust nego ono što on jeste:
+matte, region SAME fotografije, bez svojih piksela (v. `ImageLayer.maskData` i
+tekst u panelu koji to i kaže). Pomeranje matte-a pomera **rupu**, ne ono što je
+ispod. Ručke koje ništa ne rade kad se povuku čitaju se kao kvar, što je gore
+od toga da ih nema.
+
+Zato je isporučeno: okvir + obris (**vidi se da je selektovan**), bez ćoškova i
+bez kvake za rotaciju. **Pitanje da li Background TREBA da postane pomerljiv je
+poslato klijentu** — v. odeljak SLEDEĆE, to je izmena modela, ne izmena prikaza.
+
+### ⚠️ IZMERENO — i merenje je uhvatilo bledu liniju pre klijenta
+
+Nov harness **`Tools/run-layer-outline-test.py`** + `Tools/test-layer-outline.swift`.
+Vadi pravu `layerOutlineImage(for:)` iz `Develop.swift` po tekstu (svaka zamena
+je proverena, pa ne može tiho da testira zastarelu kopiju), pušta je na
+sintetičkom matte-u i **meri alfu koju overlay stavlja na sliku**.
+
+Prvi prolaz je pao, i dobro je što jeste:
+
+| mereno | prvi prolaz | posle popravke |
+|---|---|---|
+| najjača tačka na liniji | **0,451** | **1,000** |
+| unutar regiona (bila koprena) | 0,000 | 0,000 |
+| izvan regiona | 0,000 | 0,000 |
+| debljina linije | 2 px | 2 px |
+
+Uzrok 0,451: oštra ivica pada **između piksela**, pa svaki granični piksel dobija
+samo deo pojasa — matrica je tražila 0,9 a dobijala pola toga. Linija na 45%
+preko fotografije je linija koju treba tražiti. Alfa se sada **množi** faktorom
+2,4 uz `CIColorClamp`; pošto je sve van granice čista nula (izmereno), dizanje
+pojasa **ne može** da vrati koprenu — nema šta da se digne.
+
+### 2. „Select People" kao quick action dugme
+
+Traženo: *„ispod reset dodaj još jedno dugme kao quick action button select
+people sa ikonicom"*. Dodato u `FlowLayout` u zaglavlju, odmah posle Reset-a —
+na širinama na kojima se red prelama ispada tačno **ispod Reset-a**, gde je i
+traženo. Ikonica `person.crop.rectangle`, ista kao na dugmetu u Tools.
+
+Zove **isti** `selectPeopleAsLayer()`. Dva ulaza u jednu akciju, kao što Crop
+već ima (KORAK 68), pa nema ničega što bi se raspalo iz koraka.
+Dugme u **Tools ostaje** — isti razlog kao kod Crop-a: klijent je već naučio gde
+je, i uklanjanje bi popravilo prijavu kvarenjem navike.
+
+### 3. Posle Select People — pravo na Layers
+
+*„uvek kad se klikne select people i to završi automatski baci na layers"*.
+`panelTab = .layers` stoji **na kraju posla**, u `selectPeopleAsLayer`, a ne na
+dugmetu — pa važi za **oba** ulaza. Akcija napravi dva sloja i jedan izabere; da
+panel ostane na Edit-u, klijent bi morao da traži rezultat onoga što je upravo
+pritisnuo.
+
+### Provereno
+
+`BUILD SUCCEEDED`, universal, nula grešaka. Nov harness **ALL PASS**. Sva tri
+zatečena harness-a i dalje prolaze: crop rotacija **OK** (3600 kropova),
+`editsettings` dekodiranje **27 polja, nijedno ne nedostaje**, reorder slojeva
+**sve prošlo**.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Obris je izmeren u brojevima, **nije viđen na fotografiji**. Ostaje da se pogleda
+troje: da li je siva linija dovoljno kontrastna preko svetle pozadine (mereno je
+da postoji, ne kako izgleda), gde tačno pada dugme kad je panel uzak, i skok na
+Layers na pravom kliku. App je pokrenuta iz
+`build_universal/Build/Products/Release/BriefShow.app`.
+
+
+## KORAK 96 — kopija od Select People bila je druge boje: RADNI PROSTOR, ne maska (2. septembar 2026)
+
+Prijava, uz sliku: klijent je pustio Select People, pomerio People sloj u stranu
+i dobio pored svoje fotografije kopiju koja **nije ista osoba po boji** —
+*„totalno drugačiju, vidi oči recimo"*. Očekivano je bio duplikat, piksel u
+piksel.
+
+### ⚠️ UZROK — `CIContext()` bez opcija, a ceo ostatak app-e radi u sRGB-u
+
+`extractMaskedPNG` → `pngData` je crtao kroz
+`private static let sharedExtractionContext = CIContext()` — **podrazumevan**
+kontekst, koji radi u **linearnom** sRGB-u. Sve što klijent gleda ide kroz
+`makeBriefEditsCIContext` / `briefEditsCIContext`, a oni imaju
+`workingColorSpace` i `outputColorSpace` postavljene na **sRGB**.
+
+Core Image primenjuje tonske i kolor filtere **u radnom prostoru konteksta**.
+Znači isti graf — klijentova ekspozicija, kontrast, zasićenje — daje **različite
+brojeve** zavisno od toga ko ga renderuje. Cut-out je jedino mesto u app-i gde
+oba rezultata završe **jedan pored drugog na ekranu**, pa se tek tu i videlo.
+
+Maska nije bila kriva. PNG nije bio kriv. Kriv je bio kontekst.
+
+### ⚠️ IZMERENO na pravom kodu, pre i posle
+
+Nov harness **`Tools/run-layer-extract-color-test.py`** +
+`Tools/test-layer-extract-color.swift`. Vadi iz `Develop.swift` po tekstu tri
+stvari — `briefEditsSRGBColorSpace`, `sharedExtractionContext` i `pngData` —
+renderuje isti graf onako kako se **gleda** i onako kako se **čuva**, i poredi
+piksele.
+
+| izmena na fotografiji | najgori kanal PRE | POSLE |
+|---|---|---|
+| bez ijedne izmene | **0/255** | 0/255 |
+| ekspozicija +0,62 | **52/255** | **0/255** |
+| ekspozicija −0,40 | **27/255** | **0/255** |
+| kontrast 1,2 / zasićenje 1,15 | **50/255** | **0/255** |
+
+Dva reda vredi pročitati doslovno:
+
+- **Smeđe oko:** fotografija je pokazivala `(89,50,26)`, kopija `(54,0,0)` —
+  tamniji deo šarenice **odsečen na nulu**. To je tačno ono na šta je klijent
+  pokazao.
+- **Koža na −0,40:** viđeno `(167,136,121)`, kopija `(194,159,141)` — kopija
+  **svetlija** od originala, kao na poslatoj slici.
+
+### ⚠️ ZAŠTO OVO NIJE RANIJE VIĐENO — i zašto to nije uteha
+
+Na fotografiji **bez ijedne izmene odstupanje je 0**. Bag je nevidljiv dok se
+ništa ne dira, a Copy/Cut → „Paste as Layer" idu kroz **isti** `pngData`, pa su
+i oni sve vreme lepili piksele druge boje — samo se nikad nije gledalo uporedo
+sa izvorom. Popravka pogađa i njih.
+
+### Popravka
+
+`sharedExtractionContext` dobija `workingColorSpace` i `outputColorSpace` =
+`briefEditsSRGBColorSpace`, isto što gleda klijent. Uz to `createCGImage` sada
+**imenuje** prostor boja umesto da ga prepusti difoltu, jer je to oznaka koju
+PNG nosi na klijentov disk.
+
+`overlayContext` (obris iz KORAKA 95) je **namerno ostao bez opcija** i to je
+zapisano na njemu: on ne crta fotografiju nego ravnu liniju iz matte-a, nikad ne
+završi u eksportu, i njegovi brojevi su mereni baš kroz takav kontekst.
+
+### ⚠️ SLOJEVI KOJI SU VEĆ NAPRAVLJENI OSTAJU POGREŠNI
+
+PNG-ovi koji su već na disku su izvađeni starim putem i popravka ih **ne dira** —
+ona menja kako se vade **novi**. Na fotografiji na kojoj je ovo prijavljeno
+treba obrisati sloj i ponovo pustiti Select People.
+
+### Provereno
+
+`BUILD SUCCEEDED`, universal, nula grešaka. Nov harness **ALL PASS (0/255)**.
+Svi zatečeni prolaze: obris **ALL PASS**, crop rotacija **OK**, `editsettings`
+**OK — nijedan broj se nije pomerio**, reorder **sve prošlo**.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Poklapanje je izmereno u brojevima na sintetičkim zakrpama, **nije viđeno na
+klijentovoj fotografiji**. Ostaje da se pusti Select People na istoj slici i
+uporede lica.
+
+
+## KORAK 97 — traka napretka gore, i drhtanje pri vučenju sloja (2. septembar 2026)
+
+### 1. „Looking for people…" i ispod dugmeta u zaglavlju
+
+*„kada kliknem gore na quick action select people treba da se pojavi onaj
+loading bar baš ispod da zna klijent da radi"*. Dodata ista neodređena traka
+odmah ispod `FlowLayout`-a u zaglavlju.
+
+Traka u Tools **ostaje**. To nije previd nego namera: dva ulaza su daleko jedan
+od drugog na ekranu, a traka koja se pojavi pored **drugog** dugmeta je traka
+koju klijent ne vidi. Obe čitaju isti `isFindingPeople`, pa ne mogu da se raziđu.
+
+Neodređena, ne procenat — Vision ne javlja napredak, a izmišljen procenat je
+gori od poštenog vrtuljka (isto obrazloženje stoji na starijoj traci).
+
+### 2. ⚠️ DRHTANJE — PNG sloja se dekodirao IZNOVA U SVAKOM FREJMU
+
+*„kada selektujem people layer i hoću da ga pomerim drhti selection, nije smooth
+movement"*.
+
+`compositeLayers` je zvao `CIImage(data: layer.imageData)` **unutar render
+petlje**. Vučenje sloja piše u `settings` na svaki pomeraj miša, `scheduleRender`
+pušta render na 20 ms — dakle cut-out od 700 KB se dekodirao do pedeset puta u
+sekundi.
+
+**Izmereno** na realnom cut-outu 1800×2900 (708 KB) pri veličini preview-a:
+
+| jedan frejm vučenja | vreme |
+|---|---|
+| dekodiranje u svakom frejmu (kako je bilo) | **34,0 ms** |
+| kroz keš (kako je sada) | **9,3 ms** |
+| sama fotografija, bez sloja | 7,7 ms |
+
+Dakle **~24 ms čistog ponavljanja** u petlji koja ima 20 ms između frejmova.
+Samo sastavljanje košta **0,6 ms** — sastavljanje nikad nije bilo problem.
+
+### ⚠️ KVALITET — klijentova ograda, i kako je ispoštovana
+
+Klijent je uz ovo rekao: *„nemoj da izgubi quality taj duplikat layer people ili
+background… quality maximum original i samo smooth drag movement"*.
+
+Keš je baš zato ispravna vrsta popravke: čuva **pun dekod tačno onih bajtova
+koji su zapisani**. Ništa se ne smanjuje, ne prekodira i ne aproksimira. To je
+isto pravilo koje stoji na vrhu ovog fajla za sam preview.
+
+I nije ostavljeno na „trebalo bi da je isto" — **izmereno je**: kompozit kroz keš
+protiv kompozita sa svežim dekodom, **0 od 4.505.800 piksela se razlikuje**, i
+sloj se dekodira na **punih 1800×2900**, ne na umanjenoj verziji.
+
+**Nijedna buduća optimizacija ovde ne sme da smanji sloj.** Ako neka to traži,
+odgovor je ne.
+
+### Ključ keša — i zašto nije samo `layer.id`
+
+`id` + tačan broj bajtova + otisak (tri uzorka po 64 bajta, FNV-1a). Otisak je
+namerno **konstantnog vremena**: heširanje celog bafera na svakom renderu bi
+vratilo manju verziju troška koji se ovim uklanja.
+
+Provereno merenjem: isti `id` sa **drugim** pikselima (pečenje, flatten, novi
+Select People) **ne dobija** stari dekod. `NSCache` jer renderi idu sa više
+redova i jer sam izbacuje pod pritiskom memorije.
+
+### 3. Refine više ne kreće usred vučenja
+
+`isDrawingStroke` sada obuhvata i `layerDragStart != nil`. Pauza od pola sekunde
+usred pažljivog postavljanja — a to je većina njih — pokretala je
+**pun-rezolucijski** refine, za kadar sa kog klijent upravo odvlači sloj.
+
+⚠️ Ništa se ne gubi na kraju: sve tri geste sada zovu `endLayerDrag()`, koje
+briše `layerDragStart` **i** pušta `scheduleRefinedRender()`. Bez tog poziva bi
+ovaj guard ostavio fotografiju na preview rezoluciji dok je neka nevezana izmena
+ne probudi.
+
+### ⚠️ Greška u samom merenju, uhvaćena i zapisana
+
+Prvi prolaz harness-a je pokazivao 26,9 ms kroz keš i **pao** na pragu od 20 ms.
+Uzrok nije bio u app-i nego u meraču: alocirao je bafer od 18 MB **u svakom
+prolazu** i to je brojao kao deo frejma. Razlika između dva puta je i tada bila
+tačna (alokacija se skraćuje), ali apsolutni broj je taj koji se poredi sa
+pragom. Bafer se sada alocira jednom.
+
+### Provereno
+
+`BUILD SUCCEEDED`, universal, nula grešaka. Nov harness
+**`Tools/run-layer-decode-cache-test.py`** ALL PASS. Svi ostali prolaze: boja
+cut-outa **ALL PASS (0/255)**, obris **ALL PASS**, crop rotacija **OK**,
+`editsettings` **OK**, reorder **sve prošlo**.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Brzina je merena na sintetičkom cut-outu i sintetičkoj podlozi, **nije vučeno
+mišem po pravoj RAW fotografiji**. Ostaje i da se vidi da li je 9,3 ms po frejmu
+zaista dovoljno glatko na 45MP fajlu — ako i dalje drhti, sledeći osumnjičeni
+**nije** dekod nego to što upis u `settings` na svaki pomeraj iznova gradi ceo
+pogled (klasa kvara iz KORAKA 44), i to treba **izmeriti** pre nego što se dira.
+
+
+## KORAK 98 — sloj dobija SVE što ima i fotografija (2. septembar 2026)
+
+Prijava, uz sliku sa izabranim People slojem: *„videćeš sa desne strane da nemam
+iste opcije za edit kao celokupan edit, a treba da bude sve kao edit za sliku"*.
+
+Tačno je bilo. Sloj je imao 11 slajdera; fotografija ima te i još ovo:
+**Texture, Clarity, Dehaze, Soft Glow, Vignette** (sa Midpoint / Feather /
+Roundness), **Sharpness Radius** i ceo **Color Mixer** (osam traka × H/S/L).
+
+### Zašto ovo nije bilo „dodaj slajdere"
+
+Ti efekti **nisu postojali kao funkcije**. Bili su pisani direktno u telu
+`render`, kao `if settings.texture != 0 { … }` blokovi koji čitaju `settings`.
+Sloj nije mogao da ih pozove jer nije imao šta da pozove.
+
+Zato je posao išao ovim redom:
+
+1. **Izvađeno šest efekata iz `render` u funkcije** — `applySharpen`,
+   `applyTexture`, `applyClarity`, `applyDehaze`, `applySoftGlow`,
+   `applyVignette`. Kod je premešten **doslovno**, samo je `settings.texture`
+   postalo `texture`.
+2. **Model proširen** — `LocalAdjustmentSettings` dobija tih deset polja.
+3. **`applyLocalToneColorDetail` zove iste te funkcije, istim redom** kojim ih
+   zove `render`. To nije stvar ukusa: zato Clarity +40 na sloju znači isto što
+   i Clarity +40 na fotografiji.
+4. **Panel sloja dobija iste sekcije**, ista imena i iste opsege.
+
+### ⚠️ IZMERENO 1 — vađenje nije pomerilo NIJEDAN piksel fotografije
+
+Izgled ove pipeline je zaključan na vrhu ovog fajla. Dodatak ne sme da promeni
+kako fotografija izgleda, i to nije ostavljeno na „premestio sam doslovno".
+
+Nov harness **`Tools/run-effect-extraction-test.py`** uzima **staru** verziju iz
+`git show HEAD:BriefShow/Develop.swift` i **novu** sa diska, prevodi obe jednu
+pored druge i pušta ih na istoj slici kroz raspon vrednosti:
+
+**25 poređenja, sva „identical", 0 kanala razlike.** Texture na šest vrednosti,
+Clarity na četiri, Dehaze na četiri, Soft Glow na tri, Sharpness×Radius na
+četiri, Vignette na četiri kombinacije oblika.
+
+⚠️ Taj harness ima rok trajanja i to piše u njemu: čim se ovo commit-uje,
+`HEAD` postaje NOVI kod i obe strane postaju ista stvar — test koji prolazi iz
+pogrešnog razloga. Tada se `BASE_REV` pomera na `a096884` ili se harness briše.
+
+### ⚠️ IZMERENO 2 — MINA KOJA BI OBRISALA KLIJENTOVE SLOJEVE
+
+`LocalAdjustmentSettings` je imao **sintetizovan** Codable. Swift-ov
+sintetizovani dekoder **ne pada nazad na podrazumevanu vrednost** kad ključa
+nema — **baca grešku**.
+
+Provereno na pravim podacima, ne pretpostavljeno: u klijentovom skladištu je
+**125 zapisa, od toga 20 sa slojevima i 6 sa maskama**, a `adjustments` u njima
+nose tačno starih 11 ključeva i nijedan nov. I provereno šta bi se desilo:
+
+```
+synthesised decoder FAILED: DecodingError.keyNotFound:
+Key 'texture' not found in keyed decoding container.
+```
+
+Dakle prvo dodato polje bi oborilo dekodiranje **svih 20 zapisa sa slojevima** —
+ne pogrešan broj, nego ceo zapis nestaje.
+
+Zato je napisan **ručni `init(from:)` sa `decodeIfPresent` za SVA polja**, stara
+uključena. `PhotoEditSettings` je istu lekciju već naučio. Posle toga:
+**125 zapisa dekodirano, nijedan broj se nije pomerio.**
+
+### ⚠️ IZMERENO 3 — postojeći `sharpness` na sloju nije se promenio
+
+Sloj je ranije zvao `CISharpenLuminance` **bez radiusa**, pa je Core Image
+koristio svoj default. Sada zove zajednički `applySharpen`, koji radius
+postavlja na `1.69 × sharpenRadius`. Pročitano iz atributa samog filtera:
+deklarisan default je **tačno 1.69**, a novo polje ima podrazumevanu vrednost 1.
+
+Izmereno na tri jačine: **0 kanala razlike, 0/255.** Slojevi koje klijent već
+ima renderuju se identično.
+
+### Vignette na sloju — i stara beleška koja je time povučena
+
+Iznad strukture je stajalo da vinjeta maskirana na proizvoljan region „više
+nije vinjeta". **Za masku to i dalje stoji** i maska je ne dobija. **Sloj je
+druga stvar** — ima svoj pravougaonik, i zatamniti NJEGOVE ćoškove je stvarna
+želja na cut-outu. Vinjeta se računa nad sopstvenim okvirom sloja, isto kao što
+se na fotografiji računa posle kropa.
+
+### Sitno, ali namerno
+
+- `isNeutral` **ne broji** `sharpenRadius` ni tri dijala oblika vinjete. To su
+  modifikatori: pri sharpness 0 radius ne radi ništa, pa bi ih brojanje
+  prikazalo netaknut sloj kao izmenjen.
+- Traka sa bojama (`colorBandSwatch`) sada prima mikser kao parametar, jer
+  tačkica „ova traka je pomerena" mora da opisuje onaj mikser koji je na ekranu.
+- Izbor trake (`selectedColorBand`) je **zajednički** za oba miksera — to je
+  „koju boju gledaš", nije izmena.
+
+### Provereno
+
+`BUILD SUCCEEDED`, universal, nula grešaka. Sedam harness-a, svi prolaze:
+vađenje efekata **ALL PASS (25/25 identical)**, dekodiranje **125 zapisa OK**,
+keš dekoda **ALL PASS**, boja cut-outa **ALL PASS (0/255)**, obris **ALL PASS**,
+crop rotacija **OK**, reorder **sve prošlo**.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Nijedan nov slajder nije pomeren mišem. Izmereno je da efekti rade isto što i na
+fotografiji i da se ništa staro nije pomerilo — **nije** viđeno kako panel
+izgleda kad se sve to naslaže ispod „Editing: People 1", ni koliko je dugačak.
+Ako bude predugačak, to je raspored, ne ponašanje.
+
+
+## KORAK 99 — Flatten i gore, i traka dok peče (3. septembar 2026)
+
+*„dodaj quick action button ovde za flatten photo… već ga ima dole ali dodaj i
+ovde gore i dok se čeka taj flattening obavezno loading bar"*.
+
+### Dugme
+
+Dodato u red u zaglavlju, posle AI Clean Up-a i pre Grid-a — Grid ostaje
+poslednji jer je izlaz. Zove **isti** `flattenPhoto()`, čita **isto** stanje i
+nosi **isti** tekst kao ono u panelu: „Flatten Photo" / „Flatten Again" /
+„Flattening…". Drugi ulaz u jednu akciju, kao Crop i Select People — ne druga
+implementacija.
+
+**⚠️ Onemogućeno, ne sakriveno**, kad nema šta da se peče. Sakrivanje bi menjalo
+dužinu reda od fotografije do fotografije i dugmad posle njega bi se pomerala
+pod pokazivačem; Reset u istom redu se već sivi na isti način. Uslov je
+`hasUnbakedEdits` — **isti** koji testira i sekcija u panelu, pa dva mesta ne
+mogu da se raziđu oko toga ima li šta da se peče.
+
+### ⚠️ Traka — i zašto baš ovde najviše treba
+
+Flatten je **najduže čekanje u ovom prozoru**: renderuje ceo kadar u punoj
+rezoluciji i piše **nekompresovan** TIFF (v. `FlattenedImageStore` — izmereno
+102 MB na klijentovom 5176×3448 RAW-u). Do sada se dugme samo posivi i prozor
+stoji. To je ista prijava koju je KORAK 49 već jednom rešavao za prozor sa
+flattened preview-om.
+
+Traka je **neodređena**, iz istog poštenog razloga kao ona za Select People:
+render i upis fajla ne javljaju napredak, a izmišljen procenat je gori od
+nikakvog.
+
+**Natpis se preskače kad `exportStatusText` već nešto govori.** Grupno pečenje
+iz mreže (`runBake`) deli isti `isFlattening` i postavlja svoju poruku; dve
+linije koje govore istu stvar čitaju se kao bag.
+
+### Provereno
+
+`BUILD SUCCEEDED`, universal, nula grešaka. Svih sedam harness-a prolazi.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Nije pritisnuto mišem. Nije viđeno ni kako se red prelama sa sedam dugmadi na
+uskom panelu — `FlowLayout` to radi sam, ali sedmo dugme je prvo koje ide preko
+tri reda na 300 pt. Ako smeta, to je raspored, ne ponašanje.
+
+
+## KORAK 100 — „exposure odmah skoči": klizač je teleportovao palac (3. septembar 2026)
+
+*„jel možeš da provериš zašto exposure kad malo povećam on baš dosta pokaže
+expose… da kada pomerim expose da ne skoči odma baš expose?"*
+
+### ⚠️ PRVO JE PROVERENA MATEMATIKA — i ona je ČISTA
+
+Očigledna sumnja je bila da je ekspozicija prejaka, ili da se primenjuje dvaput
+(RAW je gura u `CIRAWFilter.exposure`, a non-RAW kroz `CIExposureAdjust`).
+Izmereno na **klijentovom sopstvenom `C4S_5744.NEF`**, sa RAW putanjom koju app
+zaista koristi:
+
+| ekspozicija | srednja svetlina | promena |
+|---|---|---|
+| 0,00 | 201,4 | — |
+| +0,05 | 202,7 | **+0,6%** |
+| +0,10 | 204,0 | +1,3% |
+| +0,50 | 213,7 | +6,1% |
+| +1,00 | 224,6 | +11,5% |
+
+To je **blago**, i nije primenjeno dvaput. Kroz `CIExposureAdjust` (put koji ide
+JPEG) ista slika reaguje **jače** — +1,00 EV daje +21,4%. Dakle RAW put je već
+nežniji od generičkog.
+
+Da je posao stao na „smanji ekspoziciju", smanjila bi se pogrešna stvar.
+
+### ⚠️ UZROK — klizač je čitao APSOLUTNU poziciju pritiska
+
+`EditTrackSlider` i `GradientTrackSlider` su oba imali:
+
+```swift
+let x = min(max(drag.location.x - thumbSize / 2, 0), usable)
+value = range.lowerBound + Double(x / usable) * span
+```
+
+Nema pomeraja — ima samo „gde je pokazivač". Znači **pritisak bilo gde na traci
+teleportuje palac pod kursor**, pre nego što se miš uopšte pomerio. Na Exposure
+je to najgore jer je opseg ±3 EV preko ~286 pt trake:
+
+**pritisak 60 pt desno od sredine = trenutnih +1,33 EV.** To je „skoči odma baš
+expose", doslovno.
+
+Ovo je pogađalo **svaki** klizač u panelu, ne samo ekspoziciju.
+
+### Popravka — potez se meri od mesta hvatanja
+
+Matematika je izvađena u `EditSliderDrag`, zajednički za oba klizača (i zato što
+je bila pogrešna u oba na isti način, i zato što se tako može meriti — gest se
+u ovom prozoru ne može skriptovati, aritmetika ispod njega može).
+
+- **Pritisak koji padne NA palac ne pomera ništa.** Potez se meri od mesta gde
+  je uhvaćen, pa je pomeraj od 3 pt zaista pomeraj od 3 pt.
+- **Pritisak na praznu traku i dalje skače tamo** — to traka i služi, i to je
+  jedini skok koji se traži a ne trpi. Od tog trenutka i taj potez je relativan.
+- Hvatanje ima **4 pt zazora** preko samog palca: poenta je da se lako uhvati, a
+  promašaj za jedan piksel ne sme da košta skok.
+
+### Izmereno — nov harness `Tools/run-slider-drag-test.py`
+
+Vadi pravi `EditSliderDrag` iz `Develop.swift` i meri Exposure na traci širine
+koju panel stvarno daje:
+
+| potez | pre | posle |
+|---|---|---|
+| pritisak na palac, bez pomeranja | do **+1,33 EV** | **0,0000 EV** |
+| pritisak 4–7 pt pored centra palca | skok | **0,0000 EV** |
+| pomeraj od 3 pt | — | **+0,067 EV** |
+| trećina trake | — | +2,000 EV (tačno trećina opsega) |
+| vučenje daleko preko kraja | — | staje na +3,00 EV |
+| namerni pritisak 60 pt na praznu traku | +1,33 EV | +1,33 EV (namerno zadržano) |
+
+### Greška u samom testu, zapisana
+
+Provera „trećina trake = trećina opsega" je prvo pala jer sam očekivao `span/6`
+— to je trećina JEDNE POLOVINE opsega. Kod je vraćao +2,000 EV, što je tačno.
+Ispravljen je test, ne kod.
+
+### Šta NIJE dirano
+
+Opseg je i dalje ±3 EV i korak strelica ±0,05. Sužavanje opsega bi izgubilo
+domet, a merenje kaže da domet nije bio problem.
+
+### Provereno
+
+`BUILD SUCCEEDED`, universal, nula grešaka. Osam harness-a, svi prolaze.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Nije vučeno mišem. Izmereno je šta gest računa, **nije** viđeno kako se hvata
+palac u pravoj app-i — pogotovo da li je 4 pt zazora dovoljno za pravu ruku. Ako
+i dalje beži, poluga je `EditSliderDrag.grabSlack`, na jednom mestu za oba
+klizača.
+
+
+## KORAK 101 — pikseli slojeva izlaze iz UserDefaults-a (3. septembar 2026)
+
+Prva tačka plana za history, i klijent je dao zeleno svetlo posle merenja iz
+prethodne poruke. Radi se PRVA jer history sagrađen nad ovim skladištem ne bi
+imao na čemu da stoji.
+
+### Šta je bilo
+
+Pikseli slojeva su živeli **unutar** zapisa u `UserDefaults`-u. Na klijentovom
+skladištu: **125 zapisa, 47 slojeva, 22,9 MB**, od čega su **97%** bili pikseli.
+Ceo taj blob se enkoduje pola sekunde posle svake izmene i dekoduje pri
+otvaranju.
+
+### Kako je urađeno — bez ijedne izmene na 24 pozivna mesta
+
+`ImageLayer.imageData` i `.maskData` više **nisu skladištena polja** nego vrata:
+iza njih stoji `pixelRef` (ime bloba na disku, to se enkoduje) i
+`inlineImageData` (bajtovi koji još nisu zapisani, to se **ne** enkoduje).
+Čitanje i pisanje izgledaju isto kao pre, pa nijedan poziv u app-i nije menjan.
+
+Dobitak je i na **dekodiranju**, ne samo na upisu: referenca ne košta ništa, pa
+otvaranje skladišta više ne uvlači svaki sloj svake fotografije u memoriju.
+Bajtovi stižu tek kad nešto taj sloj zaista renderuje.
+
+### `LayerPixelStore` — adresiranje po SADRŽAJU, i to je ono što ovo čini bezbednim
+
+Ime bloba se izvodi iz samih bajtova, pa je upis idempotentan: drugi flush
+zatekne fajl i ne radi ništa. Ime izvedeno iz `layer.id` **ne bi** bilo dobro —
+isti id može dobiti nove piksele (pečenje, nov Select People) i skladište bi
+posluživalo stare. Otisak je onaj isti konstantno-vremenski koji koristi i keš
+dekoda (KORAK 97), iz istog razloga.
+
+⚠️ `encode(to:)` **piše na disk**, što je neobično za enkoder i baš zato je
+adresiranje po sadržaju uslov. Ako upis padne, bajtovi idu inline kao i pre —
+sporo i debelo, i to je ispravan način da se padne: pun disk sme da košta
+brzinu, nikad sloj.
+
+### Migracija se dešava sama, bez prolaza i bez zastavice verzije
+
+`init(from:)` čita **oba** oblika. Star zapis nosi piksele inline, uđu ovde, i
+prvi sledeći upis ih ispiše kao blob. Skladište se konvertuje samo od sebe pri
+prvom snimanju; ako se app ubije na pola, star ključ je i dalje tu dok ga nov
+ne zameni.
+
+⚠️ Konverzija je **lenja** — odmah posle build-a folder `LayerPixels` je prazan
+i to je uredu, popuni se pri prvom flush-u.
+
+### ⚠️ IZMERENO na klijentovom pravom skladištu
+
+Nov harness **`Tools/run-layer-pixel-store-test.py`**. Koristi **isti** izvlakač
+i isti spisak deklaracija kao `run-editsettings-decode-test.py`, pa dva
+harness-a ne mogu da se raziđu oko toga koji kod testiraju. Dekoduje pravo
+skladište, ponovo ga enkoduje (to je korak koji piše blobove), pa dekoduje
+rezultat i poredi.
+
+| | pre | posle |
+|---|---|---|
+| veličina zapisa | **22 899 KB** | **175 KB** (99% manje) |
+| dekodiranje skladišta | **79,4 ms** | **4,3 ms** |
+| enkodovanje (flush posle svake izmene) | — | **7,5 ms** |
+| zapisa preživelo | — | **125 od 125** |
+| pikseli sloja isti bajt za bajt | — | **41 cut-out + 6 matte, svi identični** |
+
+Klijent je rekao da su postojeći slojevi ionako samo testovi; provereno je
+svejedno, jer isti kod sutra nosi njegov pravi rad.
+
+### ⚠️ Spisak deklaracija u dekod testu — pao pa dopunjen
+
+`run-editsettings-decode-test.py` je odmah **pao pri prevođenju**: `cannot find
+'LayerPixelStore' in scope`. To je tačno ona glasna greška zbog koje spisak i
+postoji (v. upozorenje u KORAKU 94 o `SkyChoice`). `LayerPixelStore` je dodat na
+spisak. **Svaki nov tip od kog `ImageLayer` ili `PhotoEditSettings` zavisi mora
+tamo.**
+
+### Usput — repo je pušao 214 MB tuđeg smeća
+
+Na klijentov zahtev *„kada pushujemo za novi update samooo čist app"* provereno
+je šta se zaista šalje:
+
+- **U app-u nema nijedne njegove fotografije ni sloja.** Provereno u paketu:
+  nula `.nef`, nula `C4S*`, nula `.tiff`. Njegove izmene žive u `UserDefaults`
+  i nikad ne ulaze u build.
+- **Ali `build_universal/` je bio PRAĆEN u git-u** — 327 fajlova, **214 MB**
+  keša prevođenja i objektnih fajlova, uz svaki push. Dodat u `.gitignore` i
+  skinut sa praćenja (`git rm -r --cached`).
+
+⚠️ Istorija commit-ova i dalje nosi tih 214 MB; čišćenje istorije je prepisivanje
+i **nije** urađeno bez pitanja.
+
+### Provereno
+
+`BUILD SUCCEEDED`, universal, nula grešaka. Devet harness-a, svi prolaze.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Migracija **nije viđena kako se dešava u pravoj app-i** — izmerena je na
+skladištu van sandboksa. Prvi pravi test je: otvoriti fotografiju sa slojem,
+pomeriti bilo šta, sačekati sekundu, pa proveriti da u kontejneru
+`Application Support/BriefShow/LayerPixels` postoje fajlovi i da se sloj i dalje
+vidi posle ponovnog pokretanja.
+
+### Sledeće — tačke 2 i 3 iz plana
+
+2. **History kao lista stanja po fotografiji**, trajno, sa datumom i imenom
+   koraka. Sada košta ~1 KB po koraku umesto do 12,8 MB.
+3. **Flatten postaje korak u history-ju**, ne jednosmerna vrata: svaki flatten
+   ostavlja svoj snimak, pa se vraća na bilo koji, ne samo na prvi.
+
+
+## KORAK 102 — kartica na hover, devet novih prečica, i Crop koji nije reagovao na prvi klik (3. septembar 2026)
+
+### 1. Kartica na hover „BriefShow" više ne nabraja prečice
+
+Klijent: *„ovu karticu sa shortcuts makni kada hoverujem BriefShow, ali dodaj
+hovered karticu da napišeš šta je BriefShow ukratko"*.
+
+Spisak prečica je bio manja polovina onoga što Edit ▸ Keyboard Shortcuts već
+radi — tamo se i **menjaju**. `ShowGridShortcutsHoverCard` →
+`BriefShowAboutHoverCard`.
+
+**⚠️ Formulacija je bila deo zahteva, ne ukras.** Traženo je izričito da NE
+piše „kao Bridge i kao Photoshop i kao Lightroom u jednom" — taj opis app
+opisuje preko tri tuđa proizvoda i ne kaže ništa o njoj. Zato kartica imenuje
+**posao**, pa tek onda program kao standard po kome je taj deo pisan:
+
+> Jedan foto suite. Tri vrste posla za koje inače trebaju tri programa.
+> **Browse & cull** — folderi, mreža, ocene, oznake, odbacivanja.
+> **Develop** — RAW, ton, boja, mikser, maske, preseti.
+> **Retouch** — slojevi, kloniranje i heal, cut-outi, blend modovi.
+
+Ispod: **dva AI modela rade na ovom Mac-u** — imenovana, jer „AI" samo po sebi
+ne govori ništa: Quick Clean Up za brzo brisanje, Generative Clean Up da izmisli
+šta tu pripada. Nijedan ne šalje fotografiju nikuda.
+
+### 2. Devet novih prečica, sve podesive
+
+Sve u LumenoLab grupi, sve prolaze kroz `ShortcutStore`, dakle sve se menjaju u
+**Edit ▸ Keyboard Shortcuts**.
+
+| akcija | podrazumevano | zašto baš to |
+|---|---|---|
+| AI Clean Up (otvori, četkica u ruci) | **J** | Photoshop-ov healing brush |
+| Quick Clean Up (LaMa) | **K** | J-K-L pod desnom rukom, tri koraka jednog posla |
+| Generative Clean Up | **L** | isto |
+| Select People | **P** | people |
+| Flatten Photo | **⇧F** | šiftovano namerno — peče kadar i piše 100 MB fajl |
+| See Original (drži) | **\\** | Lightroom-ov before/after |
+| Back to Grid | **G** | grid |
+| Black & White | **B** | |
+| Duplicate & BW | **⇧B** | šiftovani blizanac iste ideje |
+
+⚠️ Sve provereno protiv onoga što LumenoLab grupa već zauzima (e, q, ⌘z, ⌘⇧z,
+⌘c, ⌘x, ⌘v, ⌘a, ⌘=, ⌘-, ⌘0, [, ], r, x) — **nijedan sudar**, jer je duplikat
+unutar grupe konflikt.
+
+**Svaka je čuvana isto kao i postojeće:** ako nema šta da radi, taster se **ne
+guta** nego propada dalje i ostaje obično slovo. Prečica koja pojede pritisak i
+ne uradi ništa gora je od nepostojeće.
+
+### ⚠️ See Original je jedina koja je tražila SVOJ monitor
+
+Glavni monitor uzima samo `.keyDown`, a „drži da uporediš" traži i otpuštanje.
+Dugme pored je oduvek press-and-hold; prekidač bi značio da klijent ode i ostavi
+original na ekranu ne znajući. Zato `installShowOriginalKeyMonitor` sa
+`[.keyDown, .keyUp]`.
+
+Otpuštanje se prepoznaje po **samom tasteru**, bez modifikatora
+(`matchesKeyOnly`) — pusti se Shift trenutak pre slova i otpuštanje se više ne bi
+poklopilo, pa bi original ostao zaglavljen na ekranu. Zatvaranje prozora ga
+takođe vraća na `false`.
+
+Usput: ponašanje AI Clean Up dugmeta izvučeno je u `toggleAICieanUp()` da taster
+i dugme ne mogu da se raziđu.
+
+### 3. ⚠️ CROP NIJE REAGOVAO NA PRVI KLIK — i ovo je isti bag po ČETVRTI put
+
+*„zašto moram da pritisnem nekoliko puta na crop da bi otvorio… bitno je da
+svako dugme kad se klikne odma odreaguje"*.
+
+`ShowHeaderButtonLabel` **nije imao `.contentShape(Rectangle())`**. Bez njega
+Button pogađa samo tamo gde mu se natpis stvarno crta — slova i ikonica — pa je
+14 pt padding-a oko svakog dugmeta u zaglavlju bio **mrtav**. Klik koji padne
+tamo ne radi ništa, i klijent pritisne opet.
+
+**App je ovaj isti bag već dijagnostikovala i popravila TRI puta** — na
+`maskAddButton`, `EditToolButtonStyle` i `AspectRatioButtonStyle`, i to jednom
+baš sa prijavom „Crop ne reaguje na prvi klik". Svaki put na **jednom** dugmetu.
+`ShowHeaderButtonStyle` je **deljeni** stil zaglavlja — **37 pozivnih mesta**,
+među njima Crop, Reset, Grid, Original, Select People, Flatten, Unflatten — i
+njega niko nije popravio.
+
+Popravka stoji **posle padding-a**, i to je ceo trik: postavljena pre njega ne bi
+popravila ništa. Provereno da ostala dva stila (`EditToolButtonStyle`,
+`AspectRatioButtonStyle`) svoj već imaju.
+
+### ⚠️ Migracija iz KORAKA 101 — POTVRĐENA na pravoj app-i
+
+Usput izmereno, jer je app u međuvremenu radila i snimala:
+
+- skladište je sa **22 899 KB palo na 174 KB**;
+- **46 slojeva, 40 sa referencom, 0 još inline, 0 referenci bez fajla**;
+- app je upisala **77 blobova u svoj kontejner**.
+
+Znači konverzija radi u pravoj, sandboxovanoj app-i, ne samo u harness-u.
+
+Slojeva je 46 gde ih je pre bilo 47. Nijedna referenca nije slomljena i nijedan
+zapis nije nestao, pa migracija ne može biti uzrok — sloj je najverovatnije
+obrisan u app-i između dva merenja, dok je klijent radio.
+
+### ⚠️ Dve greške u harness-ima, obe zapisane
+
+1. `run-editsettings-decode-test.py` **nije mogao ni da se prevede** dok
+   `LayerPixelStore` nije dodat na spisak deklaracija — glasna greška zbog koje
+   spisak i postoji.
+2. Pošto je dodat tamo, `run-layer-pixel-store-test.py` ga je vadio **drugi
+   put** i pao sa `invalid redeclaration`. Jedan spisak, jedna kopija.
+3. Provera „zapis se smanjio" je posle konverzije postala **prazna** — skladište
+   je već bilo 174 KB i test je pao sa „0% smaller" na potpuno ispravnom stanju.
+   Sada se smanjenje tvrdi samo kad ulaz zaista još nosi piksele inline, a na
+   već konvertovanom skladištu se proverava ono što tu jedino i može da boli:
+   **da svaka referenca zaista razreši u bajtove**. Sloj sa slomljenom
+   referencom bio bi u listi a nevidljiv na fotografiji.
+
+### Provereno
+
+`BUILD SUCCEEDED`, universal, nula grešaka. Devet harness-a, svi prolaze.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Nijedna prečica nije pritisnuta, kartica nije viđena na hover, i **Crop nije
+kliknut**. Popravka pogađa poznat i ranije potvrđen uzrok, ali da li je to
+JEDINI uzrok njegovih višestrukih klikova zna se tek kad klijent proba.
+
+
 ## ⚠️ SLEDEĆE — PAKOVANJE I RELEASE 10.67 (nije počelo, 2.09. uveče)
 
 Kod je spreman: `BUILD SUCCEEDED`, nebo izvađeno (KORAK 94), oba harness-a
 prolaze, 125 slogova dekodirano bez pomeranja.
+
+**Stanje 2.09. uveče — koraci 1, 2 i 3 su URAĐENI i izmereni:**
+`MARKETING_VERSION` = **10.67**, `CURRENT_PROJECT_VERSION` = **19**, universal
+Release build prošao (**nula grešaka**), `lipo -archs` → **`x86_64 arm64`**,
+Info.plist u paketu pokazuje **10.67 / 19**. Paket stoji u
+`build_universal/Build/Products/Release/BriefShow.app` i **pokrenut je i viđen**.
+Taj paket je posle toga **prepravljen** — nosi i KORAK 95 (obris umesto koprene,
+Select People u zaglavlju, skok na Layers) i KORAK 96 (boja cut-outa) i KORAK 97 (traka i drhtanje) i KORAK 98 (svi slajderi na sloju) i KORAK 99 (Flatten gore) i KORAK 100 (klizači) i KORAK 101 (pikseli slojeva na disk) i KORAK 102 (prečice, kartica, Crop), i dalje
+`BUILD SUCCEEDED` i dalje universal, ali to **još nije viđeno na ekranu**.
+Izmena verzija **nije commit-ovana**. Ništa nije izašlo iz mašine: nema arhive,
+nema `gh release create`, `latest_version` je i dalje **6.0**.
 
 **Nije počelo namerno** — ostalo je 5% sesije, a release koji stane na pola je
 gori od nijednog: verzija podignuta a artefakt ne postoji.
 
 ### Redosled, i ništa se ne preskače
 
+0. **PROVERA DA JE ČISTO** — v. „🟢 ZAKLJUČANO — SVAKI UPDATE IDE ČIST".
+   Nijedna klijentova fotografija, sloj ni build keš ne ide gore. Dve komande
+   su zapisane tamo; obe se puštaju, ne pretpostavljaju.
 1. **`MARKETING_VERSION` 10.1 → 10.67.**
 2. **`CURRENT_PROJECT_VERSION` 18 → 19.** Bez ovoga macOS ne vidi novi build kao
    noviji i ikonica/verzija se ne osvežavaju — KORAK 74, već plaćeno jednom.
 3. **Release build, UNIVERZALAN.** Provera je `lipo -archs` → mora da vrati
    `x86_64 arm64`. Poslednji put je 10.1 ispao samo arm64 i to se videlo tek pri
    pakovanju.
-4. **Potpis i notarizacija.** ⚠️ Debug build radi „Sign to Run Locally"; to na
-   tuđem Mac-u ne prolazi. Ovo je jedini korak koji se ne može isprobati lokalno
-   — v. KORAK 35, ista klasa greške (radilo u Xcode-u, palo potpisano).
+4. **Potpis i notarizacija — PRESKAČE SE, v. „ZAKLJUČANO — DISTRIBUCIJA".**
+   Ne idemo na App Store, a Developer ID sertifikata na ovoj mašini **nema**
+   (mereno: *0 valid identities*). Pakuje se **ad-hoc**, isto kao 10.1.
+   ⚠️ Ostaje istina da se ovo ne može isprobati lokalno — v. KORAK 35, ista
+   klasa greške (radilo u Xcode-u, palo potpisano). Ako sertifikat ikad stigne,
+   ovaj korak se vraća takav kakav je bio.
 5. **Arhiva + `gh release create` v10.67**, ~140 MB.
 6. **TEK NA KRAJU: `latest_version` u BriefControl-u.**
+
+### ⚠️ DRUGA ODLUKA KOJA ČEKA KLIJENTA — da li Background treba da se POMERA
+
+Iz KORAKA 95. Klijent je uz sliku People sloja rekao „da mi pokaže da mogu da ga
+pomeram". Isporučeno je da se **vidi da je izabran**; pomeranje **nije**, jer
+Background nije piksel sloj.
+
+Ako odgovor bude „hoću da se stvarno pomera", to **nije izmena prikaza** nego
+modela, i cena je već izmerena i zapisana (v. `ImageLayer.maskData` i KORAK 65):
+piksel sloj preko celog kadra je PNG od desetina megabajta u UserDefaults-u,
+prepisan pri **svakom** flush-u. To je posao za svoju sesiju, ne dodatak na
+kraju ovog. Ne raditi bez pitanja.
 
 ### ⚠️ ODLUKA KOJA ČEKA KLIJENTA — tačka 6
 

@@ -42,6 +42,12 @@ DEFAULTS_KEY = "com.rocketsbrief.briefshow.photoEditSettings"
 # discovered closure would silently start pulling in half the file the day
 # someone adds a property, and this test would stop being about Codable.
 DECLARATIONS = [
+    # Not a Codable type itself, but ImageLayer's encode/decode call into it:
+    # the pixels live on disk now (see LayerPixelStore's own comment). Left off
+    # this list, the harness fails to COMPILE with "cannot find LayerPixelStore
+    # in scope" — which is the loud failure this list is for, and is exactly
+    # what happened the first time.
+    "enum LayerPixelStore {",
     "enum ColorBand:",
     "struct ColorMixerBand:",
     "struct ColorMixer:",

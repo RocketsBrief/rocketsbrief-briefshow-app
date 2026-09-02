@@ -77,6 +77,24 @@ struct KeyCombo: Codable, Equatable, Hashable {
         return event.charactersIgnoringModifiers?.lowercased() == character
     }
 
+    /// The key alone, modifiers ignored.
+    ///
+    /// Exists for ONE case and should not grow past it: a held shortcut's
+    /// keyUp. A key release does not reliably carry the modifier state the
+    /// press had — let go of Shift a moment before the letter and the release
+    /// no longer matches — which for a hold-to-compare key means the original
+    /// stays on screen with nothing to turn it off. See
+    /// installShowOriginalKeyMonitor.
+    func matchesKeyOnly(_ event: NSEvent) -> Bool {
+        if let keyCode {
+            return event.keyCode == keyCode
+        }
+        guard let character else {
+            return false
+        }
+        return event.charactersIgnoringModifiers?.lowercased() == character
+    }
+
     /// "⌘⇧Z" — the way a menu would write it.
     var display: String {
         var text = ""
@@ -162,6 +180,16 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case decreaseToolSize, increaseToolSize
     case toggleCrop
     case rejectPhoto
+    // Asked for by name, all at once: the two AI Clean Ups, the way in to
+    // them, Select People, Flatten, See Original, back to the grid, and the
+    // two black-and-white items from the filmstrip menu. Every one of them is
+    // a button the client presses often enough to want a key for.
+    case openCleanUp, quickCleanUp, generativeCleanUp
+    case selectPeople
+    case flattenPhoto
+    case showOriginal
+    case backToGrid
+    case blackAndWhite, duplicateBlackAndWhite
 
     // ShowGrid
     case gridSelectAll, gridCopy, gridCut, gridPaste
@@ -209,6 +237,15 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .increaseToolSize: return "Larger Brush / Tool"
         case .toggleCrop: return "Crop"
         case .rejectPhoto: return "Reject Photo"
+        case .openCleanUp: return "AI Clean Up (open, brush in hand)"
+        case .quickCleanUp: return "Quick Clean Up (LaMa)"
+        case .generativeCleanUp: return "Generative Clean Up"
+        case .selectPeople: return "Select People"
+        case .flattenPhoto: return "Flatten Photo"
+        case .showOriginal: return "See Original (hold)"
+        case .backToGrid: return "Back to Grid"
+        case .blackAndWhite: return "Black & White"
+        case .duplicateBlackAndWhite: return "Duplicate & BW"
         case .gridSelectAll: return "Select All Photos"
         case .gridCopy: return "Copy"
         case .gridCut: return "Cut"
@@ -249,6 +286,33 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         // both, and a client who moves Reject in one window has no reason to
         // have it move in the other. Free in this group — cut is ⌘X.
         case .rejectPhoto: return .key("x")
+
+        // ⚠️ Every default below was checked against what the LumenoLab group
+        // already takes — e, q, ⌘z, ⌘⇧z, ⌘c, ⌘x, ⌘v, ⌘a, ⌘=, ⌘-, ⌘0, [, ], r,
+        // x — because a duplicate WITHIN a group is a conflict (see this
+        // enum's own doc comment). None of these collide.
+        //
+        // J, K, L sit next to each other under the right hand and are the
+        // three steps of one job in order: open the brush, then Quick, then
+        // Generative. J is also Photoshop's healing brush, which is the
+        // closest thing to Clean Up that the client already has a habit for.
+        case .openCleanUp: return .key("j")
+        case .quickCleanUp: return .key("k")
+        case .generativeCleanUp: return .key("l")
+        case .selectPeople: return .key("p")
+        // Shifted on purpose. Flatten bakes the frame and writes a
+        // 100 MB file; that is not something a stray letter should start.
+        case .flattenPhoto: return .key("f", shift: true)
+        // Backslash, because that is Lightroom's before/after key and this
+        // client works in Lightroom all day. The button has said "the same
+        // interaction Lightroom's own \\ key gives you" since it was written
+        // — now the key exists too.
+        case .showOriginal: return .key("\\")
+        case .backToGrid: return .key("g")
+        // B for black-and-white, ⇧B for the version that also makes a copy —
+        // the shifted twin of the same idea, the way ⌘Z / ⌘⇧Z are.
+        case .blackAndWhite: return .key("b")
+        case .duplicateBlackAndWhite: return .key("b", shift: true)
         case .gridSelectAll: return .key("a", command: true)
         case .gridCopy: return .key("c", command: true)
         case .gridCut: return .key("x", command: true)
@@ -376,6 +440,11 @@ enum ShortcutStore {
     /// Does this event fire this action?
     static func matches(_ event: NSEvent, _ action: ShortcutAction) -> Bool {
         combo(for: action).matches(event)
+    }
+
+    /// For held shortcuts' key RELEASE only — see KeyCombo.matchesKeyOnly.
+    static func matchesKeyOnly(_ event: NSEvent, _ action: ShortcutAction) -> Bool {
+        combo(for: action).matchesKeyOnly(event)
     }
 
     // MARK: Presets

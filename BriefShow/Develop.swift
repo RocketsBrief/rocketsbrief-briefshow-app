@@ -491,10 +491,27 @@ enum PatchShape: String, Codable, CaseIterable {
     case free
 }
 
-// The subset of PhotoEditSettings that makes sense applied to a masked
-// region rather than the whole photo: tonal/color sliders only. No crop/
-// rotate/straighten (geometry is always global) and no Vignette (a
-// "vignette" masked to an arbitrary local region isn't a vignette anymore).
+// The part of PhotoEditSettings that makes sense applied to a LAYER or a
+// masked region rather than to the whole photo. No crop/rotate/straighten —
+// geometry is always global.
+//
+// ⚠️ This used to be tone and colour ONLY, and the client reported the gap in
+// as many words: *„kada selektujem ljude… nemam iste opcije za edit kao
+// celokupan edit, a treba da bude sve kao edit za sliku"*. Texture, Clarity,
+// Dehaze, Soft Glow, the Colour Mixer, the sharpen radius and Vignette are all
+// here now, and they run through the SAME functions `render` runs for the
+// photo (applySharpen, applyTexture, … — extracted for exactly this, and proved
+// pixel-identical to the code they came from by
+// Tools/run-effect-extraction-test.py), in the same order, so a layer's +40
+// Clarity means what the photo's +40 Clarity means.
+//
+// ⚠️ VIGNETTE, and the note this replaces. The old comment here said a
+// vignette masked to an arbitrary region "isn't a vignette anymore", and for a
+// MASK that is still true — a radial darkening confined to a brush stroke is
+// not what anybody means by the word. On a LAYER it is a different matter: a
+// layer has its own rectangle, and darkening ITS corners is a real thing to
+// want on a cut-out. It is offered in the layer panel only; the mask panel
+// does not show it.
 struct LocalAdjustmentSettings: Codable, Equatable {
     var exposure: Double = 0
     var contrast: Double = 0
@@ -508,10 +525,70 @@ struct LocalAdjustmentSettings: Codable, Equatable {
     var tint: Double = 0
     var sharpness: Double = 0
 
+    // Everything below arrived after records were already on the client's
+    // disk. See init(from:) — it is what keeps those records readable.
+    var sharpenRadius: Double = 1
+    var texture: Double = 0
+    var clarity: Double = 0
+    var dehaze: Double = 0
+    var softGlow: Double = 0
+    var vignette: Double = 0
+    var vignetteMidpoint: Double = 0.5
+    var vignetteFeather: Double = 0.5
+    var vignetteRoundness: Double = 0
+    var colorMixer = ColorMixer()
+
     var isNeutral: Bool {
         exposure == 0 && contrast == 0 && highlights == 0 && shadows == 0
             && whites == 0 && blacks == 0 && saturation == 0 && vibrance == 0
             && temperature == 0 && tint == 0 && sharpness == 0
+            && texture == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
+            && vignette == 0 && colorMixer.isNeutral
+            // sharpenRadius, and the three vignette shape dials, are NOT in
+            // here on purpose: they are modifiers, not effects. At sharpness 0
+            // a radius changes nothing, and with vignette 0 a midpoint changes
+            // nothing — counting them would make a layer that looks untouched
+            // report itself as edited.
+    }
+
+    init() {}
+
+    /// ⚠️ WRITTEN BY HAND, and it has to stay that way.
+    ///
+    /// Swift's synthesised decoder does NOT fall back to a property's default
+    /// when a key is missing — it throws. Every layer and every mask already
+    /// on the client's disk was encoded before the fields above existed, so
+    /// with the synthesised version the first added field would have made
+    /// every one of those records fail to decode: not a wrong number, the
+    /// whole record gone. `PhotoEditSettings` learned this already and decodes
+    /// the same way; `Tools/run-editsettings-decode-test.py` is what watches it.
+    ///
+    /// So: decodeIfPresent for everything, old fields included. A record
+    /// written by any version of this app, before or after today, reads back
+    /// with the values it had and defaults for what it never knew about.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        exposure = try c.decodeIfPresent(Double.self, forKey: .exposure) ?? 0
+        contrast = try c.decodeIfPresent(Double.self, forKey: .contrast) ?? 0
+        highlights = try c.decodeIfPresent(Double.self, forKey: .highlights) ?? 0
+        shadows = try c.decodeIfPresent(Double.self, forKey: .shadows) ?? 0
+        whites = try c.decodeIfPresent(Double.self, forKey: .whites) ?? 0
+        blacks = try c.decodeIfPresent(Double.self, forKey: .blacks) ?? 0
+        saturation = try c.decodeIfPresent(Double.self, forKey: .saturation) ?? 0
+        vibrance = try c.decodeIfPresent(Double.self, forKey: .vibrance) ?? 0
+        temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? 0
+        tint = try c.decodeIfPresent(Double.self, forKey: .tint) ?? 0
+        sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? 0
+        sharpenRadius = try c.decodeIfPresent(Double.self, forKey: .sharpenRadius) ?? 1
+        texture = try c.decodeIfPresent(Double.self, forKey: .texture) ?? 0
+        clarity = try c.decodeIfPresent(Double.self, forKey: .clarity) ?? 0
+        dehaze = try c.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0
+        softGlow = try c.decodeIfPresent(Double.self, forKey: .softGlow) ?? 0
+        vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
+        vignetteMidpoint = try c.decodeIfPresent(Double.self, forKey: .vignetteMidpoint) ?? 0.5
+        vignetteFeather = try c.decodeIfPresent(Double.self, forKey: .vignetteFeather) ?? 0.5
+        vignetteRoundness = try c.decodeIfPresent(Double.self, forKey: .vignetteRoundness) ?? 0
+        colorMixer = try c.decodeIfPresent(ColorMixer.self, forKey: .colorMixer) ?? ColorMixer()
     }
 }
 
@@ -752,10 +829,157 @@ enum LayerBlendMode: String, Codable, CaseIterable {
         }
     }
 }
+/// Where a layer's PIXELS live: files on disk, not inside the settings record.
+///
+/// ⚠️ Why this exists, measured before it was written. Every edit in this app
+/// lives in one JSON blob in UserDefaults, re-encoded 0.5s after any change
+/// (PhotoEditStore.flushNow) and decoded when the store is first read. On the
+/// client's own machine, 125 photos:
+///
+/// | | |
+/// |---|---|
+/// | whole store | **32.4 MB** |
+/// | of that, layer pixels | **31.5 MB — 97%** |
+/// | every slider, mask and crop of all 125 photos | 932 KB |
+/// | a record with no layers | ~1 KB |
+/// | encoding the store, on the MAIN THREAD | **55 ms** |
+/// | decoding it when the window opens | **35 ms** |
+/// | the same store without layer pixels | **1.9 / 1.1 ms** |
+///
+/// Two photos alone accounted for 22 MB of it. That is already a hitch after
+/// every pause in editing, but the reason it had to be fixed NOW is the
+/// history feature: a history that snapshots settings is about 1 KB a step,
+/// and one that drags a 12.8 MB layer along with every step is not a feature,
+/// it is a fault.
+///
+/// ⚠️ NOTHING IN THE CLIENT'S OWN FOLDER IS TOUCHED BY ANY OF THIS. These
+/// blobs are the app's own storage, beside the flattened copies. The imported
+/// originals are not read, written, renamed or moved — layer pixels were never
+/// in his folder to begin with.
+enum LayerPixelStore {
+
+    private static var directory: URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask).first else {
+            return nil
+        }
+        let directory = base.appendingPathComponent("BriefShow/LayerPixels", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// CONTENT-ADDRESSED, and that is what makes this safe to call from
+    /// `encode(to:)`.
+    ///
+    /// A name derived from the bytes means writing is idempotent: the second
+    /// flush finds the file already there and does nothing. A name derived
+    /// from, say, the layer's id would not — the same id can be handed new
+    /// pixels (a bake, a fresh Select People), and the store would serve the
+    /// old ones. The fingerprint is the same constant-time one the render
+    /// cache uses, for the same reason: this runs per layer per flush, and
+    /// hashing megabytes there would put back a smaller version of the cost
+    /// being removed.
+    static func name(for data: Data) -> String {
+        "\(data.count)-\(fingerprint(data))"
+    }
+
+    private static func fingerprint(_ data: Data) -> UInt64 {
+        var hash: UInt64 = 1469598103934665603
+        let count = data.count
+        let starts = [0, count / 3, count / 2, max(0, count - 96)]
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            for start in starts {
+                let end = min(start + 96, count)
+                guard start < end else { continue }
+                for i in start..<end {
+                    hash = (hash ^ UInt64(raw[i])) &* 1099511628211
+                }
+            }
+        }
+        return hash
+    }
+
+    private static func fileURL(_ name: String) -> URL? {
+        directory?.appendingPathComponent(name.replacingOccurrences(of: "/", with: "_") + ".bin")
+    }
+
+    /// Writes the bytes once and hands back the name to store in their place.
+    /// Returns nil if it could not be written — the caller then keeps the
+    /// bytes inline, which is slower but never loses a layer.
+    static func store(_ data: Data) -> String? {
+        guard !data.isEmpty, let url = fileURL(name(for: data)) else {
+            return nil
+        }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                return nil
+            }
+        }
+        return url.deletingPathExtension().lastPathComponent
+    }
+
+    /// Kept in memory once read: the same blob is asked for on every render of
+    /// the photo it belongs to, and going back to the disk each time would
+    /// trade one cost for another.
+    private static var cache: [String: Data] = [:]
+    private static let cacheLock = NSLock()
+
+    static func data(for name: String) -> Data? {
+        cacheLock.lock()
+        if let hit = cache[name] {
+            cacheLock.unlock()
+            return hit
+        }
+        cacheLock.unlock()
+
+        guard let url = fileURL(name), let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        cacheLock.lock()
+        cache[name] = data
+        cacheLock.unlock()
+        return data
+    }
+}
+
 struct ImageLayer: Codable, Equatable, Identifiable {
     var id = UUID()
     var name: String
-    var imageData: Data
+
+    /// ⚠️ The pixels are NOT stored in this struct any more, and `imageData`
+    /// below is a door to them rather than the thing itself. See
+    /// LayerPixelStore for the measurements that forced it.
+    ///
+    /// Both halves are needed. `pixelRef` is the name of a blob on disk and is
+    /// what gets encoded; `inlineImageData` holds bytes that have not been
+    /// written yet — a layer just made by Select People, a paste, a cut fill —
+    /// and is deliberately NOT encoded. Whichever is set, `imageData` answers.
+    ///
+    /// The win is on DECODE as much as on encode: a ref costs nothing to read,
+    /// so opening the store no longer drags every layer of every photo into
+    /// memory. The bytes arrive the first time something actually renders that
+    /// layer.
+    private var pixelRef: String?
+    private var inlineImageData: Data?
+    private var maskRef: String?
+    private var inlineMaskData: Data?
+
+    /// Reads and writes exactly as it always did, so every call site in the
+    /// app is unchanged. Assigning marks the bytes as not-yet-written; the
+    /// next encode stores them and records the ref.
+    var imageData: Data {
+        get {
+            if let inlineImageData { return inlineImageData }
+            if let pixelRef { return LayerPixelStore.data(for: pixelRef) ?? Data() }
+            return Data()
+        }
+        set {
+            inlineImageData = newValue
+            pixelRef = nil
+        }
+    }
     var x: Double
     var y: Double
     var width: Double
@@ -794,7 +1018,20 @@ struct ImageLayer: Codable, Equatable, Identifiable {
     /// It buys a second thing worth having: a derived layer is re-read from
     /// the photo on every render, so global sliders moved afterwards carry
     /// it along instead of leaving it behind as a frozen copy.
-    var maskData: Data?
+    /// The matte, through the same door as the pixels above and for the same
+    /// reason — a full-frame matte is tens of KB, small next to a cut-out but
+    /// not nothing once history multiplies it.
+    var maskData: Data? {
+        get {
+            if let inlineMaskData { return inlineMaskData }
+            if let maskRef { return LayerPixelStore.data(for: maskRef) }
+            return nil
+        }
+        set {
+            inlineMaskData = newValue
+            maskRef = nil
+        }
+    }
 
     /// Rotation about the layer's own centre, in degrees.
     var rotationDegrees: Double = 0
@@ -819,7 +1056,7 @@ struct ImageLayer: Codable, Equatable, Identifiable {
          rotationDegrees: Double = 0) {
         self.id = id
         self.name = name
-        self.imageData = imageData
+        self.inlineImageData = imageData
         self.x = x
         self.y = y
         self.width = width
@@ -829,7 +1066,7 @@ struct ImageLayer: Codable, Equatable, Identifiable {
         self.isEnabled = isEnabled
         self.adjustments = adjustments
         self.blur = blur
-        self.maskData = maskData
+        self.inlineMaskData = maskData
         self.isSky = isSky
         self.rotationDegrees = rotationDegrees
     }
@@ -848,7 +1085,21 @@ struct ImageLayer: Codable, Equatable, Identifiable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try c.decode(String.self, forKey: .name)
-        imageData = try c.decode(Data.self, forKey: .imageData)
+        // ⚠️ MIGRATION, and it runs silently on the client's existing records.
+        // A layer saved by any earlier build carries its pixels INLINE under
+        // "imageData"; one saved from now on carries a "pixelRef" instead.
+        // Both are read. An old record's bytes come in here and are written
+        // out as a blob by the very next encode, so a store converts itself
+        // the first time it is saved — no migration pass, no version flag, and
+        // nothing lost if the app is killed halfway (the old key is still
+        // there until the new one replaces it).
+        if let ref = try c.decodeIfPresent(String.self, forKey: .pixelRef) {
+            pixelRef = ref
+            inlineImageData = nil
+        } else {
+            inlineImageData = try c.decodeIfPresent(Data.self, forKey: .imageData) ?? Data()
+            pixelRef = nil
+        }
         x = try c.decode(Double.self, forKey: .x)
         y = try c.decode(Double.self, forKey: .y)
         width = try c.decode(Double.self, forKey: .width)
@@ -859,14 +1110,71 @@ struct ImageLayer: Codable, Equatable, Identifiable {
         adjustments = try c.decodeIfPresent(LocalAdjustmentSettings.self, forKey: .adjustments)
             ?? LocalAdjustmentSettings()
         blur = try c.decodeIfPresent(Double.self, forKey: .blur) ?? 0
-        maskData = try c.decodeIfPresent(Data.self, forKey: .maskData)
+        if let ref = try c.decodeIfPresent(String.self, forKey: .maskRef) {
+            maskRef = ref
+            inlineMaskData = nil
+        } else {
+            inlineMaskData = try c.decodeIfPresent(Data.self, forKey: .maskData)
+            maskRef = nil
+        }
         isSky = try c.decodeIfPresent(Bool.self, forKey: .isSky) ?? false
         rotationDegrees = try c.decodeIfPresent(Double.self, forKey: .rotationDegrees) ?? 0
+    }
+
+    /// ⚠️ Hand-written so the pixels go to disk instead of into the record.
+    ///
+    /// It WRITES as a side effect, which is unusual for an encoder and is the
+    /// reason LayerPixelStore names blobs by their content: storing the same
+    /// bytes twice is a `fileExists` check and nothing more, so the flush that
+    /// runs after every edit does not touch the disk again for a layer that
+    /// has not changed.
+    ///
+    /// If the write FAILS the bytes are encoded inline, exactly as before.
+    /// That is slow and fat — and it is the right failure: a full disk must
+    /// cost the client speed, never a layer.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+
+        if let ref = pixelRef {
+            try c.encode(ref, forKey: .pixelRef)
+        } else if let bytes = inlineImageData, !bytes.isEmpty {
+            if let ref = LayerPixelStore.store(bytes) {
+                try c.encode(ref, forKey: .pixelRef)
+            } else {
+                try c.encode(bytes, forKey: .imageData)
+            }
+        }
+
+        try c.encode(x, forKey: .x)
+        try c.encode(y, forKey: .y)
+        try c.encode(width, forKey: .width)
+        try c.encode(height, forKey: .height)
+        try c.encode(opacity, forKey: .opacity)
+        try c.encode(blendMode, forKey: .blendMode)
+        try c.encode(isEnabled, forKey: .isEnabled)
+        try c.encode(adjustments, forKey: .adjustments)
+        try c.encode(blur, forKey: .blur)
+
+        if let ref = maskRef {
+            try c.encode(ref, forKey: .maskRef)
+        } else if let bytes = inlineMaskData, !bytes.isEmpty {
+            if let ref = LayerPixelStore.store(bytes) {
+                try c.encode(ref, forKey: .maskRef)
+            } else {
+                try c.encode(bytes, forKey: .maskData)
+            }
+        }
+
+        try c.encode(isSky, forKey: .isSky)
+        try c.encode(rotationDegrees, forKey: .rotationDegrees)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, imageData, x, y, width, height, opacity, blendMode, isEnabled, adjustments
         case blur, maskData, isSky, rotationDegrees
+        case pixelRef, maskRef
     }
 }
 
@@ -1884,240 +2192,15 @@ enum PhotoEditRenderer {
             output = applyColorMixer(settings.colorMixer, to: output)
         }
 
-        if settings.sharpness > 0 {
-            let filter = CIFilter.sharpenLuminance()
-            filter.inputImage = output
-            filter.sharpness = Float(settings.sharpness * 2.2)
-            // Radius was never set here, so Core Image used its own default of
-            // 1.69. `sharpenRadius` defaults to 1 and is multiplied by exactly
-            // that, which is what makes this an addition rather than a change:
-            // a photo that has never seen the new slider renders through the
-            // identical filter it always did.
-            filter.radius = Float(briefEditsDefaultSharpenRadius
-                                  * min(max(settings.sharpenRadius, 0.5), 3))
-            output = filter.outputImage ?? output
-        }
+        output = PhotoEditRenderer.applySharpen(settings.sharpness, radius: settings.sharpenRadius, to: output)
 
-        // Texture — Lightroom's mid-frequency detail dial, and the only
-        // slider in this section that runs BOTH ways. Positive brings skin/
-        // fabric/hair detail OUT (a small-radius unsharp mask — finer than
-        // Clarity's large-radius midtone "punch" below, coarser than
-        // Sharpness' edge-only pass above; that middle frequency band is
-        // exactly what reads as "texture" rather than "sharper" or
-        // "punchier"). Negative pushes that same band back DOWN so a face
-        // reads softer/younger, the way a portrait retouch does.
-        //
-        // The negative side is a frequency-separation MIX, not a plain blur
-        // of everything: `blurred` is the low-frequency copy, and
-        // CIBlendWithMask against a flat gray mask cross-fades toward it by
-        // |texture| (the same "flat gray mask as an opacity dial" trick Soft
-        // Glow and Patch's Opacity already use). The mix is capped at 0.85
-        // so even -100 keeps some of the original's detail — a full 1.0
-        // would hand back a straight blur, which reads as "out of focus",
-        // not "smooth skin". This is an APPROXIMATION of Lightroom's
-        // edge-preserving version (which leaves eyes/lips/edges crisp while
-        // smoothing only flat areas) — same kind of documented shortcut as
-        // Dehaze below.
-        //
-        // Both radii are a FRACTION of the image's long edge, not a fixed
-        // pixel count — render() runs at both preview and full-export
-        // resolution and a radius picked for one would look wrong at the
-        // other (see Clarity's own radius comment right below for the full
-        // reasoning, and the brush/patch tools for the same convention).
-        if settings.texture != 0 {
-            let extent = output.extent
-            let longEdge = max(extent.width, extent.height)
-            if longEdge.isFinite, longEdge > 0 {
-                if settings.texture > 0 {
-                    let filter = CIFilter.unsharpMask()
-                    filter.inputImage = output
-                    filter.radius = Float(min(max(longEdge * 0.006, 2), 40))
-                    filter.intensity = Float(settings.texture * 1.1)
-                    output = filter.outputImage ?? output
-                } else {
-                    let blurred = output
-                        .clampedToExtent()
-                        .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: min(max(longEdge * 0.003, 1.5), 24)])
-                        .cropped(to: extent)
+        output = PhotoEditRenderer.applyTexture(settings.texture, to: output)
 
-                    // Edge guard. Cross-fading the whole frame toward
-                    // `blurred` by a FLAT mask was the first version of
-                    // this and it read as "out of focus", not "smooth
-                    // skin" — eyes, lashes and hair went soft right along
-                    // with the pores. |original - blurred| is exactly the
-                    // mid-frequency band this slider owns, so amplified
-                    // (x10) and clamped to 0...1 it doubles as a "there is
-                    // real structure here" map: flat skin scores ~0, an
-                    // eyelash or a lip edge saturates to 1. Inverting that
-                    // and scaling it by |texture| gives a per-pixel mix
-                    // that smooths the flat areas hard while leaving edges
-                    // essentially untouched.
-                    //
-                    // CIBlendWithMask reads the mask's RGB level (not its
-                    // alpha) — the same thing Soft Glow above and Patch's
-                    // Opacity rely on, confirmed by a standalone render
-                    // test, which is why a fully opaque mask image can
-                    // still act as a per-pixel strength dial.
-                    let detailBoost = 10.0
-                    let detail = output
-                        .applyingFilter("CIDifferenceBlendMode", parameters: [kCIInputBackgroundImageKey: blurred])
-                        .applyingFilter("CIColorMatrix", parameters: [
-                            "inputRVector": CIVector(x: 0.333 * detailBoost, y: 0.333 * detailBoost, z: 0.333 * detailBoost, w: 0),
-                            "inputGVector": CIVector(x: 0.333 * detailBoost, y: 0.333 * detailBoost, z: 0.333 * detailBoost, w: 0),
-                            "inputBVector": CIVector(x: 0.333 * detailBoost, y: 0.333 * detailBoost, z: 0.333 * detailBoost, w: 0),
-                            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
-                        ])
-                        .applyingFilter("CIColorClamp", parameters: [
-                            "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
-                            "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)
-                        ])
+        output = PhotoEditRenderer.applyClarity(settings.clarity, to: output)
 
-                    let amount = CGFloat(min(max(-settings.texture, 0), 1) * 0.9)
-                    let mixMask = detail
-                        .applyingFilter("CIColorInvert")
-                        .applyingFilter("CIColorMatrix", parameters: [
-                            "inputRVector": CIVector(x: amount, y: 0, z: 0, w: 0),
-                            "inputGVector": CIVector(x: 0, y: amount, z: 0, w: 0),
-                            "inputBVector": CIVector(x: 0, y: 0, z: amount, w: 0),
-                            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
-                        ])
-                        .cropped(to: extent)
+        output = PhotoEditRenderer.applyDehaze(settings.dehaze, to: output)
 
-                    let blend = CIFilter.blendWithMask()
-                    blend.inputImage = blurred
-                    blend.backgroundImage = output
-                    blend.maskImage = mixMask
-                    output = blend.outputImage ?? output
-                }
-            }
-        }
-
-        // Clarity — Lightroom's "local/midtone contrast" — is a LARGE-radius
-        // unsharp mask, as distinct from Sharpness' small-radius edge
-        // sharpening above (CISharpenLuminance has no radius knob at all;
-        // CIUnsharpMask's `radius` is what makes this read as "punch" in
-        // the midtones rather than "crisper edges"). The radius is a
-        // FRACTION of the image's long edge, not a fixed pixel count —
-        // render() runs at both preview and full-export resolution, and a
-        // radius picked for one would look wrong (too small or too smeared)
-        // at the other; the brush/patch tools above already use the same
-        // "size as a fraction of the long edge" convention for the same
-        // reason.
-        //
-        // Both directions, and NOT through the same filter: CIUnsharpMask's
-        // `intensity` is undocumented for negative values, so the softening
-        // half is what "reduce local contrast" actually means — a mix toward
-        // a blurred copy at the SAME radius, which is the exact inverse of
-        // what unsharp adds at that radius. (Positive: base + k x detail.
-        // Negative: base - k x detail, i.e. mix(base, blurred, k).) It shares
-        // the radius on purpose, so -40 undoes what +40 did rather than
-        // softening at some unrelated scale.
-        if settings.clarity != 0 {
-            let extent = output.extent
-            let longEdge = max(extent.width, extent.height)
-            if longEdge.isFinite, longEdge > 0 {
-                let radius = min(max(longEdge * 0.02, 8), 100)
-                if settings.clarity > 0 {
-                    let filter = CIFilter.unsharpMask()
-                    filter.inputImage = output
-                    filter.radius = Float(radius)
-                    filter.intensity = Float(min(settings.clarity, 1) * 0.8)
-                    output = filter.outputImage ?? output
-                } else {
-                    let blurred = output
-                        .clampedToExtent()
-                        .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
-                        .cropped(to: extent)
-
-                    // Same flat-grey-mask trick Soft Glow uses below for its
-                    // own opacity dial: CIBlendWithMask reads the mask's
-                    // level, so a constant colour is a constant mix.
-                    let amount = CGFloat(min(-settings.clarity, 1) * 0.6)
-                    let mixMask = CIImage(color: CIColor(red: amount, green: amount, blue: amount)).cropped(to: extent)
-                    let blend = CIFilter.blendWithMask()
-                    blend.inputImage = blurred
-                    blend.backgroundImage = output
-                    blend.maskImage = mixMask
-                    output = blend.outputImage ?? output
-                }
-            }
-        }
-
-        // Dehaze — an APPROXIMATION, not Lightroom's real algorithm (which
-        // uses a dark-channel-prior atmospheric-scattering model — a much
-        // bigger undertaking, explicitly deferred, see
-        // BRIEFSHOW_DEVELOP_NOTES.md). Haze visually reads as two things:
-        // flattened contrast/color (light scattered by atmospheric
-        // particles washes everything toward gray) and a lifted black
-        // point (true blacks never quite reach black through the haze) —
-        // so this fakes the "haze removed" look by boosting contrast and
-        // saturation, THEN crushing the black point back down and pulling
-        // the lower-midtones with it via a tone curve (same point0...
-        // point4 curve-bending technique the Blacks/Shadows/Highlights/
-        // Whites sliders above use, just dehaze-specific coefficients).
-        // Reads as "punchier and clearer" on a real hazy photo without
-        // needing the full atmospheric-scattering math.
-        //
-        // Runs in both directions from the SAME coefficients, with no
-        // special-casing, because every one of them already reverses
-        // correctly under a negative d: contrast and saturation drop below
-        // 1, and the tone curve's black point lifts instead of crushing —
-        // which is exactly what haze does to a photo. So the left half of
-        // the slider ADDS atmosphere rather than being dead travel.
-        if settings.dehaze != 0 {
-            let d = Float(min(max(settings.dehaze, -1), 1))
-
-            let colorFilter = CIFilter.colorControls()
-            colorFilter.inputImage = output
-            colorFilter.contrast = 1 + d * 0.35
-            colorFilter.saturation = 1 + d * 0.25
-            colorFilter.brightness = 0
-            output = colorFilter.outputImage ?? output
-
-            let curve = CIFilter.toneCurve()
-            curve.inputImage = output
-            curve.point0 = CGPoint(x: 0, y: CGFloat(-0.08 * d))
-            curve.point1 = CGPoint(x: 0.25, y: CGFloat(0.25 - 0.05 * d))
-            curve.point2 = CGPoint(x: 0.5, y: 0.5)
-            curve.point3 = CGPoint(x: 0.75, y: 0.75)
-            curve.point4 = CGPoint(x: 1, y: 1)
-            output = curve.outputImage ?? output
-        }
-
-        // Soft Glow — a classic diffusion/"soft focus" portrait look: blur
-        // a copy of the image and screen-blend it back over the sharp
-        // original (screen only ever LIGHTENS, so this reads as a soft
-        // glow/bloom rather than a plain blur), then mix between the crisp
-        // original and the fully-glowed version by `softGlow` via
-        // CIBlendWithMask against a flat gray mask — same "scale a mask's
-        // blend strength for an opacity dial" trick Patch's own Opacity
-        // slider uses. `.clampedToExtent()` before the blur (undone by the
-        // final `.cropped(to:)`) is the standard Core Image pattern for
-        // blurring without the transparent/undefined edge outside the
-        // image bleeding black into the result.
-        if settings.softGlow > 0 {
-            let extent = output.extent
-            let longEdge = max(extent.width, extent.height)
-            if longEdge.isFinite, longEdge > 0 {
-                let blurred = output
-                    .clampedToExtent()
-                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: longEdge * 0.025])
-                    .cropped(to: extent)
-
-                let screen = CIFilter.screenBlendMode()
-                screen.inputImage = blurred
-                screen.backgroundImage = output
-                let glowed = screen.outputImage ?? output
-
-                let amount = CGFloat(min(max(settings.softGlow, 0), 1))
-                let mixMask = CIImage(color: CIColor(red: amount, green: amount, blue: amount)).cropped(to: extent)
-                let blend = CIFilter.blendWithMask()
-                blend.inputImage = glowed
-                blend.backgroundImage = output
-                blend.maskImage = mixMask
-                output = blend.outputImage ?? output
-            }
-        }
+        output = PhotoEditRenderer.applySoftGlow(settings.softGlow, to: output)
 
         // Vignette moved to AFTER crop (see the end of this function) — it
         // needs to darken the CROPPED image's own corners, not the
@@ -2177,132 +2260,7 @@ enum PhotoEditRenderer {
             output = output.cropped(to: rect)
         }
 
-        // Custom corner-only vignette, applied LAST (after crop) — CIVignette
-        // (the built-in filter this used to call) has no way to confine its
-        // falloff to just the corners; even at its own default radius, the
-        // darkening visibly crept in along the top/bottom/left/right edges
-        // too, not just the four corners. Deliberately placed AFTER crop
-        // (not back where the other Detail & Effects sliders run, before
-        // local adjustments/layers/crop): a vignette needs to darken the
-        // image's OWN actual corners — if it were computed against the
-        // pre-crop extent instead, cropping in tight could leave the dark
-        // corners entirely outside the kept area (no visible vignette left
-        // at all) or cut across the middle of the cropped frame as a
-        // visible edge, neither of which is "corners of the photo you're
-        // looking at" — reported directly (a visible vignette "line" after
-        // cropping, wanting the vignette to re-fill the CROPPED image's own
-        // corners). Built as a radial gradient DARKENING MASK, multiplied
-        // onto the image — an ELLIPSE (not a circle), same non-uniform-
-        // scale-of-a-unit-gradient technique radialMask uses for the Radial
-        // local adjustment: a plain CIRCULAR inscribed/circumscribed pair
-        // was tried first and rejected after a pixel-sampling test script
-        // caught it leaving a non-square (e.g. landscape) photo's LEFT/
-        // RIGHT edge midpoints partially darkened too — a circle can only
-        // be tangent to the SHORTER pair of edges, not both pairs at once.
-        // Building the gradient in unit space (radius0 = 1, the ellipse
-        // that — once scaled by halfW/halfH below — touches ALL FOUR edge
-        // midpoints simultaneously; radius1 = √2, the unit-space distance
-        // that scales to reach the actual corners) and only THEN applying
-        // the (halfW, halfH) non-uniform scale fixes this: verified with a
-        // standalone pixel-sampling script (see BRIEFSHOW_DEVELOP_NOTES.md)
-        // — all four edge midpoints read full brightness, only the four
-        // corner wedges outside the ellipse are darkened.
-        //
-        // The mask is then BLURRED (not the photo — just this gradient)
-        // before use: the crisp geometric ellipse boundary above read as a
-        // visible "vignette line" even though the underlying gradient IS
-        // continuous with no value jump at that boundary — the RATE of
-        // change jumps there (flat right up to radius0, then suddenly
-        // sloped), a classic Mach-band effect the eye is very sensitive to.
-        // Blurring the mask itself removes that slope discontinuity, giving
-        // a soft, organic falloff instead of a geometric edge — also
-        // directly the "more feather" ask. Blur radius is a fraction of the
-        // (now-final, post-crop) image's shorter edge, same "size scales
-        // with the actual image, not a fixed pixel count" convention as
-        // Clarity/Soft Glow/the Patch brush above.
-        //
-        // Both directions, like Lightroom's own post-crop vignette: negative
-        // darkens the corners, positive lightens them. The two halves share
-        // one gradient and differ only in which blend consumes it, and both
-        // blends are chosen so the CENTRE is untouched at every amount —
-        // multiply against white changes nothing, and screen against black
-        // changes nothing. So the effect grows from the corners inward
-        // instead of dimming or fogging the whole frame.
-        if settings.vignette != 0 {
-            let extent = output.extent
-            if extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 {
-                let halfW = extent.width / 2
-                let halfH = extent.height / 2
-                let darkens = settings.vignette > 0
-                let amount = CGFloat(min(abs(settings.vignette), 1))
-                let centre: CGFloat = darkens ? 1 : 0
-                let corner0: CGFloat = darkens ? 1 - amount : amount
-
-                // Lightroom's three shape controls, added around the gradient
-                // this always drew. Each default reproduces the old numbers
-                // exactly — midpoint 0.5 gives radius0 = 1, feather 0.5 gives
-                // radius1 = √2, roundness 0 leaves the ellipse matching the
-                // frame — so a photo edited before these existed renders
-                // identically. That is the whole reason the defaults are 0.5
-                // rather than the 0 that would look tidier in a struct.
-                let corner = 2.0.squareRoot()
-                let inner = 2 * CGFloat(min(max(settings.vignetteMidpoint, 0), 1))
-                let spread = CGFloat(min(max(settings.vignetteFeather, 0), 1)) * 2 * (corner - 1)
-                // A floor on the spread: radius1 == radius0 is a gradient with
-                // no distance to travel, which Core Image has no answer for.
-                let outer = inner + max(spread, 0.02)
-
-                let gradient = CIFilter.radialGradient()
-                gradient.center = .zero
-                gradient.radius0 = Float(inner)
-                gradient.radius1 = Float(outer)
-                gradient.color0 = CIColor(red: centre, green: centre, blue: centre, alpha: 1)
-                gradient.color1 = CIColor(red: corner0, green: corner0, blue: corner0, alpha: 1)
-
-                if let unitGradient = gradient.outputImage {
-                    // Roundness, and it is honestly an APPROXIMATION of
-                    // Lightroom's. Lightroom's negative roundness bends the
-                    // shape toward a rounded RECTANGLE, which no ellipse can
-                    // be. Positive is exact — the axes are blended toward each
-                    // other until the ellipse is a circle. Negative is
-                    // approached by pushing the ellipse outward so its edge
-                    // hugs the corners the way a squarer shape would, which
-                    // reads as intended on a photograph even though it is not
-                    // the same curve.
-                    let roundness = CGFloat(min(max(settings.vignetteRoundness, -1), 1))
-                    var axisW = halfW
-                    var axisH = halfH
-                    if roundness > 0 {
-                        let mean = (halfW + halfH) / 2
-                        axisW = halfW + (mean - halfW) * roundness
-                        axisH = halfH + (mean - halfH) * roundness
-                    } else if roundness < 0 {
-                        let push = 1 + 0.35 * -roundness
-                        axisW *= push
-                        axisH *= push
-                    }
-                    let transform = CGAffineTransform(a: axisW, b: 0, c: 0, d: axisH, tx: extent.midX, ty: extent.midY)
-                    let featherRadius = min(extent.width, extent.height) * 0.06
-                    let mask = unitGradient
-                        .transformed(by: transform)
-                        .clampedToExtent()
-                        .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: featherRadius])
-                        .cropped(to: extent)
-
-                    if darkens {
-                        let multiply = CIFilter.multiplyCompositing()
-                        multiply.inputImage = mask
-                        multiply.backgroundImage = output
-                        output = multiply.outputImage ?? output
-                    } else {
-                        let screen = CIFilter.screenBlendMode()
-                        screen.inputImage = mask
-                        screen.backgroundImage = output
-                        output = screen.outputImage ?? output
-                    }
-                }
-            }
-        }
+        output = PhotoEditRenderer.applyVignette(settings.vignette, midpoint: settings.vignetteMidpoint, feather: settings.vignetteFeather, roundness: settings.vignetteRoundness, to: output)
 
         return output
     }
@@ -2472,6 +2430,428 @@ enum PhotoEditRenderer {
     // RAW — by the time a mask is applied, RAW's native exposure/WB
     // controls have already been baked into `image` (see render()), and a
     // masked region has no equivalent native RAW control to push into.
+    /// Extracted verbatim from `render` so a LAYER can have the same
+    /// effect as the whole photo — see applyLocalToneColorDetail. The call
+    /// site in `render` is unchanged in behaviour; proved pixel-for-pixel
+    /// against the pre-extraction code by Tools/run-effect-extraction-test.py.
+    private static func applySharpen(_ sharpness: Double, radius: Double, to image: CIImage) -> CIImage {
+        var output = image
+
+    if sharpness > 0 {
+        let filter = CIFilter.sharpenLuminance()
+        filter.inputImage = output
+        filter.sharpness = Float(sharpness * 2.2)
+        // Radius was never set here, so Core Image used its own default of
+        // 1.69. `sharpenRadius` defaults to 1 and is multiplied by exactly
+        // that, which is what makes this an addition rather than a change:
+        // a photo that has never seen the new slider renders through the
+        // identical filter it always did.
+        filter.radius = Float(briefEditsDefaultSharpenRadius
+                              * min(max(radius, 0.5), 3))
+        output = filter.outputImage ?? output
+    }
+
+        return output
+    }
+
+    /// Extracted verbatim from `render` so a LAYER can have the same
+    /// effect as the whole photo — see applyLocalToneColorDetail. The call
+    /// site in `render` is unchanged in behaviour; proved pixel-for-pixel
+    /// against the pre-extraction code by Tools/run-effect-extraction-test.py.
+    private static func applyTexture(_ texture: Double, to image: CIImage) -> CIImage {
+        var output = image
+
+    // Texture — Lightroom's mid-frequency detail dial, and the only
+    // slider in this section that runs BOTH ways. Positive brings skin/
+    // fabric/hair detail OUT (a small-radius unsharp mask — finer than
+    // Clarity's large-radius midtone "punch" below, coarser than
+    // Sharpness' edge-only pass above; that middle frequency band is
+    // exactly what reads as "texture" rather than "sharper" or
+    // "punchier"). Negative pushes that same band back DOWN so a face
+    // reads softer/younger, the way a portrait retouch does.
+    //
+    // The negative side is a frequency-separation MIX, not a plain blur
+    // of everything: `blurred` is the low-frequency copy, and
+    // CIBlendWithMask against a flat gray mask cross-fades toward it by
+    // |texture| (the same "flat gray mask as an opacity dial" trick Soft
+    // Glow and Patch's Opacity already use). The mix is capped at 0.85
+    // so even -100 keeps some of the original's detail — a full 1.0
+    // would hand back a straight blur, which reads as "out of focus",
+    // not "smooth skin". This is an APPROXIMATION of Lightroom's
+    // edge-preserving version (which leaves eyes/lips/edges crisp while
+    // smoothing only flat areas) — same kind of documented shortcut as
+    // Dehaze below.
+    //
+    // Both radii are a FRACTION of the image's long edge, not a fixed
+    // pixel count — render() runs at both preview and full-export
+    // resolution and a radius picked for one would look wrong at the
+    // other (see Clarity's own radius comment right below for the full
+    // reasoning, and the brush/patch tools for the same convention).
+    if texture != 0 {
+        let extent = output.extent
+        let longEdge = max(extent.width, extent.height)
+        if longEdge.isFinite, longEdge > 0 {
+            if texture > 0 {
+                let filter = CIFilter.unsharpMask()
+                filter.inputImage = output
+                filter.radius = Float(min(max(longEdge * 0.006, 2), 40))
+                filter.intensity = Float(texture * 1.1)
+                output = filter.outputImage ?? output
+            } else {
+                let blurred = output
+                    .clampedToExtent()
+                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: min(max(longEdge * 0.003, 1.5), 24)])
+                    .cropped(to: extent)
+
+                // Edge guard. Cross-fading the whole frame toward
+                // `blurred` by a FLAT mask was the first version of
+                // this and it read as "out of focus", not "smooth
+                // skin" — eyes, lashes and hair went soft right along
+                // with the pores. |original - blurred| is exactly the
+                // mid-frequency band this slider owns, so amplified
+                // (x10) and clamped to 0...1 it doubles as a "there is
+                // real structure here" map: flat skin scores ~0, an
+                // eyelash or a lip edge saturates to 1. Inverting that
+                // and scaling it by |texture| gives a per-pixel mix
+                // that smooths the flat areas hard while leaving edges
+                // essentially untouched.
+                //
+                // CIBlendWithMask reads the mask's RGB level (not its
+                // alpha) — the same thing Soft Glow above and Patch's
+                // Opacity rely on, confirmed by a standalone render
+                // test, which is why a fully opaque mask image can
+                // still act as a per-pixel strength dial.
+                let detailBoost = 10.0
+                let detail = output
+                    .applyingFilter("CIDifferenceBlendMode", parameters: [kCIInputBackgroundImageKey: blurred])
+                    .applyingFilter("CIColorMatrix", parameters: [
+                        "inputRVector": CIVector(x: 0.333 * detailBoost, y: 0.333 * detailBoost, z: 0.333 * detailBoost, w: 0),
+                        "inputGVector": CIVector(x: 0.333 * detailBoost, y: 0.333 * detailBoost, z: 0.333 * detailBoost, w: 0),
+                        "inputBVector": CIVector(x: 0.333 * detailBoost, y: 0.333 * detailBoost, z: 0.333 * detailBoost, w: 0),
+                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+                    ])
+                    .applyingFilter("CIColorClamp", parameters: [
+                        "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+                        "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)
+                    ])
+
+                let amount = CGFloat(min(max(-texture, 0), 1) * 0.9)
+                let mixMask = detail
+                    .applyingFilter("CIColorInvert")
+                    .applyingFilter("CIColorMatrix", parameters: [
+                        "inputRVector": CIVector(x: amount, y: 0, z: 0, w: 0),
+                        "inputGVector": CIVector(x: 0, y: amount, z: 0, w: 0),
+                        "inputBVector": CIVector(x: 0, y: 0, z: amount, w: 0),
+                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+                    ])
+                    .cropped(to: extent)
+
+                let blend = CIFilter.blendWithMask()
+                blend.inputImage = blurred
+                blend.backgroundImage = output
+                blend.maskImage = mixMask
+                output = blend.outputImage ?? output
+            }
+        }
+    }
+
+        return output
+    }
+
+    /// Extracted verbatim from `render` so a LAYER can have the same
+    /// effect as the whole photo — see applyLocalToneColorDetail. The call
+    /// site in `render` is unchanged in behaviour; proved pixel-for-pixel
+    /// against the pre-extraction code by Tools/run-effect-extraction-test.py.
+    private static func applyClarity(_ clarity: Double, to image: CIImage) -> CIImage {
+        var output = image
+
+    // Clarity — Lightroom's "local/midtone contrast" — is a LARGE-radius
+    // unsharp mask, as distinct from Sharpness' small-radius edge
+    // sharpening above (CISharpenLuminance has no radius knob at all;
+    // CIUnsharpMask's `radius` is what makes this read as "punch" in
+    // the midtones rather than "crisper edges"). The radius is a
+    // FRACTION of the image's long edge, not a fixed pixel count —
+    // render() runs at both preview and full-export resolution, and a
+    // radius picked for one would look wrong (too small or too smeared)
+    // at the other; the brush/patch tools above already use the same
+    // "size as a fraction of the long edge" convention for the same
+    // reason.
+    //
+    // Both directions, and NOT through the same filter: CIUnsharpMask's
+    // `intensity` is undocumented for negative values, so the softening
+    // half is what "reduce local contrast" actually means — a mix toward
+    // a blurred copy at the SAME radius, which is the exact inverse of
+    // what unsharp adds at that radius. (Positive: base + k x detail.
+    // Negative: base - k x detail, i.e. mix(base, blurred, k).) It shares
+    // the radius on purpose, so -40 undoes what +40 did rather than
+    // softening at some unrelated scale.
+    if clarity != 0 {
+        let extent = output.extent
+        let longEdge = max(extent.width, extent.height)
+        if longEdge.isFinite, longEdge > 0 {
+            let radius = min(max(longEdge * 0.02, 8), 100)
+            if clarity > 0 {
+                let filter = CIFilter.unsharpMask()
+                filter.inputImage = output
+                filter.radius = Float(radius)
+                filter.intensity = Float(min(clarity, 1) * 0.8)
+                output = filter.outputImage ?? output
+            } else {
+                let blurred = output
+                    .clampedToExtent()
+                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
+                    .cropped(to: extent)
+
+                // Same flat-grey-mask trick Soft Glow uses below for its
+                // own opacity dial: CIBlendWithMask reads the mask's
+                // level, so a constant colour is a constant mix.
+                let amount = CGFloat(min(-clarity, 1) * 0.6)
+                let mixMask = CIImage(color: CIColor(red: amount, green: amount, blue: amount)).cropped(to: extent)
+                let blend = CIFilter.blendWithMask()
+                blend.inputImage = blurred
+                blend.backgroundImage = output
+                blend.maskImage = mixMask
+                output = blend.outputImage ?? output
+            }
+        }
+    }
+
+        return output
+    }
+
+    /// Extracted verbatim from `render` so a LAYER can have the same
+    /// effect as the whole photo — see applyLocalToneColorDetail. The call
+    /// site in `render` is unchanged in behaviour; proved pixel-for-pixel
+    /// against the pre-extraction code by Tools/run-effect-extraction-test.py.
+    private static func applyDehaze(_ dehaze: Double, to image: CIImage) -> CIImage {
+        var output = image
+
+    // Dehaze — an APPROXIMATION, not Lightroom's real algorithm (which
+    // uses a dark-channel-prior atmospheric-scattering model — a much
+    // bigger undertaking, explicitly deferred, see
+    // BRIEFSHOW_DEVELOP_NOTES.md). Haze visually reads as two things:
+    // flattened contrast/color (light scattered by atmospheric
+    // particles washes everything toward gray) and a lifted black
+    // point (true blacks never quite reach black through the haze) —
+    // so this fakes the "haze removed" look by boosting contrast and
+    // saturation, THEN crushing the black point back down and pulling
+    // the lower-midtones with it via a tone curve (same point0...
+    // point4 curve-bending technique the Blacks/Shadows/Highlights/
+    // Whites sliders above use, just dehaze-specific coefficients).
+    // Reads as "punchier and clearer" on a real hazy photo without
+    // needing the full atmospheric-scattering math.
+    //
+    // Runs in both directions from the SAME coefficients, with no
+    // special-casing, because every one of them already reverses
+    // correctly under a negative d: contrast and saturation drop below
+    // 1, and the tone curve's black point lifts instead of crushing —
+    // which is exactly what haze does to a photo. So the left half of
+    // the slider ADDS atmosphere rather than being dead travel.
+    if dehaze != 0 {
+        let d = Float(min(max(dehaze, -1), 1))
+
+        let colorFilter = CIFilter.colorControls()
+        colorFilter.inputImage = output
+        colorFilter.contrast = 1 + d * 0.35
+        colorFilter.saturation = 1 + d * 0.25
+        colorFilter.brightness = 0
+        output = colorFilter.outputImage ?? output
+
+        let curve = CIFilter.toneCurve()
+        curve.inputImage = output
+        curve.point0 = CGPoint(x: 0, y: CGFloat(-0.08 * d))
+        curve.point1 = CGPoint(x: 0.25, y: CGFloat(0.25 - 0.05 * d))
+        curve.point2 = CGPoint(x: 0.5, y: 0.5)
+        curve.point3 = CGPoint(x: 0.75, y: 0.75)
+        curve.point4 = CGPoint(x: 1, y: 1)
+        output = curve.outputImage ?? output
+    }
+
+        return output
+    }
+
+    /// Extracted verbatim from `render` so a LAYER can have the same
+    /// effect as the whole photo — see applyLocalToneColorDetail. The call
+    /// site in `render` is unchanged in behaviour; proved pixel-for-pixel
+    /// against the pre-extraction code by Tools/run-effect-extraction-test.py.
+    private static func applySoftGlow(_ softGlow: Double, to image: CIImage) -> CIImage {
+        var output = image
+
+    // Soft Glow — a classic diffusion/"soft focus" portrait look: blur
+    // a copy of the image and screen-blend it back over the sharp
+    // original (screen only ever LIGHTENS, so this reads as a soft
+    // glow/bloom rather than a plain blur), then mix between the crisp
+    // original and the fully-glowed version by `softGlow` via
+    // CIBlendWithMask against a flat gray mask — same "scale a mask's
+    // blend strength for an opacity dial" trick Patch's own Opacity
+    // slider uses. `.clampedToExtent()` before the blur (undone by the
+    // final `.cropped(to:)`) is the standard Core Image pattern for
+    // blurring without the transparent/undefined edge outside the
+    // image bleeding black into the result.
+    if softGlow > 0 {
+        let extent = output.extent
+        let longEdge = max(extent.width, extent.height)
+        if longEdge.isFinite, longEdge > 0 {
+            let blurred = output
+                .clampedToExtent()
+                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: longEdge * 0.025])
+                .cropped(to: extent)
+
+            let screen = CIFilter.screenBlendMode()
+            screen.inputImage = blurred
+            screen.backgroundImage = output
+            let glowed = screen.outputImage ?? output
+
+            let amount = CGFloat(min(max(softGlow, 0), 1))
+            let mixMask = CIImage(color: CIColor(red: amount, green: amount, blue: amount)).cropped(to: extent)
+            let blend = CIFilter.blendWithMask()
+            blend.inputImage = glowed
+            blend.backgroundImage = output
+            blend.maskImage = mixMask
+            output = blend.outputImage ?? output
+        }
+    }
+
+        return output
+    }
+
+    /// Extracted verbatim from `render` so a LAYER can have the same
+    /// effect as the whole photo — see applyLocalToneColorDetail. The call
+    /// site in `render` is unchanged in behaviour; proved pixel-for-pixel
+    /// against the pre-extraction code by Tools/run-effect-extraction-test.py.
+    private static func applyVignette(_ vignette: Double, midpoint: Double, feather: Double, roundness: Double, to image: CIImage) -> CIImage {
+        var output = image
+
+    // Custom corner-only vignette, applied LAST (after crop) — CIVignette
+    // (the built-in filter this used to call) has no way to confine its
+    // falloff to just the corners; even at its own default radius, the
+    // darkening visibly crept in along the top/bottom/left/right edges
+    // too, not just the four corners. Deliberately placed AFTER crop
+    // (not back where the other Detail & Effects sliders run, before
+    // local adjustments/layers/crop): a vignette needs to darken the
+    // image's OWN actual corners — if it were computed against the
+    // pre-crop extent instead, cropping in tight could leave the dark
+    // corners entirely outside the kept area (no visible vignette left
+    // at all) or cut across the middle of the cropped frame as a
+    // visible edge, neither of which is "corners of the photo you're
+    // looking at" — reported directly (a visible vignette "line" after
+    // cropping, wanting the vignette to re-fill the CROPPED image's own
+    // corners). Built as a radial gradient DARKENING MASK, multiplied
+    // onto the image — an ELLIPSE (not a circle), same non-uniform-
+    // scale-of-a-unit-gradient technique radialMask uses for the Radial
+    // local adjustment: a plain CIRCULAR inscribed/circumscribed pair
+    // was tried first and rejected after a pixel-sampling test script
+    // caught it leaving a non-square (e.g. landscape) photo's LEFT/
+    // RIGHT edge midpoints partially darkened too — a circle can only
+    // be tangent to the SHORTER pair of edges, not both pairs at once.
+    // Building the gradient in unit space (radius0 = 1, the ellipse
+    // that — once scaled by halfW/halfH below — touches ALL FOUR edge
+    // midpoints simultaneously; radius1 = √2, the unit-space distance
+    // that scales to reach the actual corners) and only THEN applying
+    // the (halfW, halfH) non-uniform scale fixes this: verified with a
+    // standalone pixel-sampling script (see BRIEFSHOW_DEVELOP_NOTES.md)
+    // — all four edge midpoints read full brightness, only the four
+    // corner wedges outside the ellipse are darkened.
+    //
+    // The mask is then BLURRED (not the photo — just this gradient)
+    // before use: the crisp geometric ellipse boundary above read as a
+    // visible "vignette line" even though the underlying gradient IS
+    // continuous with no value jump at that boundary — the RATE of
+    // change jumps there (flat right up to radius0, then suddenly
+    // sloped), a classic Mach-band effect the eye is very sensitive to.
+    // Blurring the mask itself removes that slope discontinuity, giving
+    // a soft, organic falloff instead of a geometric edge — also
+    // directly the "more feather" ask. Blur radius is a fraction of the
+    // (now-final, post-crop) image's shorter edge, same "size scales
+    // with the actual image, not a fixed pixel count" convention as
+    // Clarity/Soft Glow/the Patch brush above.
+    //
+    // Both directions, like Lightroom's own post-crop vignette: negative
+    // darkens the corners, positive lightens them. The two halves share
+    // one gradient and differ only in which blend consumes it, and both
+    // blends are chosen so the CENTRE is untouched at every amount —
+    // multiply against white changes nothing, and screen against black
+    // changes nothing. So the effect grows from the corners inward
+    // instead of dimming or fogging the whole frame.
+    if vignette != 0 {
+        let extent = output.extent
+        if extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 {
+            let halfW = extent.width / 2
+            let halfH = extent.height / 2
+            let darkens = vignette > 0
+            let amount = CGFloat(min(abs(vignette), 1))
+            let centre: CGFloat = darkens ? 1 : 0
+            let corner0: CGFloat = darkens ? 1 - amount : amount
+
+            // Lightroom's three shape controls, added around the gradient
+            // this always drew. Each default reproduces the old numbers
+            // exactly — midpoint 0.5 gives radius0 = 1, feather 0.5 gives
+            // radius1 = √2, roundness 0 leaves the ellipse matching the
+            // frame — so a photo edited before these existed renders
+            // identically. That is the whole reason the defaults are 0.5
+            // rather than the 0 that would look tidier in a struct.
+            let corner = 2.0.squareRoot()
+            let inner = 2 * CGFloat(min(max(midpoint, 0), 1))
+            let spread = CGFloat(min(max(feather, 0), 1)) * 2 * (corner - 1)
+            // A floor on the spread: radius1 == radius0 is a gradient with
+            // no distance to travel, which Core Image has no answer for.
+            let outer = inner + max(spread, 0.02)
+
+            let gradient = CIFilter.radialGradient()
+            gradient.center = .zero
+            gradient.radius0 = Float(inner)
+            gradient.radius1 = Float(outer)
+            gradient.color0 = CIColor(red: centre, green: centre, blue: centre, alpha: 1)
+            gradient.color1 = CIColor(red: corner0, green: corner0, blue: corner0, alpha: 1)
+
+            if let unitGradient = gradient.outputImage {
+                // Roundness, and it is honestly an APPROXIMATION of
+                // Lightroom's. Lightroom's negative roundness bends the
+                // shape toward a rounded RECTANGLE, which no ellipse can
+                // be. Positive is exact — the axes are blended toward each
+                // other until the ellipse is a circle. Negative is
+                // approached by pushing the ellipse outward so its edge
+                // hugs the corners the way a squarer shape would, which
+                // reads as intended on a photograph even though it is not
+                // the same curve.
+                let roundness = CGFloat(min(max(roundness, -1), 1))
+                var axisW = halfW
+                var axisH = halfH
+                if roundness > 0 {
+                    let mean = (halfW + halfH) / 2
+                    axisW = halfW + (mean - halfW) * roundness
+                    axisH = halfH + (mean - halfH) * roundness
+                } else if roundness < 0 {
+                    let push = 1 + 0.35 * -roundness
+                    axisW *= push
+                    axisH *= push
+                }
+                let transform = CGAffineTransform(a: axisW, b: 0, c: 0, d: axisH, tx: extent.midX, ty: extent.midY)
+                let featherRadius = min(extent.width, extent.height) * 0.06
+                let mask = unitGradient
+                    .transformed(by: transform)
+                    .clampedToExtent()
+                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: featherRadius])
+                    .cropped(to: extent)
+
+                if darkens {
+                    let multiply = CIFilter.multiplyCompositing()
+                    multiply.inputImage = mask
+                    multiply.backgroundImage = output
+                    output = multiply.outputImage ?? output
+                } else {
+                    let screen = CIFilter.screenBlendMode()
+                    screen.inputImage = mask
+                    screen.backgroundImage = output
+                    output = screen.outputImage ?? output
+                }
+            }
+        }
+    }
+
+        return output
+    }
+
     private static func applyLocalToneColorDetail(_ local: LocalAdjustmentSettings, to image: CIImage) -> CIImage {
         var output = image
 
@@ -2523,12 +2903,33 @@ enum PhotoEditRenderer {
             output = filter.outputImage ?? output
         }
 
-        if local.sharpness > 0 {
-            let filter = CIFilter.sharpenLuminance()
-            filter.inputImage = output
-            filter.sharpness = Float(local.sharpness * 2.2)
-            output = filter.outputImage ?? output
+        // ⚠️ From here down, a layer runs THE SAME FUNCTIONS the photo runs,
+        // in the SAME ORDER `render` runs them: colour mixer, sharpen, texture,
+        // clarity, dehaze, soft glow, and vignette last. That order is not a
+        // preference — it is what makes a layer's +40 Clarity mean the same
+        // thing as the photo's +40 Clarity. If the order in `render` ever
+        // changes, change it here too.
+        //
+        // The old inline sharpen that stood here is gone: it passed no radius,
+        // so it could not honour the Radius dial. applySharpen is the photo's
+        // own, and at radius 1 it is byte-for-byte the filter this used to run
+        // (see the note inside it).
+        if !local.colorMixer.isNeutral {
+            output = applyColorMixer(local.colorMixer, to: output)
         }
+
+        output = applySharpen(local.sharpness, radius: local.sharpenRadius, to: output)
+        output = applyTexture(local.texture, to: output)
+        output = applyClarity(local.clarity, to: output)
+        output = applyDehaze(local.dehaze, to: output)
+        output = applySoftGlow(local.softGlow, to: output)
+
+        // Against the LAYER's own rectangle, which is the only frame a layer
+        // has. On the photo this runs after the crop, for the same reason:
+        // a vignette darkens the corners of what you are actually looking at.
+        output = applyVignette(local.vignette, midpoint: local.vignetteMidpoint,
+                               feather: local.vignetteFeather,
+                               roundness: local.vignetteRoundness, to: output)
 
         return output
     }
@@ -3093,6 +3494,76 @@ enum PhotoEditRenderer {
         return pngData(for: scaled, pixelRect: rect)
     }
 
+    /// The layer's pixels, decoded ONCE and kept — never resampled, never
+    /// reduced.
+    ///
+    /// ⚠️ This is a speed fix that must not become a quality one, and the
+    /// client said so in as many words: *„nemoj da izgubi quality taj duplikat
+    /// layer people ili background… quality maximum original i samo smooth drag
+    /// movement"*. What is cached is the FULL-RESOLUTION decode of exactly the
+    /// bytes that were stored. Nothing here may ever downscale, re-encode or
+    /// approximate a layer to go faster — the same rule the top of
+    /// BRIEFSHOW_DEVELOP_NOTES.md sets for the preview itself.
+    ///
+    /// Why it exists: `CIImage(data:)` was being built afresh inside the render
+    /// loop, so every frame of a layer drag decoded the whole cut-out PNG
+    /// again. Measured on a realistic 1800×2900 cut-out (738 KB) at preview
+    /// size: **31.6 ms per frame decoding each time, 8.3 ms reusing the
+    /// decode** — 23.3 ms of pure repeat work in a loop that gets 20 ms
+    /// between frames. That is the reported *„drhti, nije smooth movement"*.
+    /// Compositing itself costs 0.6 ms; it was never the compositing.
+    ///
+    /// Keyed by the layer's id AND the size and a fingerprint of its bytes, so
+    /// a layer whose pixels are replaced (a bake, a flatten, a fresh Select
+    /// People) cannot be served the old decode. NSCache because renders run on
+    /// more than one queue and it evicts under memory pressure on its own.
+    private static let decodedLayerCache: NSCache<NSString, CIImage> = {
+        let cache = NSCache<NSString, CIImage>()
+        // A photo has a handful of layers, not hundreds.
+        cache.countLimit = 12
+        return cache
+    }()
+
+    private static func decodedLayerImage(_ layer: ImageLayer) -> CIImage? {
+        let data = layer.imageData
+        guard !data.isEmpty else {
+            return nil
+        }
+
+        let key = "\(layer.id.uuidString)|\(data.count)|\(dataFingerprint(data))" as NSString
+        if let cached = decodedLayerCache.object(forKey: key) {
+            return cached
+        }
+        guard let decoded = CIImage(data: data) else {
+            return nil
+        }
+        decodedLayerCache.setObject(decoded, forKey: key)
+        return decoded
+    }
+
+    /// A constant-time fingerprint: three 64-byte samples, FNV-1a.
+    ///
+    /// Deliberately NOT a hash of the whole buffer. This is read on every
+    /// render of every layer, and hashing megabytes each time would put back a
+    /// smaller version of the cost this cache exists to remove. Paired with the
+    /// layer's id and its exact byte count, sampling is enough to tell one
+    /// cut-out from another.
+    private static func dataFingerprint(_ data: Data) -> UInt64 {
+        var hash: UInt64 = 1469598103934665603
+        let count = data.count
+        let starts = [0, count / 2, max(0, count - 64)]
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            for start in starts {
+                let end = min(start + 64, count)
+                guard start < end else { continue }
+                for i in start..<end {
+                    hash = (hash ^ UInt64(raw[i])) &* 1099511628211
+                }
+            }
+        }
+        return hash
+    }
+
     private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage) -> CIImage {
         var output = image
         let extent = image.extent
@@ -3116,7 +3587,7 @@ enum PhotoEditRenderer {
                 continue
             }
 
-            guard let source = CIImage(data: layer.imageData), source.extent.width > 0, source.extent.height > 0 else {
+            guard let source = decodedLayerImage(layer), source.extent.width > 0, source.extent.height > 0 else {
                 continue
             }
 
@@ -3254,7 +3725,32 @@ enum PhotoEditRenderer {
         return (boundsUnit, pixelRect)
     }
 
-    private static let sharedExtractionContext = CIContext()
+    /// ⚠️ THE SAME COLOUR SPACE THE CLIENT LOOKS THROUGH. Do not take these
+    /// options away.
+    ///
+    /// This was a bare `CIContext()` and it cost a real bug: "Select People"
+    /// gave back a cut-out that was a different colour from the photograph it
+    /// had just been cut out of, reported as *„dobio sam kopiju totalno
+    /// drugačiju, vidi oči recimo"*.
+    ///
+    /// Core Image applies tone and colour filters in the context's WORKING
+    /// colour space, and a default context works in LINEAR sRGB while every
+    /// context this app renders a picture through works in sRGB
+    /// (makeBriefEditsCIContext, briefEditsCIContext). So the identical filter
+    /// graph — the client's own exposure, contrast and saturation — landed on
+    /// different numbers depending on who rendered it, and a cut-out is the
+    /// one place in the app where both results end up side by side on screen.
+    ///
+    /// Measured on the real code by `Tools/run-layer-extract-color-test.py`
+    /// before the options were added: with the client's own +0.62 exposure a
+    /// channel was off by 52/255, and a brown eye came out (54,0,0) where the
+    /// photo showed (89,50,26) — the darker parts of the iris clipped to
+    /// nothing. With no edits at all the drift is 0, which is exactly why this
+    /// went unnoticed for so long: on an untouched photo the bug is invisible.
+    private static let sharedExtractionContext = CIContext(options: [
+        .workingColorSpace: briefEditsSRGBColorSpace,
+        .outputColorSpace: briefEditsSRGBColorSpace
+    ])
 
     // Cuts/copies the pixels under a Selection's outline out of `image`
     // (expected to be the FULL-resolution, already-edited-and-cropped
@@ -3342,7 +3838,11 @@ enum PhotoEditRenderer {
 
     private static func pngData(for image: CIImage, pixelRect: CGRect) -> Data? {
         let cropped = image.cropped(to: pixelRect)
-        guard let cgImage = sharedExtractionContext.createCGImage(cropped, from: pixelRect) else {
+        // The colour space is named here too, not left to the context's
+        // default output space: this is the tag the PNG carries onto the
+        // client's disk, and it has to say the same thing the pixels mean.
+        guard let cgImage = sharedExtractionContext.createCGImage(
+            cropped, from: pixelRect, format: .RGBA8, colorSpace: briefEditsSRGBColorSpace) else {
             return nil
         }
         let rep = NSBitmapImageRep(cgImage: cgImage)
@@ -5072,11 +5572,10 @@ struct DevelopView: View {
     // not the ordinary undo stack.
     @State private var newLayerIDs: [UUID] = []
 
-    // Tinted mattes for selected derived (Background) layers, built once each.
-    // Keyed by layer id, and a layer's matte never changes after it is made —
-    // A layer's matte never changes after it is made, so there is nothing to
-    // invalidate.
-    @State private var matteOverlayCache: [UUID: NSImage] = [:]
+    // Edge outlines for selected derived (Background) layers, built once each.
+    // Keyed by layer id, and a layer's matte never changes after it is made,
+    // so there is nothing to invalidate.
+    @State private var layerOutlineCache: [UUID: NSImage] = [:]
     // Which of the two find buttons produced the mask currently on screen,
     // so the line under them describes what was actually found.
     @State private var foundBackgroundOnly = false
@@ -5098,6 +5597,7 @@ struct DevelopView: View {
     // blemish at 4x, where the drag belongs to the brush.
     @State private var isSpaceHeld = false
     @State private var spaceKeyMonitor: Any?
+    @State private var showOriginalKeyMonitor: Any?
     @State private var optionKeyMonitor: Any?
     @State private var scrollWheelMonitor: Any?
     /// Scroll deltas add up here until they are worth one size step.
@@ -5321,12 +5821,14 @@ struct DevelopView: View {
         .onAppear {
             installEditingKeyMonitor()
             installSpaceKeyMonitor()
+        installShowOriginalKeyMonitor()
             installOptionKeyMonitor()
             installScrollWheelMonitor()
         }
         .onDisappear {
             removeEditingKeyMonitor()
             removeSpaceKeyMonitor()
+        removeShowOriginalKeyMonitor()
             removeOptionKeyMonitor()
             removeScrollWheelMonitor()
         }
@@ -5469,7 +5971,54 @@ struct DevelopView: View {
                    selectedURL != nil || !multiSelectedURLs.isEmpty {
                     toggleRejectedForFilmstripSelection(); return nil
                 }
+
+                // ⚠️ Every one of these is GUARDED the same way the cases above
+                // are, and the guard is the point: with nothing to act on the
+                // key is not swallowed, it falls through and stays an ordinary
+                // letter. A shortcut that eats a keystroke and does nothing is
+                // worse than no shortcut.
+                if ShortcutStore.matches(event, .openCleanUp), selectedURL != nil {
+                    toggleAICleanUp(); return nil
+                }
+                // Guarded on the model being available AND on there being paint
+                // down — the same two conditions that enable the buttons. On an
+                // Intel Mac the Generative key does nothing at all, exactly as
+                // its button is disabled there.
+                if ShortcutStore.matches(event, .quickCleanUp),
+                   cleanUpUnavailableReason(.quick) == nil, hasRemovalArea, !isRemoving {
+                    eraseMaskedArea(using: .quick); return nil
+                }
+                if ShortcutStore.matches(event, .generativeCleanUp),
+                   cleanUpUnavailableReason(.generative) == nil, hasRemovalArea, !isRemoving {
+                    eraseMaskedArea(using: .generative); return nil
+                }
+                if ShortcutStore.matches(event, .selectPeople),
+                   selectedURL != nil, !isFindingPeople, !isRemoving {
+                    selectPeopleAsLayer(); return nil
+                }
+                if ShortcutStore.matches(event, .flattenPhoto),
+                   selectedURL != nil, !isFlattening, hasUnbakedEdits {
+                    flattenPhoto(); return nil
+                }
+                if ShortcutStore.matches(event, .backToGrid) {
+                    onClose(); return nil
+                }
+                // The two filmstrip-menu items, acting on the same set the
+                // right-click menu would: the whole multi-selection when there
+                // is one, otherwise the open photo.
+                if ShortcutStore.matches(event, .blackAndWhite), let url = selectedURL {
+                    applyBlackAndWhite(to: contextMenuTargets(for: url)); return nil
+                }
+                if ShortcutStore.matches(event, .duplicateBlackAndWhite), let url = selectedURL {
+                    duplicatePhotos(contextMenuTargets(for: url), blackAndWhite: true); return nil
+                }
             }
+
+            // ⚠️ See Original is HELD, not toggled — the button beside it is
+            // press-and-hold and the key has to mean the same thing. So it is
+            // the one shortcut that needs keyUp as well, and it is handled in
+            // its own monitor (installShowOriginalKeyMonitor) rather than here,
+            // where only keyDown arrives.
 
             // Stepping through the filmstrip. Repeats ARE allowed — holding the
             // key to run through a folder is the point of having it on a letter
@@ -5720,6 +6269,58 @@ struct DevelopView: View {
             NSEvent.removeMonitor(optionKeyMonitor)
         }
         optionKeyMonitor = nil
+    }
+
+    /// See Original, on a key that is HELD.
+    ///
+    /// Its own monitor, and not a preference: the main shortcut monitor takes
+    /// only `.keyDown`, and "hold to compare" needs the release too. The button
+    /// beside it has always been press-and-hold — a toggle would mean the
+    /// client can walk away with the original on screen and not know it — so
+    /// the key had to mean the same thing.
+    ///
+    /// Rebindable like the rest: it asks ShortcutStore rather than matching a
+    /// literal, so whatever the client sets in Edit ▸ Keyboard Shortcuts is
+    /// what is held here.
+    private func installShowOriginalKeyMonitor() {
+        guard showOriginalKeyMonitor == nil else {
+            return
+        }
+        showOriginalKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
+            guard NSApp.keyWindow?.title == DevelopWindowController.windowTitle else {
+                return event
+            }
+            // A field editor gets its letters, the rule KORAK 58 set for every
+            // input in this app.
+            guard !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false) else {
+                return event
+            }
+            // keyUp carries no modifier state worth matching against, so the
+            // release is recognised by its key alone — otherwise letting go of
+            // the modifier first would leave the original stuck on screen.
+            guard ShortcutStore.matches(event, .showOriginal)
+                    || (event.type == .keyUp && ShortcutStore.matchesKeyOnly(event, .showOriginal)) else {
+                return event
+            }
+            guard selectedURL != nil else {
+                return event
+            }
+            if event.isARepeat {
+                return nil
+            }
+            showOriginal = (event.type == .keyDown)
+            return nil
+        }
+    }
+
+    private func removeShowOriginalKeyMonitor() {
+        if let showOriginalKeyMonitor {
+            NSEvent.removeMonitor(showOriginalKeyMonitor)
+        }
+        showOriginalKeyMonitor = nil
+        // Never leave the comparison stuck on because the window closed
+        // mid-hold.
+        showOriginal = false
     }
 
     private func installSpaceKeyMonitor() {
@@ -6508,12 +7109,96 @@ struct DevelopView: View {
                 .disabled(settings.isNeutral)
                 .help("Put this photo back to the original.")
 
+                // Select People up here beside the rest, asked for in those
+                // terms: *„ispod reset dodaj jos jedno dugme kao quick action
+                // button select people"*. It is the same call the one in Tools
+                // makes — one action, two ways in, like Crop already has — so
+                // there is nothing to keep in step between them.
+                //
+                // The FlowLayout puts it directly under Reset at the panel
+                // widths this row wraps at, which is where it was asked for.
+                Button {
+                    selectPeopleAsLayer()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.crop.rectangle")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Select People")
+                    }
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .disabled(isFindingPeople || isRemoving || selectedURL == nil)
+                .opacity((isFindingPeople || isRemoving || selectedURL == nil) ? 0.4 : 1)
+                .help("Lift the people in this photo onto their own layer, with the background on a second one.")
+
                 // The way in to AI Clean Up, and now the ONLY way in — the
                 // block below is no longer a permanently visible titled line,
                 // it appears when this is pressed. Up here for the same reason
                 // Crop is: a tool you reach by pressing a named button in a row
                 // that never scrolls away.
                 aiCleanUpHeaderButton
+
+                // Flatten up here as well as in its section below, asked for
+                // in those terms: *„već ga ima dole ali dodaj i ovde gore"*.
+                // Same call, same state, same wording as the one in the panel
+                // — a second way in, like Crop and Select People already have,
+                // not a second implementation.
+                //
+                // ⚠️ Disabled rather than hidden when there is nothing to bake.
+                // Hiding it would make this row change length depending on the
+                // photo, and the buttons after it would move under the
+                // pointer; Reset up here already greys out the same way for
+                // the same reason. `hasUnbakedEdits` is what the panel's own
+                // section tests, so the two can never disagree about whether
+                // there is anything to flatten.
+                Button {
+                    flattenPhoto()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.stack.3d.down.forward")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(isFlattening
+                             ? "Flattening…"
+                             : ((selectedURL.map { FlattenedImageStore.isFlattened($0) } ?? false)
+                                ? "Flatten Again" : "Flatten Photo"))
+                    }
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .disabled(isFlattening || selectedURL == nil || !hasUnbakedEdits)
+                .opacity((isFlattening || selectedURL == nil || !hasUnbakedEdits) ? 0.4 : 1)
+                .help("Bake the grade, the masks and the AI Clean Up into the photo. Your original file is never touched.")
+
+                // ⚠️ Unflatten belongs beside Flatten, and leaving it out was a
+                // real defect — reported as *„kada flatujem sliku ne mogu više
+                // da je unflatujem"*.
+                //
+                // The mechanism was never broken: checked on the client's own
+                // machine, 11 flattened copies, 11 saved snapshots, every key
+                // matching its file, and the panel's own Unflatten showing
+                // correctly. What broke was where he was LOOKING. Flatten moved
+                // up here (KORAK 99) and its opposite did not, so the way in
+                // was in the header and the way back was at the bottom of a
+                // long scroll. A pair of actions has to live in one place.
+                //
+                // Shown only when there IS a flattened copy — unlike Flatten,
+                // which greys out instead. Flatten greys because its slot in
+                // the row is permanent; this one has no permanent slot and a
+                // dead button on most photos would be noise.
+                if selectedURL.map({ FlattenedImageStore.isFlattened($0) }) ?? false {
+                    Button {
+                        unflattenPhoto()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Unflatten")
+                        }
+                    }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                    .disabled(isFlattening)
+                    .opacity(isFlattening ? 0.4 : 1)
+                    .help("Go back to the original file and the settings from before the first flatten. Anything done since is discarded.")
+                }
 
                 // "Grid", not "Done", and named after where it goes rather
                 // than after finishing something: it closes LumenoLab and puts
@@ -6531,6 +7216,62 @@ struct DevelopView: View {
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
                 .help("Back to the grid.")
+            }
+
+            // Directly under the buttons, because that is where the client
+            // pressed and where he is looking: *„kada kliknem gore na quick
+            // action select people treba da se pojavi onaj loading bar baš
+            // ispod da zna klijent da radi"*.
+            //
+            // The Tools strip keeps its own copy. This is not a duplicate by
+            // accident — the two ways in are far apart on screen, and a bar
+            // that appears next to the OTHER button is a bar the client does
+            // not see. Both read the same `isFindingPeople`, so neither can
+            // say something the other does not.
+            //
+            // Indeterminate, for the reason written on the other one: Vision
+            // reports no progress, and an invented percentage is worse than
+            // an honest spinner.
+            if isFindingPeople {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Looking for people…")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(accentColor)
+                }
+            }
+
+            // ⚠️ Flattening is the longest wait in this window — it renders the
+            // WHOLE frame at full resolution and writes an uncompressed TIFF of
+            // it (see FlattenedImageStore: measured at 102 MB on the client's
+            // own 5176×3448 RAW). Without this the button greyed out and the
+            // window sat there, which is precisely the complaint KORAK 49 fixed
+            // once already for the flattened-preview window: *„obavezno loading
+            // bar"*.
+            //
+            // Indeterminate for the same honest reason as the people bar: a
+            // render and a file write report no progress, and a made-up
+            // percentage is worse than none.
+            //
+            // The caption is skipped when `exportStatusText` is already saying
+            // something — a batch bake from the grid sets that and shares this
+            // same `isFlattening`, and two lines saying the same thing read as
+            // a bug.
+            if isFlattening {
+                VStack(alignment: .leading, spacing: 4) {
+                    if exportStatusText == nil {
+                        Text("Flattening…")
+                            .font(.custom("Figtree", size: 11))
+                            .foregroundColor(AppColors.muted)
+                    }
+
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(accentColor)
+                }
             }
         }
         .padding(.horizontal, 14)
@@ -6766,6 +7507,15 @@ struct DevelopView: View {
                 settings.layers.append(people)
                 newLayerIDs = [background.id, people.id]
                 selectedLayerID = people.id
+
+                // Straight to Layers, every time, asked for as *„uvek kad se
+                // klikne select people i to zavrsi automatski baci na layers"*.
+                // This makes two layers and selects one of them; leaving the
+                // panel on Edit meant the client had to go and find the result
+                // of the thing he had just pressed. It runs from BOTH ways in
+                // (the header button and the one in Tools) because it sits at
+                // the end of the work, not on either button.
+                panelTab = .layers
                 newLayerNotice = "Two layers now: People and Background. The People layer is selected — drag it on the photo to move it, drag a corner to resize, or use the knob above it to rotate. Its own sliders change only them."
             }
         }
@@ -7165,6 +7915,24 @@ struct DevelopView: View {
     // thing it opens carry the same mark. There is no SF Symbol that says AI,
     // and a wand would say the same thing as the two Clean Up buttons it sits
     // above (see KORAK 28).
+    /// What the AI Clean Up button does, so the KEY and the BUTTON cannot
+    /// drift apart. Both call this; neither owns the behaviour.
+    private func toggleAICleanUp() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if isAIManipulationVisible {
+                aiManipulationExpanded = false
+                if isRemoveBrushActive {
+                    toggleRemoveBrush()
+                }
+            } else {
+                aiManipulationExpanded = true
+                if !isRemoveBrushActive {
+                    toggleRemoveBrush()
+                }
+            }
+        }
+    }
+
     private var aiCleanUpHeaderButton: some View {
         Button {
             // ONE press puts the brush in your hand. It used to only unfold the
@@ -7180,19 +7948,7 @@ struct DevelopView: View {
             // live in that block and act on paint that is ALREADY down, so
             // folding it away the moment painting stops would put them out of
             // reach at the one moment they are wanted.
-            withAnimation(.easeInOut(duration: 0.18)) {
-                if isAIManipulationVisible {
-                    aiManipulationExpanded = false
-                    if isRemoveBrushActive {
-                        toggleRemoveBrush()
-                    }
-                } else {
-                    aiManipulationExpanded = true
-                    if !isRemoveBrushActive {
-                        toggleRemoveBrush()
-                    }
-                }
-            }
+            toggleAICleanUp()
         } label: {
             HStack(spacing: 6) {
                 Text("AI")
@@ -7315,16 +8071,19 @@ struct DevelopView: View {
                                 localAdjustmentOverlay(settings.localAdjustments[index], frame: fullImageFrame(from: fitted))
                             } else if let activeSelection {
                                 selectionOverlay(activeSelection, frame: fullImageFrame(from: fitted))
-                            // A derived layer has no frame to draw: it is a
-                            // matte over the whole
-                            // photo, so an outline would be a rectangle
-                            // round the picture, and there is nothing to
-                            // drag — moving a matte moves a hole, not what
-                            // is under it. Pixel layers get the full frame.
+                            // Pixel layers get the full frame — outline,
+                            // corner handles, rotate knob — because they can
+                            // be moved, resized and turned.
+                            //
+                            // A derived layer gets an outline and NOTHING to
+                            // grab: it is a matte over the photo, and moving a
+                            // matte moves a hole, not what is under it. It
+                            // still has to LOOK selected, which is what
+                            // derivedLayerOutlineOverlay is for.
                             } else if let index = selectedLayerIndex, !settings.layers[index].isDerived {
                                 layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
                             } else if let index = selectedLayerIndex {
-                                derivedLayerMatteOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
+                                derivedLayerOutlineOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
                             }
                         }
                         .frame(width: proxy.size.width, height: proxy.size.height)
@@ -9353,45 +10112,107 @@ struct DevelopView: View {
     /// picture came back a colour it was not. Written down here because the
     /// mistake is cheap to repeat: see SKY_ARCHIVE/BRIEFSHOW_SKY_NOTES.md §8.
     @ViewBuilder
-    private func derivedLayerMatteOverlay(_ layer: ImageLayer, frame: CGRect) -> some View {
-        if let matte = matteOverlayImage(for: layer) {
-            Image(nsImage: matte)
-                .resizable()
+    /// What a selected derived (Background) layer looks like on the photo.
+    ///
+    /// ⚠️ This used to be a MAGENTA WASH over the whole region, and it was
+    /// reported for exactly the reason KORAK 93 already wrote down and this
+    /// overlay then went on to repeat: *„kada kliknem na background ne treba da
+    /// mi pokazuje paint mask over, samo selection kao za ljude"*. A Background
+    /// layer's own sliders — Exposure, Black & White, Blur — change the very
+    /// pixels the wash was covering, so the client was tinting a photograph he
+    /// could no longer see. An indicator saying WHERE something is has to get
+    /// out of the way the moment there is a result to look at.
+    ///
+    /// What is left says the same thing without painting over anything: the
+    /// layer's frame, drawn like the pixel layer's frame so a selected layer
+    /// looks selected either way, plus a thin outline along the matte's own
+    /// edge so it is clear WHICH region this is.
+    ///
+    /// ⚠️ Deliberately WITHOUT corner handles and without the rotate knob.
+    /// A derived layer is a region of the photo, not a piece sitting on it —
+    /// it cannot be moved or resized (see ImageLayer.maskData, and the panel
+    /// text that says so). Handles that do nothing when pulled would read as
+    /// broken, which is worse than not offering them.
+    private func derivedLayerOutlineOverlay(_ layer: ImageLayer, frame: CGRect) -> some View {
+        ZStack {
+            if let outline = layerOutlineImage(for: layer) {
+                Image(nsImage: outline)
+                    .resizable()
+                    .frame(width: frame.width, height: frame.height)
+                    .position(x: frame.midX, y: frame.midY)
+            }
+
+            // The layer's bounds. A derived layer covers the whole frame, so
+            // this is the picture's own edge — which is the truth about how
+            // far the layer reaches.
+            Rectangle()
+                .stroke(layerSelectionColor, lineWidth: 1.4)
                 .frame(width: frame.width, height: frame.height)
                 .position(x: frame.midX, y: frame.midY)
-                .allowsHitTesting(false)
         }
+        .allowsHitTesting(false)
     }
 
     /// Its own small context, like PhotoEditRenderer's extraction one. Not the editor's heavy render
     /// context: this draws a flat tint a handful of times per session, and
     /// dragging a pipeline built for 45MP renders into that would be waste.
+    /// ⚠️ Bare ON PURPOSE, unlike sharedExtractionContext next to the
+    /// extraction path. Nothing here is a photograph: this builds a flat
+    /// coloured line out of a matte, and it never lands in an export. Its
+    /// numbers were measured through a context exactly like this one — see
+    /// run-layer-outline-test.py, which uses the same bare context — so giving
+    /// it colour-space options would change the measured line for no gain.
     private static let overlayContext = CIContext()
 
-    /// The tinted matte, built once per layer and kept.
+    /// The matte's EDGE, built once per layer and kept.
     ///
     /// Built here rather than in the render pipeline: this is a thing the
     /// client looks at while choosing, not part of the photograph, and it must
     /// never end up in an export.
-    private func matteOverlayImage(for layer: ImageLayer) -> NSImage? {
-        if let cached = matteOverlayCache[layer.id] {
+    ///
+    /// The edge comes from a morphology gradient — dilate minus erode — which
+    /// on a grey matte leaves a bright band exactly on the boundary and black
+    /// everywhere else. That band is then turned into alpha, so what gets
+    /// drawn is a line round the region and NOTHING over its inside. The
+    /// filled tint this replaced is described on the overlay above.
+    private func layerOutlineImage(for layer: ImageLayer) -> NSImage? {
+        if let cached = layerOutlineCache[layer.id] {
             return cached
         }
         guard let data = layer.maskData, let mask = CIImage(data: data) else {
             return nil
         }
 
-        // Luminance to alpha: the stored matte is a grey PNG, white where the
-        // layer is, and SwiftUI masks by ALPHA, not by brightness — without
-        // this the whole rectangle would come out solid.
-        let alpha = mask.applyingFilter("CIMaskToAlpha")
+        // Scaled to the stored matte, not fixed: maskPNG caps the mask at
+        // 1024px, but a smaller photo stores a smaller one, and a band of a
+        // fixed pixel width would be hairline on one and a stripe on another.
+        let side = min(mask.extent.width, mask.extent.height)
+        let radius = max(1.5, side * 0.0022)
+        let band = mask.applyingFilter("CIMorphologyGradient", parameters: [
+            kCIInputRadiusKey: radius
+        ]).cropped(to: mask.extent)
+
+        // Luminance to alpha: the band is bright on black, and SwiftUI draws
+        // by ALPHA, not by brightness — without this the black would be
+        // painted too and the wash would be back, in another colour.
+        let alpha = band.applyingFilter("CIMaskToAlpha")
+
+        // ⚠️ The alpha is multiplied UP, not set. Measured with
+        // run-layer-outline-test.py before this factor existed: the strongest
+        // pixel anywhere on the line came out at 0.451, not the 0.9 the matrix
+        // asked for, because a hard edge lands BETWEEN pixels and each one on
+        // the boundary only gets part of the band. A line at 45% over a
+        // photograph is a line the client has to look for. Everything off the
+        // boundary is a true zero (same harness: worst alpha inside and
+        // outside the region both 0.000), so lifting the whole band cannot
+        // bring back a wash — there is nothing there to lift.
         let tinted = alpha.applyingFilter("CIColorMatrix", parameters: [
             "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 0),
             "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 0),
             "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0.34),
-            "inputBiasVector": CIVector(x: 0.95, y: 0.25, z: 0.55, w: 0)
-        ])
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 2.4),
+            "inputBiasVector": CIVector(x: 0.96, y: 0.96, z: 0.98, w: 0)
+        ]).applyingFilter("CIColorClamp")
 
         let extent = tinted.extent
         guard extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite,
@@ -9400,7 +10221,7 @@ struct DevelopView: View {
         }
 
         let image = NSImage(cgImage: cgImage, size: NSSize(width: extent.width, height: extent.height))
-        matteOverlayCache[layer.id] = image
+        layerOutlineCache[layer.id] = image
         return image
     }
 
@@ -9423,7 +10244,7 @@ struct DevelopView: View {
                     .gesture(
                         DragGesture()
                             .onChanged { value in moveLayer(by: value.translation, frame: frame) }
-                            .onEnded { _ in layerDragStart = nil }
+                            .onEnded { _ in endLayerDrag() }
                     )
 
                 // The stem, drawn from the top edge up to the knob.
@@ -9449,7 +10270,7 @@ struct DevelopView: View {
                             .onChanged { value in
                                 rotateLayer(towards: value.location, centre: centre)
                             }
-                            .onEnded { _ in layerDragStart = nil }
+                            .onEnded { _ in endLayerDrag() }
                     )
 
                 ForEach(LayerCorner.allCases, id: \.self) { corner in
@@ -9485,7 +10306,7 @@ struct DevelopView: View {
                     .onChanged { value in
                         resizeLayer(corner, by: unrotated(value.translation, by: angle), frame: frame)
                     }
-                    .onEnded { _ in layerDragStart = nil }
+                    .onEnded { _ in endLayerDrag() }
             )
     }
 
@@ -9531,6 +10352,13 @@ struct DevelopView: View {
         )
     }
 
+
+    /// Puts the layer down: the drag is over, so the full-resolution refine
+    /// that isDrawingStroke held back for the length of it can run now.
+    private func endLayerDrag() {
+        layerDragStart = nil
+        scheduleRefinedRender()
+    }
 
     private func moveLayer(by translation: CGSize, frame: CGRect) {
         guard let index = selectedLayerIndex else {
@@ -10652,7 +11480,7 @@ struct DevelopView: View {
 
             HStack(spacing: 6) {
                 ForEach(ColorBand.allCases) { band in
-                    colorBandSwatch(band)
+                    colorBandSwatch(band, mixer: settings.colorMixer)
                 }
             }
 
@@ -10666,13 +11494,19 @@ struct DevelopView: View {
         }
     }
 
-    private func colorBandSwatch(_ band: ColorBand) -> some View {
+    /// `mixer` is a parameter rather than always `settings.colorMixer` because
+    /// a selected LAYER has a mixer of its own now, and the row of swatches —
+    /// including the "this band has been moved" dot — has to describe whichever
+    /// one the panel is showing. The two panels share the picker (
+    /// `selectedColorBand`) on purpose: it is which colour you are looking at,
+    /// not an edit, and carrying the choice across reads as the same panel.
+    private func colorBandSwatch(_ band: ColorBand, mixer: ColorMixer) -> some View {
         let isSelected = selectedColorBand == band
         // A band that has been moved keeps a mark whichever one is selected,
         // so a look built on three colours does not hide two of them behind a
         // picker. Without it the panel would show one band's sliders and give
         // no sign at all that the others had been touched.
-        let isTouched = !settings.colorMixer[band].isNeutral
+        let isTouched = !mixer[band].isNeutral
 
         return Button {
             selectedColorBand = band
@@ -12242,7 +13076,114 @@ struct DevelopView: View {
             editSlider("Saturation", key: "layer.saturation", value: layerAdjustmentBinding(\.saturation), range: -1...1)
             editSlider("Vibrance", key: "layer.vibrance", value: layerAdjustmentBinding(\.vibrance), range: -1...1)
             editSlider("Sharpness", key: "layer.sharpness", value: layerAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
+            // Same rule the photo's panel uses: a radius with the amount at
+            // zero is a control that cannot do anything.
+            if selectedLayerAdjustments.sharpness > 0 {
+                editSlider("  Radius", key: "layer.sharpenRadius",
+                           value: layerAdjustmentBinding(\.sharpenRadius), range: 0.5...3) {
+                    String(format: "%.1f", $0)
+                }
+            }
+
+            // ⚠️ The rest of "Detail & Effects", in the photo panel's own
+            // order and with its own ranges — this is the half the client was
+            // missing: *„nemam iste opcije za edit kao celokupan edit"*. Same
+            // labels and same numbers on purpose, so a layer's Clarity of +40
+            // is the photo's Clarity of +40 and not a second dialect.
+            editSlider("Texture", key: "layer.texture", value: layerAdjustmentBinding(\.texture), range: -1...1)
+            editSlider("Clarity", key: "layer.clarity", value: layerAdjustmentBinding(\.clarity), range: -1...1)
+            editSlider("Dehaze", key: "layer.dehaze", value: layerAdjustmentBinding(\.dehaze), range: -1...1)
+            editSlider("Soft Glow", key: "layer.softGlow", value: layerAdjustmentBinding(\.softGlow), range: 0...1) { String(format: "%.0f", $0 * 100) }
+            editSlider("Vignette", key: "layer.vignette", value: layerAdjustmentBinding(\.vignette), range: -1...1)
+            if selectedLayerAdjustments.vignette != 0 {
+                editSlider("  Midpoint", key: "layer.vignetteMidpoint",
+                           value: layerAdjustmentBinding(\.vignetteMidpoint), range: 0...1) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                editSlider("  Feather", key: "layer.vignetteFeather",
+                           value: layerAdjustmentBinding(\.vignetteFeather), range: 0...1) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                editSlider("  Roundness", key: "layer.vignetteRoundness",
+                           value: layerAdjustmentBinding(\.vignetteRoundness), range: -1...1)
+            }
+
+            layerColorMixerSection
         }
+    }
+
+    /// The layer's own eight-band mixer — the same control the photo has, bound
+    /// to the layer instead. Built here rather than by parameterising
+    /// `colorMixerSection` because the two differ in more than their binding:
+    /// this one carries the layer's name in its title, so it is obvious which
+    /// of the two mixers is on screen.
+    private var layerColorMixerSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                sectionTitle("Color Mixer")
+
+                Spacer()
+
+                if !selectedLayerAdjustments.colorMixer.isNeutral {
+                    Button {
+                        guard let index = selectedLayerIndex else { return }
+                        settings.layers[index].adjustments.colorMixer = ColorMixer()
+                    } label: {
+                        Text("Reset")
+                            .font(.custom("Figtree", size: 11))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(AppColors.muted)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(AppColors.border, lineWidth: 1)
+                    )
+                    .help("Put all eight colours back to zero on this layer.")
+                }
+            }
+
+            HStack(spacing: 6) {
+                ForEach(ColorBand.allCases) { band in
+                    colorBandSwatch(band, mixer: selectedLayerAdjustments.colorMixer)
+                }
+            }
+
+            let band = selectedColorBand
+            editSlider("Hue", key: "layer.mixer.hue",
+                       value: layerColorMixerBinding(band, \.hue), range: -1...1)
+            editSlider("Saturation", key: "layer.mixer.saturation",
+                       value: layerColorMixerBinding(band, \.saturation), range: -1...1)
+            editSlider("Luminance", key: "layer.mixer.luminance",
+                       value: layerColorMixerBinding(band, \.luminance), range: -1...1)
+        }
+    }
+
+    /// The selected layer's adjustments, or a neutral set when there is no
+    /// layer selected. Read by the `if` conditions above, which run while the
+    /// panel is being built and cannot use `guard let`.
+    private var selectedLayerAdjustments: LocalAdjustmentSettings {
+        guard let index = selectedLayerIndex else {
+            return LocalAdjustmentSettings()
+        }
+        return settings.layers[index].adjustments
+    }
+
+    private func layerColorMixerBinding(_ band: ColorBand,
+                                        _ slider: WritableKeyPath<ColorMixerBand, Double>) -> Binding<Double> {
+        Binding(
+            get: { selectedLayerAdjustments.colorMixer[band][keyPath: slider] },
+            set: { newValue in
+                guard let index = selectedLayerIndex else {
+                    return
+                }
+                var updated = settings.layers[index].adjustments.colorMixer[band]
+                updated[keyPath: slider] = newValue
+                settings.layers[index].adjustments.colorMixer[band] = updated
+            }
+        )
     }
     /// A switch in the layer editor: on, off, and it says which it is.
     private func layerToggleButton(_ title: String, systemImage: String,
@@ -14258,6 +15199,18 @@ struct DevelopView: View {
             || !brushCursor.stroke.isEmpty
             || !activePatchDrawPoints.points.isEmpty
             || !activeSelectionDrawPoints.points.isEmpty
+            // Dragging, resizing or rotating a LAYER counts, for the same
+            // reason painting does: a full-resolution refine in the middle of
+            // it is work for a frame the client is already dragging away from.
+            // A drag that pauses for half a second — which is most careful
+            // placements — used to start one.
+            //
+            // ⚠️ Nothing is lost at the end: every gesture that clears
+            // layerDragStart calls scheduleRefinedRender() as it does so, so
+            // the sharp frame arrives when the layer is put down. Without that
+            // call this guard would leave the photo at preview resolution
+            // until some unrelated edit happened to kick a refine.
+            || layerDragStart != nil
     }
 
     private func scheduleRefinedRender() {
@@ -14698,6 +15651,71 @@ struct DevelopView: View {
 // range, which puts it at the centre for the -1...1 controls and at the far
 // left for the genuinely one-directional ones (Sharpness, sizes, opacities,
 // Quality), so both kinds get the right behaviour from the same view.
+/// Where a slider's thumb goes while it is being dragged.
+///
+/// ⚠️ Pulled out of the two slider views because it was WRONG in both, in the
+/// same way, and because it is the kind of thing that has to be measurable:
+/// see Tools/run-slider-drag-test.py.
+///
+/// The bug it fixes, reported as *„kada pomerim expose da ne skoči odma baš
+/// expose"*: both sliders set their value from the ABSOLUTE press position —
+/// `value = lowerBound + (location.x / usable) * span` — so pressing anywhere
+/// on the track teleported the thumb under the pointer. On Exposure that is
+/// brutal: the track is about 270pt for a ±3 EV span, so a press 60pt to the
+/// right of centre was an instant **+1.37 EV**, before the pointer had moved at
+/// all. Nothing was wrong with the exposure maths — measured on the client's
+/// own C4S_5744.NEF, +0.05 EV moves the picture by 0.6% — the slider was
+/// handing it a number he never asked for.
+///
+/// What it does now:
+///
+/// - **A press that lands ON the thumb does not move it.** The drag is
+///   measured from where it was grabbed, so a 3pt nudge is a 3pt nudge.
+/// - **A press on the empty track still jumps there**, which is what a track
+///   is for and what Lightroom does — but from then on that press behaves like
+///   a grab, so the rest of the drag is relative too.
+enum EditSliderDrag {
+    struct Grab {
+        var startValue: Double
+        var startX: CGFloat
+    }
+
+    /// The generous half-width, in points, within which a press counts as
+    /// having landed on the thumb. A little wider than the thumb itself: the
+    /// whole point is that grabbing it must be easy, and being one pixel out
+    /// should not cost a jump.
+    static let grabSlack: CGFloat = 4
+
+    static func begin(pressX: CGFloat, thumbX: CGFloat, thumbSize: CGFloat,
+                      usable: CGFloat, range: ClosedRange<Double>,
+                      value: Double) -> Grab {
+        let thumbCentre = thumbX + thumbSize / 2
+        if abs(pressX - thumbCentre) <= thumbSize / 2 + grabSlack {
+            return Grab(startValue: value, startX: pressX)
+        }
+        return Grab(startValue: valueAt(pressX, thumbSize: thumbSize, usable: usable, range: range),
+                    startX: pressX)
+    }
+
+    /// Absolute mapping — used only for the jump on a press that misses the
+    /// thumb, never while dragging.
+    static func valueAt(_ pressX: CGFloat, thumbSize: CGFloat,
+                        usable: CGFloat, range: ClosedRange<Double>) -> Double {
+        let span = range.upperBound - range.lowerBound
+        let x = min(max(pressX - thumbSize / 2, 0), usable)
+        return range.lowerBound + Double(x / usable) * span
+    }
+
+    /// Relative mapping — every event after the press, including the press
+    /// itself once `begin` has decided where it started from.
+    static func value(at x: CGFloat, grab: Grab, usable: CGFloat,
+                      range: ClosedRange<Double>) -> Double {
+        let span = range.upperBound - range.lowerBound
+        let moved = Double((x - grab.startX) / usable) * span
+        return min(max(grab.startValue + moved, range.lowerBound), range.upperBound)
+    }
+}
+
 private struct EditTrackSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -14714,6 +15732,10 @@ private struct EditTrackSlider: View {
     // a tick spacing that straddled it would put the zero marker between two
     // marks and make the track look mis-drawn.
     private let tickIntervals = 8
+
+    /// Where this drag started, or nil when no drag is in flight. See
+    /// EditSliderDrag for what it is for.
+    @State private var grab: EditSliderDrag.Grab?
 
     var body: some View {
         GeometryReader { proxy in
@@ -14796,10 +15818,15 @@ private struct EditTrackSlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
                         onEditingChanged(true)
-                        let x = min(max(drag.location.x - thumbSize / 2, 0), usable)
-                        value = range.lowerBound + Double(x / usable) * span
+                        let grab = self.grab ?? EditSliderDrag.begin(
+                            pressX: drag.startLocation.x, thumbX: thumbX,
+                            thumbSize: thumbSize, usable: usable, range: range, value: value)
+                        self.grab = grab
+                        value = EditSliderDrag.value(at: drag.location.x, grab: grab,
+                                                     usable: usable, range: range)
                     }
                     .onEnded { _ in
+                        grab = nil
                         onEditingChanged(false)
                     }
             )
@@ -14835,6 +15862,10 @@ private struct GradientTrackSlider: View {
     // sliders sit in one column with those, and two tick rhythms down one
     // panel would read as a mistake rather than as a distinction.
     private let tickIntervals = 8
+
+    /// Where this drag started, or nil when no drag is in flight. See
+    /// EditSliderDrag for what it is for.
+    @State private var grab: EditSliderDrag.Grab?
 
     var body: some View {
         GeometryReader { proxy in
@@ -14902,10 +15933,15 @@ private struct GradientTrackSlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
                         onEditingChanged(true)
-                        let x = min(max(drag.location.x - thumbSize / 2, 0), usable)
-                        value = range.lowerBound + Double(x / usable) * span
+                        let grab = self.grab ?? EditSliderDrag.begin(
+                            pressX: drag.startLocation.x, thumbX: usable * CGFloat(clamped),
+                            thumbSize: thumbSize, usable: usable, range: range, value: value)
+                        self.grab = grab
+                        value = EditSliderDrag.value(at: drag.location.x, grab: grab,
+                                                     usable: usable, range: range)
                     }
                     .onEnded { _ in
+                        grab = nil
                         onEditingChanged(false)
                     }
             )

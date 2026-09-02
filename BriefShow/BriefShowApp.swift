@@ -187,6 +187,29 @@ struct BriefShowApp: App {
                 Button("Keyboard Shortcuts…") {
                     ShortcutsWindowController.shared.open()
                 }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+
+                // ⚠️ Straight to defaults, without opening the window. It is
+                // the one thing a client wants from a menu when a rebinding
+                // has gone wrong — including a rebinding that took the key
+                // they would use to reach the window.
+                //
+                // No confirmation, because there is nothing to lose that is
+                // not one keystroke away from being set again, and every
+                // binding it clears is visible in the window it does not open.
+                Button("Reset Shortcuts to Defaults") {
+                    ShortcutStore.resetAll()
+                }
+
+                Divider()
+
+                // ⚠️ NO Undo/Redo here, and that is deliberate. Both live in
+                // local NSEvent monitors scoped by window title; a menu key
+                // equivalent for ⌘Z would be a SECOND claimant on the same
+                // press, racing the monitor, and the client's own rebinding
+                // would show in only one of the two. The rule this file
+                // already states for the shortcuts list applies to every
+                // editing command: the monitors own the keys.
             }
 
             // File ▸ Import…
@@ -217,9 +240,83 @@ struct BriefShowApp: App {
                     ImportWindowRequest.shared.pending = .folder(chosen)
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
+
+                // Open a folder the way any Mac app does. The same door the
+                // Finder drop and "Open With" already use — the delegate parks
+                // a URL on ExternalFolderOpen and ShowGrid collects it — so
+                // this needed no new plumbing and cannot drift from the drop.
+                Button("Open Folder…") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = true
+                    panel.canChooseFiles = false
+                    panel.allowsMultipleSelection = false
+                    panel.prompt = "Open"
+                    panel.message = "Choose a folder of photos to open."
+                    guard panel.runModal() == .OK, let chosen = panel.url else {
+                        return
+                    }
+                    ExternalFolderOpen.shared.pendingFolder = chosen
+                }
+                .keyboardShortcut("o", modifiers: [.command])
+
+                Divider()
+
+                // The camera window, by hand. It opens by itself when a camera
+                // is plugged in (KORAK 35), and this is for the camera that was
+                // ALREADY plugged in when the app launched — the one case that
+                // deliberately does not pop a window.
+                //
+                // Disabled with nothing connected rather than hidden: a File
+                // menu that changes shape depending on what is plugged in is a
+                // menu the client cannot learn.
+                Button("Import from Camera…") {
+                    guard let camera = CameraBrowser.shared.cameras.first else {
+                        return
+                    }
+                    ImportWindowRequest.shared.pending = .camera(camera)
+                }
+                .disabled(CameraBrowser.shared.cameras.isEmpty)
+
+                Divider()
+
+                // Where the app keeps what it makes, which is otherwise
+                // invisible: the flattened copies and the layer pixels. Asked
+                // about directly — "where are my originals, where is the rest"
+                // — and the honest answer is that the originals are in the
+                // client's own folder and NOTHING else of his is anywhere but
+                // here.
+                Button("Show App Files in Finder") {
+                    guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                              in: .userDomainMask).first else {
+                        return
+                    }
+                    let directory = base.appendingPathComponent("BriefShow", isDirectory: true)
+                    try? FileManager.default.createDirectory(at: directory,
+                                                             withIntermediateDirectories: true)
+                    NSWorkspace.shared.activateFileViewerSelecting([directory])
+                }
+            }
+
+            // Help ▸ the two things a client actually looks for there.
+            CommandGroup(replacing: .help) {
+                Button("BriefShow Help") {
+                    if let url = URL(string: "https://github.com/\(Self.repositoryPath)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+
+                Button("Check for Updates…") {
+                    if let url = URL(string: "https://github.com/\(Self.repositoryPath)/releases/latest") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
             }
         }
     }
+
+    /// Written once. Both Help items point at the same repository, and a second
+    /// hand-typed copy is a second thing to get wrong.
+    private static let repositoryPath = "RocketsBrief/rocketsbrief-briefshow-app"
 }
 
 /// The Keyboard Shortcuts window.

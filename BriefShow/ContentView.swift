@@ -11988,62 +11988,49 @@ struct DisclaimerHoverCard: View {
     }
 }
 
-struct ShowGridShortcutsHoverCard: View {
+/// What hovering the BriefShow wordmark says: the name, one line, and the
+/// version. Nothing else.
+///
+/// ⚠️ It has been cut twice, and both cuts were the client's. First it listed
+/// keyboard shortcuts — removed, because Edit ▸ Keyboard Shortcuts already
+/// lists them AND lets them be changed. Then it explained the three parts of
+/// the suite and the two AI models — removed too: *„samo neka piše BriefShow a
+/// ispod One Photography Suite.. i to je to"*. A hover card is read in a second
+/// on the way to something else; it is not the place for the product's story.
+/// Do not grow it back.
+struct BriefShowAboutHoverCard: View {
     @ObservedObject private var themeManager = ThemeManager.shared
 
-    private struct ShortcutRow: Identifiable {
-        let id = UUID()
-        let key: String
-        let description: String
+    /// Read from the bundle, never typed here. A version written into the UI by
+    /// hand is a version that disagrees with the build the moment one of the
+    /// two is changed and the other is forgotten — which is exactly how
+    /// CFBundleVersion sat at 17 through every build (KORAK 74). This is
+    /// MARKETING_VERSION, so it says the same thing as the release tag.
+    private var version: String {
+        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return short.map { "v\($0)" } ?? ""
     }
 
-    private let rows: [ShortcutRow] = [
-        ShortcutRow(key: "X", description: "Label the selected photo(s)"),
-        ShortcutRow(key: "1..5", description: "Set that many stars on the selected photo(s)"),
-        ShortcutRow(key: "Space", description: "Preview the selected photo(s) — up to 5 at once"),
-        ShortcutRow(key: "C", description: "Exit the preview"),
-        ShortcutRow(key: "V", description: "Clear every label and star rating"),
-    ]
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Keyboard shortcuts")
-                .font(.custom("Figtree", size: 14).weight(.medium))
+        VStack(alignment: .leading, spacing: 4) {
+            Text("BriefShow")
+                .font(.custom("Figtree", size: 15).weight(.semibold))
                 .foregroundColor(AppColors.ink)
 
-            VStack(alignment: .leading, spacing: 7) {
-                ForEach(rows) { row in
-                    HStack(spacing: 10) {
-                        Text(row.key)
-                            .font(.custom("Figtree", size: 11).weight(.bold))
-                            .foregroundColor(AppColors.ink)
-                            .frame(minWidth: 36)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(AppColors.panel)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(AppColors.border, lineWidth: 1)
-                            )
+            Text("One Photography Suite")
+                .font(.custom("Figtree", size: 11).weight(.regular))
+                .foregroundColor(AppColors.muted)
 
-                        Text(row.description)
-                            .font(.custom("Figtree", size: 11).weight(.regular))
-                            .foregroundColor(AppColors.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
+            if !version.isEmpty {
+                Text(version)
+                    .font(.custom("Figtree", size: 10.5).weight(.semibold))
+                    .foregroundColor(AppColors.hoverInk)
+                    .padding(.top, 2)
             }
-
-            Text("Select one or more photos first, then press a key.")
-                .font(.custom("Figtree", size: 10.5).weight(.semibold))
-                .foregroundColor(AppColors.hoverInk)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        .frame(width: 300, alignment: .leading)
+        .frame(width: 220, alignment: .leading)
         .background(AppColors.background)
         .overlay(
             RoundedRectangle(cornerRadius: 26)
@@ -21410,7 +21397,7 @@ struct PhotoShowSheet: View {
                         // was the old fixed 260 written down a SECOND time, by
                         // hand, and the moment the sidebar became draggable it
                         // would have been wrong at every width but one.
-                        ShowGridShortcutsHoverCard()
+                        BriefShowAboutHoverCard()
                             .padding(.leading, CGFloat(effectiveSidebarWidth) + 24)
                             .padding(.top, 46)
 
@@ -24991,6 +24978,24 @@ private struct ShowHeaderButtonLabel: View {
             .animation(.linear(duration: 0.1), value: isHovered)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
+            // ⚠️ AFTER the padding, and that position is the whole fix.
+            //
+            // Reported as *„moram da pritisnem nekoliko puta na crop da bi
+            // otvorio… bitno je da svako dugme kad se klikne odma odreaguje"*.
+            // Without a content shape a Button hits only where its LABEL
+            // actually draws — the glyphs and the text — so the 14pt of
+            // padding around every header button, which is most of what looks
+            // like the button, was dead. A click that lands there does
+            // nothing, and the client presses again.
+            //
+            // This app has diagnosed and fixed this exact bug three times
+            // already, on maskAddButton, EditToolButtonStyle and
+            // AspectRatioButtonStyle, and each time on one button. This is the
+            // SHARED header style — 37 call sites, Crop and Reset and Grid and
+            // the rest of the row among them — and it never got it. Placed
+            // after the padding so the shape covers the padded rectangle
+            // rather than the text; placed before it, it would fix nothing.
+            .contentShape(Rectangle())
             // Border added 30.08.2026, on the note that these read as bare text
             // rather than as buttons — Slideshow, Develop, Add Photos, Select
             // All, Deselect, Export All, Done and the rest. This is the shared

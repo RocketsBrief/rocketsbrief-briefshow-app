@@ -12,7 +12,35 @@ import SwiftUI
 import AppKit
 
 struct CameraImportView: View {
-    let camera: ConnectedCamera
+    /// A connected camera, or a folder — an SD card in a reader, or anywhere
+    /// the client pointed File ▸ Import… at. See ImportSource.
+    let source: ImportSource
+
+    /// Where the photos land, when the client has not chosen anywhere else.
+    ///
+    /// `~/Documents/BriefShow NEF`, created if it is not there. Asked for on
+    /// 2.09.: imports were landing wherever ShowGrid happened to be pointed,
+    /// which meant a card could go into whatever folder was last browsed.
+    ///
+    /// This is a DEFAULT, not a rule — the Choose… button beside it still
+    /// picks anywhere, and the choice sticks for the session.
+    static var defaultDestination: URL? {
+        guard let documents = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let folder = documents.appendingPathComponent("BriefShow NEF", isDirectory: true)
+        // Created here rather than at import time so the path shown in the
+        // panel is a folder that exists — a destination the client can go and
+        // look at before pressing Import, not a promise.
+        //
+        // A failure is not reported: the folder chooser is right there, and a
+        // sandbox that refuses this would refuse it silently anyway. The
+        // directory is created again, with the same call, before anything is
+        // written (see CameraImportSession.startImport).
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
 
     /// Where the photos land. Seeded with whatever folder ShowGrid currently
     /// has open, because that is almost always where they are wanted — the
@@ -27,6 +55,11 @@ struct CameraImportView: View {
     let onImported: (URL) -> Void
     let onClose: () -> Void
 
+    /// Re-opens this window against a different source. A new source means a
+    /// new session, and a session is built in `init` — so the presenter swaps
+    /// the whole sheet rather than this view mutating underneath itself.
+    let onSourceChosen: (ImportSource) -> Void
+
     @StateObject private var session: CameraImportSession
     @ObservedObject private var themeManager = ThemeManager.shared
 
@@ -36,18 +69,53 @@ struct CameraImportView: View {
     @State private var thumbnailSize: CGFloat = 132
 
     init(
-        camera: ConnectedCamera,
+        source: ImportSource,
         initialDestination: URL?,
         onImported: @escaping (URL) -> Void,
-        onClose: @escaping () -> Void
+        onClose: @escaping () -> Void,
+        onSourceChosen: @escaping (ImportSource) -> Void
     ) {
-        self.camera = camera
+        self.source = source
+        self.onSourceChosen = onSourceChosen
         self.initialDestination = initialDestination
         self.onImported = onImported
         self.onClose = onClose
-        _session = StateObject(wrappedValue: CameraImportSession(camera: camera))
-        _destination = State(initialValue: initialDestination ?? FileManager.default
-            .urls(for: .picturesDirectory, in: .userDomainMask).first)
+        _session = StateObject(wrappedValue: CameraImportSession(source: source))
+        // Pictures was the old fallback and it is gone: the client asked for one
+        // predictable place, and "wherever the system calls Pictures" is not
+        // one the shoot can be found in later.
+        _destination = State(initialValue: initialDestination ?? Self.defaultDestination)
+    }
+
+    /// Points this window at a folder — a mounted SD card, or any folder.
+    ///
+    /// Opens where the volumes are, because a card reader is what this is for
+    /// most of the time and /Volumes is where it appears.
+    private func chooseFolderSource() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use as Source"
+        panel.message = "Choose the card or folder to import from."
+        panel.directoryURL = URL(fileURLWithPath: "/Volumes")
+
+        guard panel.runModal() == .OK, let chosen = panel.url else {
+            return
+        }
+        onSourceChosen(.folder(chosen))
+    }
+
+    private static func sheetSide(
+        ideal: CGFloat,
+        floor: CGFloat,
+        margin: CGFloat,
+        axis: KeyPath<CGSize, CGFloat>
+    ) -> CGFloat {
+        guard let host = ShowGridWindowController.shared.contentSize else {
+            return ideal
+        }
+        return min(ideal, max(floor, host[keyPath: axis] - margin))
     }
 
     var body: some View {
@@ -72,7 +140,21 @@ struct CameraImportView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 900, idealWidth: 1180, minHeight: 560, idealHeight: 740)
+        // Sized to fit INSIDE the ShowGrid window, not to a fixed minimum.
+        //
+        // This was `minWidth: 900, idealWidth: 1180`, and the window's own
+        // minimum is 700x480 — so on any window narrower than 900 the sheet was
+        // simply wider than the thing presenting it, and hung out over the
+        // desktop past its left edge. That is what the client photographed on
+        // 2.09.: the import panel running off the side of the app.
+        //
+        // A sheet inherits NO geometry from its presenter, so the window has to
+        // be asked directly. The 48pt margin keeps the sheet visibly inside its
+        // window rather than flush to the pixel. The 560/380 floor only comes
+        // into play on a window smaller than the app allows, and the ideal
+        // sizes are the ones this layout was designed at.
+        .frame(width: Self.sheetSide(ideal: 1180, floor: 560, margin: 48, axis: \.width),
+               height: Self.sheetSide(ideal: 740, floor: 380, margin: 48, axis: \.height))
         .background(AppColors.background)
         // The session holds the camera open for as long as this view is on
         // screen. Closing it here rather than only on the Done button is what
@@ -85,11 +167,11 @@ struct CameraImportView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image(systemName: "camera")
+            Image(systemName: source.camera == nil ? "sdcard" : "camera")
                 .font(.system(size: 15, weight: .regular))
                 .foregroundColor(AppColors.inkSecondary)
 
-            Text("IMPORT FROM \(camera.name.uppercased())")
+            Text("IMPORT FROM \(source.displayName.uppercased())")
                 .font(.custom("Figtree", size: 12).weight(.bold))
                 .tracking(1.1)
                 .foregroundColor(AppColors.ink)
@@ -110,11 +192,12 @@ struct CameraImportView: View {
             panelTitle("SOURCE")
 
             HStack(spacing: 8) {
-                Image(systemName: "camera.fill")
+                Image(systemName: source.camera == nil ? "sdcard.fill" : "camera.fill")
                     .font(.system(size: 11))
-                Text(camera.name)
+                Text(source.displayName)
                     .font(.custom("Figtree", size: 12).weight(.medium))
                     .lineLimit(1)
+                    .truncationMode(.middle)
             }
             .foregroundColor(AppColors.ink)
             .padding(.horizontal, 10)
@@ -124,6 +207,17 @@ struct CameraImportView: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(AppColors.panelAlt))
             .padding(.horizontal, 12)
+
+            // Lets the client point somewhere else without closing the window —
+            // the reason File ▸ Import… is usable at all when nothing is
+            // plugged in, and the way an SD card in a reader gets imported,
+            // since a mounted card is a folder rather than a camera.
+            Button("Choose Source…") {
+                chooseFolderSource()
+            }
+            .buttonStyle(BrutalButtonStyle())
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
 
             Text(statusLine)
                 .font(.custom("Figtree", size: 11))
@@ -190,7 +284,7 @@ struct CameraImportView: View {
                     .multilineTextAlignment(.center)
                     .foregroundColor(AppColors.inkSecondary)
                     .frame(maxWidth: 380)
-            } else {
+            } else if session.phase == .connecting || session.phase == .listing {
                 ProgressView()
                     .controlSize(.small)
                 Text("Reading the card…")
@@ -204,6 +298,28 @@ struct CameraImportView: View {
                     .multilineTextAlignment(.center)
                     .foregroundColor(AppColors.muted.opacity(0.8))
                     .frame(maxWidth: 320)
+            } else {
+                // Reading is FINISHED and there is nothing on the card.
+                //
+                // This branch is new, and it exists because the old code drew
+                // the spinner and "Reading the card…" whenever the list was
+                // empty, whatever the phase. On 1.09. that meant the client
+                // watched a spinner that had already stopped meaning anything:
+                // the panel beside it said "0 files on the card" — the .ready
+                // wording — while the middle of the window still claimed to be
+                // reading. A window that says two different things is worse
+                // than one that says the disappointing one.
+                Image(systemName: "camera.badge.ellipsis")
+                    .font(.system(size: 22))
+                    .foregroundColor(AppColors.muted)
+                Text("The camera reported an empty card.")
+                    .font(.custom("Figtree", size: 12))
+                    .foregroundColor(AppColors.inkSecondary)
+                Text("Finished reading, and nothing came back. Check that the card is in the camera and that its USB mode is MTP/PTP — and if Image Capture cannot see the card either, the problem is the camera or the cable rather than BriefShow.")
+                    .font(.custom("Figtree", size: 11))
+                    .multilineTextAlignment(.center)
+                    .foregroundColor(AppColors.muted.opacity(0.8))
+                    .frame(maxWidth: 360)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -376,7 +492,7 @@ struct CameraImportView: View {
         panel.allowsMultipleSelection = false
         panel.directoryURL = destination
         panel.prompt = "Import Here"
-        panel.message = "Choose where to copy the photos from \(camera.name)."
+        panel.message = "Choose where to copy the photos from \(source.displayName)."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         destination = url
     }

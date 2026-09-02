@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	    This file exists for ONE key: CFBundleDocumentTypes.
+
+	    GENERATE_INFOPLIST_FILE is still YES, and Xcode merges everything it
+	    generates (version, name, principal class, the INFOPLIST_KEY_* build
+	    settings) on top of what is here. So this file holds only what the
+	    generator cannot express — there is no INFOPLIST_KEY_ setting for a
+	    document type, which is why declaring one needs a real file at all.
+
+	    Referenced by path from INFOPLIST_FILE and not added to the Xcode
+	    navigator, matching how BriefShow.entitlements beside it is referenced.
+	-->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<!--
+			    Without this, a folder cannot be dropped on the BriefShow
+			    icon at all: the app declared that it opens NOTHING, so
+			    Finder refused the drop and nothing happened. That was the
+			    whole of the report — not a bug in handling the drop, but
+			    never having claimed to accept one.
+			-->
+			<key>CFBundleTypeName</key>
+			<string>Folder</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+			<!-- Viewer, not Editor: BriefShow shows what is in the folder. -->
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<!--
+			    Alternate, emphatically not Owner or Default. This app must
+			    never become the thing that opens a folder when someone
+			    double-clicks one in Finder — it only needs to be a legal
+			    drop target for its own icon and to appear under "Open With".
+			-->
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+	</array>
+	<!--
+	    Open the folder where it actually is, rather than being handed a copy
+	    in a temporary location. For a photo browser a copy would be useless:
+	    every edit, label and rating would be written against a path that
+	    disappears.
+	-->
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+</dict>
+</plist>

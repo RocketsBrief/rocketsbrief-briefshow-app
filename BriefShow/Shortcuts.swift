@@ -109,6 +109,11 @@ struct KeyCombo: Codable, Equatable, Hashable {
         case " ": return "Space"
         case "=": return "="
         case "-": return "−"
+        // Spelled out rather than shown as the bare glyph: a lone dot or comma
+        // inside a keycap reads as a speck of dirt on the screen, which is not
+        // a thing to do to the one list whose whole job is being readable.
+        case ".": return "Period ."
+        case ",": return "Comma ,"
         default: return character.uppercased()
         }
     }
@@ -155,10 +160,13 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case selectAllPhotos
     case zoomIn, zoomOut, zoomToFit
     case decreaseToolSize, increaseToolSize
+    case toggleCrop
+    case rejectPhoto
 
     // ShowGrid
     case gridSelectAll, gridCopy, gridCut, gridPaste
     case gridToggleLabel, gridClearLabels, gridPreview
+    case gridRejectPhoto, gridCycleRating
 
     var id: String { rawValue }
 
@@ -176,7 +184,8 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     var group: Group {
         switch self {
         case .gridSelectAll, .gridCopy, .gridCut, .gridPaste,
-             .gridToggleLabel, .gridClearLabels, .gridPreview:
+             .gridToggleLabel, .gridClearLabels, .gridPreview,
+             .gridRejectPhoto, .gridCycleRating:
             return .showGrid
         default:
             return .lumenoLab
@@ -198,6 +207,8 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .zoomToFit: return "Zoom to Fit"
         case .decreaseToolSize: return "Smaller Brush / Tool"
         case .increaseToolSize: return "Larger Brush / Tool"
+        case .toggleCrop: return "Crop"
+        case .rejectPhoto: return "Reject Photo"
         case .gridSelectAll: return "Select All Photos"
         case .gridCopy: return "Copy"
         case .gridCut: return "Cut"
@@ -205,6 +216,8 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .gridToggleLabel: return "Toggle Label"
         case .gridClearLabels: return "Clear All Labels & Stars"
         case .gridPreview: return "Preview Selected"
+        case .gridRejectPhoto: return "Reject Photo"
+        case .gridCycleRating: return "Add a Star (5 wraps to none)"
         }
     }
 
@@ -225,11 +238,35 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .zoomToFit: return .key("0", command: true)
         case .decreaseToolSize: return .key("[")
         case .increaseToolSize: return .key("]")
+        // R, because that is what Lightroom uses for the crop tool and this
+        // client works in Lightroom alongside this app all day. Free in the
+        // LumenoLab group, and the ShowGrid group is a separate namespace —
+        // see the doc comment on this enum.
+        case .toggleCrop: return .key("r")
+        // The same X as ShowGrid's Reject, and deliberately a SEPARATE action
+        // rather than the grid one reused: the two windows have their own key
+        // monitors and their own group, so one binding could not be scoped to
+        // both, and a client who moves Reject in one window has no reason to
+        // have it move in the other. Free in this group — cut is ⌘X.
+        case .rejectPhoto: return .key("x")
         case .gridSelectAll: return .key("a", command: true)
         case .gridCopy: return .key("c", command: true)
         case .gridCut: return .key("x", command: true)
         case .gridPaste: return .key("v", command: true)
-        case .gridToggleLabel: return .key("x")
+        // X is Reject, because that is what X does in Lightroom and this
+        // client reviews shoots in both apps. It USED to be Toggle Label, and
+        // that moved to "." rather than being dropped.
+        //
+        // ⚠️ A client who had explicitly rebound Toggle Label TO "x" keeps that
+        // override — the store only holds what was actually changed — and then
+        // two actions in this group answer to X. The monitor checks Reject
+        // first, so X rejects and the old override is dead; Edit ▸ Keyboard
+        // Shortcuts shows the clash and either one can be moved.
+        case .gridToggleLabel: return .key(".")
+        case .gridRejectPhoto: return .key("x")
+        // Comma walks the rating up one star per press and wraps 5 back to
+        // none. The 1–5 keys still SET a rating outright and are unchanged.
+        case .gridCycleRating: return .key(",")
         case .gridClearLabels: return .key("v")
         case .gridPreview: return .code(49)
         }

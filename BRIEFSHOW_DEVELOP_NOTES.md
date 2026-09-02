@@ -297,6 +297,44 @@ list) i `Tools/linstat.swift` (raspodela šuma u linearnom prostoru).
 kako je merenje u sRGB-u dvaput dalo pogrešan odgovor koji je izgledao kao
 merenje.
 
+### ⚠️ PRVO SADA — devet prijava od 1.09. uveče
+
+Klijent je prijavio devet stvari: kamera javlja „0 files", traka napretka izlazi
+iz panela, folder se ne može pustiti na ikonicu, levi panel se ne razvlači,
+sinhronizovan 4:3 se ne zadrži i crop lagovi, nema odbačenih fotografija, SD na
+Intelu, meka slika u ShowGrid lupi, i teško dostupno Crop dugme.
+
+**Plan je na dnu dokumenta: „PLAN — devet prijava od 1. septembra uveče".**
+Tri talasa, sa uzrocima koji su već nađeni u kodu. Nebo ide POSLE ovoga.
+
+**Talas A (KORAK 68) i B1 (KORAK 69) su napisani i prevode se, ali NISU viđeni
+na ekranu.** B1-ova Codable migracija JESTE izmerena na klijentovih 25 pravih
+zapisa — v. `Tools/run-editsettings-decode-test.py`, koji od sada treba pokrenuti
+posle SVAKE izmene `PhotoEditSettings`.
+
+**B2 (KORAK 70) takođe napisan.** Uzrok NIJE bio ono što je plan pretpostavio —
+v. taj korak pre nego što se dira bilo šta oko crop-a.
+
+**B3 (KORAK 71) takođe napisan** — odbačene fotografije, i `X`/`.`/`,` po
+klijentovom rasporedu. **B4 (KORAK 72) takođe napisan** — folder na ikonicu.
+
+Time je ceo talas B napisan. **Ostaje talas C: kamera (C1) i SD na Intelu (C2).**
+**C1 (KORAK 73) napisan dokle ide bez kamere** — alat `Tools/camtest.swift` čeka
+da se kamera priključi. **KORAK 74** — `CFBundleVersion` je bio 17 u svakom
+build-u, zbog čega nova ikonica ne bi bila viđena posle zamene app-a.
+
+**C2 je u toku.** Odlučeno 2.09: težine idu na **GitHub Releases**, jedan fajl.
+Izmereno: SD15-Inpainting je 1,99 GB sirovo, **1,84 GB kao zip i 1,85 GB kao
+Apple Archive** — dakle STAJE ispod GitHub-ovog limita od 2 GiB, bez deljenja.
+⚠️ Time pada ono što je ranije pisalo u ovom dokumentu („2,14 GB, ne može ni kao
+zaseban asset") — bilo je pogrešno, mereno je sad.
+Preuzimanje još NIJE napisano; `installedDirectory` se i dalje samo čita.
+
+**⚠️ PRVO ZA SLEDEĆI PUT: „SLEDEĆE — spisak od 2. septembra uveče" na DNU
+dokumenta.** Pet stavki, klijentovim redom. Prva je da **rotacija crop-a ne
+radi** — isporučena je u KORAKU 77 i specifikacija je bila pogrešno shvaćena na
+dva načina. Nebo ide POSLE svega toga.
+
 ### ⚠️ POLA PUŠTENO — jedan email, jedan kompjuter (KORAK 56)
 
 **Baza je gotova.** `Tools/seats.sql` je pokrenut 1.09. u RocketsBrief projektu
@@ -8303,3 +8341,1215 @@ Ugao ima **detent od 5°**, da ravno ostane ravno.
 
 Maska neba JESTE viđena, na pravoj fotografiji, pre i posle. **Nije viđeno:**
 ručke i rotacija na ekranu, i da Reset sad zaista skida nebo.
+
+## PLAN — devet prijava od 1. septembra uveče (napravljen 1.09, NIJE počelo)
+
+Klijent je prijavio devet stvari odjednom. Ovo je plan, ne izveštaj — ništa od
+ovoga još nije popravljeno. Svaka tačka nosi **šta je izmereno u kodu** odvojeno
+od **šta je pretpostavka**, jer se u ovom dokumentu ta dva već jednom pomešala i
+koštalo je tri merenja (KORAK 66).
+
+**⚠️ Ništa u ovom planu ne dira zaključane odeljke** — rezoluciju u LumenoLab-u,
+AI modele i njihove brojeve, ni `blur`/`grow` u `DevelopInpaint.swift`. Tačka 4
+je najbliža toj ivici i tamo je posebno zapisano zašto je NE dira.
+
+### Redosled — tri talasa
+
+Talasi su poređani po odnosu vrednosti prema riziku, ne po redosledu prijave.
+Talas A se vidi odmah i ne može ništa da obori; talas C traži merenje na
+klijentovoj mašini i može da ne ispadne.
+
+---
+
+### TALAS A — vidi se odmah, mali rizik
+
+#### A1. Traka napretka izlazi iz desnog panela u sliku
+
+**Izmereno:** `eraseProgressBar` (`Develop.swift:5383`) crta se na dva mesta —
+`panelHeader:6565` i AI kartica:`10721`. Traka je `GeometryReader` sa
+`.frame(height: 6)`; visina je vezana, **širina nije** — `GeometryReader` uzima
+ponuđenu širinu, a putujući segment se pomera `offset`-om do
+`proxy.size.width - segment`. Ako roditelj ponudi širinu veću od panela, segment
+odlazi preko ivice, i ništa ga ne seče.
+
+**Popravka:** vezati širinu na panel (`.frame(maxWidth: .infinity)` na traci) i
+staviti `.clipped()` na `ZStack` — clip je pojas i tregeri, da nijedan budući
+raspored ne može opet da je pusti u sliku.
+
+**Prvo reprodukovati u pokrenutoj app-i** i uslikati, jer za ovu prijavu nema
+slike — treba znati DA LI curi iz zaglavlja panela ili iz AI kartice, pošto su
+dva različita roditelja.
+
+Cena: mala.
+
+#### A2. Levi panel sa folderima se ne razvlači
+
+**Izmereno:** `ContentView.swift:21255` — `.frame(width: 260)`, tvrdo. Nema
+razdelnika, nema `@AppStorage`. Na klijentovoj slici (18.38) posledica se vidi:
+imena foldera su „325 Pl…", „Al…", „Re…", „Se…", „St…" — pet redova zaredom
+odsečenih na dva-tri znaka.
+
+**Popravka:** širina u `@AppStorage`, plus razdelnik koji se vuče. **Ne pisati
+novi** — LumenoLab već ima razvlačenje i ono je u KORAKU 46 popravljeno da ne
+drhti; uzeti isti obrazac.
+
+**⚠️ Mina:** `ContentView.swift:21307` ima `.padding(.leading, 284)` sa
+komentarom „sidebar's width (260) plus its divider". To je 260 upisano drugi put,
+rukom. Kad širina postane promenljiva, ovo mora da je prati ili će kartica sa
+prečicama da odleti preko drveta foldera.
+
+Cena: mala.
+
+#### A3. Crop dugme se teško nalazi
+
+**Izmereno:** `cropRotateSection:9603` — dugme je ikonica bez natpisa
+(`Image(systemName: "crop")`), treća u redu, unutar sekcije „Crop & Rotate" u
+desnom panelu. Do nje se **skroluje**. U Lightroom-u je crop u stalnoj traci
+odmah ispod histograma i nikad ne odlazi sa ekrana.
+
+**Popravka:** Crop dobija mesto u gornjoj traci panela, pored Before/After i
+Reset — tamo gde traka već stoji uvek. Sekcijsko dugme OSTAJE (isto stanje,
+`isCropping`), ne seli se: klijent ga je već naučio gde je.
+
+Prečica: `R`, kao u Lightroom-u, kroz `Shortcuts.swift` da bude podesiva.
+
+Cena: mala.
+
+#### A4. Slika u ShowGrid-u je mekša nego u Lightroom-u
+
+**Izmereno, i ovo je ceo uzrok:** `ContentView.swift:23171` —
+`makeEditedShowGridThumbnail(from: url, maxPixelSize: 2000)`. Uvećan prikaz u
+ShowGrid-u dekodira se na **2000 px po dužoj strani**. Na Retina ekranu lupa
+široka ~1500 pt je **3000 fizičkih piksela**. Dakle slika se razvlači 1,5× —
+tačno ono što se na slici 19.11 vidi kao mekoća.
+
+Drugi, manji izvor: dok se 2000 px ne učita, `loupeImageView:22408` pokazuje
+`gridThumbnails[url]` — a to je **420 px** (`makeEditedShowGridThumbnail`
+difolt, `Develop.swift:1499`). Prvi kadar posle klika je zato jako mek.
+
+**Zašto se LumenoLab ne poredi loše (slika 19.12):** tamo je zaključano pravilo o
+nativnoj rezoluciji i ono radi. Ovo je isključivo ShowGrid-ova lupa.
+
+**Popravka:** dekodirati na stvarnu veličinu prikaza — širina lupe u tačkama ×
+`backingScaleFactor`, ograničeno nativnom rezolucijom fajla. Isti potez kao
+KORAK 49: **dekodirati umanjeno, ne skalirati posle.**
+
+**⚠️ Ovo NE dira zaključani odeljak.** Pravilo kaže da sličice u filmstrip-u i
+ShowGrid mreži SMEJU biti male — i ostaju 420 px. Lupa nije sličica.
+
+**Meriti:** ista fotografija, ista veličina prozora, pre i posle, uz Lightroom
+pored — jer je klijent tako i prijavio.
+
+Cena: mala. Pazi na memoriju kad je više fotki otvoreno u lupi odjednom.
+
+---
+
+### TALAS B — ponašanje, srednja cena
+
+#### B1. Sinhronizovan 4:3 se ne zadrži kad se uđe u fotografiju
+
+**Izmereno, i piše u samom kodu:** `Develop.swift:351` —
+
+> „Quick aspect-ratio presets … **not persisted anywhere** (EditCropRect itself
+> has no notion of 'locked to a ratio')"
+
+`selectedCropAspectRatio` je `@State` (`:4971`) i vraća se na `.free` na
+`:13395`. Uz to, `mergedSyncSettings` u kategoriji `.cropRotate` (`:13116`)
+prenosi `rotationQuarterTurns`, `straightenDegrees` i `crop` — **odnos NE**,
+jer ga nema gde da prenese.
+
+Dakle Sync prenese pravougaonik, ali fotografija koja se posle otvori nema
+pojma da je zaključana na 4:3, pa svako vučenje ručke ide slobodno. Tačno kako
+je prijavljeno.
+
+**Popravka:** odnos postaje polje u `PhotoEditSettings`, ide u `.cropRotate`
+kategoriju Sync-a, i vraća se pri otvaranju fotografije.
+
+**⚠️ Mina — `PhotoEditSettings` je Codable.** Novo polje mora imati difolt pri
+dekodiranju ili **svaka postojeća izmena koju klijent ima na disku prestaje da
+se pročita.** Isto upozorenje već stoji uz `ImageLayer` u KORAKU 63. Uraditi
+`init(from:)` sa `decodeIfPresent` i difoltom `.free`, i **proveriti na pravom
+`UserDefaults`-u sa starim zapisom**, ne samo na novom.
+
+Cena: srednja. Rizik je isključivo u Codable migraciji.
+
+#### B2. Vučenje i razvlačenje crop-a lagovi
+
+**Izmereno:** matematika nije uzrok — `resizeCrop:7755` je nekoliko deljenja i
+`min`/`max`, ništa po pikselu.
+
+**Pretpostavka, i mora se izmeriti pre nego što se dira:** `pendingCrop` je
+`@State` na `DevelopView`, pa svaka izmena tokom vučenja ponovo gradi **celo**
+telo pogleda, sliku uključivo. To je isti kvar koji je već tri puta nađen u
+ovom dokumentu — KORAK 36 (painting), pa opet u KORAKU 44 na **još četiri
+mesta**. Ovo bi bilo peto.
+
+**Popravka, ako se pretpostavka potvrdi:** izdvojiti crop overlay u sopstveni
+pogled sa sopstvenim stanjem, tako da vučenje ne dira `DevelopView`. Isti
+obrazac koji je već primenjen u KORACIMA 36 i 44 — ne izmišljati šesti.
+
+**Meriti Instruments-om ili brojanjem prolaza kroz `body`**, pre i posle. Ne
+„izgleda brže".
+
+Cena: srednja.
+
+#### B3. Odbačene fotografije (Lightroom „reject")
+
+Traženo: fotografija se označi kao odbačena, sa znakom na sebi, **ne briše se**,
+i pri izvozu se preskače.
+
+**Izmereno:** `PhotoLabelStore` (`ContentView.swift:23631`) već drži dva skupa u
+`UserDefaults` — liked i ratings — ključem `"ime|veličina"`. Treći skup ide
+istim putem, bez ičeg novog.
+
+**Popravka:**
+- `PhotoLabelStore.setRejected/isRejected`, treći ključ.
+- **⚠️ `X` JE VEĆ ZAUZET, i to baš u ShowGrid-u.** `ShortcutAction.gridToggleLabel`
+  ima difolt `.key("x")`, a `gridClearLabels` `.key("v")` — obe u ShowGrid grupi,
+  tačno tamo gde bi Lightroom-ov reject išao. Dakle nije „dodaj X", nego
+  **odluka koju od dve stvari X radi**, i klijent je taj koji je bira:
+  (a) X ostaje Toggle Label, reject ide na neko drugo slovo — čuva naviku, ali
+  se razilazi sa Lightroom-om baš na tasteru koji se najviše pritiska;
+  (b) X postaje Reject kao u Lightroom-u, a Toggle Label se seli — poklapa se
+  sa Lightroom-om, ali menja naučen taster.
+  U svakom slučaju obe idu kroz `Shortcuts.swift`, pa su podesive.
+- `U` vraća odbačenu nazad (u Lightroom-u je to par sa X).
+- Znak na sličici u mreži i u filmstrip-u, i prigušen prikaz — Lightroom je
+  zatamni; odluka za klijenta da li i mi.
+- **Izvoz preskače odbačene na SVA četiri mesta**, i to je jedini deo koji sme
+  da se pogreši tiho: `ContentView.exportPhotos:23206`,
+  `Develop.exportSelectedPhotos:13876`, `Develop.exportAllEditedPhotos:13947`,
+  i `Develop.exportSinglePhoto:13828`.
+
+**Odlučeno 1.09. (klijent):** ako je otvorena JEDNA fotografija i ona je
+odbačena, a klijent pritisne Export — **izveze se, uz upozorenje.** Izričit
+pritisak na jednu fotografiju je namera, ne previd. Grupni izvozi je i dalje
+preskaču bez pitanja.
+
+Cena: srednja, raširena po fajlovima.
+
+#### B4. Prevlačenje foldera na ikonicu ne radi
+
+**Izmereno, i uzrok je konačan:** app **ne prijavljuje da ume da otvori išta.**
+`GENERATE_INFOPLIST_FILE = YES` i nema `Info.plist` fajla
+(`project.pbxproj:322`), dakle nema `CFBundleDocumentTypes`, i u
+`BriefShowApp.swift` nema `NSApplicationDelegateAdaptor` — nema
+`application(_:openURLs:)`. Finder zato ne dozvoljava da se folder pusti na
+ikonicu, i ništa se ne dešava. Nije bag, nikad nije ni bilo napravljeno.
+
+**Popravka ima dva dela i oba su potrebna:**
+1. Pravi `Info.plist` sa `CFBundleDocumentTypes` za `public.folder` (uloga
+   `Viewer`) i `LSSupportsOpeningDocumentsInPlace`. Uz `GENERATE_INFOPLIST_FILE`
+   Xcode fajl uzima kao osnovu i dodaje svoje ključeve povrh.
+2. `AppDelegate` sa `application(_:openURLs:)` koji folder prosledi ShowGrid-u.
+
+**Ne pisati novu logiku otvaranja** — `ContentView.swift:21419` već otvara
+prevučen folder na prozor, i to radi. Delegat samo puni isto mesto.
+
+**⚠️ Sandbox:** puštanje na ikonicu jeste korisnikov izbor i Powerbox daje
+pristup, ali **ovo se mora videti na potpisanom build-u**, ne u Xcode-u. Ista
+klasa greške kao entitlement iz KORAKA 35.
+
+Cena: srednja. Traži izmenu projekta, ne samo Swift-a.
+
+---
+
+### TALAS C — mora merenje na pravoj mašini, može i da ne ispadne
+
+#### C1. Kamera se vidi, ali „0 files on the card"
+
+**Izmereno sa klijentove slike (18.34), i ovo sužava pretragu na jedno mesto:**
+bočni panel piše **„0 files on the card"**. `statusLine`
+(`CameraImportView.swift:141`) tu rečenicu daje SAMO za faze
+`.ready/.importing/.finished/.failed`; da je faza bila `.listing`, pisalo bi
+„Reading the card… 0 so far".
+
+Dakle: **sesija se otvorila, kamera je javila kompletan katalog
+(`deviceDidBecomeReady`), i `mediaFiles` je bio prazan.** Nije USB, nije
+entitlement, nije spavanje kamere — sve troje je prošlo. Poruka u sredini
+(„Reading the card…", `:196`) je zato **lagala**, jer se crta kad god je lista
+prazna, bez obzira na fazu. To je zaseban, siguran popravak.
+
+**Pretpostavka broj 1, najjača:** `ICCameraDevice.mediaFiles` je **filtrirana**
+lista — samo ono što ImageCaptureCore prepozna kao medija po UTI-ju. NEF sa
+novijeg tela koje sistem ne poznaje ispada. `device.contents` (stablo foldera)
+ne filtrira ništa.
+→ **Popravka:** šetati `contents` rekurzivno i uzimati svaki `ICCameraFile`, a
+`mediaFiles` koristiti samo kao potvrdu.
+
+**Pretpostavka broj 2:** dupla stavka. Na obe slike kamera je u spisku **dvaput**
+(„LOC:346030080" dvaput u 18.34, „Z 6" dvaput u 18.38). `CameraBrowser`
+razlikuje uređaje po `device ===` (`CameraImport.swift:39`), pa dva različita
+objekta za isto telo oba prolaze. Ako se sesija otvori na pogrešnom, katalog je
+prazan. Uz to `id` ide preko `uuidString` — ako su isti, `ForEach` ima dva
+jednaka ključa, što je samo po sebi nedefinisano ponašanje.
+→ **Popravka:** razlikovati po `uuidString`, i pokazati jedan red po telu.
+
+Ime „LOC:346030080" u 18.34 i „Z 6" u 18.38 je isto telo pre i posle nego što
+uređaj bude spreman — dakle spisak se crta i dok su uređaji polusirovi.
+
+**Prvi potez nije popravka nego merenje:** `Tools/camtest.swift`, po ugledu na
+`skymask.swift` i `skytest.swift` — komandna alatka koja izlista uređaje
+(`name`, `uuidString`, `transportType`), otvori sesiju, i **ispiše sa vremenima
+svaki delegatski poziv**, plus `contents.count` i `mediaFiles.count` posle
+`deviceDidBecomeReady`. Time se između dve pretpostavke bira mereno.
+
+**⚠️ Alatka nije u sandbox-u i app jeste** — ako se u alatki fajlovi vide a u
+app-i ne, odgovor je sandbox i pretpostavke padaju obe. To je i dalje nalaz.
+
+**⚠️ Traži klijentovu kameru priključenu.** Ovo ne mogu da izmerim sam.
+
+Cena: nepoznata dok se ne izmeri. Popravka je verovatno mala, pronalaženje nije.
+
+#### C2. SD Generative na Intelu
+
+Mašina: i7 3,2 GHz 6 jezgara, 32 GB DDR4-2667, **Radeon Pro 560X sa 4 GB**.
+
+**Prvo, pošteno, o traženom „kombinuj sve troje":** ne kombinuje se tako.
+32 GB sistemske memorije se **ne dodaje** na 4 GB video memorije — na Intel Mac-u
+su to dve odvojene memorije preko PCIe. CoreML sme da podeli mrežu između CPU-a
+i GPU-a (`MLComputeUnits.all`) i to je maksimum onoga što „kombinovanje" ovde
+znači. Ono što ne stane u 4 GB ide na CPU, i tamo je sporo. Ovo nije prepreka
+sama po sebi — SD 1.5 na 512×512 u fp16 staje u 4 GB — ali obećanje da će 32 GB
+RAM-a nadoknaditi grafičku nije tačno i ne treba ga davati.
+
+**Dve prepreke, i druga je veća od prve.**
+
+**Prepreka 1 — `Float16` ne postoji na x86_64.** Već zapisano u ovom dokumentu:
+`DevelopSDInpaint.swift` ga koristi na 8 mesta i ceo fajl je danas iza
+`#if arch(arm64)`. Ovo je rešivo i **ne mora da dira arm64 put uopšte**:
+`MLMultiArray` sa `dataType: .float16` postoji i na Intelu, samo se ne sme
+puniti kroz Swift-ov tip `Float16`. Puni se preko
+`vImageConvert_PlanarFtoPlanar16F`, koji na Intelu radi. Ulazi u model ostaju
+bajt-u-bajt isti, pa se **ništa izmereno na arm64 ne pomera** — što je uslov,
+jer je izlaz AI Clean Up-a zaključan od 31.08.
+
+**Prepreka 2 — modela nema ni na jednoj klijentovoj mašini, ni Intel ni Apple
+Silicon.** Ovo već stoji u „GDE SMO STALI": `SDModelStore` traži modele u
+Application Support pa na Desktopu; **prvo mesto niko ne popunjava** —
+preuzimanja nema, `installedDirectory` se u celom kodu samo čita. Drugo postoji
+samo na ovoj mašini. Težine su **2,14 GB**, app je 125 MB, a GitHub Releases
+prima do 2 GB po fajlu — dakle ni kao zaseban prilog.
+
+**⚠️ Zato prepreka 2 ide PRVA.** Ako se uradi samo Intel deo, klijent na Intelu
+dobije isti „models missing" kao i svi ostali, i uložen posao ne isporuči ništa.
+Redosled je: **prvo hosting i preuzimanje težina, pa tek onda Intel.**
+
+**Čega još nema, a mora:** SD put ide na 512 px radno platno
+(`SDInpaintPipeline.imageSide`, zaključano) i 12 koraka. Na Radeon Pro 560X to
+je realno **minuti, ne sekundi**. Broj se ne sme pogađati — meri se na
+klijentovoj mašini pre nego što se dugme uopšte pusti, i ako ispadne
+neupotrebljivo sporo, pošten odgovor je da dugme na Intelu ostane isključeno sa
+razlogom koji piše, kako je danas.
+
+**Predlog:** raditi C2 posle svega ostalog, u dva odvojena koraka, i ne
+obećavati ishod dok se ne izmeri.
+
+Cena: velika, i jedina tačka u planu koja može da se završi sa „ne isplati se".
+
+---
+
+### Šta ovaj plan NE dira
+
+Nebo (`SkyMasker`) — dogovoreno da ide posle ovoga. Preimenovanje u „Afterburn
+Studio" — i dalje nije počelo. Puštanje KORAKA 56 (`is_locked`,
+`latest_version`) — čeka da svi budu na novom build-u.
+
+**⚠️ Kad se bude pravio build sa ovim izmenama, gleda se KORAK 56 do kraja** —
+`latest_version` u BriefControl-u i dalje piše 6.0.
+
+## KORAK 68 — talas A iz plana: traka, levi panel, Crop, oštrina lupe (1. septembar 2026)
+
+Prve četiri tačke plana „devet prijava". Sve četiri su izmene rasporeda i
+učitavanja; **nijedna ne dira nijedan zaključan odeljak** — ni rezoluciju u
+LumenoLab-u, ni AI modele, ni `blur`/`grow`.
+
+### Oštrina u ShowGrid lupi — bio je jedan broj
+
+`loadLoupeImages` je dekodirao na **fiksnih 2000 px**. Lupa na Retina prozoru
+širokom ~1500 pt traži **3000 fizičkih piksela**. Dakle AppKit je razvlačio
+2000 px na 3000 — 1,5× uvećanje, i to je cela prijavljena „meka slika". Nije bio
+RAW, nije bio renderer, nije bio profil boje.
+
+Sad se dekodira na ono što ekran zaista crta: ćelija u tačkama × `backingScaleFactor`
+prozora, ograničeno na 6000. Ista pouka kao KORAK 49 — **dekoduj umanjeno, ne
+skaliraj umanjeno posle** — primenjena na jedino mesto u ShowGrid-u koje je
+radilo obrnuto.
+
+**Tri stvari koje nisu očigledne, i sve tri su morale:**
+
+1. **Dekodiranje sad vodi `loupeGrid`, ne `openLoupe`.** `openLoupe` ne zna
+   koliko će slika biti velika; `GeometryReader` u mreži zna. Zato `openLoupe`
+   više uopšte ne pokreće učitavanje.
+2. **`loupeImages` preživljava zatvaranje lupe**, pa obična provera „da li je
+   već učitana" znači da je **prva veličina prozora na kojoj je lupa ikad
+   otvorena zauvek i najoštrija koju ta slika dobija.** Zato postoji
+   `loupeImagePixelSizes` — pamti na kojoj je veličini dekodirana, i dekoduje
+   ponovo kad prozor poraste. Prag je 0,87, ne tačno poređenje: vučenje ivice
+   prozora menja ćeliju za par tačaka po kadru, a tačno poređenje bi naručilo
+   jedno puno dekodiranje RAW-a **po kadru vučenja**.
+3. **`backingScaleFactor` se čita sa PROZORA, ne sa `NSScreen.main`.**
+   `NSScreen.main` je ekran sa ključnim prozorom, što nije nužno ekran na kom je
+   ShowGrid. Na spoljnom 1× ekranu bi promašaj značio dekodiranje na dvostruko,
+   a na Retini prevučenoj na 1× — dekodiranje na pola, i opet meku sliku.
+
+`loupeImagePixelSizes` se briše svuda gde se briše i `loupeImages` (bacanje u
+korpu, premeštanje, izmena) — inače bi izmenjena fotografija zadržala staru
+zauzetu veličinu i ne bi se ponovo dekodirala.
+
+**Ostavljen je i dalje `gridThumbnails` kao međukorak dok se ne učita** — to je
+420 px i jeste mutno prvi tren. Namerno: prazan okvir sa vrtiljkom je gori od
+mutne slike koja se izoštri za pola sekunde.
+
+### Traka napretka — kriv je `.offset`, ne širina
+
+`.offset` **ne učestvuje u rasporedu.** Pomerena stavka se crta gde je stavljena,
+pravo kroz granice roditelja, jer SwiftUI po difoltu ne seče ništa. Putujući
+segment je jedina necečena stvar u toj traci i on je izašao na fotografiju.
+
+Sad je `.clipped()` na traci. Bekstvo je time strukturno nemoguće, umesto da
+zavisi od toga da aritmetika `proxy.size.width - segment` ostane tačna u oba
+roditelja u kojima se traka crta (`panelHeader` i AI kartica).
+
+**⚠️ Ovo NIJE potvrđeno gledanjem.** Za ovu prijavu nema slike, i nije
+reprodukovano — v. NEPROVERENO na dnu.
+
+### Levi panel se razvlači
+
+`.frame(width: 260)` → `@AppStorage` širina (180–560) plus ručica koja se vuče.
+**Nije pisana nova** — uzet je `panelResizeHandle` iz LumenoLab-a, jer je taj
+prošao KORAK 46 gde su nađena **dva** razloga drhtanja: pisanje kroz na svaki
+kadar, i lokalne koordinate kao povratna sprega. Nova ručica bi bila druga
+prilika da se obe naprave ponovo. Znak je obrnut — ovaj panel je levo, pa
+vučenje udesno širi.
+
+**⚠️ Usput izbegnuta mina:** `.padding(.leading, 284)` na kartici sa prečicama
+bio je stari fiksni 260 upisan **drugi put, rukom**. Da je ostao, kartica bi bila
+na pogrešnom mestu na svakoj širini osim jedne. Sad se računa iz iste vrednosti.
+
+### Crop je u stalnoj traci
+
+Bio je gola ikonica, treća u redu, u sekciji „Crop & Rotate" do koje se skroluje.
+Sad ima i mesto u zaglavlju panela — pored Before/After, Reset i Done — sa
+natpisom, jer ikonica bez natpisa u redu reči čita se kao ukras.
+
+**Ono u „Crop & Rotate" OSTAJE.** Isto stanje (`isCropping`), nije drugi režim.
+Ukloniti ga da ne bi bilo duplikata značilo bi popraviti prijavu tako što se
+pokvari naučena navika.
+
+Prečica: **`R`**, kao u Lightroom-u, kroz `Shortcuts.swift` pa je podesiva.
+Slobodno je u LumenoLab grupi. Čuvano je `selectedURL != nil`, kao i svaki drugi
+slučaj u tom monitoru — bez otvorene fotografije `R` ostaje obično slovo.
+
+### ⚠️ NEPROVERENO — i ovo je ceo domet ovog koraka
+
+**Prevodi se** (`BUILD SUCCEEDED`, Debug). **Ništa nije viđeno na ekranu.**
+App je pokrenuta i podigla se kao proces, ali je ekran ove mašine u trenutku
+pisanja pokazivao samo pozadinu — bez menija, bez Dock-a — i `System Events` je
+odgovarao istekom vremena, pa snimak ekrana nije uhvatio nijedan prozor.
+
+Dakle nije viđeno **ni jedno od četiri**:
+
+- da lupa zaista jeste oštrija (**meriti isto kao što je prijavljeno**: ista
+  fotografija, isti prozor, Lightroom pored, pre i posle);
+- da traka više ne izlazi iz panela — **a ovo nije ni reprodukovano**, pa je
+  popravka rezonovanje o `.offset`, ne odgovor na viđeni kvar. Ako i dalje curi,
+  uzrok je drugde i traži se snimak;
+- da se levi panel vuče glatko i da širina preživi gašenje app-e;
+- da `R` otvara crop i da dugme u zaglavlju svetli dok je crop aktivan.
+
+## KORAK 69 — B1: zaključan odnos crop-a se pamti i sinhronizuje (2. septembar 2026)
+
+Prijava: „kad sinhronizujem sve fotke na 4:3, pa uđem u fotku da doteram crop,
+kreće od originalnog odnosa a ne od 4:3 koji je već postavljen."
+
+### Uzrok je pisao u samom kodu
+
+Iznad `CropAspectRatioOption` je stajalo, doslovno: *„not persisted anywhere
+(EditCropRect itself has no notion of 'locked to a ratio')"*. Odnos je bio
+`@State`, a `toggleCropMode` ga je pri svakom otvaranju alata postavljao na
+`.free`. Sync je u kategoriji `.cropRotate` prenosio `rotationQuarterTurns`,
+`straightenDegrees` i `crop` — **odnos ne, jer ga nije imao gde preneti.**
+
+Dakle putovao je PRAVOUGAONIK a ne BRAVA. Na cilju je crop bio 4:3, ali prvo
+vučenje ručke išlo je slobodno, jer taj sloj podataka nije znao da postoji
+zaključanje.
+
+### Šta je urađeno
+
+`cropAspect` je sad polje na `PhotoEditSettings`, pa:
+
+- `toggleCropMode` ga **vraća** umesto da ga briše (bila je jedna linija
+  `= .free`, i to je bio ceo bag);
+- `commitCrop` ga upisuje — **tu, a ne na svaki pritisak dugmeta u redu odnosa.**
+  Prolazak kroz red bi inače upisao `settings` šest puta, a `onChange(of:
+  settings)` ponovo renderuje fotografiju. Brava se pamti u istom trenutku kao i
+  pravougaonik koji je napravila;
+- `mergedSyncSettings` ga nosi zajedno sa `crop`-om u kategoriji „Crop & Rotate";
+- `resetAllSettings` čisti i `@State` kopiju — bez toga bi Reset sa OTVORENIM
+  crop alatom ostavio 4:3 upaljeno u redu, i `commitCrop` bi tu ustajalu bravu
+  upisao nazad preko reseta.
+
+`CropAspectRatioOption` je izašao iz `private` i dobio **`String` sirove
+vrednosti, ne podrazumevane `Int` redne brojeve** — ovo završava u JSON zapisu na
+klijentovom disku, a redni brojevi bi tiho preusmerili svaki sačuvan odnos onog
+dana kad neko ubaci novi slučaj u sredinu spiska.
+
+`cropAspect` NE ulazi u `isNeutral`, iz istog razloga iz kog ne ulaze ni oblik
+vinjete ni `sharpenRadius`: sam po sebi ne menja nijedan piksel, a brojanje bi
+upalilo „ova fotka ima izmene" — a s tim i Flatten, Reset i spiskove za izvoz —
+za polugu koja ne radi ništa.
+
+### ⚠️ MINA JE VEĆA NEGO ŠTO JE PLAN REKAO — i sad je izmerena
+
+Plan je rekao „novo polje bez difolta obara postojeće izmene". Pravo stanje je
+gore. `PhotoEditStore.allSettings` radi:
+
+```swift
+(try? JSONDecoder().decode([String: PhotoEditSettings].self, from: data)) ?? [:]
+```
+
+To je **JEDAN rečnik sa svim izmenama koje je klijent ikad napravio, i odluka je
+sve-ili-ništa.** Jedan zapis koji ne dekodira ne ispada sam — ceo dekod vrati
+nil, sve izmene u app-i postanu `[:]`, i sledeći odloženi upis to prazno
+prepiše preko klijentovog rada. Bez greške, bez dijaloga, bez undo-a.
+
+**Zato je napravljen `Tools/run-editsettings-decode-test.py`.** Čita PRAVI blob
+iz `defaults` instalirane app-e i dekodira ga strukturom kakva je u
+`Develop.swift` u tom trenutku — tipovi se vade iz izvora po tekstu, kao u
+`run-layer-reorder-test.py`, pa test ne može tiho da zaostane za kodom.
+
+**Izmereno na klijentovom stvarnom skladištu (2.09.):**
+
+```
+records in the client's store: 25
+declared but absent from every stored record: ['cropAspect']
+decoded: 25 records
+RESULT: OK — every record survives, and no stored number moved
+```
+
+Dakle svih 25 zapisa napisanih STARIM build-om i dalje dekodira, i nijedan
+sačuvan broj se nije pomerio na round-tripu. Test ne proverava samo da dekodira
+nego i da vrednosti ostanu iste — zapis koji dekodira u DRUGE brojeve je tiha
+izmena tuđeg rada, što je gore od pada.
+
+**Negativna kontrola je takođe pokrenuta**, jer test koji ne može da padne ne
+dokazuje ništa: sa jednim namerno pokvarenim zapisom (`exposure` kao string) od
+25, test pada, imenuje baš taj zapis, i pokaže da bi app obrisala **svih 25**.
+
+Rezerva klijentovog `defaults`-a je uzeta pre svega ovoga.
+
+### ⚠️ NEPROVERENO
+
+Prevodi se, i migracija je izmerena. **Nije viđeno na ekranu:** da Sync na 4:3
+sad zaista drži odnos kad se uđe u drugu fotku i povuče ručka, i da Reset sa
+otvorenim crop alatom gasi red odnosa.
+
+## KORAK 70 — B2: crop lag nije bio ponovna gradnja pogleda nego render (2. septembar 2026)
+
+Prijava: „kad pomeram crop ili ga razvlačim, malo lagne."
+
+### ⚠️ PLAN JE PRETPOSTAVIO POGREŠAN UZROK — i zato je tražio merenje
+
+Plan (tačka B2) je rekao: verovatno peti slučaj kvara iz KORAKA 36 i 44 —
+`pendingCrop` je `@State`, pa svaki kadar vučenja ponovo gradi `DevelopView.body`.
+**To jeste tačno, i nije glavni trošak.**
+
+Prava cena je bila jedna linija:
+
+```swift
+.onChange(of: pendingCrop) { _ in
+    if isCropping { scheduleRender() }
+}
+```
+
+### Zašto je to bilo čisto bacanje
+
+`renderNow()` prosleđuje **`applyCrop: !isCropping`**. Dakle dok je crop alat
+otvoren, render **potpuno ignoriše crop** — `pendingCrop` mu uopšte nije ulaz.
+Ulazi su `settings`, `previewBaseImage` i `showOriginal`, i nijedan se ne menja
+tokom vučenja.
+
+Znači svaki kadar vučenja je proizvodio **bit-identičnu sliku**, a usput radio:
+
+| po kadru vučenja | šta je |
+|---|---|
+| `PhotoEditRenderer.render` | ceo CoreImage lanac nad preview-om |
+| `briefEditsDisplayCGImage` | konverzija u CGImage |
+| `PhotoEditStore.setSettings` | upis u skladište + zakazan flush celog blob-a |
+| `luminanceHistogram` | pun prolaz kroz renderovanu sliku |
+| `scheduleRefinedRender()` | **puna rezolucija** (5176×3448 na .NEF-u) |
+| `displayedImage =` i `histogramBins =` | još **dva** poništenja `body`-ja |
+
+Na `scheduleRender`-ovom pragu od 20 ms to je do **pedeset takvih u sekundi, za
+sliku koja se nije menjala.**
+
+### Popravka — brisanje, ne optimizacija
+
+`onChange(of: pendingCrop)` više ne postoji. Na njegovom mestu stoji objašnjenje
+zašto ga ne treba vraćati.
+
+**Provereno jedan po jedan, ne pretpostavljeno:** svaki drugi upisivač
+`pendingCrop`-a ili u istom dahu postavlja `settings` (undo/redo, flatten,
+unflatten, bake, preset, paste, reset) pa ga pokriva `onChange(of: settings)`
+iznad, ili sam zove `scheduleRender()` (`toggleCropMode` pri ulasku, `commitCrop`
+pri izlasku). Ona tri koja ne rade ni jedno ni drugo — `applyCropAspectRatio`,
+„Reset Crop" i samo vučenje — **ne treba im render**, iz razloga iz prvog
+pasusa.
+
+### Šta OSTAJE, i to pošteno
+
+Ponovna gradnja `DevelopView.body` po kadru vučenja je i dalje tu — `pendingCrop`
+je i dalje `@State` na tom pogledu. To je **sekundarni** trošak i namerno nije
+diran u istom koraku: izmeštanje u observable objekat (obrazac iz KORAKA 36 i 44)
+dotiče `pendingCrop` na dvadesetak mesta, i nema smisla praviti taj zahvat pre
+nego što se zna da li se preostali lag uopšte oseti.
+
+**Ako se posle ovoga i dalje oseti, to je taj ostatak i tada se radi izmeštanje.**
+
+### ⚠️ NEPROVERENO
+
+Prevodi se. **Nije viđeno na ekranu**, i ovo je jedina od dosadašnjih tačaka gde
+je potvrda korisnika i jedina moguća mera — lag je osećaj, a sve što se moglo
+utvrditi čitanjem jeste da render nije mogao ništa da promeni na slici.
+
+## KORAK 71 — B3: odbačene fotografije, i tri prečice po klijentovom rasporedu (2. septembar 2026)
+
+Traženo: fotografija se označi kao odbačena kao u Lightroom-u — **sa znakom na
+sebi, ne obrisana** — i izvoz je preskače. Uz to, izričito zatražen raspored
+tastera: `X` odbacuje, `.` je label, `,` dodaje zvezdicu.
+
+### Skladište — treći ključ, ne vrednost u ocenu
+
+`PhotoLabelStore` je već držao dva skupa u `UserDefaults` ključem `"ime|veličina"`.
+Odbacivanje je treći, istim putem.
+
+**Namerno nije uvučeno u ocenu** (npr. „ocena −1"): u Lightroom-u su odbačeno i
+ocenjeno nezavisni, a klijent radi u obe app-e. Fotografija može biti trojka koja
+je kasnije odbačena, i skidanje odbacivanja mora da vrati te tri zvezdice.
+
+`clear(for:)` — „Clear All" — **briše i odbacivanje.** To je jedina kontrola koja
+kaže da vraća celu selekciju na ništa, a ostaviti fotografije odbačenim posle nje
+značilo bi izvoz koji tiho preskače fajlove za koje klijent misli da ih je upravo
+odznačio.
+
+### ⚠️ X JE BIO ZAUZET — i to je bila stvarna odluka, ne sitnica
+
+`gridToggleLabel` je imao difolt `.key("x")`. Po klijentovom izboru:
+
+| taster | pre | sada |
+|---|---|---|
+| `X` | Toggle Label | **Reject** |
+| `.` | — | Toggle Label |
+| `,` | — | **+1 zvezdica**, 5 se vraća na nulu |
+
+Sve tri idu kroz `Shortcuts.swift` i vide se i menjaju u Edit ▸ Keyboard
+Shortcuts. Tasteri `1`–`5` i dalje POSTAVLJAJU ocenu i nisu dirani — ostaju u
+`fixed` spisku.
+
+**⚠️ Mina koja postoji i ne može da se ukloni iz koda:** `ShortcutStore` čuva samo
+ono što je klijent stvarno menjao, pa novi difolt stiže svakome ko taster nije
+dirao — što je i poenta. Ali klijent koji je NEKAD izričito vezao Toggle Label
+BAŠ na `x` zadržava taj override, i tada dve akcije u istoj grupi odgovaraju na
+X. Monitor zato proverava **Reject prvo**, pa X odbacuje a stari override je mrtav;
+ekran sa prečicama pokazuje sudar i bilo koja od dve može da se premesti.
+
+**Odbacivanje je preklopnik, ne jednosmerna oznaka.** Lightroom za vraćanje
+koristi `U`, ali drugi taster čiji je jedini posao poništavanje prvog je taster
+koji se pamti ni za šta.
+
+**`,` radi samo u mreži**, kako je i traženo. Uvećano su `1`–`5` ionako tu i kažu
+tačno šta postavljaju; taster koji znači „jedan više nego što je sad" zarađuje
+mesto na sličici, ne preko celog ekrana.
+
+**Sa više izabranih fotografija korak se računa JEDNOM**, od prve izabrane, i ista
+dobijena vrednost se upisuje svima. Koračanje svake od njene sopstvene ocene bi
+mešovitu selekciju na svaki pritisak razvlačilo dalje umesto da je skuplja, i ne
+bi postojao jedan broj koji se može prijaviti.
+
+### Kako izgleda
+
+Odbačena fotografija je **prigušena i nosi X u krugu**, kao u Lightroom-u.
+Prigušenje ide **samo na sliku, ne na celu ćeliju**, da zvezdice i kružić ispod
+ostanu čitljivi — klijent koji traži šta da vrati čita baš njih.
+
+Podnožje sad broji i odbačene („184 photos · 12 labeled · 5 starred · 9
+rejected"). To je tu iz jednog razloga: izvozi pored njega tiho ostaju kraći dok
+je taj broj iznad nule, a broj koji se vidi PRE pritiska vredi više od objašnjenja
+posle.
+
+### Izvoz — sva četiri mesta, i izuzetak
+
+Preskakanje je dodato na sva četiri: `ContentView.exportPhotos` (Labeled i
+Starred), `Develop.exportSelectedPhotos`, `Develop.exportAllEditedPhotos`.
+
+**Filtrira se PRE nego što se otvori birač foldera**, u sva tri grupna slučaja.
+Filtriranje posle bi otvorilo panel koji obećava dvadeset fajlova a upisalo
+jedanaest. Panel uz to kaže koliko ih preskače — klijent koji je odbacivao pre
+više sati neće sam povezati kratak izvoz sa oznakom koje se ne seća, a „nedostaju
+mi fajlovi" je najgore što izvoz može da ostavi za sobom.
+
+**Izuzetak, odlučen 1.09:** `exportEditedCopy` i `exportSinglePhoto` — jedna
+imenovana fotografija — **izvoze je i kad je odbačena, uz upozorenje u panelu.**
+Pritisak na Export nad jednom imenovanom fotografijom je namera, ne previd, a
+odbijanje bi značilo da se oznaka mora skinuti samo da bi izašao jedan fajl.
+
+### ⚠️ NEPROVERENO
+
+Prevodi se. **Nije viđeno na ekranu:** znak i prigušenje na sličici, da `X`, `.`
+i `,` rade i da se sve tri vide u Edit ▸ Keyboard Shortcuts, i da izvoz zaista
+preskoči odbačene i to kaže u panelu.
+
+Posebno neprovereno: da odbacivanje **preživi gašenje app-e** — piše se istim
+putem kao label i ocena, koji preživljavaju, ali to nije isto što i viđeno.
+
+## KORAK 72 — B4: folder se pušta na ikonicu (2. septembar 2026)
+
+Traženo: prevučeš folder na BriefShow ikonicu, BriefShow se otvori i pokaže šta
+je u njemu.
+
+### Uzrok — app nikad nije rekla da ume išta da otvori
+
+`GENERATE_INFOPLIST_FILE = YES` i **nije bilo `Info.plist` fajla**, dakle nije
+bilo `CFBundleDocumentTypes`; u `BriefShowApp.swift` nije bilo
+`NSApplicationDelegateAdaptor`, dakle nije bilo `application(_:open:)`.
+
+Finder zato nije ni **dozvoljavao** puštanje na ikonicu. Nije bio bag u obradi
+puštanja — nikad nije ni napravljeno.
+
+### Popravka ima dve polovine i nijedna ne radi sama
+
+**1. `BriefShow/Info.plist`** — postoji zbog jednog ključa,
+`CFBundleDocumentTypes` za `public.folder`. Za tip dokumenta ne postoji
+`INFOPLIST_KEY_` podešavanje, i to je jedini razlog zašto fajl uopšte mora da
+postoji. `GENERATE_INFOPLIST_FILE` ostaje `YES` i Xcode svoje ključeve spaja
+povrh ovoga.
+
+Referišе se putanjom iz `INFOPLIST_FILE` i **nije dodat u Xcode navigator** —
+isto kako je pored njega referisan `BriefShow.entitlements`. To je zatečena
+konvencija ovog projekta, ne prečica.
+
+**⚠️ `LSHandlerRank` je `Alternate`, i to je nosivo.** `Owner` ili `Default` bi
+značilo da BriefShow postaje ono što se otvori kad se u Finder-u dvaput klikne
+na folder. Treba nam samo da bude legalna meta puštanja na sopstvenu ikonicu i
+da se pojavi u „Open With".
+
+`LSSupportsOpeningDocumentsInPlace` je `true`: bez toga app dobija KOPIJU foldera
+na privremenoj lokaciji, a za pregledač fotografija je to beskorisno — svaka
+izmena, oznaka i ocena bi se pisala na putanju koja nestaje.
+
+**2. `BriefShowAppDelegate`** — `application(_:open:)`.
+
+Tri stvari koje nisu očigledne:
+
+- **URL se ne prosleđuje pogledu nego se PARKIRA** (`ExternalFolderOpen`).
+  Puštanje foldera na ikonicu app-e koja NE radi je pokreće, i povratni poziv
+  delegata ume da stigne pre nego što ShowGrid-ov pogled uopšte postoji. Pogled
+  ga preuzima preko `.onReceive` — a `Publisher` isporučuje trenutnu vrednost
+  čim se pretplati, pa je slučaj hladnog pokretanja pokriven istim kodom kao i
+  slučaj kad app već radi.
+- **`startAccessingSecurityScopedResource()` mora, i nikad se ne pušta.** URL
+  predat ovim putem nosi sopstveno sandbox proširenje koje se mora preuzeti.
+  ⚠️ **Važi samo za sesiju:** folder IZVAN klijentovog home foldera — spoljni
+  disk, mrežni disk — čita se sada ali ne i posle ponovnog pokretanja, jer se za
+  njega ne čuva bookmark. Sve ispod home-a pokriva `RootFolderAccess`.
+- **Delegat NE otvara prozor**, samo `NSApp.activate`. Pravljenje prozora odavde
+  je tačno ono što je u KORAKU 51 pravilo dva prozora.
+
+Otvaranje foldera ide kroz **iste dve linije** koje već koristi puštanje foldera
+na sam prozor (`refreshFolderTree()` pa `selectedFolderURL = folder`). Drugi
+način otvaranja foldera bio bi drugi način da otvaranje bude pogrešno.
+
+Usput: `BriefShowApp.swift` je morao da dobije `import Combine`. Meta se prevodi
+sa `SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY`, koji gasi to što SwiftUI
+inače re-izvozi `@Published`.
+
+### ⚠️ IZMERENO — i to baš na riskantnoj polovini
+
+Izmena `project.pbxproj`-a je bila jedini deo koji je mogao tiho da ošteti build.
+Zato je sagrađen `Info.plist` **uporeðen ključ po ključ** sa onim iz prethodnog
+build-a (`build_universal`):
+
+```
+IZGUBLJENO: ništa
+DODATO:     ['CFBundleDocumentTypes', 'LSSupportsOpeningDocumentsInPlace']
+PROMENJENO: (ništa)
+```
+
+Dakle spajanje nije pojelo nijedan generisani ključ — verzija, identifikator,
+ikonica, minimalni sistem, svi su prošli. (`NSPrincipalClass` ne postoji, ali ga
+nije bilo ni u jednom ranijem build-u — provereno na tri.)
+
+**I LaunchServices to potvrđuje**, posle `lsregister -f` na sagrađenoj app-i:
+
+```
+claimed UTIs:  public.folder
+claim id:      Folder (0x49a0)
+rank:          Alternate
+bindings:      public.folder
+```
+
+To je tačno ono čega pre nije bilo, i na rangu koji ne otima Finder-u dvoklik.
+
+### ⚠️ NEPROVERENO — i zašto je test stao
+
+Prava putanja (`open -a … <folder>`, isti LaunchServices put kojim ide i puštanje
+na ikonicu) je pokrenuta, ali se app zaustavila na **dijalogu keychain-a**:
+„BriefShow wants to use your confidential information stored in
+`com.rocketsbrief.briefshow.session`".
+
+To nije bag iz ovog koraka. Debug build je potpisan drugačije od klijentovog
+Release build-a, pa ACL na tom keychain zapisu ne prepoznaje binarni fajl i
+sistem pita. **Pojaviće se pri svakom pokretanju Debug build-a**, i nema veze sa
+folderima.
+
+Zato NIJE viđeno: da folder zaista sleti u mrežu, i da drvo foldera levo pokaže
+gde je. Deklaracija i registracija jesu izmerene; poslednji korak — folder na
+ekranu — nije.
+
+## KORAK 73 — C1: alat za kameru, i dve popravke koje su već bile izmerene (2. septembar 2026)
+
+Kamera nije bila priključena, pa se glavno pitanje — zašto je karta prazna — NIJE
+moglo izmeriti. Napravljen je alat koji to rešava jednom komandom, i popravljene
+su dve stvari koje su već bile izmerene sa klijentovih slika i iz koda.
+
+### `Tools/camtest.swift`
+
+```
+swift Tools/camtest.swift
+```
+
+Koristi **istu masku** koju koristi `CameraBrowser.start()`, pa gleda ono što
+gleda i app. Ispisuje svaki delegatski poziv sa vremenom, a na
+`deviceDidBecomeReady` uporedi `mediaFiles.count` sa rekurzivnim hodom kroz
+`contents` i **sam kaže koja je hipoteza potvrđena**, imenujući fajlove i UTI-je
+koji ispadnu između to dvoje. Provereno da se prevodi i pokreće (0 uređaja, bez
+kamere).
+
+**⚠️ Alat NIJE u sandbox-u, a app jeste.** Ako fajlovi izađu ovde a u app-i ne,
+odgovor je sandbox i obe hipoteze padaju — što je i dalje nalaz, i korisniji.
+
+### Popravka 1 — kamera se pojavljivala DVAPUT
+
+Na obe klijentove slike od 1.09. Z 6 je u spisku dvaput. `ConnectedCamera` se
+poredio po `device ===`, a ImageCaptureCore je predao **dva različita objekta za
+jedno telo** — dva promašaja, dva reda. Povrh toga su im `id`-jevi (uuidString)
+isti, što je u `ForEach` nedefinisano ponašanje, ne samo ružan prikaz.
+
+Sad se porede po `id`. Kad nema ni uuid-a ni imena, pada nazad na pokazivač —
+tada nema po čemu drugom, a dva reda su bolja od tihog gutanja druge prave kamere.
+
+### Popravka 2 — prazan ekran je LAGAO
+
+`emptyState` je crtao vrtiljak i „Reading the card…" **kad god je lista prazna,
+bez obzira na fazu.** Zato je na slici bočni panel pisao „0 files on the card" —
+tekst faze `.ready`, dakle gotovo — dok je sredina prozora tvrdila da još čita.
+Prozor koji istovremeno kaže dve stvari gori je od onog koji kaže razočaravajuću.
+
+Sad postoji treća grana: čitanje je gotovo i karta je prazna, sa uputstvom koje
+uključuje i pravu proveru — **ako ni Image Capture ne vidi karticu, problem je
+kamera ili kabl, ne BriefShow.**
+
+### Dodato usput — hod kroz `contents`, kao UNIJA
+
+`rebuildItems` sad na `mediaFiles` dodaje rekurzivan hod kroz `contents`.
+**Strogo dodatno:** ništa što se ranije uvozilo ne prestaje. Filtrirano po
+spisku ekstenzija, da ne uvuče sidecar-e i pomoćne fajlove koje svako telo piše
+(Nikonov `.NKSC`, `MISC` folder) — mreža puna toga gora je od kratke mreže.
+
+Ovo je popravka za **hipotezu 1** i napravljena je pre merenja, svesno, jer ne
+može ništa da oduzme. Merenje i dalje treba: ako `camtest` pokaže da su i
+`contents` prazni, uzrok je drugde i ovo nije rešenje nego samo bezopasan dodatak.
+
+### ⚠️ NEPROVERENO
+
+Sve troje. Traži kameru.
+
+## KORAK 74 — zašto nova ikonica ne bi bila viđena posle update-a (2. septembar 2026)
+
+Klijent: ikonica ostaje kakva jeste za sada, ali **kad se sledeći put promeni,
+mora da se vidi čim se app zameni u Applications.**
+
+### ⚠️ IZMERENO — `CFBundleVersion` je bio 17 u SVAKOM build-u
+
+Provereno na četiri sagrađena bundle-a:
+
+| bundle | verzija | build |
+|---|---|---|
+| `dist-universal` | 6.0 | **17** |
+| `build/UniversalRelease` (arhiva) | 6.0 | **17** |
+| `build_universal` | 10.1 | **17** |
+| `build_dd` (Debug) | 10.1 | **17** |
+
+macOS kešira ikonicu app-e u IconServices, po identitetu i **verziji** bundle-a.
+Zamena bundle-a na istoj putanji, sa istim `CFBundleIdentifier` i **istim
+`CFBundleVersion`**, je tačno slučaj u kom sistem zaključi da se ništa nije
+promenilo i nastavi da crta staru ikonicu.
+
+Dakle uzrok nije bio u ikonici nego u broju koji se nije pomerao.
+
+### ⚠️ GLAVNA POPRAVKA JE RELEASE KORAK, NE KOD
+
+`CURRENT_PROJECT_VERSION` je podignut 17 → 18. Ali **mora da se podiže na svako
+izdanje**, i to je korak u puštanju koji kod ne može da natera. Zapisano ovde jer
+je jedini razlog zbog kog bi se ovo ponovilo to što je zaboravljeno.
+
+### Šta je dodato u kodu
+
+`reregisterWithLaunchServicesIfVersionChanged()` u `BriefShowApp.init()`. Kad se
+verzija promeni u odnosu na zapamćenu, LaunchServices-u se kaže da ponovo pročita
+bundle — to je API iza `lsregister -f`. Verzija se upisuje **pre** poziva, da
+zaglavljivanje ili pad u registraciji ne bi bili na svakom sledećem pokretanju.
+
+### ⚠️ NIJE GARANCIJA, i ne treba je tako prodavati
+
+Pločica koju je klijent **prikačio u Dock** crta se iz Dock-ove sopstvene kopije,
+a ona popušta tek kad se Dock ili Mac restartuje. Ako sledeća promena ikonice i
+dalje izgleda ustajalo u Dock-u — to je razlog, i nije bag u app-i.
+
+### ⚠️ NEPROVERENO
+
+Ne može se proveriti dok se ikonica stvarno ne promeni i app ne zameni u
+Applications. Ono što JESTE provereno: build prolazi i sagrađen bundle sad nosi
+`CFBundleVersion = 18`.
+
+## KORAK 75 — crop je i dalje pisao „Free", plavi ček, i ručica (2. septembar 2026)
+
+Tri prijave posle KORAKA 69, sa slikama.
+
+### ⚠️ KORAK 69 NIJE BIO DOVOLJAN — i evo zašto
+
+Prijava: „sinkujem, idem na sledeću sliku, ona JESTE lepo kropirana na 4:3 i to
+se vidi — ali red odnosa pokazuje Free, pa kad krenem ručno da pomeram, pomeram
+slobodno umesto tog sinhronizovanog 4:3."
+
+KORAK 69 je dodao `settings.cropAspect` i sve troje radi — **za ono što je
+sinkovano POSLE te izmene.** Ali `cropAspect` govori samo koji je odnos neko
+izabrao **kroz ovaj alat**. Fotografija može doći do savršenog 4:3 crop-a a da se
+to nikad nije desilo: sinkovana build-om koji bravu nije imao gde da upiše,
+kropirana starijom verzijom, ili donesena presetom. **Klijentove fotografije su
+sve takve** — sinkovane su ranije.
+
+**Popravka: pita se i PRAVOUGAONIK, ne samo zapis.** `inferredCropAspect` računa
+stvarni odnos postojećeg crop-a (razlomak puta sopstveni odnos slike — ista
+konverzija koju `resizeCrop` radi u drugom smeru) i traži preset koji mu odgovara.
+
+Redosled je: upisana brava pobeđuje ako postoji; ako ne, gleda se pravougaonik.
+**Pravougaonik je ono što klijent vidi na ekranu i njemu treba verovati.**
+
+Tolerancija je 1%. Preseti su daleko jedan od drugog (0,75 / 1 / 1,33 / 1,78) pa
+se nijedan ne može zameniti susedom, a crop koji je prošao kroz razlomke i
+odsecanje na granice sme da bude za dlaku pored bez da bude proglašen slobodnim.
+
+**⚠️ Samo kad crop POSTOJI.** Nekropirana fotografija ostaje Free i onda kad je
+sam kadar 4:3: tamo je odnos kamerin, a ne nečija odluka, i zaključavanje bi tiho
+oduzelo slobodno vučenje svakoj fotografiji snimljenoj 4:3 telom.
+
+### Plavi ček u filmstrip-u
+
+Bio je **namerno** fiksna macOS plava, da se poklopi sa Finder-ovim i Photos-ovim
+„stavka je izabrana". Klijent traži da prati temu, kao znak za izmene desno od
+njega.
+
+Sad koristi **isti `ink`/`background` par** koji taj znak već koristi, i iz istog
+razloga: to su app-ine sopstvene boje za tekst, pa su garantovano kontrastne u
+svakoj temi. Plavi disk je bio jedina stvar u toj traci koja pripada tuđoj paleti.
+
+`.palette` ostaje — boji kvačicu i disk kao dva sloja, i to je ono što kvačicu
+drži čitljivom. Jedna ravna boja je tu jednom već dala skoro belu mrlju na svetlim
+sličicama, i to ne treba ponovo otkrivati.
+
+### Ručica pri pomeranju crop-a
+
+Otvorena šaka iznad crop-a, zatvorena dok se vuče — isti par koji Space-to-pan
+sloj već koristi u ovom fajlu.
+
+**⚠️ Zatvorena šaka se gura JEDNOM po vučenju, sa čuvarem.** `NSCursor` je STEK:
+guranje na svaki `onChanged` je jedno guranje po kadru miša, a jedan `pop` na
+kraju bi ostavio stotine zatvorenih šaka naslaganih — posle čega je svaki drugi
+kursor u app-i pogrešan do ponovnog pokretanja.
+
+### ⚠️ NEPROVERENO
+
+Sve troje. Prevodi se.
+
+## KORAK 76 — X odbacuje i u LumenoLab filmstrip-u (2. septembar 2026)
+
+KORAK 71 je odbacivanje dao samo ShowGrid mreži. Klijent: mora i u filmstrip-u,
+jer se tamo i pregleda.
+
+### Zasebna akcija, ne deljena
+
+`ShortcutAction.rejectPhoto` je nova akcija u **LumenoLab grupi**, sa istim
+difoltom `x` kao `gridRejectPhoto` u ShowGrid grupi. Nije ista akcija upotrebljena
+dvaput: dva prozora imaju svoje monitore i svoje grupe, jedno vezivanje se ne
+može ograničiti na oba, a klijent koji premesti Reject u jednom prozoru nema
+razloga da mu se pomeri i u drugom. `x` je slobodno u ovoj grupi — cut je ⌘X.
+
+### Jedno skladište, dva prozora
+
+Piše u isti `PhotoLabelStore`, pa je fotografija odbačena u mreži odbačena i ovde,
+i **oba prozora je preskaču pri grupnom izvozu** — to je već bilo napravljeno u
+KORAKU 71.
+
+`rejectedURLs` je ogledalo u `@State`, jer je `PhotoLabelStore` običan statični tip
+bez načina da javi promenu, a filmstrip mora da se precrta. Čita se na `onAppear`
+i na promenu `photoURLs` — **ne po sličici po prolazu**: `isRejected` ide u
+`UserDefaults`, a traka crta svaku vidljivu ćeliju na svaki prolaz.
+
+### Meta i smer
+
+Radi na više-selekciji kad je ima, inače na otvorenoj fotografiji — isto pravilo
+koje ovaj prozor već koristi za „fotografije na koje mislim".
+
+Smer se odlučuje **jednom za ceo skup**, po prvoj: mešovita selekcija se skuplja,
+a ne izvrće fotografiju po fotografiju. Isto pravilo kao `cycleRating`.
+
+### Znak je u TREĆEM uglu
+
+Gore levo je kvačica selekcije, gore desno znak za izmene. X ide **dole levo**.
+Tri oznake u sličici od stotinak tačaka traže tri različita ugla ili se sliju u
+mrlju.
+
+Prigušenje ide **samo na sliku**, ne na prsten selekcije — traka u kojoj bledi i
+prsten čitala bi se kao „nije izabrano" umesto „odbačeno".
+
+### ⚠️ NEPROVERENO
+
+Prevodi se. Nije viđeno na ekranu.
+
+## KORAK 77 — import dobija izvor, meni i podrazumevani folder; crop dobija rotaciju (2. septembar 2026)
+
+Pet zahteva odjednom, sa slikom prozora koji izlazi iz app-e.
+
+### Prozor za import je izlazio iz app-e — `minWidth: 900`
+
+`CameraImportView` je imao `.frame(minWidth: 900, idealWidth: 1180, ...)`, a
+prozor ShowGrid-a sme da bude **700×480** (`window.minSize`). Na svakom prozoru
+užem od 900 sheet je bio širi od onoga što ga prikazuje i visio je preko leve
+ivice, na Desktop. To je tačno ono što je klijent uslikao.
+
+**Sheet ne nasleđuje NIKAKVU geometriju od prikazivača**, pa se prozor mora
+pitati direktno — dodat je `ShowGridWindowController.contentSize`. Veličina je
+sad `min(ideal, max(floor, prozor − 48))`.
+
+### ⚠️ IZVOR MOŽE BITI KAMERA **ILI** FOLDER — i to rešava tri zahteva odjednom
+
+Traženo je bilo troje: ručni Import iz menija, biranje izvora, i „proveri da li
+SD kartica isto vuče import". Sve troje je isti nedostatak: **jednom kad se
+kartica montira, ona JE folder, a ne kamera**, i `CameraImportSession` je znao
+samo za `ICCameraDevice`.
+
+Nov `ImportSource` je `.camera(ConnectedCamera)` ili `.folder(URL)`:
+
+- Telo u MTP/PTP režimu se nikad ne montira kao disk i dostupno je samo kroz
+  ImageCaptureCore — to je `.camera`.
+- SD kartica u čitaču se montira kao običan disk, a klijent koji otvori
+  File ▸ Import… bez ičega priključenog hoće da pokaže na folder. Oboje je
+  `.folder`, jedna putanja.
+
+`Item` sad nosi `Origin` — `.cameraFile(ICCameraFile)` ili `.diskFile(URL)` — i
+grana se na **tačno tri mesta**: sličica, kopiranje, i skeniranje. Sve ostalo
+(faze, kvačice, brojanje, dnevni folder) je zajedničko.
+
+Folder se skenira rekurzivno, jer su fotografije pod `DCIM/100NIKON`, nikad na
+vrhu, i po **istom spisku ekstenzija** koji koristi kamera put — da se dva izvora
+slože oko toga šta je fotografija.
+
+Sličice za disk idu kroz `makeShowGridThumbnail`, isti poziv kojim idu i ShowGrid
+sličice: RAW sa kartice se dekodira ovde tačno onako kako će i kad se prekopira.
+
+Kopiranje sa diska **ne prepisuje** postojeći fajl nego uniquira ime
+(`DSC_0001-1.NEF`) — isto što `.overwrite: false` daje kamera putu, samo ručno.
+Brisanje sa izvora, ako je traženo, ide **tek posle** uspešnog kopiranja.
+
+### File ▸ Import…
+
+`⇧⌘I`, u `CommandGroup(after: .newItem)` — tamo gde stoji Open…, tamo fotograf i
+traži Import. Otvara birač foldera (pozicioniran na `/Volumes`, jer je kartica u
+čitaču čest slučaj), pa otvara isti prozor.
+
+Unutar prozora **Choose Source…** repointuje ga. Sesija se pravi u `init` i drži
+kameru otvorenom, pa se ne može preusmeriti u mestu — presenter zato menja
+`item` sheet-a, i to **kroz jedan runloop okret**: prikazivanje novog preko
+starog ostavlja dva sheet-a u trci i kameru zaključanu onim koji je izgubio.
+
+### Podrazumevano odredište
+
+`~/Documents/BriefShow NEF/`, napravljen ako ne postoji, plus dnevni podfolder
+koji je već postojao. Ranije je fallback bio Pictures — „gde god sistem zove
+Pictures" nije mesto na kom se snimanje kasnije nađe.
+
+**Dnevni folder ostaje po datumu SNIMANJA, ne po današnjem.** Za karticu
+uvezenu istog dana to je isto; za karticu uvezenu sutradan ujutru fotografije
+pripadaju danu snimanja, što je i cela svrha organizovanja po datumu. Ako nema
+datuma, pada na danas.
+
+### Crop dugme skroluje panel do sekcije
+
+Pritisak na Crop u zaglavlju ostavljao je klijenta da sam nađe dugmad za odnos —
+ona su unutar „Crop & Rotate", dovoljno nisko da su van ekrana. Sad `ScrollViewReader`
+dovodi sekciju na vrh, animirano.
+
+Dve stvari koje su morale: **tab se prvo prebacuje na Edit** (iz Retouch-a
+sekcije nema u stablu), i skrol ide **jedan runloop okret kasnije**, da promena
+taba stigne da je ubaci. Okidač je BROJAČ, ne Bool — dva uzastopna pritiska
+moraju da skroluju dvaput, a vrednost jednaka sebi ne pali `onChange`.
+
+### Rotacija vučenjem izvan crop-a
+
+Kao u Lightroom-u: vuci bilo gde **izvan** crop-a i fotografija se ispravlja.
+Ide kroz `straightenBinding`, isti koji koristi i slajder, pa se auto-fit crop-a
+izvršava i ovde.
+
+**Ugao, ne pomeraj.** Meri se ugao od centra crop-a do pokazivača i pomera se
+`straightenDegrees` za onoliko koliko se taj ugao okrenuo od početka vučenja —
+zato slika prati ruku, a ne koliko je ruka prešla.
+
+**⚠️ Smer je PROVEREN u rendereru, ne pogođen.** Ekranski Y raste nadole, pa
+`atan2` ovde raste u smeru kazaljke; renderer primenjuje `rotationAngle: -radians`,
+što za pozitivnu vrednost takođe okreće u smeru kazaljke. Dakle preslikava se
+direktno, bez preokretanja znaka. Zapisano jer je rotacija koja ide na pogrešnu
+stranu stvar koja se „popravi" dvaput.
+
+Delta se normalizuje u −180…180, da vučenje preko šava ne prebaci sliku za pola
+kruga. Ispod 20 px od centra se ne reaguje — tamo je ugao šum.
+
+**⚠️ Sloj za rotaciju koristi even-odd `contentShape`, ne pun pravougaonik.**
+Pun pravougaonik bi se preklapao sa površinom za pomeranje i sa ručkama, a dva
+pogleda koja oba primaju isti `onHover` znače dva gurnuta kursora i jedan skinut
+— posle čega je svaki kursor u app-i pogrešan. Isti razlog zbog kog se zatvorena
+šaka gura jednom po vučenju (KORAK 75).
+
+### Rotacioni kursor je nacrtan
+
+macOS ga nema. Crta se jednom i drži: SF Symbol `arrow.clockwise` u belom preko
+crnog obrisa, gde je **obris ono što ga čini upotrebljivim** — kursor stoji NA
+fotografiji, a beo znak nestaje nad peskom i nebom, tačno kao što je nestajao
+prsten clone stamp-a pre nego što je dobio svoju boju.
+
+### ⚠️ NEPROVERENO
+
+Sve. Prevodi se. SD kartica **i dalje nije bila ubačena**, pa nije potvrđeno
+ni da se pojavljuje kao kamera ni da folder put radi na pravoj kartici.
+
+## ⚠️ SLEDEĆE — spisak od 2. septembra uveče (NIŠTA OD OVOGA NIJE URAĐENO)
+
+Zapisano na klijentov zahtev, pre commit-a. Redosled je klijentov.
+
+### 1. ⚠️ ROTACIJA CROP-A NE RADI — i specifikacija je bila POGREŠNO shvaćena
+
+Isporučeno u KORAKU 77, **prijavljeno kao neispravno.** Dve odvojene greške:
+
+**(a) Pogrešan okidač.** Napravljeno je „vuci bilo gde IZVAN crop-a", po ugledu
+na Lightroom. Traženo je drugo: kursor prilazi **IVICAMA CROP-A** — onim
+linijama koje se vide dok je crop alat otvoren — i tu se ikonica menja iz šake u
+rotaciju.
+
+**(b) Pogrešan predmet.** Napravljeno je da rotira **SLIKU**
+(`settings.straightenDegrees`). Klijent doslovno: *„da mogu da rotiram krop (ne
+sliku)"*. Dakle rotira se **okvir crop-a** preko mirne fotografije, sitno gore-dole.
+
+**⚠️ To je nova geometrija, ne podešavanje postojeće.** `EditCropRect` je
+`x/y/width/height` i **nema pojam ugla**. Rotirajući crop znači ili novo polje na
+njemu (i još jedna Codable migracija — pokrenuti
+`Tools/run-editsettings-decode-test.py`), ili preslikavanje u
+`straightenDegrees` sa suprotnim znakom uz istovremeno prepravljanje
+pravougaonika. Prvo je poštenije, drugo je jeftinije. **Pitati klijenta pre
+pisanja.**
+
+**Neproverene sumnje zašto ni ono što JESTE napravljeno nije okinulo** — ne
+trošiti vreme dok se ne izmeri:
+- `Color.clear` sa `contentShape(_, eoFill: true)` možda ne isporučuje `onHover`
+  onako kako je pretpostavljeno;
+- unutrašnji pravougalnik crop-a ima svoj `onHover` (otvorena šaka) i možda guta
+  događaj;
+- sloj možda uopšte nije dobio veličinu kontejnera.
+
+Prvo reprodukovati sa jednim `print`-om u `onHover`, pa tek onda menjati.
+
+### 2. SD kartica da se čita SAMA kad se ubaci
+
+Danas: `ImportSource.folder` postoji i **File ▸ Import… radi ručno** (KORAK 77),
+ali app **ne prati montiranje diskova uopšte** — nema nijednog
+`didMountNotification`. Kamera iskače sama; kartica ne.
+
+Traženo: kartica ubačena dok BriefShow radi otvara isti prozor sama, kao kamera.
+
+Šta to traži: posmatrač `NSWorkspace.didMountNotification`, provera da li na
+novom disku postoji `DCIM`, pa `ImportWindowRequest.shared.pending = .folder(url)`.
+Ista kapija koju kamera već koristi (`camerasAlreadyOffered`), da disk koji je
+BIO priključen pri pokretanju ne iskoči preko onoga što klijent radi.
+
+**⚠️ Otvoreno pitanje, neizmereno:** da li sandbox-ovana app sme da čita
+`/Volumes/...` bez posebnog entitlement-a. Entitlements danas ima
+`files.user-selected.read-write` i `device.usb`, ništa za prenosive diskove. Ako
+ne sme, dodaje se entitlement i **mora se videti na POTPISANOM build-u**, ne u
+Xcode-u — ista klasa greške kao KORAK 35.
+
+**Takođe još neprovereno:** da li ImageCaptureCore uopšte prijavljuje čitač
+kartica kao `ICCameraDevice`. Ako da, prozorčić već radi i posao otpada.
+`Tools/camtest.swift` to rešava jednim pokretanjem, čim se kartica ubaci.
+
+### 3. Prevlačenje fotografija iz mreže u folder u levom drvetu
+
+Traženo: izabrati fotografije u mreži i **prevući ih na bilo koji folder levo**,
+unutar same app-e.
+
+Danas postoji suprotan smer (folder se prevlači U prozor) i postoji Cut/Copy/Paste
+preko menija (`pasteClipboard(into:)`), ali **prevlačenja iz mreže nema**.
+
+Dobra vest: odredište je već napisano — `pasteClipboard(into: node.url)` radi tačan
+posao. Treba `onDrag` na sličici i `onDrop` na redu u `FolderTreeSidebar`.
+
+**⚠️ Odluka za klijenta:** prevlačenje **premešta ili kopira**? Finder premešta
+unutar istog diska, a kopira preko diskova, i drži ⌥ za suprotno. Premeštanje
+fotografija je neповratno ako se promaši folder, pa ovo nije sitnica.
+
+### 4. AI Generative na Intelu — plan pakovanja
+
+Klijentova mašina: i7 3,2 GHz 6 jezgara, 32 GB DDR4-2667, **Radeon Pro 560X 4 GB**.
+Traženo: da se pri pakovanju iskoristi sve što može da ubrza — procesor, grafička,
+RAM — da Intel Mac-ovi mogu Generative.
+
+**⚠️ PRVO ONO ŠTO SE NE MOŽE, da se ne obećava:** **32 GB sistemske memorije se NE
+DODAJE na 4 GB video memorije.** Na Intel Mac-u su to dve odvojene memorije preko
+PCIe. CoreML sme da podeli mrežu između CPU-a i GPU-a (`MLComputeUnits.all`) i to
+je maksimum onoga što „deljenje memorije" ovde znači. Ono što ne stane u 4 GB ide
+na CPU, i tamo je sporo. SD 1.5 na 512×512 u fp16 **staje** u 4 GB, pa to nije
+prepreka — ali RAM neće nadoknaditi grafičku i to ne treba prodavati.
+
+**Redosled, i on je nosiv:**
+
+1. **Hosting težina — PRVI, i nije Intel posao.** `installedDirectory` se u celom
+   projektu **samo čita** (dve linije), nema nijednog `downloadTask`. Dakle SD je
+   mrtav na SVAKOJ klijentskoj mašini, ne samo na Intelu. Ako se uradi samo Intel
+   deo, Intel Mac dobije isti „models missing" kao i svi ostali.
+   **Odlučeno 2.09: GitHub Releases, jedan fajl.** Izmereno: 1,99 GB sirovo,
+   **1,84 GB kao zip / 1,85 GB kao Apple Archive** — staje ispod limita od 2 GiB.
+   (Ovim pada ranije zapisano „2,14 GB, ne može ni kao asset" — bilo je pogrešno.)
+   Arhiva ide kao **Apple Archive**, jer se raspakuje prvoklasnim API-jem bez
+   pokretanja `ditto` procesa iz sandbox-a.
+   **⚠️ Klijent je izričito rekao: pushuje se kao RELEASE na GitHub.**
+2. **`Float16` — drugi.** Postoji samo na arm64; `DevelopSDInpaint.swift` ga
+   koristi na 8 mesta i ceo fajl je iza `#if arch(arm64)`. Rešivo **bez diranja
+   arm64 puta**: `MLMultiArray` sa `dataType: .float16` postoji i na Intelu, samo
+   se ne sme puniti kroz Swift-ov tip `Float16` — puni se preko
+   `vImageConvert_PlanarFtoPlanar16F`, koji na Intelu radi. Ulazi u model ostaju
+   bajt-u-bajt isti, pa se **ništa izmereno na arm64 ne pomera** — što je uslov,
+   jer je izlaz AI Clean Up-a zaključan od 31.08.
+3. **Merenje na klijentovoj mašini — treće, i ono odlučuje.** 12 koraka na
+   512×512 kroz Radeon Pro 560X je realno **minuti, ne sekunde**. Broj se ne
+   pogađa. **Ako ispadne neupotrebljivo sporo, pošten odgovor je da dugme na
+   Intelu ostane isključeno sa razlogom koji piše**, kako je danas.
+
+### 5. Nebo — POSLE svega gore
+
+Dogovoreno da se o njemu odlučuje tek kad se ovo završi. Stanje i tri pravca su u
+„⚠️ SLEDEĆE — NEBO" na vrhu ovog dokumenta i u KORACIMA 66 i 67.
+
+### Stanje pakovanja u trenutku pisanja
+
+`CURRENT_PROJECT_VERSION` podignut **17 → 18** (KORAK 74). `MARKETING_VERSION`
+je 10.1, nedirano. **`latest_version` u BriefControl-u je i dalje 6.0** — niko
+još ne dobija „mora update".

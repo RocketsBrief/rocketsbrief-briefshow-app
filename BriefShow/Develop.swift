@@ -164,6 +164,12 @@ struct PhotoEditSettings: Codable, Equatable {
     var rotationQuarterTurns: Int = 0   // 0...3, applied in 90° steps
     var straightenDegrees: Double = 0   // -45...45, fine rotation
     var crop: EditCropRect?             // nil = uncropped
+    // Which ratio the crop tool is LOCKED to, if any. Stored beside the crop
+    // rather than kept as tool state, because the rectangle alone does not say
+    // whether dragging a handle should hold 4:3 or go free — see
+    // CropAspectRatioOption. Not part of isNeutral, for the same reason the
+    // vignette's shape controls are not: on its own it changes no pixel.
+    var cropAspect: CropAspectRatioOption = .free
     var localAdjustments: [LocalAdjustment] = []   // masks — see LocalAdjustment
     var layers: [ImageLayer] = []        // pasted cut/copied pieces — see ImageLayer
 
@@ -203,6 +209,10 @@ struct PhotoEditSettings: Codable, Equatable {
         rotationQuarterTurns = try c.decodeIfPresent(Int.self, forKey: .rotationQuarterTurns) ?? 0
         straightenDegrees = try c.decodeIfPresent(Double.self, forKey: .straightenDegrees) ?? 0
         crop = try c.decodeIfPresent(EditCropRect.self, forKey: .crop)
+        // Absent from every record written before 2.09. — and .free is what
+        // those photos behaved as, so an old edit decodes to the same photo it
+        // always was, not merely to a photo that decodes.
+        cropAspect = try c.decodeIfPresent(CropAspectRatioOption.self, forKey: .cropAspect) ?? .free
         localAdjustments = try c.decodeIfPresent([LocalAdjustment].self, forKey: .localAdjustments) ?? []
         layers = try c.decodeIfPresent([ImageLayer].self, forKey: .layers) ?? []
     }
@@ -212,7 +222,7 @@ struct PhotoEditSettings: Codable, Equatable {
         case temperature, tint, sharpness, texture, clarity, dehaze, softGlow, vignette
         case vignetteMidpoint, vignetteFeather, vignetteRoundness, sharpenRadius
         case colorMixer
-        case rotationQuarterTurns, straightenDegrees, crop
+        case rotationQuarterTurns, straightenDegrees, crop, cropAspect
         case localAdjustments, layers
     }
 
@@ -347,11 +357,18 @@ struct EditCropRect: Codable, Equatable {
     static let full = EditCropRect(x: 0, y: 0, width: 1, height: 1)
 }
 
-// Quick aspect-ratio presets offered on the crop tool's own row of
-// buttons — not persisted anywhere (EditCropRect itself has no notion of
-// "locked to a ratio"), just a one-shot starting point applied via
-// PhotoEditRenderer... see DevelopView.applyCropAspectRatio.
-private enum CropAspectRatioOption: CaseIterable, Identifiable {
+// Quick aspect-ratio presets offered on the crop tool's own row of buttons.
+//
+// This USED to say "not persisted anywhere", and that was the whole of the
+// 1.09. report: a client synced 4:3 across a shoot, opened one of those photos,
+// dragged a crop handle, and got free-form — because the RECTANGLE travelled
+// and the LOCK did not. It is stored on PhotoEditSettings now, so it survives
+// closing the photo and it rides along with Sync's "Crop & Rotate" category.
+//
+// String raw values, not the synthesized Int ordinals: these end up in a JSON
+// record on the client's disk, and ordinals would silently re-point every
+// stored ratio the day a case is inserted in the middle of this list.
+enum CropAspectRatioOption: String, CaseIterable, Identifiable, Codable {
     case free, square, fourThree, threeFour, sixteenNine, nineSixteen
 
     var id: Self { self }
@@ -4934,6 +4951,11 @@ struct DevelopView: View {
     // right-click "Export…" context menu (exports the whole set when more
     // than one photo is selected) — see handleFilmstripClick/exportSinglePhoto.
     @State private var multiSelectedURLs: Set<URL> = []
+    // Which photos in this folder are marked rejected. A mirror of
+    // PhotoLabelStore, held here because that store is a plain static type with
+    // no way to announce a change — the filmstrip has to be told to redraw, and
+    // @State is what tells it.
+    @State private var rejectedURLs: Set<URL> = []
     // The photo a Shift-click range is measured from — set on every plain
     // or Cmd click, left untouched by Shift-clicks themselves (so repeated
     // Shift-clicks keep extending/shrinking from the same anchor, matching
@@ -4964,6 +4986,16 @@ struct DevelopView: View {
     @State private var isCropping = false
     @State private var pendingCrop: EditCropRect = .full
     @State private var dragStartCrop: EditCropRect?
+    // Whether the closed-hand cursor is currently pushed for a crop move.
+    // Tracked rather than pushed blind, because NSCursor is a STACK: a push on
+    // every onChanged is one push per mouse-move frame, and the single pop on
+    // onEnded would leave hundreds of closed hands stacked up — after which
+    // every other cursor in the app is wrong until relaunch.
+    @State private var isPushingCropMoveCursor = false
+    // Where the rotation drag began: the pointer's angle around the crop's
+    // centre, and the straighten value at that moment. Both nil between drags.
+    @State private var rotateDragStartAngle: Double?
+    @State private var rotateDragStartDegrees: Double?
     // Which aspect-ratio button (if any) is highlighted on the crop tool's
     // own row — purely a UI highlight, not enforced during handle drags
     // (see moveCrop/resizeCrop, which reset it back to .free since a
@@ -5210,6 +5242,11 @@ struct DevelopView: View {
     @State private var layerDragStart: ImageLayer?
     // Which panel tab is showing.
     @State private var panelTab: DevelopPanelTab = .edit
+    // Bumped to ask the panel to scroll the crop section into view. A counter
+    // rather than a Bool or an optional id: pressing Crop twice in a row has to
+    // scroll twice, and a value that is already equal to itself fires no
+    // onChange.
+    @State private var scrollToCropRequest = 0
     // The layer being dragged in the Layers list, by id — an index would go
     // stale the instant the drop reorders the array underneath it.
     @State private var draggingLayerID: UUID?
@@ -5405,6 +5442,15 @@ struct DevelopView: View {
                             .offset(x: eraseProgressPulse * (proxy.size.width - segment))
                     }
                 }
+                // The travelling segment is placed with .offset, and .offset
+                // does NOT participate in layout — an offset view draws
+                // wherever it is put, straight through its parent's bounds,
+                // because SwiftUI clips nothing by default. That is the only
+                // unclipped drawing in this view, and it is what walked out of
+                // the panel and across the photograph. Clipping to the track
+                // makes the escape structurally impossible rather than
+                // depending on the arithmetic staying right.
+                .clipped()
             }
             .frame(height: 6)
             // Animated so the bar slides between diffusion steps instead of
@@ -5462,16 +5508,47 @@ struct DevelopView: View {
             // the one moment the user is not already waiting for a result.
             SDInpaintPipeline.shared.warmUp()
             LaMaInpaintPipeline.shared.warmUp()
+            // Read once here rather than asked per thumbnail per redraw:
+            // PhotoLabelStore.isRejected hits UserDefaults, and the filmstrip
+            // draws every visible cell on every pass.
+            reloadRejectedFlags()
+        }
+        // The folder's contents change under this window — a photo trashed, a
+        // duplicate made — and a stale mirror would leave an X on a thumbnail
+        // that is now a different photo.
+        .onChange(of: photoURLs) { _ in
+            reloadRejectedFlags()
         }
         .onChange(of: settings) { _ in
             scheduleRender()
             scheduleUndoCommit()
         }
-        .onChange(of: pendingCrop) { _ in
-            if isCropping {
-                scheduleRender()
-            }
-        }
+        // pendingCrop deliberately has NO onChange here any more. It used to
+        // call scheduleRender() on every change, which meant every frame of a
+        // crop drag ran the whole preview pipeline — and produced a
+        // BIT-IDENTICAL picture every time.
+        //
+        // The reason it is identical: renderNow() passes
+        // `applyCrop: !isCropping`, so while the crop tool is open the render
+        // ignores the crop completely. pendingCrop is not an input to it at
+        // all. The only inputs are `settings`, `previewBaseImage` and
+        // `showOriginal`, and none of the three moves during a drag.
+        //
+        // What that wasted per drag frame, in order: a full
+        // PhotoEditRenderer.render, a CGImage conversion, a
+        // PhotoEditStore.setSettings write, a luminanceHistogram pass over the
+        // result, and a scheduleRefinedRender() — the FULL-RESOLUTION one.
+        // At scheduleRender's 20ms throttle that is up to fifty of those a
+        // second, for a picture that never changed. That is the reported
+        // "moving or resizing the crop lags a bit".
+        //
+        // Nothing lost: every OTHER writer of pendingCrop either assigns
+        // `settings` in the same breath (undo/redo, flatten, unflatten, bake,
+        // preset, paste, reset) and is covered by the onChange above, or calls
+        // scheduleRender() itself (toggleCropMode entering, commitCrop
+        // leaving) — checked one by one. The ones that do neither
+        // (applyCropAspectRatio, "Reset Crop", the drag) need no render,
+        // because of the first paragraph.
         .onChange(of: showOriginal) { _ in renderNow() }
         .onAppear {
             installEditingKeyMonitor()
@@ -5612,6 +5689,20 @@ struct DevelopView: View {
                 }
                 if ShortcutStore.matches(event, .selectAllPhotos), !photoURLs.isEmpty {
                     selectAllPhotos(); return nil
+                }
+                // Guarded on there being a photo open, like every case above
+                // is guarded on having something to do — with nothing open,
+                // R falls through and stays an ordinary letter.
+                if ShortcutStore.matches(event, .toggleCrop), selectedURL != nil {
+                    toggleCropMode(); return nil
+                }
+                // X marks the filmstrip's photos rejected, exactly as it does
+                // in ShowGrid — same flag, same store, so a photo rejected in
+                // one window is rejected in the other and both windows' bulk
+                // exports skip it.
+                if ShortcutStore.matches(event, .rejectPhoto),
+                   selectedURL != nil || !multiSelectedURLs.isEmpty {
+                    toggleRejectedForFilmstripSelection(); return nil
                 }
             }
 
@@ -6212,6 +6303,7 @@ struct DevelopView: View {
         let isOpen = selectedURL == url
         let isMultiSelected = multiSelectedURLs.contains(url)
         let hasEdits = PhotoEditStore.hasEdits(url)
+        let isRejected = rejectedURLs.contains(url)
 
         return ZStack(alignment: .topTrailing) {
             Group {
@@ -6235,6 +6327,26 @@ struct DevelopView: View {
             }
             .frame(width: filmstripThumbnailSide, height: filmstripThumbnailSide)
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            // Dimmed and flagged, the same way ShowGrid's grid cell shows a
+            // rejected photo. The dim is on the PICTURE only, so the selection
+            // ring and both badges stay at full strength — a strip where the
+            // ring fades too would read as "not selected" rather than
+            // "rejected".
+            .opacity(isRejected ? 0.42 : 1)
+            .overlay(alignment: .bottomLeading) {
+                if isRejected {
+                    // Bottom-left, because top-left is the selection tick and
+                    // top-right is the edits badge. Three marks in a 100pt
+                    // thumbnail need three different corners or they overlap
+                    // into a smear.
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .heavy))
+                        .foregroundColor(AppColors.background)
+                        .padding(3)
+                        .background(Circle().fill(AppColors.ink.opacity(0.92)))
+                        .padding(4)
+                }
+            }
             .overlay(
                 // The open-in-editor photo keeps the original full-opacity
                 // accent ring; a photo that's only part of the multi-select
@@ -6250,21 +6362,26 @@ struct DevelopView: View {
             )
 
             if isMultiSelected {
-                // A previous version painted the WHOLE "checkmark.circle.fill"
-                // glyph (circle AND checkmark together) in a single flat
-                // color via .foregroundColor — with that color being the
-                // pale-yellow accentColor, the result was a low-contrast
-                // near-white blob on light thumbnails, exactly what wasn't
-                // visible. `.palette` rendering mode colors the checkmark
-                // and circle separately so they read as two contrasting
-                // layers regardless of accentColor/theme; a fixed, saturated
-                // blue (independent of accentColor, which stays reserved for
-                // the selection RING) matches the standard macOS "item is
-                // selected" affordance (Finder/Photos) rather than blending
-                // into either theme's own accent.
+                // The SAME ink-on-background pair the edits badge below uses,
+                // and for the same reason it uses it: those two colours are
+                // the app's own text pair, so they are guaranteed to contrast
+                // in every theme, and they follow the theme instead of
+                // standing outside it.
+                //
+                // This was a fixed macOS-blue until 2.09., chosen to match
+                // Finder's and Photos' "item is selected" affordance. The
+                // client asked for it to follow the theme like the badge on
+                // the right does — a blue disc is the one thing in this strip
+                // that belongs to another app's palette rather than to this
+                // one.
+                //
+                // `.palette` stays: it colours the tick and the disc as two
+                // separate layers, which is what keeps the tick readable. A
+                // single flat colour here once produced a near-white blob on
+                // light thumbnails, and that is not worth rediscovering.
                 Image(systemName: "checkmark.circle.fill")
                     .symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, Color(red: 0.13, green: 0.47, blue: 0.98))
+                    .foregroundStyle(AppColors.background, AppColors.ink.opacity(0.92))
                     .font(.system(size: 15))
                     .shadow(color: .black.opacity(0.5), radius: 1.5)
                     .padding(4)
@@ -6576,6 +6693,20 @@ struct DevelopView: View {
 
             HStack(spacing: 8) {
                 beforeAfterButton
+
+                // Crop lives up here for the same reason Reset does, and it
+                // was reported the same way: it was a bare icon, third in a
+                // row, inside the "Crop & Rotate" section — reachable only by
+                // scrolling to it and knowing which section it had been filed
+                // under. Lightroom keeps crop in a strip directly under the
+                // histogram that never scrolls away, and that is the standard
+                // the client is comparing against.
+                //
+                // The one in "Crop & Rotate" STAYS. It is the same state
+                // (isCropping), not a second mode, and the client has already
+                // learned where it is — taking it away to avoid a duplicate
+                // would be fixing the report by breaking the habit.
+                cropHeaderButton
 
                 // Reset lives up here, beside Done, because it acts on the
                 // WHOLE photo — the same scope as Done — and because a client
@@ -7292,6 +7423,28 @@ struct DevelopView: View {
             )
     }
 
+    // Named, not a bare icon: this sits in a row of words (Before / After,
+    // Reset, Done) and an unlabelled glyph among them reads as decoration.
+    // The icon stays alongside the word so it is still findable by shape.
+    private var cropHeaderButton: some View {
+        Button {
+            toggleCropMode()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "crop")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Crop")
+            }
+        }
+        .buttonStyle(ShowHeaderButtonStyle())
+        .foregroundColor(isCropping ? AppColors.hoverInk : AppColors.ink)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isCropping ? AppColors.panelAlt : Color.clear)
+        )
+        .help("Crop and straighten this photo.")
+    }
+
     // MARK: Center preview + crop overlay
 
     private var centerPreview: some View {
@@ -7633,6 +7786,69 @@ struct DevelopView: View {
         var isEdge: Bool { self == .top || self == .bottom || self == .left || self == .right }
     }
 
+    /// The rotate cursor.
+    ///
+    /// macOS ships no rotate cursor, so this is drawn: an SF Symbol arrow in
+    /// white over a black outline. The outline is what makes it usable — this
+    /// cursor lives ON the photograph, and a plain white glyph disappears over
+    /// sand or sky exactly the way the clone-stamp ring did before it was given
+    /// its own hue (see patchSourceColor).
+    ///
+    /// Built once and held: NSCursor(image:) rasterises, and doing that on
+    /// every hover would be per-frame work for a picture that never changes.
+    private static let rotateCursor: NSCursor = {
+        let side: CGFloat = 26
+        let canvas = NSImage(size: NSSize(width: side, height: side))
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .bold)
+        let symbol = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)?
+            .withSymbolConfiguration(config)
+
+        canvas.lockFocus()
+        if let symbol {
+            let size = symbol.size
+            let origin = NSPoint(x: (side - size.width) / 2, y: (side - size.height) / 2)
+            let box = NSRect(origin: origin, size: size)
+
+            // Outline first: the same glyph drawn at eight offsets in black,
+            // which is cheaper and sharper than a shadow and does not bleed.
+            NSColor.black.set()
+            for dx in [-1.0, 0.0, 1.0] as [CGFloat] {
+                for dy in [-1.0, 0.0, 1.0] as [CGFloat] where !(dx == 0 && dy == 0) {
+                    symbol.draw(in: box.offsetBy(dx: dx, dy: dy),
+                                from: .zero, operation: .sourceOver, fraction: 1,
+                                respectFlipped: true,
+                                hints: [.interpolation: NSImageInterpolation.high.rawValue])
+                }
+            }
+            symbol.isTemplate = true
+            NSColor.white.set()
+            symbol.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1,
+                        respectFlipped: true,
+                        hints: [.interpolation: NSImageInterpolation.high.rawValue])
+        }
+        canvas.unlockFocus()
+
+        return NSCursor(image: canvas, hotSpot: NSPoint(x: side / 2, y: side / 2))
+    }()
+
+    /// Everything OUTSIDE the crop, as one even-odd shape.
+    ///
+    /// Used as the rotation layer's `contentShape`, so that layer takes hover
+    /// and drags only where the crop is not. A plain full-size rectangle would
+    /// overlap the move area and the handles, and two views both claiming the
+    /// same hover means two cursors pushed and one popped — after which every
+    /// cursor in the app is wrong.
+    private struct CropOutsideShape: Shape {
+        let hole: CGRect
+
+        func path(in rect: CGRect) -> Path {
+            var path = Path()
+            path.addRect(rect)
+            path.addRect(hole)
+            return path
+        }
+    }
+
     private func cropOverlay(frame: CGRect, containerSize: CGSize) -> some View {
         let rect = CGRect(
             x: frame.minX + pendingCrop.x * frame.width,
@@ -7651,21 +7867,128 @@ struct DevelopView: View {
             .fill(Color.black.opacity(0.55), style: FillStyle(eoFill: true))
             .allowsHitTesting(false)
 
+            // Drag anywhere OUTSIDE the crop to straighten, the way Lightroom
+            // does it. Nothing is drawn here — the darkening above already
+            // shows what this region is — it only takes the cursor and the
+            // drag.
+            //
+            // Placed BEFORE the crop rectangle and the handles: a ZStack gives
+            // a gesture to the last view that claims it, so those two win where
+            // they overlap, and the even-odd contentShape below keeps this one
+            // from claiming their area in the first place.
+            Color.clear
+                .contentShape(CropOutsideShape(hole: rect), eoFill: true)
+                .onHover { inside in
+                    if inside {
+                        Self.rotateCursor.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
+                .gesture(
+                    // Named space, not local: this view is the whole container,
+                    // and the angle is measured from the crop's centre to the
+                    // pointer — both of which have to be in the same
+                    // coordinates as `rect`.
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.cropOverlaySpace))
+                        .onChanged { value in
+                            rotateCrop(to: value.location, around: CGPoint(x: rect.midX, y: rect.midY))
+                        }
+                        .onEnded { _ in
+                            rotateDragStartAngle = nil
+                            rotateDragStartDegrees = nil
+                        }
+                )
+
             Rectangle()
                 .stroke(Color.white, lineWidth: 1.0)
                 .frame(width: rect.width, height: rect.height)
                 .position(x: rect.midX, y: rect.midY)
                 .contentShape(Rectangle())
+                // Open hand over the crop, closed hand while it is being
+                // dragged — the same pair the Space-to-pan layer uses further
+                // up this file, and the same thing every other editor does with
+                // a box you can pick up and move.
+                //
+                // push/pop rather than .set, so the cursor goes back to
+                // whatever it was instead of leaving a hand behind over the
+                // rest of the photo.
+                .onHover { inside in
+                    if inside {
+                        NSCursor.openHand.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
                 .gesture(
                     DragGesture()
-                        .onChanged { value in moveCrop(by: value.translation, frame: frame) }
-                        .onEnded { _ in dragStartCrop = nil }
+                        .onChanged { value in
+                            // Pushed ONCE per drag, guarded — see
+                            // isPushingCropMoveCursor for what pushing per
+                            // frame would do to the cursor stack.
+                            if !isPushingCropMoveCursor {
+                                isPushingCropMoveCursor = true
+                                NSCursor.closedHand.push()
+                            }
+                            moveCrop(by: value.translation, frame: frame)
+                        }
+                        .onEnded { _ in
+                            if isPushingCropMoveCursor {
+                                isPushingCropMoveCursor = false
+                                NSCursor.pop()
+                            }
+                            dragStartCrop = nil
+                        }
                 )
 
             ForEach(CropHandle.allCases, id: \.self) { handle in
                 cropHandleView(handle, rect: rect, frame: frame)
             }
         }
+        .coordinateSpace(name: Self.cropOverlaySpace)
+    }
+
+    private static let cropOverlaySpace = "develop.cropOverlay"
+
+    /// Straightens by dragging outside the crop.
+    ///
+    /// Measures the ANGLE from the crop's centre to the pointer and moves
+    /// `straightenDegrees` by however much that angle has turned since the drag
+    /// began — so the photograph follows the hand rather than following how far
+    /// the hand moved, which is what makes a rotation drag feel like a rotation
+    /// and not like a slider.
+    private func rotateCrop(to location: CGPoint, around centre: CGPoint) {
+        let dx = location.x - centre.x
+        let dy = location.y - centre.y
+        // Too close to the centre and the angle is noise — a pixel of movement
+        // swings it through ninety degrees.
+        guard dx * dx + dy * dy > 400 else { return }
+
+        // Screen Y grows downward, so atan2 here increases CLOCKWISE. The
+        // renderer applies `rotationAngle: -radians`, which also turns the
+        // picture clockwise for a positive value — so this maps straight
+        // across with no sign flip. Checked against PhotoEditRenderer rather
+        // than guessed, because a rotation that goes the wrong way is the kind
+        // of thing that gets "fixed" twice.
+        let angle = atan2(dy, dx) * 180 / .pi
+
+        guard let startAngle = rotateDragStartAngle,
+              let startDegrees = rotateDragStartDegrees else {
+            rotateDragStartAngle = angle
+            rotateDragStartDegrees = settings.straightenDegrees
+            return
+        }
+
+        // Normalised into -180...180 so a drag across the ±180 seam does not
+        // snap the photo through half a turn.
+        var delta = angle - startAngle
+        while delta > 180 { delta -= 360 }
+        while delta < -180 { delta += 360 }
+
+        // Through the same binding the Straighten slider uses, so the crop
+        // auto-fit runs here too — see straightenBinding for why that is a
+        // binding rather than a blanket onChange.
+        straightenBinding.wrappedValue = min(max(startDegrees + delta, -45), 45)
     }
 
     private func cropHandleView(_ handle: CropHandle, rect: CGRect, frame: CGRect) -> some View {
@@ -7728,6 +8051,41 @@ struct DevelopView: View {
     // convert a target width:height ratio (e.g. 4:3) into the right
     // width/height FRACTIONS for EditCropRect, since fraction space isn't
     // the same shape as pixel space unless the image itself is square.
+    /// Which preset a crop that is ALREADY on the photo matches, if any.
+    ///
+    /// Needed because `settings.cropAspect` only tells you the ratio someone
+    /// chose THROUGH THIS TOOL. A photo can arrive at a perfectly good 4:3 crop
+    /// without that ever having happened: synced from another photo by a build
+    /// that had nowhere to put the lock, cropped by an older version, or
+    /// carried in on a preset. The client's report is exactly that case — "the
+    /// photo IS cropped 4:3, but the row says Free, so dragging a handle goes
+    /// free-form".
+    ///
+    /// So the rectangle is asked as well as the record. The rectangle is the
+    /// thing the client can see, and it should be believed.
+    ///
+    /// Tolerance is 1%: the presets are far apart (0.75, 1, 1.33, 1.78) so
+    /// nothing can be mistaken for its neighbour, while a crop that went
+    /// through fraction space and a bounds clamp is allowed to be a hair off
+    /// without being called free-form.
+    private func inferredCropAspect(from crop: EditCropRect) -> CropAspectRatioOption {
+        guard let imagePixelRatio = currentImagePixelRatio, imagePixelRatio > 0,
+              crop.width > 0, crop.height > 0 else {
+            return .free
+        }
+        // crop.width/height are fractions OF THE IMAGE, so the real ratio is
+        // that shape times the image's own pixel ratio — the same conversion
+        // resizeCrop does in the other direction.
+        let actual = (crop.width / crop.height) * imagePixelRatio
+        for option in CropAspectRatioOption.allCases {
+            guard let ratio = option.ratio, ratio > 0 else { continue }
+            if abs(actual - ratio) / ratio < 0.01 {
+                return option
+            }
+        }
+        return .free
+    }
+
     private var currentImagePixelRatio: Double? {
         guard let base = previewBaseImage else {
             return nil
@@ -9419,6 +9777,7 @@ struct DevelopView: View {
 
             Divider()
 
+            ScrollViewReader { panelScroll in
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     switch panelTab {
@@ -9432,6 +9791,7 @@ struct DevelopView: View {
                         Divider()
 
                         cropRotateSection
+                            .id(Self.cropSectionAnchor)
 
                         Divider()
 
@@ -9478,6 +9838,21 @@ struct DevelopView: View {
                     panelFooter
                 }
                 .padding(18)
+            }
+            // Pressing Crop in the header used to leave the client to find the
+            // ratio buttons themselves — they sit inside "Crop & Rotate", far
+            // enough down the panel to be off screen. The tool is on; the
+            // controls for it should be where the eye already went.
+            //
+            // Animated, because a panel that jumps has not told anyone where it
+            // went. anchor .top puts the section's own heading at the top of
+            // the scroll rather than centring it, so what is under the cursor
+            // afterwards is the section that was asked for.
+            .onChange(of: scrollToCropRequest) { _ in
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    panelScroll.scrollTo(Self.cropSectionAnchor, anchor: .top)
+                }
+            }
             }
         }
         .frame(width: CGFloat(effectivePanelWidth))
@@ -12294,6 +12669,11 @@ struct DevelopView: View {
     private func resetAllSettings() {
         settings = PhotoEditSettings()
         pendingCrop = .full
+        // Cleared alongside settings.cropAspect, which the line above just put
+        // back to .free. Without this, pressing Reset with the crop tool OPEN
+        // would leave 4:3 lit in the ratio row — and commitCrop would then
+        // write that stale lock straight back over the reset.
+        selectedCropAspectRatio = .free
         cropIsAutoFitted = false
         selectedLocalAdjustmentID = nil
         activeSelection = nil
@@ -13117,6 +13497,10 @@ struct DevelopView: View {
             result.rotationQuarterTurns = source.rotationQuarterTurns
             result.straightenDegrees = source.straightenDegrees
             result.crop = source.crop
+            // The lock travels with the rectangle. Syncing one without the
+            // other is what the client hit: every target got the 4:3 box and
+            // none of them knew to hold 4:3 when a handle was dragged.
+            result.cropAspect = source.cropAspect
         }
         if categories.contains(.light) {
             result.exposure = source.exposure
@@ -13383,16 +13767,47 @@ struct DevelopView: View {
         settings.rotationQuarterTurns = ((settings.rotationQuarterTurns + delta) % 4 + 4) % 4
     }
 
+    private static let cropSectionAnchor = "develop.section.cropRotate"
+
     private func toggleCropMode() {
         if isCropping {
             commitCrop()
         } else {
+            // The ratio buttons live in the Edit tab. Opening the tool from the
+            // header while Retouch is showing would scroll a panel that does
+            // not contain the section at all, so the tab is switched first.
+            panelTab = .edit
+            // One runloop turn, so the switch above has actually put the
+            // section in the tree before it is asked to scroll to it.
+            DispatchQueue.main.async { scrollToCropRequest += 1 }
             pendingCrop = settings.crop ?? .full
             isCropping = true
             selectedLocalAdjustmentID = nil
             activeSelection = nil
             selectedLayerID = nil
-            selectedCropAspectRatio = .free
+            // Restored, not reset. This line WAS `= .free`, and that is the
+            // reported bug: a photo synced to 4:3 opened its crop tool with no
+            // lock at all, so the first handle drag went free-form.
+            //
+            // The stored lock wins when there is one. When there is not — and
+            // there is not on any photo synced or cropped before 2.09., which
+            // is every photo the client already has — the RECTANGLE is asked
+            // instead. A photo sitting at a clean 4:3 opens locked to 4:3
+            // whether or not anyone ever recorded that, because that is what
+            // the client can see on screen.
+            //
+            // Only when a crop actually exists. An UNCROPPED photo stays Free
+            // even if the frame itself happens to be 4:3: there the ratio is
+            // the camera's, not a decision anyone made, and locking to it would
+            // silently take free-form dragging away from every photo shot on a
+            // 4:3 body.
+            if settings.cropAspect != .free {
+                selectedCropAspectRatio = settings.cropAspect
+            } else if let existingCrop = settings.crop {
+                selectedCropAspectRatio = inferredCropAspect(from: existingCrop)
+            } else {
+                selectedCropAspectRatio = .free
+            }
             deactivateRemoveBrush()
             scheduleRender()
         }
@@ -13400,6 +13815,12 @@ struct DevelopView: View {
 
     private func commitCrop() {
         settings.crop = (pendingCrop == .full) ? nil : pendingCrop
+        // Written HERE and not on every ratio-button tap, deliberately: tapping
+        // through the row would otherwise write `settings` six times, and an
+        // onChange on `settings` re-renders the photograph. The lock is stored
+        // at the same moment as the rectangle it produced, which is also the
+        // only moment the two can disagree.
+        settings.cropAspect = selectedCropAspectRatio
         // The user just went through the crop tool themselves — even if
         // they landed back on the auto-fitted rect, further Straighten
         // drags shouldn't override their choice anymore.
@@ -13786,6 +14207,13 @@ struct DevelopView: View {
         panel.nameFieldStringValue = selectedURL.deletingPathExtension().lastPathComponent
             + " Edited." + format.fileExtension
         panel.canCreateDirectories = true
+        // Exported anyway, and SAID so — decided 1.09. Pressing Export with one
+        // named photo open is a statement of intent, not an oversight, and
+        // refusing would mean un-rejecting a photo just to get one file out.
+        // The bulk exports still skip rejected photos without asking.
+        if PhotoLabelStore.isRejected(selectedURL) {
+            panel.message = "This photo is marked rejected. Exporting it anyway."
+        }
 
         guard panel.runModal() == .OK, let destinationURL = panel.url else {
             return
@@ -13836,6 +14264,11 @@ struct DevelopView: View {
         panel.nameFieldStringValue = url.deletingPathExtension().lastPathComponent
             + " Edited." + format.fileExtension
         panel.canCreateDirectories = true
+        // Same single-photo rule as exportEditedCopy: one named photo, asked
+        // for by name, goes out with a warning rather than being refused.
+        if PhotoLabelStore.isRejected(url) {
+            panel.message = "This photo is marked rejected. Exporting it anyway."
+        }
 
         guard panel.runModal() == .OK, let destinationURL = panel.url else {
             return
@@ -13867,6 +14300,58 @@ struct DevelopView: View {
         }
     }
 
+    /// Marks or unmarks the filmstrip's current photos as rejected.
+    ///
+    /// The same flag ShowGrid's X sets — one store, so a photo rejected while
+    /// reviewing the grid is still rejected here, and the bulk exports below
+    /// skip it either way.
+    ///
+    /// Acts on the multi-selection when there is one, otherwise on the photo
+    /// that is open. That is the same target rule the rest of this window uses
+    /// for anything that acts on "the photos I mean".
+    private func toggleRejectedForFilmstripSelection() {
+        let targets = multiSelectedURLs.isEmpty
+            ? [selectedURL].compactMap { $0 }
+            : photoURLs.filter { multiSelectedURLs.contains($0) }
+        guard !targets.isEmpty else { return }
+
+        // One decision for the whole set, taken from the first photo, so a
+        // mixed selection is brought together rather than inverted photo by
+        // photo — the same rule cycleRating uses in ShowGrid.
+        let shouldReject = !rejectedURLs.contains(targets[0])
+        for url in targets {
+            if shouldReject {
+                rejectedURLs.insert(url)
+            } else {
+                rejectedURLs.remove(url)
+            }
+            PhotoLabelStore.setRejected(shouldReject, for: url)
+        }
+    }
+
+    private func reloadRejectedFlags() {
+        rejectedURLs = Set(photoURLs.filter { PhotoLabelStore.isRejected($0) })
+    }
+
+    /// Drops rejected photos out of a bulk export, and says how many went.
+    ///
+    /// Bulk only. A client who presses Export with ONE photo open and that
+    /// photo rejected gets it exported anyway, with a warning — decided 1.09.:
+    /// pressing export on a single named photo is a statement of intent, not
+    /// an oversight, and refusing it would mean un-rejecting a photo just to
+    /// get one file out. That case is handled at its own call site, not here.
+    private func withoutRejected(_ urls: [URL]) -> (kept: [URL], skipped: Int) {
+        let kept = urls.filter { !PhotoLabelStore.isRejected($0) }
+        return (kept, urls.count - kept.count)
+    }
+
+    /// The one line the export panel adds when photos are being left out.
+    private func rejectedSkipNotice(_ skipped: Int) -> String {
+        skipped == 0
+            ? ""
+            : "\n\n\(skipped) rejected photo\(skipped == 1 ? " is" : "s are") being skipped."
+    }
+
     // Right-click "Export N Selected…" when the right-clicked thumbnail is
     // part of a larger (Cmd/Shift) multi-select — same one-folder-picker
     // shape as exportAllEditedPhotos below, but for exactly the given set of
@@ -13879,6 +14364,9 @@ struct DevelopView: View {
         // the file being written.
         let format = exportFormat
         let quality = exportQuality
+        // Filtered BEFORE the panel opens, so the count in its message is the
+        // count of files the client will actually find in the folder.
+        let (urls, skippedRejected) = withoutRejected(urls)
         guard !urls.isEmpty else {
             return
         }
@@ -13890,6 +14378,7 @@ struct DevelopView: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Export"
         panel.message = "Choose a folder for the \(urls.count) selected photo\(urls.count == 1 ? "" : "s")"
+            + rejectedSkipNotice(skippedRejected)
 
         guard panel.runModal() == .OK, let destinationFolder = panel.url else {
             return
@@ -13950,7 +14439,8 @@ struct DevelopView: View {
         // the file being written.
         let format = exportFormat
         let quality = exportQuality
-        let editedURLs = photoURLs.filter { PhotoEditStore.hasEdits($0) }
+        let (editedURLs, skippedRejected) =
+            withoutRejected(photoURLs.filter { PhotoEditStore.hasEdits($0) })
         guard !editedURLs.isEmpty else {
             return
         }
@@ -13962,6 +14452,7 @@ struct DevelopView: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Export"
         panel.message = "Choose a folder for the \(editedURLs.count) edited photo\(editedURLs.count == 1 ? "" : "s")"
+            + rejectedSkipNotice(skippedRejected)
 
         guard panel.runModal() == .OK, let destinationFolder = panel.url else {
             return

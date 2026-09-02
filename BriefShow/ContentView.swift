@@ -20962,6 +20962,29 @@ final class ShowGridWindowController {
 
         windowController = NSWindowController(window: window)
     }
+
+    /// How many physical pixels this window paints per point — 2 on Retina,
+    /// 1 on an external 1x display, and it CHANGES when the window is dragged
+    /// between the two.
+    ///
+    /// Read from the window rather than from `NSScreen.main` because
+    /// `NSScreen.main` is the screen with the key window, which is not
+    /// necessarily the screen ShowGrid is on. The loupe decodes to a pixel
+    /// size derived from this, so getting it wrong means decoding at half
+    /// resolution and blaming the file.
+    var backingScaleFactor: CGFloat? {
+        windowController?.window?.backingScaleFactor
+    }
+
+    /// The ShowGrid window's content area, in points.
+    ///
+    /// Read by anything presented INSIDE this window that has to fit in it —
+    /// a sheet gets no geometry from its presenter, so a sheet with a hard
+    /// minimum size simply spills over the window's edges and out onto the
+    /// desktop. See CameraImportView.
+    var contentSize: CGSize? {
+        windowController?.window?.contentView?.bounds.size
+    }
 }
 
 // Reads the NSWindow hosting a SwiftUI view — used only to hand that
@@ -21072,8 +21095,36 @@ struct PhotoShowSheet: View {
 
     @State private var photoURLs: [URL] = []
     @State private var gridThumbnails: [URL: NSImage] = [:]
+    // How wide the folder tree on the left is. @AppStorage, so a client who
+    // works with deeply nested job folders sets it once and it is still that
+    // wide next launch — the whole point of the request was that names like
+    // "325 Playa de Palma" were arriving as "325 Pl…".
+    @AppStorage("showgrid.layout.sidebarWidth") private var sidebarWidth: Double = 260
+    // Live width DURING a drag, kept apart from the stored one. Writing
+    // @AppStorage on every mouse-move frame means a UserDefaults write per
+    // frame; this holds the in-flight value and only the final one is stored.
+    // Same split LumenoLab's panel uses — see KORAK 46, where writing through
+    // on every frame was half of why that drag shook.
+    @State private var sidebarWidthLive: Double?
+    @State private var sidebarWidthAtDragStart: Double?
+
+    private static let sidebarMinWidth: Double = 180
+    private static let sidebarMaxWidth: Double = 560
+
+    private var effectiveSidebarWidth: Double { sidebarWidthLive ?? sidebarWidth }
+
     @State private var loupeImages: [URL: NSImage] = [:]
+    // The pixel size each loupe image was decoded at. Without this, the first
+    // window size the loupe was ever opened at would be the sharpest that
+    // photo ever gets — loupeImages survives the loupe being closed, so a
+    // plain "already loaded?" check would never re-decode after a resize.
+    @State private var loupeImagePixelSizes: [URL: CGFloat] = [:]
     @State private var likedURLs: Set<URL> = []
+    // Lightroom's reject flag. Deliberately NOT "deleted": a rejected photo
+    // stays in the folder and in the grid, it just carries a mark and is
+    // skipped by every bulk export. Throwing it away is Delete's job, and
+    // Delete asks first.
+    @State private var rejectedURLs: Set<URL> = []
     @State private var ratings: [URL: Int] = [:]
     @State private var selectedURLs: Set<URL> = []
 
@@ -21145,7 +21196,7 @@ struct PhotoShowSheet: View {
     // Which camera the import window is open on, if any. Set either by
     // clicking the camera in the sidebar or, for a camera that is newly
     // connected, by the app itself — see onReceive below.
-    @State private var importingCamera: ConnectedCamera?
+    @State private var importingSource: ImportSource?
 
     // Cameras that have already opened the import window once in this run, so
     // dismissing it does not have it immediately reopen itself while the
@@ -21253,9 +21304,9 @@ struct PhotoShowSheet: View {
                             onTrashFolder: requestTrashFolder
                         )
                     }
-                    .frame(width: 260)
+                    .frame(width: CGFloat(effectiveSidebarWidth))
 
-                    Divider()
+                    sidebarResizeHandle
                 }
 
                 VStack(spacing: 0) {
@@ -21304,12 +21355,17 @@ struct PhotoShowSheet: View {
                 VStack {
                     HStack {
                         // Leading padding accounts for the folder-tree
-                        // sidebar's width (260) plus its divider, so this
+                        // sidebar's width plus its drag handle, so this
                         // lands under the "BriefShow" wordmark in the main
                         // content area instead of covering the tree next
                         // to it, on the window's actual left edge.
+                        //
+                        // Computed, not the literal 284 it used to be: that
+                        // was the old fixed 260 written down a SECOND time, by
+                        // hand, and the moment the sidebar became draggable it
+                        // would have been wrong at every width but one.
                         ShowGridShortcutsHoverCard()
-                            .padding(.leading, 284)
+                            .padding(.leading, CGFloat(effectiveSidebarWidth) + 24)
                             .padding(.top, 46)
 
                         Spacer()
@@ -21416,6 +21472,22 @@ struct PhotoShowSheet: View {
             }
         )
         .onDisappear { removeKeyMonitor() }
+        // A folder dropped on the Dock icon, or opened through Finder's
+        // "Open With". Deliberately the SAME two lines the window's own
+        // .onDrop below runs for a dropped folder — that path already works,
+        // and a second way of opening a folder would be a second way for it to
+        // be wrong.
+        //
+        // .onReceive on the publisher, not .onChange: a publisher delivers its
+        // current value the moment this subscribes, so a folder that arrived
+        // while the app was still launching — the ordinary case for a drop on
+        // the icon of an app that was not running — is picked up here rather
+        // than being missed for having happened too early.
+        .onReceive(ExternalFolderOpen.shared.$pendingFolder.compactMap { $0 }) { folder in
+            ExternalFolderOpen.shared.pendingFolder = nil
+            refreshFolderTree()
+            selectedFolderURL = folder
+        }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             loadDroppedFileURLs(from: providers) { urls in
                 // Dragging a single whole folder in opens it exactly like
@@ -21471,14 +21543,14 @@ struct PhotoShowSheet: View {
         // ALREADY attached when the app launched from doing it, since that one
         // is not a thing the client just did.
         .onReceive(cameraBrowser.$lastConnectedCamera) { camera in
-            guard let camera, importingCamera == nil else { return }
+            guard let camera, importingSource == nil else { return }
             guard !camerasAlreadyOffered.contains(camera.id) else { return }
             camerasAlreadyOffered.insert(camera.id)
-            importingCamera = camera
+            importingSource = .camera(camera)
         }
-        .sheet(item: $importingCamera) { camera in
+        .sheet(item: $importingSource) { source in
             CameraImportView(
-                camera: camera,
+                source: source,
                 initialDestination: selectedFolderURL,
                 onImported: { folder in
                     // The imported folder becomes the open folder, so the
@@ -21488,11 +21560,86 @@ struct PhotoShowSheet: View {
                     refreshFolderTree()
                     selectedFolderURL = folder
                 },
-                onClose: { importingCamera = nil })
+                onClose: { importingSource = nil },
+                // Swapping the sheet's item rebuilds the whole view, which is
+                // what a new source needs: the session is created in init and
+                // holds a camera open, so it cannot be repointed in place.
+                onSourceChosen: { newSource in
+                    importingSource = nil
+                    // One runloop turn, so the old sheet is fully dismissed and
+                    // its session closed before the new one claims the window.
+                    // Presenting straight over it leaves two sheets racing and
+                    // the camera locked to the one that lost.
+                    DispatchQueue.main.async { importingSource = newSource }
+                })
+        }
+        // File ▸ Import…, and anything else that asks for the import window
+        // from outside this view. Same holding-place pattern as
+        // ExternalFolderOpen, and for the same reason — a menu command has no
+        // way to reach into a SwiftUI view.
+        .onReceive(ImportWindowRequest.shared.$pending.compactMap { $0 }) { source in
+            ImportWindowRequest.shared.pending = nil
+            importingSource = source
         }
     }
 
     // MARK: Cameras
+
+    // The line between the folder tree and the grid. It IS the Divider that
+    // used to be here — same 1pt hairline, so nothing looks different until
+    // the cursor reaches it — with a 7pt transparent hit area centred on it,
+    // because a 1pt drag target is a target the client hunts for.
+    //
+    // Built the same way LumenoLab's panelResizeHandle is, deliberately: that
+    // one had two separate reasons for shaking and both are already fixed
+    // there (KORAK 46). A second, independently-written splitter would have
+    // been a second chance to make the same two mistakes.
+    private var sidebarResizeHandle: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 7)
+            .overlay(
+                Rectangle()
+                    .fill(AppColors.border)
+                    .frame(width: 1)
+            )
+            .contentShape(Rectangle())
+            .onHover { inside in
+                // push/pop rather than .set, so the cursor goes back to
+                // whatever was under it instead of leaving resize arrows
+                // behind over the photo grid.
+                if inside {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            // .global, not the default local space. The gesture is attached to
+            // the handle, and the handle MOVES as a result of the drag — in
+            // local coordinates that is a feedback loop, because each frame's
+            // translation is measured from a view the previous frame just
+            // displaced. Global coordinates are fixed to the window.
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .onChanged { value in
+                        let start = sidebarWidthAtDragStart ?? sidebarWidth
+                        sidebarWidthAtDragStart = start
+                        // Plus: this panel is on the LEFT, so dragging its
+                        // edge right (positive translation) makes it wider.
+                        // LumenoLab's is minus for the mirror-image reason.
+                        sidebarWidthLive = min(max(start + value.translation.width,
+                                                   Self.sidebarMinWidth),
+                                               Self.sidebarMaxWidth)
+                    }
+                    .onEnded { _ in
+                        if let live = sidebarWidthLive {
+                            sidebarWidth = live
+                        }
+                        sidebarWidthAtDragStart = nil
+                        sidebarWidthLive = nil
+                    }
+            )
+    }
 
     private var cameraSourcesSection: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -21506,7 +21653,7 @@ struct PhotoShowSheet: View {
 
             ForEach(cameraBrowser.cameras) { camera in
                 Button {
-                    importingCamera = camera
+                    importingSource = .camera(camera)
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "camera.fill")
@@ -21740,19 +21887,28 @@ struct PhotoShowSheet: View {
         photoURLs.filter { (ratings[$0] ?? 0) > 0 }.count
     }
 
-    /// "184 photos · 12 labeled · 5 starred" — the same words, and the same
-    /// two sets, as the Export Labeled / Export Starred buttons next to it.
+    /// "184 photos · 12 labeled · 5 starred · 9 rejected" — the same words,
+    /// and the same sets, as the Export Labeled / Export Starred buttons next
+    /// to it.
+    ///
+    /// The rejected count is here for one reason: the exports beside it stay
+    /// silently short while it is above zero, and a number the client can see
+    /// before pressing Export is worth more than an explanation afterwards.
     private var gridCountsSummary: String {
         var parts = ["\(photoURLs.count) photos", "\(likedURLs.count) labeled"]
         let starred = starredCount
         if starred > 0 {
             parts.append("\(starred) starred")
         }
+        let rejected = rejectedURLs.intersection(photoURLs).count
+        if rejected > 0 {
+            parts.append("\(rejected) rejected")
+        }
         return parts.joined(separator: " · ")
     }
 
     private var hasLabelsOrRatings: Bool {
-        !likedURLs.isEmpty || hasStarredPhotos
+        !likedURLs.isEmpty || hasStarredPhotos || !rejectedURLs.isEmpty
     }
 
     private var currentYear: Int {
@@ -22103,6 +22259,26 @@ struct PhotoShowSheet: View {
             }
             .frame(width: cellWidth, height: thumbnailSize)
             .clipShape(RoundedRectangle(cornerRadius: 10))
+            // A rejected photo is dimmed and flagged, the way Lightroom dims
+            // one. Dimmed rather than hidden: it is still in the folder, still
+            // clickable, and still there to be un-rejected — hiding it would
+            // be Delete's job, and Delete asks first.
+            //
+            // The dim goes on the picture only, not on the whole cell, so the
+            // stars and the label circle underneath stay readable — a client
+            // scanning for what to un-reject is reading exactly those.
+            .opacity(rejectedURLs.contains(url) ? 0.42 : 1)
+            .overlay(alignment: .topLeading) {
+                if rejectedURLs.contains(url) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .heavy))
+                        .foregroundColor(.white)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.black.opacity(0.72)))
+                        .overlay(Circle().stroke(Color.white.opacity(0.85), lineWidth: 1.5))
+                        .padding(8)
+                }
+            }
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(isSelected ? selectionBorderColor : AppColors.border.opacity(0.6), lineWidth: isSelected ? 3 : 1)
@@ -22375,6 +22551,11 @@ struct PhotoShowSheet: View {
             let rowSpacing: CGFloat = 18
             let rowHeight = (proxy.size.height - rowSpacing * CGFloat(max(0, rows.count - 1)))
                 / CGFloat(max(1, rows.count))
+            // The widest row decides the cell width, since every row is laid
+            // out across the same full width.
+            let columns = CGFloat(max(1, rows.map(\.count).max() ?? 1))
+            let cellWidth = (proxy.size.width - 18 * (columns - 1)) / columns
+            let cell = CGSize(width: max(cellWidth, 1), height: max(rowHeight, 1))
 
             VStack(spacing: rowSpacing) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, rowURLs in
@@ -22386,6 +22567,25 @@ struct PhotoShowSheet: View {
                     }
                     .frame(height: rowHeight)
                 }
+            }
+            // Decoding is driven from HERE, not from openLoupe, because this
+            // is the only place that knows how big the photo will actually be
+            // drawn. openLoupe used to ask for a flat 2000px, which on a
+            // Retina window ~1500pt wide is 3000 physical pixels of demand
+            // against 2000 pixels of image — a 1.5x upscale, reported as
+            // "quality drops". See BRIEFSHOW_DEVELOP_NOTES.md, plan item A4.
+            .onAppear {
+                loadLoupeImages(for: urls, cellSize: cell)
+            }
+            // Both changes matter: arrow keys swap which photo is in the
+            // loupe without this view ever disappearing (so onAppear will not
+            // fire again), and resizing the window raises the demand on a
+            // photo that is already decoded.
+            .onChange(of: urls) { newURLs in
+                loadLoupeImages(for: newURLs, cellSize: cell)
+            }
+            .onChange(of: cell) { newCell in
+                loadLoupeImages(for: urls, cellSize: newCell)
             }
         }
     }
@@ -22530,6 +22730,35 @@ struct PhotoShowSheet: View {
         persistLabel(for: url)
     }
 
+    private func toggleRejected(_ url: URL) {
+        if rejectedURLs.contains(url) {
+            rejectedURLs.remove(url)
+        } else {
+            rejectedURLs.insert(url)
+        }
+        persistLabel(for: url)
+    }
+
+    /// One press up the star ladder, wrapping 5 back to 0.
+    ///
+    /// The 1–5 keys SET a rating; this one WALKS it, which is what was asked
+    /// for: press it four times to get four stars without having to look at
+    /// which number key that is.
+    ///
+    /// With several photos selected the step is computed ONCE, from the first
+    /// selected photo, and the same resulting value is written to all of them.
+    /// Stepping each photo from its own rating would fan a mixed selection out
+    /// further on every press instead of bringing it together, and there would
+    /// be no single number to report.
+    private func cycleRating(for urls: [URL]) {
+        guard let first = urls.first else { return }
+        let next = ((ratings[first] ?? 0) + 1) % (maxRatingStars + 1)
+        for url in urls {
+            ratings[url] = next
+            persistLabel(for: url)
+        }
+    }
+
     // Shows "N Stars" over the loupe for a beat, then fades it back out —
     // takes the ACTUAL resulting rating (not just the key that was
     // pressed) since setRating toggles a rating off back to 0 when the
@@ -22560,6 +22789,7 @@ struct PhotoShowSheet: View {
             PhotoLabelStore.clear(for: url)
         }
         likedURLs.removeAll()
+        rejectedURLs.removeAll()
         ratings.removeAll()
     }
 
@@ -22570,6 +22800,7 @@ struct PhotoShowSheet: View {
     private func persistLabel(for url: URL) {
         PhotoLabelStore.setLiked(likedURLs.contains(url), for: url)
         PhotoLabelStore.setRating(ratings[url] ?? 0, for: url)
+        PhotoLabelStore.setRejected(rejectedURLs.contains(url), for: url)
     }
 
     // MARK: Black & White, Duplicate
@@ -22667,6 +22898,7 @@ struct PhotoShowSheet: View {
         for url in urls {
             gridThumbnails.removeValue(forKey: url)
             loupeImages.removeValue(forKey: url)
+            loupeImagePixelSizes.removeValue(forKey: url)
             likedURLs.remove(url)
             ratings.removeValue(forKey: url)
         }
@@ -22844,6 +23076,7 @@ struct PhotoShowSheet: View {
             for url in movedAwayURLs {
                 gridThumbnails.removeValue(forKey: url)
                 loupeImages.removeValue(forKey: url)
+                loupeImagePixelSizes.removeValue(forKey: url)
             }
         }
 
@@ -23106,14 +23339,44 @@ struct PhotoShowSheet: View {
                     return nil
                 }
 
-                // "x" toggles the liked label on every currently selected
+                // Reject, X by default — Lightroom's key for it. Checked
+                // BEFORE the label toggle on purpose: a client who had once
+                // rebound Toggle Label to X keeps that override, and then two
+                // actions in this group answer to the same key. First one
+                // wins, and the one that should win is the current default.
+                //
+                // A toggle, not a one-way mark: pressing X again takes the
+                // rejection off. Lightroom uses U for that, but a second key
+                // whose only job is undoing the first is a key to remember for
+                // nothing.
+                if ShortcutStore.matches(event, .gridRejectPhoto), !selectedURLs.isEmpty {
+                    for url in selectedURLs {
+                        toggleRejected(url)
+                    }
+                    return nil
+                }
+
+                // "." toggles the liked label on every currently selected
                 // photo (same per-photo toggle as clicking its circle) —
                 // checked by character rather than key code so it still
-                // works under non-US keyboard layouts.
+                // works under non-US keyboard layouts. It was X until 2.09.,
+                // and moved when X became Reject.
                 if ShortcutStore.matches(event, .gridToggleLabel), !selectedURLs.isEmpty {
                     for url in selectedURLs {
                         toggleLike(url)
                     }
+                    return nil
+                }
+
+                // "," walks the rating up one star, 5 wrapping back to none.
+                //
+                // In the grid only, which is what was asked for: enlarged, the
+                // 1–5 keys are already right there and they say exactly what
+                // they set, so a key that means "one more than whatever it is
+                // now" earns its place at thumbnail size and not at full
+                // screen.
+                if ShortcutStore.matches(event, .gridCycleRating), !selectedURLs.isEmpty {
+                    cycleRating(for: photoURLs.filter { selectedURLs.contains($0) })
                     return nil
                 }
 
@@ -23155,12 +23418,42 @@ struct PhotoShowSheet: View {
     }
 
     private func openLoupe(for urls: [URL]) {
+        // No decode kicked off here on purpose: loupeGrid does it, because
+        // only it knows the size the photo will be drawn at. See the comment
+        // on its .onAppear.
         loupeURLs = urls
-        loadLoupeImages(for: urls)
     }
 
-    private func loadLoupeImages(for urls: [URL]) {
-        for url in urls where loupeImages[url] == nil {
+    /// Decodes each photo in the loupe at the size the screen will actually
+    /// paint it, and re-decodes one that was already loaded smaller.
+    ///
+    /// `cellSize` is one photo's cell in POINTS; the pixel demand is that
+    /// times the window's backing scale. This is the same rule KORAK 49
+    /// settled on for the flatten preview — decode small, never scale a small
+    /// decode up afterwards — applied to the one place in ShowGrid that was
+    /// still doing the opposite.
+    private func loadLoupeImages(for urls: [URL], cellSize: CGSize) {
+        let scale = ShowGridWindowController.shared.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        // Ceiling so a photo dropped on a 6K display cannot ask for a decode
+        // measured in hundreds of megabytes; every camera this app is used
+        // with sits under it anyway (the .NEF measured in KORAK 1 is 5176px).
+        let wanted = min(max(cellSize.width, cellSize.height) * scale, 6000)
+        guard wanted > 1 else { return }
+
+        for url in urls {
+            // 0.87 rather than a bare "already loaded" check: dragging a
+            // window edge changes the cell by a few points per frame, and an
+            // exact comparison would queue one full RAW decode per frame.
+            // A photo only gets decoded again once it is meaningfully short.
+            if let decoded = loupeImagePixelSizes[url], decoded >= wanted * 0.87 {
+                continue
+            }
+            // Claimed BEFORE the work starts so two calls in the same frame
+            // (onAppear and onChange both firing) do not both decode it.
+            loupeImagePixelSizes[url] = wanted
+
             DispatchQueue.global(qos: .userInitiated).async {
                 // makePreviewImage uses NSImage lockFocus/unlockFocus, which
                 // is main-thread-only AppKit drawing — calling it off-thread
@@ -23168,11 +23461,16 @@ struct PhotoShowSheet: View {
                 // brief app hang when several selected photos loaded at
                 // once. makeShowGridThumbnail is ImageIO-based and safe to
                 // call concurrently from a background queue.
-                let image = makeEditedShowGridThumbnail(from: url, maxPixelSize: 2000)
+                let image = makeEditedShowGridThumbnail(from: url, maxPixelSize: wanted)
 
                 DispatchQueue.main.async {
                     if let image {
                         loupeImages[url] = image
+                    } else {
+                        // Give the claim back, or a photo that failed once is
+                        // never attempted again for as long as the window
+                        // stays open.
+                        loupeImagePixelSizes.removeValue(forKey: url)
                     }
                 }
             }
@@ -23204,6 +23502,13 @@ struct PhotoShowSheet: View {
     }
 
     private func exportPhotos(matching urlsToMatch: Set<URL>, message: String, countingAs kind: ExportCounter.Kind) {
+        // Rejected photos are dropped BEFORE the folder chooser opens, so the
+        // count in the message the client is about to read is the count they
+        // will actually get. Filtering after would open a panel promising
+        // twenty files and write eleven.
+        let urlsToMatch = urlsToMatch.subtracting(rejectedURLs)
+        let skipped = rejectedURLs.intersection(photoURLs).count
+
         guard !urlsToMatch.isEmpty else {
             return
         }
@@ -23214,7 +23519,13 @@ struct PhotoShowSheet: View {
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Export"
-        panel.message = message
+        // Said in the chooser rather than in a dialog afterwards: a client who
+        // rejected photos hours ago will not otherwise connect a short export
+        // to a mark they have forgotten making, and "some files are missing"
+        // is the worst thing an export can leave someone thinking.
+        panel.message = skipped == 0
+            ? message
+            : "\(message)\n\n\(skipped) rejected photo\(skipped == 1 ? " is" : "s are") being skipped."
 
         guard panel.runModal() == .OK, let destinationFolder = panel.url else {
             return
@@ -23356,11 +23667,16 @@ struct PhotoShowSheet: View {
     // the "N liked" header count and the Export/Clear All buttons.
     private func applyPersistedLabels(for urls: [URL]) {
         var newLikedURLs: Set<URL> = []
+        var newRejectedURLs: Set<URL> = []
         var newRatings: [URL: Int] = [:]
 
         for url in urls {
             if PhotoLabelStore.isLiked(url) {
                 newLikedURLs.insert(url)
+            }
+
+            if PhotoLabelStore.isRejected(url) {
+                newRejectedURLs.insert(url)
             }
 
             let rating = PhotoLabelStore.rating(for: url)
@@ -23370,6 +23686,7 @@ struct PhotoShowSheet: View {
         }
 
         likedURLs = newLikedURLs
+        rejectedURLs = newRejectedURLs
         ratings = newRatings
     }
 
@@ -23450,6 +23767,9 @@ struct PhotoShowSheet: View {
 
         for url in mine {
             loupeImages[url] = nil
+            // Cleared too, or the next loupe open would see a size already
+            // claimed for this photo and skip re-decoding it with the new edit.
+            loupeImagePixelSizes.removeValue(forKey: url)
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -23631,6 +23951,11 @@ enum RootFolderAccess {
 enum PhotoLabelStore {
     private static let likedDefaultsKey = "com.rocketsbrief.briefshow.likedPhotoKeys"
     private static let ratingsDefaultsKey = "com.rocketsbrief.briefshow.photoRatingKeys"
+    // Lightroom's reject flag. A THIRD key rather than a value folded into the
+    // rating, because rejected and starred are independent there and the
+    // client works in both apps: a photo can be a 3-star that was later
+    // rejected, and un-rejecting it has to give the 3 stars back.
+    private static let rejectedDefaultsKey = "com.rocketsbrief.briefshow.rejectedPhotoKeys"
 
     private static func key(for url: URL) -> String {
         let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? -1
@@ -23651,6 +23976,20 @@ enum PhotoLabelStore {
         likedKeys = keys
     }
 
+    static func isRejected(_ url: URL) -> Bool {
+        rejectedKeys.contains(key(for: url))
+    }
+
+    static func setRejected(_ isRejected: Bool, for url: URL) {
+        var keys = rejectedKeys
+        if isRejected {
+            keys.insert(key(for: url))
+        } else {
+            keys.remove(key(for: url))
+        }
+        rejectedKeys = keys
+    }
+
     static func rating(for url: URL) -> Int {
         ratingsByKey[key(for: url)] ?? 0
     }
@@ -23665,16 +24004,27 @@ enum PhotoLabelStore {
         ratingsByKey = byKey
     }
 
-    // Drops both the liked flag and the star rating for one photo — used
-    // by "Clear All".
+    // Drops the liked flag, the star rating and the reject flag for one
+    // photo — used by "Clear All".
+    //
+    // The reject flag IS included: "Clear All" is the one control that says it
+    // puts the whole review back to nothing, and leaving photos rejected after
+    // it would mean an export silently skipping files the client believes they
+    // just un-marked.
     static func clear(for url: URL) {
         setLiked(false, for: url)
         setRating(0, for: url)
+        setRejected(false, for: url)
     }
 
     private static var likedKeys: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: likedDefaultsKey) ?? []) }
         set { UserDefaults.standard.set(Array(newValue), forKey: likedDefaultsKey) }
+    }
+
+    private static var rejectedKeys: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: rejectedDefaultsKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: rejectedDefaultsKey) }
     }
 
     private static var ratingsByKey: [String: Int] {

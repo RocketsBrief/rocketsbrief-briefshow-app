@@ -37,8 +37,20 @@ struct ConnectedCamera: Identifiable, Equatable {
 
     var name: String { device.name ?? "Camera" }
 
+    // Compared by IDENTITY, not by object pointer.
+    //
+    // `===` was the old rule and it let one camera into the list twice: the
+    // client's screenshots from 1.09. show the Z 6 listed twice in both of
+    // them, and ImageCaptureCore had handed over two distinct ICCameraDevice
+    // objects for the one body. Two objects, two `===` misses, two rows — and
+    // two rows whose SwiftUI `id` is the same uuidString, which is undefined
+    // behaviour in a ForEach on top of merely looking wrong.
+    //
+    // Falling back to the pointer only when there is no uuid and no name,
+    // because then there is nothing else to go on and two rows are better than
+    // silently swallowing a second real camera.
     static func == (lhs: ConnectedCamera, rhs: ConnectedCamera) -> Bool {
-        lhs.device === rhs.device
+        lhs.id == rhs.id
     }
 }
 
@@ -102,6 +114,41 @@ extension CameraBrowser: ICDeviceBrowserDelegate {
     }
 }
 
+/// Where an import is reading FROM.
+///
+/// Two kinds, because two different things are actually plugged in and only one
+/// of them is a camera:
+///
+/// - A body in MTP/PTP mode never mounts as a disk, and is reachable only
+///   through ImageCaptureCore. That is `.camera`.
+/// - An SD card in a reader mounts as an ordinary volume, and a client who
+///   picks File ▸ Import… with nothing plugged in wants to point at a folder.
+///   Both of those are `.folder` — one code path, because once a card is
+///   mounted it IS just a folder with a DCIM in it.
+enum ImportSource: Identifiable, Equatable {
+    case camera(ConnectedCamera)
+    case folder(URL)
+
+    var id: String {
+        switch self {
+        case .camera(let camera): return "camera:\(camera.id)"
+        case .folder(let url): return "folder:\(url.path)"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .camera(let camera): return camera.name
+        case .folder(let url): return url.lastPathComponent
+        }
+    }
+
+    var camera: ConnectedCamera? {
+        if case .camera(let camera) = self { return camera }
+        return nil
+    }
+}
+
 // MARK: - One camera's contents, and copying them across
 
 /// Opens a session on one camera, lists what is on the card, and copies the
@@ -115,8 +162,15 @@ extension CameraBrowser: ICDeviceBrowserDelegate {
 /// only ever touched there.
 final class CameraImportSession: NSObject, ObservableObject {
 
+    /// The one thing an Item needs that differs between the two sources: what
+    /// to ask for a thumbnail, and what to copy.
+    enum Origin {
+        case cameraFile(ICCameraFile)
+        case diskFile(URL)
+    }
+
     struct Item: Identifiable {
-        let file: ICCameraFile
+        let origin: Origin
         let id: String
         let name: String
         let byteSize: Int64
@@ -143,7 +197,11 @@ final class CameraImportSession: NSObject, ObservableObject {
     @Published private(set) var completedCount: Int = 0
     @Published private(set) var currentFileName: String = ""
 
-    let camera: ConnectedCamera
+    let source: ImportSource
+
+    /// Nil for a folder import — there is no session to open, nothing to lock,
+    /// and no delegate to clear.
+    var camera: ConnectedCamera? { source.camera }
 
     private var didOpenSession = false
 
@@ -161,11 +219,22 @@ final class CameraImportSession: NSObject, ObservableObject {
     /// that is being torn down.
     private var isCancelled = false
 
-    init(camera: ConnectedCamera) {
-        self.camera = camera
+    init(source: ImportSource) {
+        self.source = source
         super.init()
-        camera.device.delegate = self
-        camera.device.requestOpenSession()
+
+        switch source {
+        case .camera(let camera):
+            camera.device.delegate = self
+            camera.device.requestOpenSession()
+
+        case .folder(let url):
+            // No session, no delegate, no waiting. A folder is readable now, so
+            // the scan runs immediately and the window opens straight into
+            // .ready rather than showing a spinner for something that already
+            // finished.
+            scanFolder(url)
+        }
     }
 
     deinit {
@@ -181,7 +250,7 @@ final class CameraImportSession: NSObject, ObservableObject {
         // away on. Guarded on identity because reopening the import window for
         // the same camera builds a NEW session that has already claimed the
         // slot — clearing it blind would silence that one instead of this one.
-        if (camera.device.delegate as AnyObject?) === self {
+        if let camera, (camera.device.delegate as AnyObject?) === self {
             camera.device.delegate = nil
         }
     }
@@ -213,19 +282,83 @@ final class CameraImportSession: NSObject, ObservableObject {
     /// BriefShow quits.
     func close() {
         isCancelled = true
-        guard didOpenSession else { return }
+        guard didOpenSession, let camera else { return }
         didOpenSession = false
         camera.device.requestCloseSession()
     }
 
     // MARK: Listing
 
+    /// Extensions worth importing when ImageCaptureCore does not recognise the
+    /// file itself.
+    ///
+    /// Only consulted for files `mediaFiles` left out — see `rebuildItems`. The
+    /// list is deliberately explicit rather than "anything that is not a
+    /// folder": walking the card raw would also drag in the sidecars and
+    /// housekeeping files every body writes (Nikon's .NKSC, the MISC folder),
+    /// and a grid full of those is worse than a grid that is short.
+    private static let importableExtensions: Set<String> = [
+        // RAW, by maker
+        "nef", "nrw", "cr2", "cr3", "crw", "arw", "srf", "sr2", "raf", "orf",
+        "rw2", "pef", "dng", "raw", "3fr", "fff", "iiq", "x3f", "erf", "mrw",
+        "mos", "gpr",
+        // ordinary stills
+        "jpg", "jpeg", "jpe", "png", "tif", "tiff", "heic", "heif", "avif",
+        "webp", "bmp", "gif",
+        // movies
+        "mov", "mp4", "m4v", "avi", "mts", "m2ts", "mxf",
+        // audio — some bodies attach a voice memo to a frame
+        "wav", "aiff", "aif", "mp3", "m4a"
+    ]
+
+    /// Every file under `items`, walking into folders.
+    ///
+    /// `contents` is the card's real folder tree (DCIM/100NIKON/...) and
+    /// filters nothing, which is the whole reason it is read here.
+    private func allFiles(under items: [ICCameraItem]) -> [ICCameraFile] {
+        var found: [ICCameraFile] = []
+        for item in items {
+            if let file = item as? ICCameraFile {
+                found.append(file)
+            } else if let folder = item as? ICCameraFolder {
+                found.append(contentsOf: allFiles(under: folder.contents ?? []))
+            }
+        }
+        return found
+    }
+
     private func rebuildItems() {
-        // `mediaFiles` is every image, movie and audio file on the card,
-        // flattened out of the DCIM folder structure — which is what the grid
-        // wants. Sorted by capture time so the card reads in the order it was
+        // `mediaFiles` is ImageCaptureCore's own flattened list of the image,
+        // movie and audio files on the card. It is the right list — when it is
+        // complete.
+        //
+        // ⚠️ It is a FILTERED list: only what the system recognises as media by
+        // UTI. That is the leading explanation for the 1.09. report, where the
+        // import window reached phase .ready — the camera had reported a
+        // COMPLETE content catalog — and still said "0 files on the card".
+        //
+        // So the card's own folder tree is walked as well and the two are
+        // UNIONED. Strictly additive: a file `mediaFiles` already knows about
+        // is unaffected, and one it left out is picked up if its extension is
+        // recognisable. Nothing that used to import stops importing.
+        //
+        // Measure before changing this further: Tools/camtest.swift prints
+        // mediaFiles.count against the walk on a real camera and names the
+        // files (and UTIs) that fall between them.
+        // Guarded rather than forced: this only ever runs from the camera
+        // delegate callbacks, but the compiler cannot know that, and a crash
+        // here would be on a card the client is halfway through reading.
+        guard let camera else { return }
+        let known = (camera.device.mediaFiles ?? []).compactMap { $0 as? ICCameraFile }
+        let knownIDs = Set(known.map { itemID(for: $0) })
+        let extras = allFiles(under: camera.device.contents ?? []).filter { file in
+            guard !knownIDs.contains(itemID(for: file)) else { return false }
+            let ext = (file.name ?? file.originalFilename ?? "").split(separator: ".").last?.lowercased() ?? ""
+            return Self.importableExtensions.contains(ext)
+        }
+        // Sorted by capture time below, so the card reads in the order it was
         // shot, oldest first, matching the filmstrip everywhere else in the app.
-        let files = (camera.device.mediaFiles ?? []).compactMap { $0 as? ICCameraFile }
+        let files = known + extras
 
         let existing = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
         items = files
@@ -237,7 +370,7 @@ final class CameraImportSession: NSObject, ObservableObject {
                 // items, and rebuilding from scratch would blank the grid and
                 // silently undo the client's unchecking mid-enumeration.
                 return Item(
-                    file: file,
+                    origin: .cameraFile(file),
                     id: id,
                     name: name,
                     byteSize: Int64(file.fileSize),
@@ -253,6 +386,63 @@ final class CameraImportSession: NSObject, ObservableObject {
             }
 
         enqueueMissingThumbnails()
+    }
+
+    /// Reads a folder — a mounted SD card, or anywhere the client pointed at.
+    ///
+    /// Walks into subfolders, because that is where the photos are: a card puts
+    /// them under DCIM/100NIKON, never at the top. Same extension list the
+    /// camera path uses for files ImageCaptureCore did not recognise, so the
+    /// two sources agree on what counts as a photo.
+    private func scanFolder(_ folder: URL) {
+        phase = .listing
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .creationDateKey]
+            var found: [Item] = []
+
+            if let walker = FileManager.default.enumerator(
+                at: folder,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) {
+                for case let url as URL in walker {
+                    let values = try? url.resourceValues(forKeys: Set(keys))
+                    guard values?.isDirectory != true else { continue }
+                    guard Self.importableExtensions.contains(url.pathExtension.lowercased()) else { continue }
+
+                    let size = Int64(values?.fileSize ?? 0)
+                    found.append(Item(
+                        origin: .diskFile(url),
+                        // Same name+size key the camera path uses, so a card
+                        // imported once as a camera and once as a volume is the
+                        // same photo to the rest of the app.
+                        id: "\(url.lastPathComponent)-\(size)",
+                        name: url.lastPathComponent,
+                        byteSize: size,
+                        // creationDate is the capture time for a file written by
+                        // a camera; modification date is the fallback for one
+                        // that has been copied around since.
+                        created: values?.creationDate ?? values?.contentModificationDate,
+                        thumbnail: nil,
+                        isChecked: true))
+                }
+            }
+
+            let sorted = found.sorted { lhs, rhs in
+                switch (lhs.created, rhs.created) {
+                case let (left?, right?) where left != right: return left < right
+                default: return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+            }
+
+            DispatchQueue.main.async {
+                guard let self, !self.isCancelled else { return }
+                self.items = sorted
+                self.phase = .ready
+                self.enqueueMissingThumbnails()
+            }
+        }
     }
 
     private func itemID(for file: ICCameraFile) -> String {
@@ -287,20 +477,38 @@ final class CameraImportSession: NSObject, ObservableObject {
         // 512 rather than the embedded EXIF thumbnail's own size: the grid
         // draws these at up to 320pt on a Retina display, and the camera's
         // built-in thumbnail is typically 160px, which looks like a smear.
-        // ImageCaptureCore renders this one from the file itself.
-        item.file.requestThumbnailData(
-            options: [.imageSourceThumbnailMaxPixelSize: NSNumber(value: 512)]
-        ) { [weak self] data, _ in
-            let image = data.flatMap { NSImage(data: $0) }
-            DispatchQueue.main.async {
-                guard let self, !self.isCancelled else { return }
-                self.thumbnailsInFlight -= 1
-                if let image, let index = self.items.firstIndex(where: { $0.id == item.id }) {
-                    self.items[index].thumbnail = image
+        switch item.origin {
+        case .cameraFile(let file):
+            // ImageCaptureCore renders this one from the file itself.
+            file.requestThumbnailData(
+                options: [.imageSourceThumbnailMaxPixelSize: NSNumber(value: 512)]
+            ) { [weak self] data, _ in
+                let image = data.flatMap { NSImage(data: $0) }
+                DispatchQueue.main.async {
+                    self?.finishThumbnail(image, for: item)
                 }
-                self.pumpThumbnailQueue()
+            }
+
+        case .diskFile(let url):
+            // ImageIO, off the main thread — the same call ShowGrid's own
+            // thumbnails go through, so a RAW on a card decodes here exactly
+            // the way it will once it is copied across.
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let image = makeShowGridThumbnail(from: url, maxPixelSize: 512)
+                DispatchQueue.main.async {
+                    self?.finishThumbnail(image, for: item)
+                }
             }
         }
+    }
+
+    private func finishThumbnail(_ image: NSImage?, for item: Item) {
+        guard !isCancelled else { return }
+        thumbnailsInFlight -= 1
+        if let image, let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index].thumbnail = image
+        }
+        pumpThumbnailQueue()
     }
 
     // MARK: Importing
@@ -366,17 +574,70 @@ final class CameraImportSession: NSObject, ObservableObject {
             options[.deleteAfterSuccessfulDownload] = NSNumber(value: true)
         }
 
-        _ = item.file.requestDownload(options: options) { [weak self] _, error in
-            DispatchQueue.main.async {
-                guard let self, !self.isCancelled else { return }
-                if let error {
-                    self.phase = .failed("\(item.name): \(error.localizedDescription)")
-                    return
+        switch item.origin {
+        case .cameraFile(let file):
+            _ = file.requestDownload(options: options) { [weak self] _, error in
+                DispatchQueue.main.async {
+                    self?.finishOne(item, error: error, remaining: rest,
+                                    into: folder, deleteAfterwards: deleteAfterwards)
                 }
-                self.completedCount += 1
-                self.downloadNext(remaining: rest, into: folder, deleteAfterwards: deleteAfterwards)
+            }
+
+        case .diskFile(let url):
+            // A plain copy, off the main thread — a 45MB RAW per file, and the
+            // window has to keep drawing its progress while they go across.
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                var copyError: Error?
+                var destination = folder.appendingPathComponent(item.name)
+                // Never silently replace a file already on the Mac, matching
+                // what .overwrite:false gives the camera path. The camera path
+                // gets uniquing for free from ImageCaptureCore; here it has to
+                // be done by hand, and in the same shape (name-1.NEF).
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    let base = destination.deletingPathExtension().lastPathComponent
+                    let ext = destination.pathExtension
+                    var suffix = 1
+                    repeat {
+                        let candidate = ext.isEmpty ? "\(base)-\(suffix)" : "\(base)-\(suffix).\(ext)"
+                        destination = folder.appendingPathComponent(candidate)
+                        suffix += 1
+                    } while FileManager.default.fileExists(atPath: destination.path)
+                }
+
+                do {
+                    try FileManager.default.copyItem(at: url, to: destination)
+                    if deleteAfterwards {
+                        // Only after the copy has actually landed — the same
+                        // order .deleteAfterSuccessfulDownload gives the camera
+                        // path, and the only order that is safe.
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                } catch {
+                    copyError = error
+                }
+
+                DispatchQueue.main.async {
+                    self?.finishOne(item, error: copyError, remaining: rest,
+                                    into: folder, deleteAfterwards: deleteAfterwards)
+                }
             }
         }
+    }
+
+    private func finishOne(
+        _ item: Item,
+        error: Error?,
+        remaining: [Item],
+        into folder: URL,
+        deleteAfterwards: Bool
+    ) {
+        guard !isCancelled else { return }
+        if let error {
+            phase = .failed("\(item.name): \(error.localizedDescription)")
+            return
+        }
+        completedCount += 1
+        downloadNext(remaining: remaining, into: folder, deleteAfterwards: deleteAfterwards)
     }
 }
 
@@ -390,7 +651,7 @@ extension CameraImportSession: ICCameraDeviceDelegate {
 
     func device(_ device: ICDevice, didOpenSessionWithError error: Error?) {
         if let error {
-            phase = .failed("Could not open \(camera.name): \(error.localizedDescription)")
+            phase = .failed("Could not open \(source.displayName): \(error.localizedDescription)")
             return
         }
         didOpenSession = true
@@ -406,10 +667,10 @@ extension CameraImportSession: ICCameraDeviceDelegate {
         // The camera was unplugged or switched off mid-import. Say so plainly:
         // anything already copied is on disk and fine, and the client's next
         // question is always "did I lose the rest".
-        guard device === camera.device else { return }
+        guard let camera, device === camera.device else { return }
         isCancelled = true
         if case .finished = phase { return }
-        phase = .failed("\(camera.name) was disconnected. \(completedCount) file\(completedCount == 1 ? "" : "s") had already been copied.")
+        phase = .failed("\(source.displayName) was disconnected. \(completedCount) file\(completedCount == 1 ? "" : "s") had already been copied.")
     }
 
     func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
@@ -453,6 +714,6 @@ extension CameraImportSession: ICCameraDeviceDelegate {
     }
 
     func cameraDeviceDidEnableAccessRestriction(_ device: ICDevice) {
-        phase = .failed("\(camera.name) is locking its card. Set the camera's USB mode to MTP/PTP and switch it on again.")
+        phase = .failed("\(source.displayName) is locking its card. Set the camera's USB mode to MTP/PTP and switch it on again.")
     }
 }

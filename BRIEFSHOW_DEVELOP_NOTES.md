@@ -11550,7 +11550,85 @@ kliknut**. Popravka pogađa poznat i ranije potvrđen uzrok, ali da li je to
 JEDINI uzrok njegovih višestrukih klikova zna se tek kad klijent proba.
 
 
-## ⚠️ SLEDEĆE — PAKOVANJE I RELEASE 10.67 (nije počelo, 2.09. uveče)
+## KORAK 103 — RELEASE v10.8 (3. septembar 2026)
+
+Prvi release posle 10.1 (1.09.). Tag **v10.8**, grana `briefshow-develop`, isto
+kao i 10.1.
+
+### Kartica na hover, po drugi put skraćena
+
+*„samo neka piše BriefShow a ispod One Photography Suite.. i to je to"*.
+Ostalo je ime, jedna linija i **verzija**. Verzija se **čita iz bundle-a**
+(`CFBundleShortVersionString`), nikad se ne kuca u UI — verzija upisana rukom je
+verzija koja se razilazi sa build-om čim se jedno promeni a drugo zaboravi, što
+je tačno kako je `CFBundleVersion` stajao na 17 kroz svaki build (KORAK 74).
+
+### Meniji
+
+**File:** Import…, **Open Folder…** (⌘O), Import from Camera…, Show App Files
+in Finder.
+**Edit:** Keyboard Shortcuts… (⇧⌘K), **Reset Shortcuts to Defaults**.
+**Help:** BriefShow Help, Check for Updates…
+
+Odluke koje nisu očigledne:
+
+- **Open Folder ide kroz `ExternalFolderOpen`** — ista vrata kroz koja ulazi
+  folder pušten na ikonicu (KORAK 72). Nije trebalo novo vodovodstvo i ne može
+  da se raziđe sa drop-om.
+- **Import from Camera je ONEMOGUĆEN kad nema kamere, ne sakriven.** Meni koji
+  menja oblik zavisno od toga šta je uključeno je meni koji se ne može naučiti.
+  Postoji za kameru koja je **već bila** uključena pri pokretanju — jedini slučaj
+  koji namerno ne otvara prozor sam.
+- **⚠️ NEMA Undo/Redo u Edit meniju,** i to je namerno. Oba žive u lokalnim
+  `NSEvent` monitorima; menijski key equivalent za ⌘Z bio bi **drugi polagač
+  prava** na isti pritisak, u trci sa monitorom, a klijentova izmena prečice bi
+  se videla samo u jednom od njih. Monitori drže tastere.
+- **Show App Files in Finder** postoji jer je klijent pitao gde su njegove
+  stvari: originali su u njegovom folderu, a sve što app napravi (flatten kopije,
+  pikseli slojeva) je tu i nigde drugde.
+
+### Pakovanje — sve provereno, ništa pretpostavljeno
+
+| provera | rezultat |
+|---|---|
+| lične fotografije u paketu | **nula** (`.nef`, `.cr2`, `.arw`, `C4S*`, `.tiff`) |
+| `lipo -archs` | **`x86_64 arm64`** |
+| `CFBundleShortVersionString` | **10.8** |
+| `CFBundleVersion` | **19** (bilo 18 — bez ovoga macOS ne vidi nov build, KORAK 74) |
+| `LSMinimumSystemVersion` | **13.0** |
+| veličina paketa / arhive | 139 MB / **110 MB** |
+| preuzimanje sa GitHub-a | **HTTP 200, 114 822 876 B** |
+
+Korak 0 iz plana („PROVERA DA JE ČISTO") je izvršen, ne preskočen.
+
+### Linkovi
+
+- **Direktno preuzimanje:**
+  `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v10.8/BriefShow-10.8.zip`
+- **Stranica release-a:**
+  `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v10.8`
+
+### ⚠️ Šta OSTAJE nedovršeno, i to pošteno
+
+1. **Nije potpisano Developer ID sertifikatom.** Ad-hoc, kao i 10.1 — v.
+   „🟢 ZAKLJUČANO — DISTRIBUCIJA". Na tuđem Mac-u traži ručno dopuštanje pri
+   prvom pokretanju.
+2. **`latest_version` u BriefControl-u je i dalje 6.0.** Nije dirano jer nije
+   traženo. Dok je tako, **niko ne dobija ekran „mora update"** — 10.8 je gore i
+   preuzimljiv, ali se ne nameće. Podizanje na 10.8 je klijentova odluka i radi
+   se tek sad kad je release već gore.
+3. **`build_universal/` je skinut sa praćenja**, ali istorija commit-ova i dalje
+   nosi tih 214 MB. Čišćenje je prepisivanje istorije i čeka odluku.
+
+### ⚠️ NEPROVERENO
+
+Arhiva **nije raspakovana i pokrenuta na drugom Mac-u**, ni na Intelu.
+`lipo` kaže da su obe arhitekture unutra i minimum je 13.0, ali to je tvrdnja o
+fajlu, ne o tome da se pokreće — a KORAK 35 je već jednom pokazao razliku
+(radilo u Xcode-u, palo potpisano).
+
+## ✅ ZAVRŠENO — bivši plan za 10.67, isporučeno kao v10.8 (v. KORAK 103)
+ (nije počelo, 2.09. uveče)
 
 Kod je spreman: `BUILD SUCCEEDED`, nebo izvađeno (KORAK 94), oba harness-a
 prolaze, 125 slogova dekodirano bez pomeranja.

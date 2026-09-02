@@ -5,6 +5,13 @@ BriefShow.xcodeproj/xcuserdata/
 build/
 dist/
 
+# Release ARCHIVES. They belong on the Releases page, not in the repository:
+# v10.8's is 110 MB and GitHub refuses any file over 100 MB outright, so a
+# push that carries one is rejected — which is how this line came to exist.
+# The unzipped dist-universal/BriefShow.app stays tracked (a shipped build);
+# only the archives are ignored.
+dist-universal/*.zip
+
 # macOS
 .DS_Store
 

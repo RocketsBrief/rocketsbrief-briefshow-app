@@ -1349,12 +1349,53 @@ extension InpaintPipeline {
         /// Posted as each pre-diffusion stage finishes, so the bar can move
         /// before `progress` has anything to say. See SDRemovalStage.
         stage: ((SDRemovalStage) -> Void)? = nil,
+        /// ⚠️ ADDS a wider mask growth for a thin, wispy selection — a
+        /// flyaway hair, not the default behaviour for everything else
+        /// Generative Clean Up does. Does NOT touch `quickAIRemoval` or the
+        /// 0.0025 growth every other Generative erase still uses.
+        ///
+        /// WHY GROWTH, NOT THE PROMPT OR THE MODEL: reported — *"AI generative
+        /// clean hair nije lepo ocistio odradio je kao quick clean up"* — a
+        /// stray hair against bright sky, still faintly visible after the
+        /// erase. KORAK 40 already measured that once LaMa has filled the
+        /// hole, "the prompt barely changes anything" — so a hair-worded
+        /// prompt was never going to be the lever.
+        ///
+        /// DevelopInpaint.swift's own comment on `ExemplarInpainter.fill`
+        /// explains what actually is: its scoring "prefers fronts where a
+        /// strong edge runs INTO the hole, which is what makes a railing or a
+        /// horizon continue across the gap instead of being smeared over." A
+        /// flyaway hair IS a strong, thin, linear edge — the exact shape that
+        /// rule is designed to continue. If the mask hugs the strand tightly,
+        /// the edge still borders the hole, and LaMa may extend it rather than
+        /// erase it. Growing the mask further removes that bordering edge
+        /// before the fill ever runs.
+        ///
+        /// MEASURED, not reasoned — Tools/run-hair-strand-test.py runs the
+        /// real LaMa pipeline on a synthetic thin strand over bright "sky" at
+        /// several growth radii and looks at what survives:
+        ///
+        ///   13px (today's 0.0025 formula, on a ~5176px NEF)  — faint ghost of
+        ///     the strand remains, visible in the written-out PNG
+        ///   20px  — fainter, still a trace
+        ///   30px  — gone, flat sky, confirmed by eye on the PNG
+        ///   45px  — gone, no further improvement
+        ///
+        /// 0.006 lands at 31px on that same NEF — past the 30px line the test
+        /// found clean, with headroom before diminishing returns at 45px.
+        ///
+        /// ⚠️ A synthetic strand is a stand-in for the MECHANISM (an edge
+        /// bordering a hole), not for the client's actual photograph — it
+        /// cannot confirm his specific picture looks right. That needs his
+        /// screen.
+        flyawayHair: Bool = false,
         shouldContinue: @escaping () -> Bool = { true }
     ) throws -> Removal? {
         let extent = image.extent
         guard extent.width >= 8, extent.height >= 8 else { return nil }
 
-        let grownMask = SubjectMasker.grown(mask, by: max(extent.width, extent.height) * 0.0025)
+        let growth = flyawayHair ? 0.006 : 0.0025
+        let grownMask = SubjectMasker.grown(mask, by: max(extent.width, extent.height) * growth)
         guard let maskBox = maskBoundingBox(grownMask, extent: extent, context: context) else {
             return nil
         }
@@ -1402,7 +1443,7 @@ extension InpaintPipeline {
                     mask: mask, from: image, context: context, prompt: prompt,
                     negativePrompt: negativePrompt, feather: feather, steps: steps,
                     seed: seed, refineStrength: nil, progress: progress,
-                    stage: stage, shouldContinue: shouldContinue)
+                    stage: stage, flyawayHair: flyawayHair, shouldContinue: shouldContinue)
             }
         }
 

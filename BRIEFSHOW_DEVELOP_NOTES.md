@@ -12125,3 +12125,124 @@ Sve iz ovog koraka. App je pokrenuta i predata klijentu na proveru; nijedna od
    To je bio zahtev; ovde se ne može proveriti bez Intel mašine.
 3. **Da li traka sada vidljivo prolazi kroz sva četiri stanja**, ili neka
    prolete pa se čini da preskače.
+
+## KORAK 107 — vlasi: nova opcija, izmerena; trava: tri poluge probane, nijedna ne radi (3. septembar 2026)
+
+Dve prijave iz iste poruke, obe sa slikama pre/posle.
+
+### 1. „Generative clean hair" je ostavljao trag vlasi
+
+Prijava: kod čišćenja izletele vlasi preko neba, Generative je izgledao „kao
+Quick Clean Up" — trag ostaje, samo mekši.
+
+**Zašto prompt nije bio poluga (i zašto nisam ni probao da ga menjam):** KORAK
+40 je već izmerio da „sa LaMa podlogom prompt jedva da išta menja" — otkad
+Generative kreće od LaMa popune (KORAK 40), model nema šta da odlučuje, pa
+reč u promptu skoro ništa ne pomera. Menjati prompt za „kosu" bio bi treći put
+da se ovo izmeri uzalud (KORAK 3, KORAK 18, KORAK 40).
+
+**Pravi uzrok je geometrijski, i piše ga sam kod.** Komentar u
+`DevelopInpaint.swift` na `ExemplarInpainter.fill` kaže da algoritam nagrađuje
+fronta gde „jak ivični signal ulazi u rupu" — to je ono što ispravno produžava
+horizont ili ogradu preko praznine. **Vlas jeste jak, tanak, linearan ivični
+signal.** Ako maska tesno prati vlas, ivica i dalje graniči rupu, i isto
+pravilo koje ispravno produžava horizont može ispravno da produži vlas.
+
+I `quickAIRemoval` i `aiRemoval` zovu **isti** rast maske:
+`SubjectMasker.grown(mask, by: 0,0025 × veće dimenzije)`. Na 5176px fajlu to je
+**13px** — dovoljno tesno da ivica vlasi ostane tik uz rupu.
+
+**⚠️ IZMERENO, ne rezonovano.** Nov harness `Tools/run-hair-strand-test.py` +
+`Tools/test-hair-strand.swift` gradi sintetičku fotografiju — zakrivljenu tamnu
+vlas preko svetlog „neba" sa šumom — i pušta **pravi** `SubjectMasker.grown` +
+`LaMaInpaintPipeline` + `InpaintPipeline.package` iz izvora, pri više radijusa
+rasta:
+
+| rast | rezultat (gledano na PNG-u) |
+|---|---|
+| 13px (dana{{š}}nji, na ~5176px NEF-u) | **bledi duh vlasi i dalje vidljiv** |
+| 20px | slabiji trag |
+| 30px | **čisto, ravno nebo** |
+| 45px | čisto, bez daljeg poboljšanja |
+
+Prva verzija testa (vlas preko cele visine kadra) je davala lažno velike
+razlike jer je rupa gutala skoro ceo radni kvadrat — ispravljeno na **lokalnu**
+vlas dužine ~⅓ kadra, kao pravi pramen, i tek tad je razlika bila čitljiva i na
+oko, ne samo u broju.
+
+**Šta je urađeno — DODATO, ne izmenjeno.** Nov parametar
+`InpaintPipeline.aiRemoval(…, flyawayHair: Bool = false)`. Kad je `true`, rast
+maske ide na `0,006 × veće dimenzije` (31px na istom NEF-u — iznad izmerene
+granice od 30px). **Podrazumevano `false`** — ništa se ne menja za bilo koji
+drugi Generative posao (kamenčić, osoba, bilo šta drugo). `quickAIRemoval` je
+netaknut u potpunosti.
+
+U panelu: **`Toggle("Flyaway Hair")`**, samo pored Generative dugmeta (traženo
+tačno tako — „na generative ai"), `@AppStorage`, podrazumevano isključen.
+
+**⚠️ Sintetički test dokazuje MEHANIZAM (ivica koja graniči rupu), ne
+klijentovu konkretnu fotografiju** — njegov fajl je na njegovoj mašini, ne
+ovde. To se ne može potvrditi bez njegovog ekrana.
+
+### 2. Trava — gušća u originalu, ređa/mekša posle Generative popune
+
+Prijava, sa slikom: travnjak posle uklanjanja osobe izgleda **ređe i mekše**
+od okolne trave, ne po sadržaju nego po **gustini teksture**.
+
+**Klijent je dao dozvolu da se dirne zaključani odeljak „AI MODELI I NJIHOVA
+PODEŠAVANJA" — izričito, za ovaj jedan slučaj, uz uslov merenja pre bilo kakve
+trajne izmene.** Iskorišćeno tačno tako: tri poluge izmerene, **nijedna
+zadržana** jer nijedna ne pomaže.
+
+**⚠️ Sintetička trava, ne klijentov fajl** — isti razlog kao kod vlasi: fajl je
+na njegovoj mašini. Napravljena je gusta prava trava (90.000 procenih vlati,
+`Tools/`-a nema stalno jer test nije doveo do izmene — v. niže) i rupa 400×660
+px, veličine slične uklanjanju osobe, puštena kroz `Tools/run-inpaint-sweep.py`
+(taj alat već postoji, prevodi PRAVI `InpaintPipeline` iz izvora).
+
+| poluga | probano | rezultat |
+|---|---|---|
+| `defaultRefineStrength` | 0,2 / 0,3 (isporučeno) / 0,45 / 0,6 | **identično meko na sve četiri** — SD ovde skoro ništa ne menja |
+| kontekst odnos u `squareRegion` | 1,6 (isporučeno) / 1,3 / 1,1 / 1,0 | **1,3 i 1,1 isto meko; 1,0 GORE** — tvrda pravougaona ivica i plava mrlja-artefakt |
+| `--lama` (Quick, bez SD-a uopšte) | sam LaMa | **ISTA mekoća** kao i sa SD-om |
+
+Treći red je nalaz koji zatvara pitanje: **mekoća dolazi iz LaMa-inog sopstvenog
+popunjavanja, pre nego što SD uopšte dobije priliku da nešto doradi.** SD u
+sadašnjoj arhitekturi kreće od LaMa-ine popune i namerno je blag (to je KORAK
+40 — cilj je bio da se **spreči izmišljanje**, po ceni da SD skoro ništa ne sme
+da menja). Isti kompromis koji je zaustavio izmišljanje kamiona na plaži je i
+ono što travi ne dozvoljava da postane gušća.
+
+**To je ista stvar koja je 30-31.08. već izmerena i zapisana** —
+„LaMa se kvari u MEKOĆU" (KORAK 39) — samo sad viđena na travi umesto na peskovitoj
+obali. Nije nov bag; ista poznata granica, na novom sadržaju.
+
+**⚠️ Ništa nije promenjeno u kodu za travu.** Sve tri probane vrednosti su
+odbačene tačno kao u KORAK 39 — „nijedna izmerena varijanta nije bolja od
+isporučene, pa menjati bilo šta 'za svaki slučaj' značilo bi zameniti izmereno
+stanje neizmerenim". `defaultRefineStrength` ostaje **0,3**, kontekst odnos u
+`squareRegion` ostaje **1,6**.
+
+**⚠️ OTVORENO PITANJE ZA KORISNIKA, ne za sledeću sesiju da odluči sama.**
+Jedini put koji bi ovo stvarno popravio je onaj već zapisan u KORAKU 39 kao
+neisproban — SD sa znatno VIŠOM jačinom, ali samo za poslove bez ljudi/predmeta
+u kadru (čista tekstura), gde je rizik izmišljanja manji nego na sceni sa
+strukturom. Nije probano danas: veći zahvat, i pre nego što se probode
+zaključani odeljak po DRUGI put treba klijentova reč, ne moja pretpostavka.
+Dok se ne odluči, preporuka je ista kao za nebo — veliko uklanjanje na travi
+raditi u dva-tri manja prolaza, ili ručno Selection alatom.
+
+### Provereno
+
+- `Tools/run-hair-strand-test.py` — vizuelno i brojem, tabela gore.
+- `BUILD SUCCEEDED`.
+- `Tools/run-editsettings-decode-test.py` → **127 slogova** (pao sa 129 —
+  posledica gašenja/paljenja app-e na ovoj mašini tokom sesije, ne izmene u
+  kodu; `aiRemoveFlyawayHair` je `@AppStorage`, van `PhotoEditSettings`, nema
+  Codable migraciju), **RESULT: OK, nijedno polje ne fali**.
+- `Tools/run-crop-rotation-test.py` → OK.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+„Flyaway Hair" toggle — nije viđen na pravoj fotografiji sa vlasima, ni ovde
+(nema takve slike) ni na klijentovoj mašini.

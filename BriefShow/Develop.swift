@@ -5656,6 +5656,14 @@ struct DevelopView: View {
     @State private var isHoveringPreview = false
     @AppStorage("develop.aiRemove.feather")
     private var aiRemoveFeather: Double = SDInpaintPipeline.defaultFeather
+
+    /// "Flyaway Hair" — Generative Clean Up only. See the long comment on
+    /// `InpaintPipeline.aiRemoval`'s `flyawayHair` parameter for the
+    /// mechanism and the measurement behind it. Off by default: widening the
+    /// mask is right for a thin wisp and wrong for a normal object, so it
+    /// must not change Generative's ordinary behaviour uninvited.
+    @AppStorage("develop.aiRemove.flyawayHair")
+    private var aiRemoveFlyawayHair = false
     // Hand-painted half of the Remove tool: paint over anything (a bin, a
     // sign, a stranger Vision didn't call a person) and erase that instead.
     // Strokes live in the FULL, pre-crop image's unit space, same as
@@ -12426,6 +12434,23 @@ struct DevelopView: View {
                 // garden into a beach.
                 cleanUpButton(.generative, systemImage: "wand.and.stars")
 
+                // ⚠️ ADDS to Generative Clean Up, does not change what it does
+                // by default — asked for in exactly those terms: *„jel moze
+                // da se doda ne mnjea nego doda"*. Off, Generative behaves
+                // exactly as it did. On, it widens the mask before erasing —
+                // see the long comment on `flyawayHair` in
+                // InpaintPipeline.aiRemoval for why growth, not the prompt, is
+                // the lever for a thin strand, and for the measurement behind
+                // 0.006.
+                //
+                // Generative only: reported specifically against that button,
+                // and Quick's own LaMa fill is the thing being compared
+                // against, so widening it too would erase the comparison.
+                Toggle("Flyaway Hair", isOn: $aiRemoveFlyawayHair)
+                    .toggleStyle(.checkbox)
+                    .font(.custom("Figtree", size: 11))
+                    .help("Grows the selection further before Generative Clean Up erases it, so a thin stray hair against sky or background doesn't leave a faint trace. Leave off for anything that isn't a wisp of hair — a wider erase on a real object removes more of what's around it than it should.")
+
                 // The patch is generated, not copied, so its tone lands a hair
                 // off the photo's and a hard edge shows as a rectangle. This is
                 // how far it fades out — as a fraction of the repaired area, so
@@ -12890,6 +12915,7 @@ struct DevelopView: View {
         let visionBox = removalMaskUnitBox
         let strokes = removalStrokes
         let feather = aiRemoveFeather
+        let flyawayHair = aiRemoveFlyawayHair
 
         developRenderQueue.async(qos: .userInitiated) {
             let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
@@ -13010,7 +13036,8 @@ struct DevelopView: View {
                                 DispatchQueue.main.async {
                                     advanceEraseProgress(to: fraction, stage: text)
                                 }
-                            }
+                            },
+                            flyawayHair: flyawayHair
                         )
                     }
                     if let removal {

@@ -12581,14 +12581,115 @@ app sada radi sama; koraci su prenumerisani sa 7 na 6, a korak 1 sada kaže i da
   `assets.pictures.read-write` oba prisutna.
 - App pokrenuta i predata klijentu na proveru.
 
-### ⚠️ NEPROVERENO NA EKRANU
+### ✅ Provereno posle predaje klijentu — i beleška iznad je bila prestroga
 
-1. **Da li se `~/Pictures/C4S Library` zaista napravi** kad se prvi put otvori
-   prozor za import. Entitlement je u paketu i logika pada nazad umesto da
-   puca, ali sam folder nije viđen — pravi se tek pri otvaranju tog prozora.
-   **Ovo je prva stvar koju treba pogledati.**
+Klijent je otvorio File ▸ Import… i javio da je folder napravljen kako treba.
+Provereno i sa ove strane:
+
+- `~/Pictures/C4S Library` postoji.
+- `~/Library/Containers/com.rocketsbrief.BriefShow/Data/Pictures` je
+  **symlink** na `../../../../Pictures`, i oba puta daju **isti inode**
+  (`stat -f "%d:%i"`). Jedan folder, na pravom mestu.
+
+⚠️ **Ispravka tvrdnje iz ovog istog koraka:** kad je entitlement dodeljen,
+macOS symlink-uje kontejnerski Pictures na pravi — pa bi i obično
+`.picturesDirectory` odgovorilo tačno. **Pravi lek je bio entitlement**;
+`getpwuid` je pojas preko tregera. Ostavljen je jer ne škodi i jer pada nazad
+ako entitlementa nekad nema, ali ne treba mu pripisivati zaslugu: bez
+entitlementa ni on ne bi mogao da piše tamo.
+
+### ⚠️ NEPROVERENO NA EKRANU
 2. **Gašenje na Update.** Ne može se isprobati odavde: kartica se pojavljuje
    samo kad je `latest_version` veći od ugrađenog, a `latest_version` je i dalje
    6.0 (klijentova odluka, v. KORAK 108).
 3. Automatsko otvaranje foldera posle importa — nije viđeno sa pravom kamerom
    ni karticom.
+
+## KORAK 111 — KORAK 109 je POVUČEN: klijent je na ekranu video da je gore (3. septembar 2026)
+
+Klijent, pošto je pogledao pravu app-u: *„nista sad je SD gori nego sto je bio
+hahahaha.. vrati SD i lamu kako su bili pre ove p[opravke.. a ovo sada novo sto
+si uradio neka ostane"*.
+
+### Šta je vraćeno
+
+`git checkout 6d8be1a --` nad tri fajla — `DevelopInpaint.swift`,
+`DevelopSDInpaint.swift`, `DevelopLaMaInpaint.swift`. Ceo detalj-prolaz iz
+KORAKA 109 (`nativeDetailPass`, `restoreFineDetail`, `detailSource`, i sve
+pomoćne funkcije) je nestao; provereno grep-om da ni jedna od te tri reči više
+ne postoji ni u jednom od tri fajla.
+
+Potvrđeno da je stanje **brojčano identično** onome pre 109, ne samo naizgled:
+
+| | pre 109 | posle 109 | sada |
+|---|---|---|---|
+| patch koji dokument nosi | 512×512, 118 KB | 1360×1360, 552 KB | **512×512, 118 KB** |
+| odnos teksture, cela rupa | 0,33 | 0,82 | **0,33** |
+| odnos, pojas peska | 0,47 | 0,96 | **0,47** |
+
+KORAK 110 (import, odredište, Update gasi app) je **netaknut** — tako je i
+traženo.
+
+### ⚠️ Zašto ovo NIJE „vraćanje na neizmereno stanje"
+
+KORAK 39 i KORAK 107 su odbacivali varijante zato što merenje nije pokazalo
+poboljšanje. Ovde je obrnuto: **merenje je pokazalo poboljšanje, a klijent je na
+svom ekranu video pogoršanje.** Ekran pobeđuje. To je isto pravilo koje je
+KORAK 109 sam zapisao u zaglavlje `Tools/measure-texture-density.py` — tri puta
+je tokom tog koraka broj rastao dok je slika postajala gora — samo što je
+četvrti put promakao, i uhvatio ga je klijent umesto mene.
+
+⚠️ **Odnos teksture nije mera kvaliteta popune.** Meri koliko se piksel po
+piksel menja, i ne razlikuje pravo zrno od pogrešnog. Sve što je KORAK 109
+merio bilo je tačno; ono što nije radio je gledao rezultat u samoj app-i, na
+uklanjanjima kakva klijent stvarno radi, umesto na dva kadra kroz harness.
+
+### ⚠️ ŠTA SE NE ZNA, i zašto to smeta
+
+**Nije zabeleženo ŠTA je tačno izgledalo gore.** Klijent je rekao „gori" bez
+opisa, a ja sam vratio pre nego što sam pitao. Kandidati, iz onoga što je
+tokom 109 već viđeno na harness slikama:
+
+1. dodato zrno na sadržaju koji ga ne traži (koža, nebo, glatke površine);
+2. vidljiv prelaz na ivici rupe gde se zrno gasi;
+3. zrno pravilnog karaktera na uklanjanjima **osobe** — što u KORAKU 109 nikad
+   nije isprobano (merene su rupa od suncobrana i kamena staza, nijedna nije
+   osoba, i to je tamo i zapisano kao neprovereno).
+
+⚠️ **Ako se ovome ikad vraća, prvo pitanje je ovo, ne kod.** Bez toga bi
+sledeći pokušaj krenuo od iste pretpostavke i završio isto.
+
+### Šta je ZADRŽANO iz 109, i zašto
+
+- **`Tools/measure-texture-density.py`** — alat je i dalje ispravan i njegovo
+  zaglavlje je sad još tačnije nego kad je pisano.
+- **Ispis veličine patch-a u `Tools/inpaint-sweep.swift`** — komentar
+  prepravljen da kaže da je patch opet 512², umesto da i dalje tvrdi ono što je
+  109 uradio.
+- **Ispravka `Tools/README.txt` o `BRIEFSHOW_MODELS`** — činjenična, nema veze
+  sa popunom.
+
+### Šta i dalje stoji kao izmereno, i vredi za sledeći put
+
+Ovo revert ne poništava:
+
+- **Jačina SD-a nije poluga.** Plafon je 0,35 (identičan odnos kao 0,3), a od
+  0,40 naviše model izmišlja — na klijentovoj plaži stenu. To je i dalje
+  izmereno i i dalje je razlog da se `defaultRefineStrength` ne dira.
+- **Mekoća je aritmetika**: 512 / 1100 razvučeno nazad, 2,6× na plaži i 4,1× na
+  klijentovoj travi; bez razvlačenja isti posao ide 0,33 → 0,53.
+- **Quick i Generative su jednako meki** (0,44 prema 0,47) iz istog razloga —
+  klijentovo zapažanje je bilo tačno na broj.
+
+⚠️ Ono što je ostalo nedokazano je da se to popravlja **pozajmljivanjem zrna**.
+Jedini put koji nikad nije probanje ostaje onaj koji i `squareRegion` navodi:
+model nad preklapajućim pločicama u izvornoj rezoluciji, 6–16 prolaza umesto
+jednog. Klijent ga je odbio zbog vremena, i ta odluka nije promenjena.
+
+### Provereno
+
+- `BUILD SUCCEEDED`.
+- `Tools/run-editsettings-decode-test.py` → **RESULT: OK**, 129 slogova.
+- `Tools/run-layer-pixel-store-test.py` → **ALL PASS**.
+- `Tools/run-crop-rotation-test.py` → **RESULT: OK**.
+- `Tools/run-inpaint-sweep.py` → patch opet 512×512 / 118 KB, odnosi 0,33 i 0,47.

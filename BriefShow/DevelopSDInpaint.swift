@@ -1468,10 +1468,7 @@ extension InpaintPipeline {
             buffers: buffers, originalKnown: originalKnown,
             region: region, imageExtent: extent,
             growRadius: 2,
-            blurRadius: InpaintPipeline.featherRadius(feather, originalKnown: originalKnown, side: side),
-            // The 512 buffer above is the whole reason the patch comes back
-            // softer than the photo around it — see the detail pass.
-            detailSource: (image, context))
+            blurRadius: InpaintPipeline.featherRadius(feather, originalKnown: originalKnown, side: side))
     }
 
 }

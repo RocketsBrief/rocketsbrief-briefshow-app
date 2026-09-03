@@ -12693,3 +12693,73 @@ jednog. Klijent ga je odbio zbog vremena, i ta odluka nije promenjena.
 - `Tools/run-layer-pixel-store-test.py` → **ALL PASS**.
 - `Tools/run-crop-rotation-test.py` → **RESULT: OK**.
 - `Tools/run-inpaint-sweep.py` → patch opet 512×512 / 118 KB, odnosi 0,33 i 0,47.
+
+## KORAK 112 — KORAK 109 vraćen, ali na 1024 umesto 2048 (3. septembar 2026)
+
+Klijent, posle reverta iz KORAKA 111: *„ipak vrati da bude sa 109. ali sa
+izmenama da bude 1024x1024 cela rupa ce malo da se smanji sa verujem 0.82 na
+0.67 i pojas peska ce isto da se malo smanji sa 0.96 na 0.78"*.
+
+Kod iz 109 je vraćen doslovno (`git checkout 0043e95 --` nad ista tri fajla),
+sa jednom izmenom: **`maxDetailEdge` 2048 → 1024**.
+
+### ⚠️ Klijentova procena pada je bila znatno preniska — izmereno
+
+Očekivao je blag pad. Pad je oštriji, jer se sa 1024 razvlači i **davalac**:
+zrno koje se pozajmljuje je već omekšano pre nego što se doda. Na plaži region
+je 1360 px (razvlačenje 1,33× umesto 1,0×), na travi 2364 px (**2,3×** umesto
+1,15×).
+
+| | pre 109 | 109 @2048 | procena klijenta | **stvarno @1024** |
+|---|---|---|---|---|
+| plaža, cela rupa | 0,33 | 0,82 | 0,67 | **0,41** |
+| plaža, pojas peska | 0,47 | 0,96 | 0,78 | **0,68** |
+| Quick, pojas peska | 0,44 | 0,74 | — | **0,53** |
+| trava, cela rupa | 0,35 | 0,56 | — | **0,40** |
+
+Na celoj rupi plaže dobija se **0,41 umesto očekivanih 0,67** — dakle nešto
+preko četvrtine puta od polazne 0,33 do onoga što je 2048 davao, a ne dve
+trećine. Pojas peska je bliži proceni (0,68 prema 0,78).
+
+### Šta se dobija zauzvrat — veličina dokumenta
+
+Ovo je i bio razlog spuštanja, i tu je dobitak stvaran:
+
+| | pre 109 | 109 @2048 | @1024 |
+|---|---|---|---|
+| plaža | 118 KB | 552 KB | **334 KB** |
+| trava, velika rupa | 315 KB | **3066 KB** | **942 KB** |
+
+Veliko uklanjanje sada nosi ~0,9 MB umesto ~3 MB — tri puta više od polaznog
+stanja umesto deset puta.
+
+### Pogledano, ne samo izmereno
+
+Plaža i trava su gledane na PNG-u pri punoj veličini. Čisto: nema češlja, nema
+vertikalnih pruga, nema zrna peska preko mora, nema izmišljenih objekata —
+dakle nijedan od tri artefakta koje je KORAK 109 usput napravio i bacio. Trava
+je vidljivo blaža nego na 2048.
+
+### ⚠️ I DALJE SE NE ZNA šta je klijentu izgledalo gore na 2048
+
+Pitanje iz KORAKA 111 nije dobilo odgovor — klijent je umesto opisa tražio
+konkretnu vrednost. Zato ovaj korak **ne zna** da li 1024 rešava ono što je
+smetalo ili samo to isto radi slabije.
+
+⚠️ Ako se opet javi da je gore, tri kandidata iz KORAKA 111 i dalje važe i i
+dalje su neprovereni: zrno na koži/glatkim površinama, prelaz na ivici rupe, i
+uklanjanje **osobe** — koje ni ovaj korak nije isprobao, jer su i ovde merene
+iste dve rupe (suncobran i kamena staza).
+
+### Provereno
+
+- `BUILD SUCCEEDED`.
+- `Tools/run-editsettings-decode-test.py` → **RESULT: OK**.
+- `Tools/run-layer-pixel-store-test.py` → **ALL PASS**.
+- `Tools/run-crop-rotation-test.py` → **RESULT: OK**.
+- Sve brojke iz tabela gore su iz `Tools/run-inpaint-sweep.py` +
+  `Tools/measure-texture-density.py` na klijentovim pravim fajlovima.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Sve — u app-i nije viđeno. App je pokrenuta i predata klijentu.

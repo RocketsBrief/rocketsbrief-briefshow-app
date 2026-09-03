@@ -59,6 +59,11 @@ func write(_ removal: InpaintPipeline.Removal, _ name: String) {
     // Composite the returned patch back onto the photo, exactly the way the
     // app's layer compositing does, so what is looked at is what would ship.
     guard let patch = CIImage(data: removal.pngData) else { return }
+    // The patch is what a saved document actually carries for this erase, so
+    // its size is worth seeing: KORAK 109 lifted it from the 512 the model ran
+    // at to the photo's own resolution, and that lands in the client's files.
+    print(String(format: "  patch %.0fx%.0f, %d KB", patch.extent.width,
+                 patch.extent.height, removal.pngData.count / 1024))
     let target = CGRect(x: extent.minX + removal.boundsUnit.minX * extent.width,
                         y: extent.minY + (1 - removal.boundsUnit.minY - removal.boundsUnit.height) * extent.height,
                         width: removal.boundsUnit.width * extent.width,

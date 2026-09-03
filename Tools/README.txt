@@ -6,12 +6,17 @@ Weights and working copies live in a sibling CoreMLModels/ directory beside
 this checkout. Nothing there is in git, and nothing there is needed to READ
 this repository — only to rebuild the models.
 
-  ⚠️ There is NO BRIEFSHOW_MODELS override. This file claimed one for days and
-  the app has never read such a variable — grep the sources and it is not
-  there. The path is decided in SDModelStore (DevelopSDInpaint.swift), so
-  moving that folder is a code change, not an environment change. Left written
-  down rather than quietly deleted, because the claim has already been believed
-  once.
+  ⚠️ BRIEFSHOW_MODELS moves that folder FOR THE TOOLS IN HERE, and for nothing
+  else. convert_lama.py, clip_tokenize.py and run-inpaint-sweep.py all read it;
+  the APP never has, and grepping BriefShow/ still finds nothing. The app's
+  path is decided in SDModelStore (DevelopSDInpaint.swift), so moving the
+  folder for the app is a code change, not an environment change.
+
+  This line has now been wrong in both directions. It first claimed the app
+  honoured the variable, which it does not; KORAK 106 corrected that by
+  declaring the variable did not exist at all, which sent KORAK 109 looking for
+  a way to point the sweep at the weights that it already had. The distinction
+  is app versus tools, and it is the whole of it.
 
   convert_lama.py          big-lama checkpoint -> LaMa.mlpackage (99 MB)
   clip_tokenize.py         CLIP BPE, pure stdlib
@@ -20,6 +25,12 @@ this repository — only to rebuild the models.
   run-model-load-test.py   times how long the SD weights take to load into
                            Core ML, cold and warm. Reads the model names and
                            compute units out of prepare() so it cannot drift.
+  measure-texture-density.py
+                           how much fine texture a repaired patch has against
+                           the photo around it — the KORAK 109 measurement.
+                           ⚠️ Read its header before trusting a number: during
+                           that step the score went UP three times while the
+                           picture got worse.
 
 Rebuilding LaMa from scratch:
   curl -LJO https://huggingface.co/smartywu/big-lama/resolve/main/big-lama.zip

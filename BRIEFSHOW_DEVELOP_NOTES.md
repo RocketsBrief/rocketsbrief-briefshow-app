@@ -12321,3 +12321,166 @@ koju treba doneti tiho.
   korak po dogovorenom redosledu.
 - Developer ID potpis — i dalje 0 identiteta na ovoj mašini.
 - 214 MB `build_universal/` u istoriji commit-ova — čeka odluku o prepisivanju.
+
+## KORAK 109 — mekoća zakrpe: jačina SD-a NIJE poluga, i to je izmereno; zrno se vraća iz same fotografije (3. septembar 2026)
+
+Klijent, o travi i o pesku: *„moramo da popravimo da izgleda bolje ta trava,
+pojacaj SD Jacinu!"*, pa dopuna: *„kao i za plazu pesak postje mutniji nije kao
+plaza.. a quick clean up isto to uradi znaci SD mora to da popravi!"*
+
+⚠️ **Ta dopuna je rešila korak.** „Quick radi isto" je jedina rečenica koja
+isključuje model iz priče: ako obe putanje greše isto, greška nije u tome šta
+model odlučuje.
+
+### 1. Traženo je pojačanje jačine. Izmereno je i NE radi.
+
+Mereno na **klijentovom pravom kadru** `C4S_7891.NEF` (isti fajl i isti
+pravougaonik kao KORAK 39), `Tools/run-inpaint-sweep.py`, ocena
+`Tools/measure-texture-density.py` (odnos teksture zakrpe prema okolnoj):
+
+| refine | odnos | šta se VIDI na PNG-u |
+|---|---|---|
+| 0,3 (isporučeno) | 0,33 | čisto |
+| 0,35 | 0,33 | čisto |
+| 0,40 | 0,34 | **stena se nazire** |
+| 0,45 | — | **stena** |
+| 0,50 | — | **stena** |
+| 0,6 | 0,37 | **stena** (bleda — zato se na smanjenoj slici ne primeti) |
+| 0,8 | 0,44 | **stena, nedvosmisleno** |
+| 0,95 | 0,49 | **stena** |
+| `off` (iz šuma) | 0,77 | **velika mahovinasta stena** |
+
+**Broj raste isključivo zato što model izmišlja.** Dokaz iz drugog smera: na
+travi, gde nema objekta za koji bi se uhvatio, **sve** jačine od 0,3 do pune
+daju ravno 0,28–0,30.
+
+Plafon je između **0,35 i 0,40**, a 0,35 daje **identičan** odnos kao 0,3
+(0,33). Sitno povećanje ne kupuje ništa merljivo pre nego što počne da laže
+sliku. ⚠️ **`defaultRefineStrength` OSTAJE 0,3, zaključani odeljak nije diran.**
+To je KORAK 40 izmeren ponovo, sa druge strane.
+
+### 2. Pravi uzrok je aritmetika, i `squareRegion` ga je već pisao
+
+Nijedna popuna se ne računa na klijentovoj rezoluciji: SD-ov konvertovani
+checkpoint prima fiksnih **512**, LaMa radi do **1100**, i rezultat se razvlači
+nazad na kadar od 5176 px.
+
+| kadar | rupa | radni kvadrat | razvlačenje |
+|---|---|---|---|
+| plaža `C4S_7891` | 828×431 | 1325 | **2,6×** |
+| trava `C4S_8931 BW` | 1449×1310 | 2364 | **4,1×** |
+
+⚠️ **Dokazano, ne rezonovano:** ista slika i isti posao, samo smanjena tako da
+razvlačenja NEMA (rupa 256 px, kvadrat 512, 1:1) → odnos **0,33 → 0,53**, na
+istoj jačini 0,3. Više nego išta što jačina može bezbedno da kupi.
+
+I zato Quick greši isto: bio je **0,44** tamo gde je SD bio **0,47**. Klijentovo
+zapažanje je bilo tačno na broj.
+
+### 3. Šta je urađeno — zrno se uzima iz fotografije, ne od modela
+
+Nov detaljni prolaz u **`package()`** u `DevelopInpaint.swift`. `package()` je
+zajednički, pa jednim potezom hvata **sva tri** puta: SD, LaMa Quick i
+exemplar. Region se ponovo renderuje u izvornoj rezoluciji (kapirano na
+`maxDetailEdge` = 2048), popuna se podigne na nju, i u rupu se vrati **pravo
+zrno iz iste fotografije**. Struktura — šta je u rupi — ostaje tačno kako je
+popuna odlučila; dopunjava se samo fini pojas.
+
+To je isti razlog zbog kog je exemplar put oštar, rečima koje već stoje u tom
+fajlu: *„COPIES real pixels out of the surrounding photo instead of
+synthesizing them, so what it puts back is as sharp as what it took."*
+
+| | pre | posle |
+|---|---|---|
+| plaža, pojas peska u rupi | 0,47 | **0,96** |
+| Quick (`--lama`), isti pojas | 0,44 | **0,74** |
+| trava `C4S_8931`, cela rupa | 0,35 | **0,56** |
+
+Cena vremena, što je bio klijentov uslov: SD **9,3 s → 9,9 s**, Quick
+**1,1 s → 1,1 s** na 5176 px kadru.
+
+### ⚠️ Tri izbora davaoca zrna, dva bačena — i OBA su imala BOLJI broj
+
+Ovo je najvažnija stavka koraka i razlog zašto `measure-texture-density.py` nosi
+upozorenje u zaglavlju.
+
+| izbor davaoca | odnos | šta se videlo |
+|---|---|---|
+| jedan ravan pravougaonik peska | 0,82 | **talasi peska preko mora** |
+| svaki red zasebno upario po svetlini | **1,48** | **tvrd pravilan ČEŠALJ** |
+| upareno pa „hoda", sa pragom | — | **vertikalne PRUGE** (prag okida na svakom redu i otiskuje isti red) |
+| **preslikana susedna traka + meka težina** | 0,66 / 0,96 | čisto |
+
+**Tri puta je broj porastao dok je fotografija postajala gora.** Pogrešna
+tekstura je i dalje tekstura, a ova mera to ne razlikuje. PNG odlučuje.
+
+Zadržano rešenje: davalac je najbliža netaknuta traka, preslikana i **pomera se
+red po red** — neprekidnost je osobina koja se ne sme žrtvovati, jer je ona ta
+zbog koje zrno izgleda kao zrno. Neslaganje traka (pesak nad morem) se rešava
+**težinom, ne skakanjem**: gde davalac ne liči na ono što treba da ozrni,
+gasi se. Najgore što tako može da uradi jeste da ne vrati ništa — ne može da
+izmisli teksturu koje nije bilo.
+
+Širina te težine je izmerena, ne odabrana: na 12 je trava dobila samo
+0,35 → 0,39 (premalo, gušila je glavni slučaj), na **24** trava 0,56 i pesak
+0,96, a plaža je pogledom potvrđena da je i dalje čista.
+
+### ⚠️ Poboljšanje, NIJE izlečenje — i razlika je bitna
+
+Na plaži ovo stvarno izgleda bolje. Na klijentovoj travi rupa je **četvrtina
+kadra**; zrno se vrati i vlati se vide gde je pre bila glatka mrlja, ali ispod
+je i dalje mrlja i ona ne postaje travnjak. Jedino što bi to izlečilo je model
+nad preklapajućim pločicama u izvornoj rezoluciji — 6 do 16 prolaza umesto
+jednog, što je klijent odbio zbog vremena. Preporuka za velika uklanjanja
+ostaje ista kao u KORAKU 107: u dva-tri manja prolaza.
+
+### Provereno
+
+- `BUILD SUCCEEDED` posle svake od četiri verzije davaoca.
+- `Tools/run-editsettings-decode-test.py` → **RESULT: OK**, 129 slogova, 27
+  polja, nijedan broj se nije pomerio.
+- `Tools/run-layer-pixel-store-test.py` → **ALL PASS**.
+- `Tools/run-crop-rotation-test.py` → **RESULT: OK**.
+- `Tools/run-hair-strand-test.py` → radi, redosled radijusa isti kao KORAK 107.
+
+### Usput popravljeno
+
+`Tools/README.txt` je od KORAKA 106 tvrdio da `BRIEFSHOW_MODELS` **ne postoji**.
+Netačno u drugu stranu: app ga zaista nikad nije čitao, ali `convert_lama.py`,
+`clip_tokenize.py` i `run-inpaint-sweep.py` ga svi poštuju — i ovaj korak ga je
+koristio da izmeri baznu vrednost. Ta linija je sad bila pogrešna u OBA smera;
+prepisana je na pravu razliku: app protiv alata.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Sve iz ovog koraka. Mereno i gledano na PNG-ovima ovde, u app-i nije viđeno.
+Konkretno neprovereno:
+
+1. Kako popravka izgleda na uklanjanju **osobe** (ovde su merene rupa od
+   suncobrana i kamena staza, nijedna nije osoba).
+2. Šta radi na sadržaju sa **strukturom** u rupi — ograda, pločice, zid. Meka
+   težina bi tu trebalo da se ugasi, ali to nije viđeno.
+3. Vreme na **Intelu**. Prolaz je čist CPU posao nad do 2048² piksela; ovde je
+   0,6 s, tamo je nepoznat.
+
+### ⚠️ Cena koja NIJE u vremenu nego u dokumentu — izmerena
+
+Sloj sada nosi PNG u izvornoj rezoluciji umesto 512², i to ide u klijentov
+sačuvan fajl. Mereno dodavanjem ispisa u `Tools/inpaint-sweep.swift` (ostao je
+tamo, jer je to broj koji sledeći korak treba da vidi):
+
+| | patch pre | patch posle |
+|---|---|---|
+| plaža `C4S_7891` | 512×512, **118 KB** | 1360×1360, **552 KB** |
+| trava `C4S_8931`, velika rupa | 512×512, **315 KB** | 2048×2048, **3066 KB** |
+
+⚠️ **Jedno veliko uklanjanje sada nosi ~3 MB umesto ~315 KB — desetostruko.**
+To je cena nošenja pravog zrna: zrno od dva piksela ne može da stane u bafer
+koji se razvlači 4×. Nije skriveno u vremenu (SD 9,3 → 9,9 s), nego u veličini
+fajla, i klijent to nije video pri odluci.
+
+Poluga ako zasmeta je **`maxDetailEdge`** (`DevelopInpaint.swift`, sada 2048):
+spuštanje na 1400 otprilike prepolovljava veličinu, po cenu mekšeg zrna na
+najvećim rupama. ⚠️ Nije spuštano bez pitanja — 2048 je vrednost na kojoj su
+izmereni svi brojevi gore, pa bi menjanje značilo zameniti izmereno stanje
+neizmerenim.

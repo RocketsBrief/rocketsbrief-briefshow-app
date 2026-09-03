@@ -187,6 +187,10 @@ extension InpaintPipeline {
         return package(
             buffers: buffers, originalKnown: originalKnown,
             region: region, imageExtent: extent,
-            growRadius: 2, blurRadius: featherRadius(feather, originalKnown: originalKnown, side: side))
+            growRadius: 2, blurRadius: featherRadius(feather, originalKnown: originalKnown, side: side),
+            // The client's own observation was that Quick is soft in exactly
+            // the same way Generative is, which is what pointed at the shared
+            // cause: this path runs at 1100 and is stretched back too.
+            detailSource: (image, context))
     }
 }

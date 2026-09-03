@@ -879,7 +879,12 @@ enum InpaintPipeline {
 
         return package(
             buffers: buffers, originalKnown: originalKnown,
-            region: region, imageExtent: extent
+            region: region, imageExtent: extent,
+            // This path copies real pixels already, so on a region small
+            // enough to run unscaled the detail pass finds nothing missing and
+            // returns without touching anything. It earns its place on the big
+            // ones, where even this path is working on a shrunk copy.
+            detailSource: (image, context)
         )
     }
 
@@ -1168,7 +1173,8 @@ enum InpaintPipeline {
         region: CGRect,
         imageExtent: CGRect,
         growRadius: Int = 2,
-        blurRadius: Int = 3
+        blurRadius: Int = 3,
+        detailSource: (image: CIImage, context: CIContext)? = nil
     ) -> Removal? {
         let width = buffers.width
         let height = buffers.height
@@ -1195,18 +1201,44 @@ enum InpaintPipeline {
         blur(&alpha, width: width, height: height, radius: blurRadius)
         blur(&alpha, width: width, height: height, radius: blurRadius)
 
-        var rgba = [UInt8](repeating: 0, count: width * height * 4)
-        for index in 0..<(width * height) {
+        // ⚠️ Up to here everything is at the WORKING resolution the fill ran
+        // at — 512 for SD, up to 1100 for LaMa — not the photo's. On a 5176px
+        // frame an 828px hole means a 1325px region, so every pixel the fill
+        // produced is about to be stretched 2.6x on its way back onto the
+        // photograph, and a client's grass hole measured 4.1x. That stretch is
+        // the whole of "the patch is blurrier than the sand around it", and it
+        // is arithmetic: no prompt, and no refine strength, can undo it (KORAK
+        // 109 measured the strengths, and the only thing raising them bought
+        // was an invented rock).
+        //
+        // So the grain is put back here, at the photo's own resolution, out of
+        // the photograph itself. See restoreFineDetail.
+        var pixels = buffers.pixels
+        var outWidth = width
+        var outHeight = height
+        if let source = detailSource,
+           let native = nativeDetailPass(
+               fill: buffers.pixels, known: originalKnown, alpha: alpha,
+               width: width, height: height, region: region,
+               image: source.image, context: source.context) {
+            pixels = native.pixels
+            alpha = native.alpha
+            outWidth = native.width
+            outHeight = native.height
+        }
+
+        var rgba = [UInt8](repeating: 0, count: outWidth * outHeight * 4)
+        for index in 0..<(outWidth * outHeight) {
             let a = Int(alpha[index])
             let base = index * 4
             // Premultiplied, to match the bitmapInfo below.
-            rgba[base] = UInt8(Int(buffers.pixels[base]) * a / 255)
-            rgba[base + 1] = UInt8(Int(buffers.pixels[base + 1]) * a / 255)
-            rgba[base + 2] = UInt8(Int(buffers.pixels[base + 2]) * a / 255)
+            rgba[base] = UInt8(Int(pixels[base]) * a / 255)
+            rgba[base + 1] = UInt8(Int(pixels[base + 1]) * a / 255)
+            rgba[base + 2] = UInt8(Int(pixels[base + 2]) * a / 255)
             rgba[base + 3] = alpha[index]
         }
 
-        guard let cgImage = makeCGImage(rgba: rgba, width: width, height: height) else {
+        guard let cgImage = makeCGImage(rgba: rgba, width: outWidth, height: outHeight) else {
             return nil
         }
         let rep = NSBitmapImageRep(cgImage: cgImage)
@@ -1224,6 +1256,356 @@ enum InpaintPipeline {
             height: region.height / imageExtent.height
         )
         return Removal(pngData: png, boundsUnit: boundsUnit)
+    }
+
+    // MARK: - Putting the photograph's own grain back
+    //
+    // KORAK 109. The client's report was "the sand is blurrier, not like the
+    // beach" and "the grass is thinner than the grass around it", with the
+    // pointed observation that QUICK DOES THE SAME THING — which is the clue
+    // that mattered, because it rules the model out. Both paths are soft for
+    // one shared reason: neither runs on the photograph. SD's converted
+    // checkpoint takes a fixed 512, LaMa runs at up to 1100, and whatever they
+    // produce is scaled back up onto a 5176px frame.
+    //
+    // Measured before any of this was written (Tools/run-inpaint-sweep.py, on
+    // the client's own C4S_7891 beach frame): the patch carries 0.33 of the
+    // surrounding photo's fine detail. Raising SD's refine strength — the
+    // thing that was actually asked for — does NOT fix it. It reaches 0.77,
+    // but by INVENTING: at 0.6 a rock formation appears on the beach where
+    // there was nothing, and at 0.8 and above it is unmistakable. On grass,
+    // where there is no object for it to reach for, every strength from 0.3 to
+    // full gives the same 0.28-0.30. The number only moves when the model
+    // makes something up. That is KORAK 40's wall, measured again from the
+    // other side.
+    //
+    // So the grain is not asked for from a model. It is taken from the
+    // photograph, which is the same reason the exemplar path is sharp, in this
+    // file's own words further up: it "COPIES real pixels out of the
+    // surrounding photo instead of synthesizing them, so what it puts back is
+    // as sharp as what it took."
+    //
+    // Structure — what is in the hole — is left exactly as the fill decided.
+    // Only the fine band is topped up. Measured after: beach 0.33 -> 0.61,
+    // the client's own grass frame 0.35 -> 0.94, in milliseconds, with nothing
+    // invented.
+    //
+    // ⚠️ It is an improvement, NOT a cure, and the difference matters. On the
+    // client's grass the hole is 1449x1310 — a quarter of the frame, stretched
+    // 4.1x — and under the restored grain the fill is still a smooth blob. The
+    // texture comes back; the blob does not become a lawn. The only thing that
+    // would is running the model over overlapping tiles at native resolution,
+    // which is 6 to 16 model passes instead of one (see squareRegion's comment
+    // in DevelopSDInpaint.swift). The client ruled that out on time.
+
+    /// The edge this pass works at.
+    ///
+    /// The region can be most of a 3448px frame and this holds two float
+    /// planes of it, so it is capped rather than unbounded. At 2048 the
+    /// client's 2364px grass region is still only stretched 1.15x instead of
+    /// 4.1x — which is the part that is visible — without holding 130 MB of
+    /// scratch to chase the last sliver.
+    static let maxDetailEdge = 2048
+
+    private struct NativePatch {
+        var pixels: [UInt8]
+        var alpha: [UInt8]
+        var width: Int
+        var height: Int
+    }
+
+    /// Re-renders the region at (close to) the photo's own resolution, lifts
+    /// the fill up to it, and puts the photograph's grain back into the hole.
+    /// Returns nil when there was no stretch to undo, which is the one case
+    /// where this would be pure cost.
+    private static func nativeDetailPass(
+        fill: [UInt8], known: [UInt8], alpha: [UInt8],
+        width: Int, height: Int, region: CGRect,
+        image: CIImage, context: CIContext
+    ) -> NativePatch? {
+        let longest = max(region.width, region.height)
+        guard longest > CGFloat(max(width, height)) else { return nil }
+
+        let scale = min(1, CGFloat(maxDetailEdge) / longest)
+        let nativeWidth = max(1, Int((region.width * scale).rounded()))
+        let nativeHeight = max(1, Int((region.height * scale).rounded()))
+        guard nativeWidth > width, nativeHeight > height else { return nil }
+
+        let photo = renderRegion(
+            image, region: region, width: nativeWidth, height: nativeHeight, context: context)
+        var pixels = upscale(fill, srcW: width, srcH: height,
+                             dstW: nativeWidth, dstH: nativeHeight, components: 4)
+        let bigAlpha = upscale(alpha, srcW: width, srcH: height,
+                               dstW: nativeWidth, dstH: nativeHeight, components: 1)
+        let bigKnown = upscale(known, srcW: width, srcH: height,
+                               dstW: nativeWidth, dstH: nativeHeight, components: 1)
+
+        restoreFineDetail(fill: &pixels, photo: photo, known: bigKnown,
+                          width: nativeWidth, height: nativeHeight)
+
+        return NativePatch(pixels: pixels, alpha: bigAlpha,
+                           width: nativeWidth, height: nativeHeight)
+    }
+
+    private static func renderRegion(
+        _ source: CIImage, region: CGRect, width: Int, height: Int, context: CIContext
+    ) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let placed = source
+            .cropped(to: region)
+            .transformed(by: CGAffineTransform(translationX: -region.origin.x, y: -region.origin.y))
+            .transformed(by: CGAffineTransform(scaleX: CGFloat(width) / region.width,
+                                               y: CGFloat(height) / region.height))
+        bytes.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            context.render(
+                placed, toBitmap: base, rowBytes: width * 4,
+                bounds: CGRect(x: 0, y: 0, width: width, height: height),
+                format: .RGBA8, colorSpace: briefInpaintColorSpace)
+        }
+        return bytes
+    }
+
+    /// Tops the fill's fine detail up to the level of the photograph around
+    /// the hole, using grain borrowed from the photograph itself.
+    private static func restoreFineDetail(
+        fill: inout [UInt8], photo: [UInt8], known: [UInt8], width: Int, height: Int
+    ) {
+        var minX = width, maxX = -1, minY = height, maxY = -1
+        for y in 0..<height {
+            let row = y * width
+            for x in 0..<width where known[row + x] == 0 {
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return }
+
+        var photoDetail = lumaPlane(photo, width: width, height: height)
+        var fillDetail = lumaPlane(fill, width: width, height: height)
+
+        // Row averages across the hole's columns, taken while these are still
+        // brightness rather than detail. They are what lets a hole row be
+        // matched to the untouched row that actually LOOKS like it — see the
+        // donor choice below.
+        let columns = Float(maxX - minX + 1)
+        var photoRowLuma = [Float](repeating: 0, count: height)
+        var fillRowLuma = [Float](repeating: 0, count: height)
+        for y in 0..<height {
+            let row = y * width
+            var photoSum: Float = 0
+            var fillSum: Float = 0
+            for x in minX...maxX {
+                photoSum += photoDetail[row + x]
+                fillSum += fillDetail[row + x]
+            }
+            photoRowLuma[y] = photoSum / columns
+            fillRowLuma[y] = fillSum / columns
+        }
+
+        // The band the stretch destroyed: everything finer than a couple of
+        // pixels. Two box passes stand in for a Gaussian.
+        var scratch = photoDetail
+        boxBlur(&scratch, width: width, height: height, radius: 2)
+        boxBlur(&scratch, width: width, height: height, radius: 2)
+        for i in 0..<photoDetail.count { photoDetail[i] -= scratch[i] }
+
+        scratch = fillDetail
+        boxBlur(&scratch, width: width, height: height, radius: 2)
+        boxBlur(&scratch, width: width, height: height, radius: 2)
+        for i in 0..<fillDetail.count { fillDetail[i] -= scratch[i] }
+
+        let block = 16
+        let gridWidth = (width + block - 1) / block
+        let gridHeight = (height + block - 1) / block
+        let photoEnergy = energyGrid(photoDetail, width: width, height: height, block: block)
+        let fillEnergy = energyGrid(fillDetail, width: width, height: height, block: block)
+
+        // A ramp that fades the borrowed grain in from the hole's edge, so it
+        // does not begin on a line. `scratch` is finished with, so it is
+        // reused rather than holding a third plane of a 2048px region.
+        for i in 0..<scratch.count { scratch[i] = known[i] == 0 ? 1 : 0 }
+        boxBlur(&scratch, width: width, height: height, radius: 10)
+        boxBlur(&scratch, width: width, height: height, radius: 10)
+
+        // The untouched rows this can borrow from at all.
+        var candidates: [Int] = []
+        candidates.reserveCapacity(height - (maxY - minY + 1))
+        for y in 0..<height where y < minY || y > maxY { candidates.append(y) }
+        guard !candidates.isEmpty else { return }
+
+        // ⚠️ Grain has to match the CONTENT, not just its strength, and it
+        // cannot be chosen by POSITION. Reflecting the nearest rows into the
+        // hole — which is what this did first — puts sand ripples across the
+        // water on the client's beach frame, because the rows nearest the
+        // hole's bottom half are sand while part of that half is sea. It was
+        // plainly visible on screen and the measurement did not catch it: the
+        // score went UP, to 0.82, precisely because wrong grain is still grain.
+        //
+        // So the donor is chosen by how the row LOOKS. The fill is a plausible
+        // continuation of the scene, so its brightness across the hole says
+        // which band a row belongs to; the untouched row with the closest
+        // brightness is the one whose grain belongs there. Sky matches sky,
+        // water matches water, sand matches sand, with no notion of "above" or
+        // "below" needed.
+        // ⚠️ Two ways of choosing the donor were built and thrown away, and
+        // both are worth knowing about, because BOTH scored better than what is
+        // here while looking worse on screen:
+        //
+        //   - matching every hole row to the untouched row it most resembles
+        //     scored 1.48 and produced a hard regular COMB, because
+        //     consecutive rows then pull from unrelated places and the vertical
+        //     continuity that makes grain read as grain is gone;
+        //   - letting that match walk, and re-matching on a brightness
+        //     threshold, produced vertical STREAKS, because near a gradient the
+        //     threshold fires on every row and stamps one donor row down the
+        //     whole hole.
+        //
+        // Continuity is the property that cannot be given up. So the donor is
+        // simply the nearest untouched band, reflected in and advancing one row
+        // at a time — grain stays grain — and the band-mismatch problem (sand
+        // ripples appearing over the sea, which the first version of this did)
+        // is handled by WEIGHT rather than by jumping: where the donor does not
+        // look like what it is being asked to grain, it fades out. The worst
+        // this can do is restore nothing, which is where this started; it
+        // cannot invent a texture that was never there.
+        let above = minY
+        let below = height - 1 - maxY
+
+        func pingPong(_ step: Int, _ span: Int) -> Int {
+            guard span > 1 else { return 0 }
+            let m = step % (2 * span)
+            return m < span ? m : 2 * span - 1 - m
+        }
+
+        func donorRow(_ y: Int) -> Int {
+            let preferBelow = (y - minY) * 2 >= (maxY - minY)
+            if preferBelow, below > 0 { return maxY + 1 + pingPong(maxY - y, below) }
+            if above > 0 { return minY - 1 - pingPong(y - minY, above) }
+            return maxY + 1 + pingPong(maxY - y, below)
+        }
+
+        for y in minY...maxY {
+            let row = y * width
+            let gridRow = min(y / block, gridHeight - 1) * gridWidth
+            let source = donorRow(y)
+            let donorGridRow = min(source / block, gridHeight - 1) * gridWidth
+
+            // How much the donor row looks like what the fill put here. Sand
+            // over sand is ~1; sand under a blown-out sea falls away to 0.
+            let mismatch = (photoRowLuma[source] - fillRowLuma[y]) / 24
+            let similarity = exp(-mismatch * mismatch)
+            guard similarity > 0.02 else { continue }
+
+            for x in minX...maxX where known[row + x] == 0 {
+                let gridX = min(x / block, gridWidth - 1)
+
+                // The donor row says both what the grain looks like and how
+                // much of it there should be, so the two can no longer
+                // disagree. Blown sky matches a blown row, reads ~0, and gets
+                // ~nothing added.
+                let want = photoEnergy[donorGridRow + gridX]
+                let have = fillEnergy[gridRow + gridX]
+                guard want > have else { continue }
+                let gain = min((want - have) / max(want, 0.5), 1) * similarity
+
+                let add = gain * photoDetail[source * width + x] * scratch[row + x]
+                let base = (row + x) * 4
+                for channel in 0..<3 {
+                    let value = Float(fill[base + channel]) + add
+                    fill[base + channel] = UInt8(max(0, min(255, value.rounded())))
+                }
+            }
+        }
+    }
+
+    private static func lumaPlane(_ rgba: [UInt8], width: Int, height: Int) -> [Float] {
+        var plane = [Float](repeating: 0, count: width * height)
+        for i in 0..<(width * height) {
+            let base = i * 4
+            plane[i] = 0.2126 * Float(rgba[base])
+                + 0.7152 * Float(rgba[base + 1])
+                + 0.0722 * Float(rgba[base + 2])
+        }
+        return plane
+    }
+
+    private static func energyGrid(
+        _ detail: [Float], width: Int, height: Int, block: Int
+    ) -> [Float] {
+        let gridWidth = (width + block - 1) / block
+        let gridHeight = (height + block - 1) / block
+        var grid = [Float](repeating: 0, count: gridWidth * gridHeight)
+        var counts = [Float](repeating: 0, count: gridWidth * gridHeight)
+        for y in 0..<height {
+            let gridRow = (y / block) * gridWidth
+            let row = y * width
+            for x in 0..<width {
+                let cell = gridRow + x / block
+                grid[cell] += abs(detail[row + x])
+                counts[cell] += 1
+            }
+        }
+        for i in 0..<grid.count where counts[i] > 0 { grid[i] /= counts[i] }
+        return grid
+    }
+
+    /// Separable box blur on a float plane, clamped at the edges.
+    private static func boxBlur(_ plane: inout [Float], width: Int, height: Int, radius: Int) {
+        guard radius > 0, width > 0, height > 0 else { return }
+        var temp = [Float](repeating: 0, count: plane.count)
+        let window = Float(radius * 2 + 1)
+        for y in 0..<height {
+            let row = y * width
+            var sum: Float = 0
+            for x in -radius...radius { sum += plane[row + min(max(x, 0), width - 1)] }
+            for x in 0..<width {
+                temp[row + x] = sum / window
+                sum += plane[row + min(x + radius + 1, width - 1)]
+                    - plane[row + max(x - radius, 0)]
+            }
+        }
+        for x in 0..<width {
+            var sum: Float = 0
+            for y in -radius...radius { sum += temp[min(max(y, 0), height - 1) * width + x] }
+            for y in 0..<height {
+                plane[y * width + x] = sum / window
+                sum += temp[min(y + radius + 1, height - 1) * width + x]
+                    - temp[max(y - radius, 0) * width + x]
+            }
+        }
+    }
+
+    /// Bilinear resample of an interleaved 8-bit buffer.
+    private static func upscale(
+        _ src: [UInt8], srcW: Int, srcH: Int, dstW: Int, dstH: Int, components: Int
+    ) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: dstW * dstH * components)
+        let stepX = Float(srcW) / Float(dstW)
+        let stepY = Float(srcH) / Float(dstH)
+        for y in 0..<dstH {
+            let fy = min(max((Float(y) + 0.5) * stepY - 0.5, 0), Float(srcH - 1))
+            let y0 = Int(fy), y1 = min(y0 + 1, srcH - 1)
+            let wy = fy - Float(y0)
+            for x in 0..<dstW {
+                let fx = min(max((Float(x) + 0.5) * stepX - 0.5, 0), Float(srcW - 1))
+                let x0 = Int(fx), x1 = min(x0 + 1, srcW - 1)
+                let wx = fx - Float(x0)
+                let base = (y * dstW + x) * components
+                for c in 0..<components {
+                    let p00 = Float(src[(y0 * srcW + x0) * components + c])
+                    let p10 = Float(src[(y0 * srcW + x1) * components + c])
+                    let p01 = Float(src[(y1 * srcW + x0) * components + c])
+                    let p11 = Float(src[(y1 * srcW + x1) * components + c])
+                    let top = p00 + (p10 - p00) * wx
+                    let bottom = p01 + (p11 - p01) * wx
+                    out[base + c] = UInt8(max(0, min(255, (top + (bottom - top) * wy).rounded())))
+                }
+            }
+        }
+        return out
     }
 
     // Square dilation and a separable box blur, both on the 8-bit alpha

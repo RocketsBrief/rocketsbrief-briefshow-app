@@ -12246,3 +12246,78 @@ raditi u dva-tri manja prolaza, ili ručno Selection alatom.
 
 „Flyaway Hair" toggle — nije viđen na pravoj fotografiji sa vlasima, ni ovde
 (nema takve slike) ni na klijentovoj mašini.
+
+## KORAK 108 — RELEASE v11.1 (3. septembar 2026)
+
+Klijentov zahtev: zapakuj i pusti sve iz KORAKA 106–107 kao universal build,
+macOS 13+, ista dva AI modela (LaMa u bundle-u, SD na preuzimanje), tag v11.1.
+
+### Provereno na pravom paketu, ne pretpostavljeno
+
+| provera | rezultat |
+|---|---|
+| `lipo -archs` | **`x86_64 arm64`** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.1** / **21** |
+| `CFBundleDisplayName` / `Name` / `Executable` | **C4S Suite** |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` (netaknut) |
+| potpis | ad-hoc (i dalje nema Developer ID sertifikata) |
+| lične fotografije u paketu | **nula** |
+| `LaMa.mlmodelc` u paketu | **da** — Quick AI Clean Up bez preuzimanja, na oba procesora |
+| SD15-Inpainting u paketu | **ne**, namerno — preuzima se na zahtev |
+| app / arhiva | 140 MB / **109 MB** |
+
+### ⚠️ Zamka — prvi universal build je ispao arm64-only, i `-showBuildSettings` je lagao da je sve u redu
+
+`xcodebuild -configuration Release build` je dao **samo `arm64`**, iako
+`-showBuildSettings` za isti scheme/config pokazuje `ARCHS = arm64 x86_64` i
+`ONLY_ACTIVE_ARCH = NO`. Podešavanja u `.pbxproj`-u nikad nisu bila problem —
+`xcodebuild build` bez `-destination` je tiho suzio arhitekturu na mašinu koja
+gradi. Dodavanjem `-destination "generic/platform=macOS"` build je ispravno
+izašao univerzalan. **Zapamtiti za sledeći release**: bez tog `-destination`,
+provera podešavanja pre build-a ne dokazuje ništa o stvarnom binarnom fajlu —
+mora se meriti `lipo -archs` na **rezultatu**, ne na `-showBuildSettings`.
+
+### SD model — NIJE ponovo pušten, i to je namerno
+
+`SDModelInstaller.archiveURL` je i dalje pinovan na **v11.0** tag-a
+(`SD15-Inpainting.aar`, 1891 MB, potvrđeno da i dalje postoji na GitHub-u).
+Težine se nisu promenile od 25.08, pa ponovno pakovanje i upload identičnih
+1,8 GB ne bi ništa dodalo — samo bi trošilo vreme i mesto.
+
+**Ovo direktno odgovara na klijentovo pitanje o mešovitim instalacijama:**
+model živi u `Application Support` unutar app-inog kontejnera, odvojeno od same
+app-e (v. KORAK 108 razgovor pre ovog koraka). Klijent koji je već preuzeo SD
+zadržava ga bez ičega novog; klijent koji nije, dobija isti, i dalje važeći
+link kad klikne „Install Model" u novoj 11.1. Nijedna mašina ne gubi niti mora
+ponovo da preuzima 1,8 GB zbog ovog update-a.
+
+### Oznaka verzije u app-i — već postoji
+
+Klijent je tražio „label u appu ispod da je taj tag version". Postoji od pre —
+`BriefShowAboutHoverCard` (hover na „C4S Suite" natpis) čita
+`CFBundleShortVersionString` direktno iz build-a i ispisuje „v11.1" bez ijedne
+izmene koda. Nije dodato ništa novo; ako klijent hoće da bude STALNO vidljiva
+(ne samo na hover), to je sledeći, poseban zahtev.
+
+### ⚠️ Uočeno usput, nije dirano
+
+`dist-universal/BriefShow.app` (praćen fajl u git-u) je **zastareo od 6.
+avgusta** — pre preimenovanja u C4S Suite, pre svih release-a od 10.8 naovamo.
+Ni 10.8 ni 11.0 ga nisu osvežili; obe su isporučene isključivo kao GitHub
+Release asset (arhiva), a ta praćena kopija je otad mrtvo drvo. Nije dirana
+danas — menjanje praćenog binarnog fajla van onoga što je traženo nije odluka
+koju treba doneti tiho.
+
+### Pušteno
+
+- Commit `85345ea` — podizanje verzije i beleška o `-destination` zamci.
+- Tag **`v11.1`**, push na `origin`.
+- `gh release create v11.1` sa `C4S-Suite-11.1.zip` (109 MB) kao asset-om.
+
+### ⚠️ Šta i dalje NIJE dirano
+
+- `latest_version` u BriefControl-u — i dalje 6.0, klijentova odluka, poslednji
+  korak po dogovorenom redosledu.
+- Developer ID potpis — i dalje 0 identiteta na ovoj mašini.
+- 214 MB `build_universal/` u istoriji commit-ova — čeka odluku o prepisivanju.

@@ -439,8 +439,25 @@ struct UpdateRequiredOverlay: View {
                 }
 
                 Button {
-                    if let downloadURL, let url = URL(string: downloadURL) {
-                        NSWorkspace.shared.open(url)
+                    // Hand the download to the browser, then QUIT — the client
+                    // asked for it in as many words, and the reason is the next
+                    // step of the install: the new C4S Suite cannot be dragged
+                    // over the old one in Applications while the old one is
+                    // running. Leaving it open only to tell the client to close
+                    // it (which is what install step 3 used to say) was making
+                    // them do the app's job.
+                    //
+                    // Quit AFTER the browser has actually been handed the URL,
+                    // not alongside it: terminating in the same turn can beat
+                    // the hand-off and leave the client with neither a download
+                    // nor an app. On a failure it deliberately does NOT quit,
+                    // so the button is still there to press again.
+                    guard let downloadURL, let url = URL(string: downloadURL) else { return }
+                    NSWorkspace.shared.open(
+                        url, configuration: NSWorkspace.OpenConfiguration()
+                    ) { _, error in
+                        guard error == nil else { return }
+                        DispatchQueue.main.async { NSApplication.shared.terminate(nil) }
                     }
                 } label: {
                     HStack {
@@ -469,13 +486,12 @@ struct UpdateRequiredOverlay: View {
 
                 if showInstallGuide {
                     VStack(alignment: .leading, spacing: 10) {
-                        installStep(1, "Click \"Download Update\" above. It opens the C4S Suite release page on GitHub in your browser.")
+                        installStep(1, "Click \"Download Update\" above. It opens the C4S Suite release page on GitHub in your browser, and then C4S Suite closes itself so you can replace it.")
                         installStep(2, "On that page, under \"Assets\", click the file named \"BriefShow-macOS-Universal.zip\" to start the download.")
-                        installStep(3, "Quit C4S Suite if it's currently open.")
-                        installStep(4, "Open the downloaded file, then drag the new C4S Suite into your Applications folder. Choose \"Replace\" when asked.")
-                        installStep(5, "C4S Suite is still in active development, so it isn't distributed through the Mac App Store yet. When you first open it, macOS will say it \"was blocked to protect your Mac.\" Open System Settings → Privacy & Security, scroll down to the Security section, and click \"Open Anyway\" next to C4S Suite.")
-                        installStep(6, "Open C4S Suite again. Click \"Open Anyway\" once more in the dialog, then enter your Mac's login password when asked. Choose \"Always Allow\" so you won't be asked again.")
-                        installStep(7, "That's it. C4S Suite will open normally from then on.")
+                        installStep(3, "Open the downloaded file, then drag the new C4S Suite into your Applications folder. Choose \"Replace\" when asked.")
+                        installStep(4, "C4S Suite is still in active development, so it isn't distributed through the Mac App Store yet. When you first open it, macOS will say it \"was blocked to protect your Mac.\" Open System Settings → Privacy & Security, scroll down to the Security section, and click \"Open Anyway\" next to C4S Suite.")
+                        installStep(5, "Open C4S Suite again. Click \"Open Anyway\" once more in the dialog, then enter your Mac's login password when asked. Choose \"Always Allow\" so you won't be asked again.")
+                        installStep(6, "That's it. C4S Suite will open normally from then on.")
                     }
                     .padding(14)
                     .background(AppColors.panel)

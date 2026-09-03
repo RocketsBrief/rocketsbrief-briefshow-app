@@ -6,6 +6,13 @@
     <true/>
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
+    <!-- The real ~/Pictures, which is where imports now land by default
+         (Pictures ▸ C4S Library, KORAK 110). Without this a sandboxed app's
+         .picturesDirectory resolves INSIDE the container — a path the client
+         cannot reach in Finder — so the photos would appear to import and
+         then be nowhere. Read-write because import writes into it. -->
+    <key>com.apple.security.assets.pictures.read-write</key>
+    <true/>
     <key>com.apple.security.network.client</key>
     <true/>
     <!-- Cameras connected over USB, read through ImageCaptureCore. A

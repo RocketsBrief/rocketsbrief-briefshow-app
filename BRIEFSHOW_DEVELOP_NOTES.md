@@ -12484,3 +12484,111 @@ spuštanje na 1400 otprilike prepolovljava veličinu, po cenu mekšeg zrna na
 najvećim rupama. ⚠️ Nije spuštano bez pitanja — 2048 je vrednost na kojoj su
 izmereni svi brojevi gore, pa bi menjanje značilo zameniti izmereno stanje
 neizmerenim.
+
+## KORAK 110 — import: sam otvara folder, uvek u Pictures ▸ C4S Library; Update gasi app (3. septembar 2026)
+
+Tri klijentova zahteva iz jedne poruke.
+
+### 1. Posle importa folder se otvara sam
+
+Prijava: *„Kada importuj slike iz kamere ili SD kartice da se otvori taj folder
+u gridu automatksi gde su importovane."*
+
+⚠️ **Mehanizam je već postojao i bio je ispravan** — `onImported` u
+`CameraImportView`, povezan u `ContentView` tako da osveži stablo foldera i
+postavi `selectedFolderURL`. Ono što je falilo: zvao ga je **samo klik na dugme
+„Show These Photos"**. Svaki import se završavao tako što klijent ručno zatvara
+prozor da bi došao do onoga što je upravo tražio.
+
+Sada `.onChange(of: session.phase)` na telu prikaza: čim faza pređe u
+`.finished`, poziva se `onImported(folder)` + `onClose()`. Dugme je uklonjeno —
+posle automatike moglo bi da se vidi samo na tren pre nego što nestane.
+
+⚠️ **Samo na `.finished`.** `.failed` namerno OSTAJE na ekranu: to je jedini
+slučaj u kom na tom mestu ima šta da se pročita.
+
+### 2. Odredište: uvek Pictures ▸ C4S Library, uvek datumski folder
+
+Prijava: *„default uvek da vodi na Pictures under C4S Library Folder, i uvek tu
+da pravi folder by dates kada se importuje!"*
+
+- `defaultDestination` je bio `Documents/"BriefShow NEF"` → sada
+  `Pictures/"C4S Library"`.
+- Seme iz otvorenog foldera u gridu (`initialDestination`) **više se ne
+  koristi** za odredište. ⚠️ To je bila namerna funkcija sa svojim
+  obrazloženjem („that is almost always where they are wanted"); klijent je
+  tražio suprotno tim rečima — uvek jedno predvidivo mesto. `Choose…` i dalje
+  vodi bilo gde.
+- Čekboks „Into a dated subfolder" je **uklonjen**; datumski folder je sada
+  stalan (`intoDatedSubfolder` je konstanta `true`). Tekst je ostao, ali sada
+  konstatuje umesto da nudi.
+
+Grupisanje je i dalje po danu kada je **snimljeno**, ne po današnjem datumu —
+to je zatečeno i nije dirano.
+
+### ⚠️ ZAMKA koja bi izgledala kao da su slike nestale
+
+App je **sandboxed** (`BriefShow.entitlements`), a u sandboxu
+`FileManager.urls(for: .picturesDirectory)` odgovara putanjom **unutar
+kontejnera** — `~/Library/Containers/com.rocketsbrief.BriefShow/Data/Pictures`.
+To je stvaran, upisiv folder koji klijent **nikada neće naći u Finderu**. Da je
+ovo pušteno naivno, import bi „uspeo" a slika ne bi bilo nigde.
+
+**To je tačno ono na šta se odnosila stara beleška u ovom fajlu** — da „wherever
+the system calls Pictures" nije mesto na kom se snimanje kasnije nađe. Ta
+rečenica je bila zapisana kao klijentova odluka o ukusu; ona je zapravo bila
+opis ovog sandbox ponašanja.
+
+Urađeno dvoje:
+
+1. Dodat entitlement **`com.apple.security.assets.pictures.read-write`** —
+   provereno da je stvarno u paketu (`codesign -d --entitlements`), ne samo u
+   izvoru.
+2. Nova `picturesFolder()`: pravi kućni folder se traži preko **`getpwuid`**
+   (koji i u sandboxu vraća pravi home, dok `NSHomeDirectory()` vraća
+   kontejner), i ta putanja se koristi **samo ako se u njoj zaista može
+   napraviti folder**. Upisivost se proverava tako što se posao uradi, jer
+   `isWritableFile` u sandboxu ume da odgovori optimistično. Ako ne uspe, pada
+   nazad na staro ponašanje umesto da pukne.
+
+### 3. „Download Update" sada gasi app
+
+Prijava: *„cim klijent klikne update automatksi mora da se ugasi C4S Suit, ali
+skroz da se uvasi literaly Quit! Da bi klijent mogao da replace odradi u
+application."*
+
+Preuzimanje je i pre išlo u browser (`NSWorkspace.open` na GitHub release
+stranicu), pa nije bilo šta da se izgubi gašenjem. Sada se gasi
+`NSApplication.shared.terminate(nil)` u **completion handler-u** tog otvaranja,
+a ne u istom potezu: gašenje uporedo sa predajom ume da pretekne predaju i
+ostavi klijenta bez i preuzimanja i app-e.
+
+⚠️ **Na grešci se NE gasi.** Ako otvaranje ne uspe, prozor ostaje da se dugme
+može pritisnuti ponovo — inače bi neuspeh značio da je klijent ostao i bez
+app-e i bez linka.
+
+Provereno da nema `applicationShouldTerminate` koji bi gašenje zaustavio ili
+tražio potvrdu — grep po svim izvorima, nema ga.
+
+Korak 3 uputstva („Quit C4S Suite if it's currently open") je uklonjen jer ga
+app sada radi sama; koraci su prenumerisani sa 7 na 6, a korak 1 sada kaže i da
+će se app zatvoriti.
+
+### Provereno
+
+- `BUILD SUCCEEDED`.
+- `codesign -d --entitlements` na sagrađenom paketu → `app-sandbox` i
+  `assets.pictures.read-write` oba prisutna.
+- App pokrenuta i predata klijentu na proveru.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+1. **Da li se `~/Pictures/C4S Library` zaista napravi** kad se prvi put otvori
+   prozor za import. Entitlement je u paketu i logika pada nazad umesto da
+   puca, ali sam folder nije viđen — pravi se tek pri otvaranju tog prozora.
+   **Ovo je prva stvar koju treba pogledati.**
+2. **Gašenje na Update.** Ne može se isprobati odavde: kartica se pojavljuje
+   samo kad je `latest_version` veći od ugrađenog, a `latest_version` je i dalje
+   6.0 (klijentova odluka, v. KORAK 108).
+3. Automatsko otvaranje foldera posle importa — nije viđeno sa pravom kamerom
+   ni karticom.

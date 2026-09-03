@@ -24,12 +24,18 @@ struct CameraImportView: View {
     ///
     /// This is a DEFAULT, not a rule — the Choose… button beside it still
     /// picks anywhere, and the choice sticks for the session.
+    ///
+    /// ⚠️ This is Pictures ▸ C4S Library as of KORAK 110, and that REVERSES an
+    /// earlier decision by the same client, which used to be written here:
+    /// Pictures was dropped for Documents/"BriefShow NEF" because "wherever the
+    /// system calls Pictures" was judged not findable later. The client has now
+    /// asked for Pictures ▸ C4S Library by name, which is a named folder rather
+    /// than the loose Pictures root the old note was about — so it is not the
+    /// same thing being undone, but it is close enough to be worth knowing
+    /// before anyone "restores" the old path.
     static var defaultDestination: URL? {
-        guard let documents = FileManager.default
-            .urls(for: .documentDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-        let folder = documents.appendingPathComponent("BriefShow NEF", isDirectory: true)
+        guard let pictures = picturesFolder() else { return nil }
+        let folder = pictures.appendingPathComponent("C4S Library", isDirectory: true)
         // Created here rather than at import time so the path shown in the
         // panel is a folder that exists — a destination the client can go and
         // look at before pressing Import, not a promise.
@@ -40,6 +46,41 @@ struct CameraImportView: View {
         // written (see CameraImportSession.startImport).
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder
+    }
+
+    /// The Pictures folder the CLIENT can open in Finder.
+    ///
+    /// ⚠️ `.picturesDirectory` is not good enough on its own here. This app is
+    /// sandboxed (see BriefShow.entitlements), and inside a sandbox that lookup
+    /// can answer with the container's own Pictures —
+    /// ~/Library/Containers/com.rocketsbrief.BriefShow/Data/Pictures — which is
+    /// a real, writable folder that the client will never find. An import that
+    /// lands there looks exactly like an import that lost the photos, and it is
+    /// what the older note in this file meant by "wherever the system calls
+    /// Pictures" not being findable later.
+    ///
+    /// So the real home directory is asked for by hand — getpwuid answers with
+    /// it even in a sandbox, where NSHomeDirectory() answers with the container
+    /// — and that path is only used if it can actually be written to, which is
+    /// what com.apple.security.assets.pictures.read-write grants. If it cannot,
+    /// this falls back rather than failing, and the Choose… button is still
+    /// right there.
+    private static func picturesFolder() -> URL? {
+        let sandboxed = FileManager.default
+            .urls(for: .picturesDirectory, in: .userDomainMask).first
+
+        if let home = getpwuid(getuid())?.pointee.pw_dir.map({ String(cString: $0) }) {
+            let real = URL(fileURLWithPath: home, isDirectory: true)
+                .appendingPathComponent("Pictures", isDirectory: true)
+            // Writability is tested by doing the thing, not by asking: the
+            // sandbox answers isWritableFile optimistically often enough that
+            // creating the folder is the only honest check.
+            if (try? FileManager.default.createDirectory(
+                at: real, withIntermediateDirectories: true)) != nil {
+                return real
+            }
+        }
+        return sandboxed
     }
 
     /// Where the photos land. Seeded with whatever folder ShowGrid currently
@@ -64,7 +105,12 @@ struct CameraImportView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
 
     @State private var destination: URL?
-    @State private var intoDatedSubfolder = true
+    /// Always on, and no longer a choice: the client asked for every import to
+    /// land in a dated folder, so the checkbox that could turn it off is gone
+    /// from the destination panel. Kept as a constant rather than threaded
+    /// away, so the reason survives next to the behaviour and startImport's
+    /// parameter does not have to change shape.
+    private let intoDatedSubfolder = true
     @State private var deleteFromCameraAfterwards = false
     @State private var thumbnailSize: CGFloat = 132
 
@@ -81,10 +127,14 @@ struct CameraImportView: View {
         self.onImported = onImported
         self.onClose = onClose
         _session = StateObject(wrappedValue: CameraImportSession(source: source))
-        // Pictures was the old fallback and it is gone: the client asked for one
-        // predictable place, and "wherever the system calls Pictures" is not
-        // one the shoot can be found in later.
-        _destination = State(initialValue: initialDestination ?? Self.defaultDestination)
+        // ⚠️ ALWAYS the library folder, never the folder the grid happens to
+        // have open. `initialDestination` used to seed this — "that is almost
+        // always where they are wanted", as its own comment still says — and
+        // the client has now asked for the opposite in as many words: the
+        // import window must always start at Pictures ▸ C4S Library. One
+        // predictable place beats a clever guess, and Choose… is still there
+        // for the import that wants to go somewhere else.
+        _destination = State(initialValue: Self.defaultDestination)
     }
 
     /// Points this window at a folder — a mounted SD card, or any folder.
@@ -139,6 +189,19 @@ struct CameraImportView: View {
 
             Divider()
             footer
+        }
+        // The import finishing IS the request to see the photos. It used to
+        // wait behind a "Show These Photos" button, which meant every import
+        // ended with the client dismissing a window to get to the thing they
+        // had just asked for. Now the folder opens in the grid and the window
+        // closes on its own.
+        //
+        // Only on .finished — a .failed import deliberately stays on screen,
+        // because that is the one case where there is something to read.
+        .onChange(of: session.phase) { phase in
+            guard case .finished(_, let folder) = phase else { return }
+            onImported(folder)
+            onClose()
         }
         // Sized to fit INSIDE the ShowGrid window, not to a fixed minimum.
         //
@@ -367,10 +430,9 @@ struct CameraImportView: View {
             Divider().padding(.vertical, 14)
 
             VStack(alignment: .leading, spacing: 10) {
-                Toggle(isOn: $intoDatedSubfolder) {
-                    Text("Into a dated subfolder")
-                        .font(.custom("Figtree", size: 11))
-                }
+                // Stated, not offered — every import goes into a dated folder.
+                Text("Into a dated subfolder")
+                    .font(.custom("Figtree", size: 11))
                 Text(datedSubfolderExplanation)
                     .font(.custom("Figtree", size: 10))
                     .foregroundColor(AppColors.muted)
@@ -446,12 +508,12 @@ struct CameraImportView: View {
 
             Spacer()
 
-            if case .finished(_, let folder) = session.phase {
-                Button("Show These Photos") {
-                    onImported(folder)
-                    onClose()
-                }
-                .buttonStyle(PrimaryBrutalButtonStyle())
+            // No "Show These Photos" button any more: reaching .finished opens
+            // the folder and closes this window by itself (see .onChange on the
+            // body), so the button could only ever be seen for the instant
+            // before it went away.
+            if case .finished = session.phase {
+                EmptyView()
             } else {
                 Button("Import") { startImport() }
                     .buttonStyle(PrimaryBrutalButtonStyle())

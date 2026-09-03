@@ -3,13 +3,23 @@ repository; the WEIGHTS they operate on deliberately do not, because GitHub
 refuses any single file over 100 MB and SD's UNet alone is 1.6 GB.
 
 Weights and working copies live in a sibling CoreMLModels/ directory beside
-this checkout (override with BRIEFSHOW_MODELS). Nothing there is in git, and
-nothing there is needed to READ this repository — only to rebuild the models.
+this checkout. Nothing there is in git, and nothing there is needed to READ
+this repository — only to rebuild the models.
+
+  ⚠️ There is NO BRIEFSHOW_MODELS override. This file claimed one for days and
+  the app has never read such a variable — grep the sources and it is not
+  there. The path is decided in SDModelStore (DevelopSDInpaint.swift), so
+  moving that folder is a code change, not an environment change. Left written
+  down rather than quietly deleted, because the claim has already been believed
+  once.
 
   convert_lama.py          big-lama checkpoint -> LaMa.mlpackage (99 MB)
   clip_tokenize.py         CLIP BPE, pure stdlib
   dump_prompt_embeds.swift bakes the default SD prompt into sd_prompt_embeds.bin
   sd_prompt_embeds.bin     that baked prompt (231 KB)
+  run-model-load-test.py   times how long the SD weights take to load into
+                           Core ML, cold and warm. Reads the model names and
+                           compute units out of prepare() so it cannot drift.
 
 Rebuilding LaMa from scratch:
   curl -LJO https://huggingface.co/smartywu/big-lama/resolve/main/big-lama.zip

@@ -5417,6 +5417,17 @@ struct DevelopView: View {
     /// Watched so the install row and the Generative button agree about what
     /// is happening. See SDModelInstall.swift.
     @ObservedObject private var modelInstaller = SDModelInstaller.shared
+
+    /// Watched for one thing: whether the weights are being loaded into Core
+    /// ML right now.
+    ///
+    /// ⚠️ Separate from `modelInstaller` on purpose, because they are separate
+    /// costs and the client hit both. Installing is the 1.8 GB download, once
+    /// ever. Loading is per launch and invisible — the client saw only that
+    /// the first Generative Clean Up took two minutes and the next fifteen
+    /// seconds. This is what lets the panel say which of the two is happening
+    /// instead of leaving a button silent.
+    @ObservedObject private var sdPipeline = SDInpaintPipeline.shared
     @State private var flattenErrorMessage: String?
     @State private var showSyncDialog = false
 
@@ -5572,6 +5583,16 @@ struct DevelopView: View {
     // second or two the exemplar fill takes, so a bare "Erasing…" would read
     // as a hang. nil means no AI erase is running.
     @State private var aiEraseProgress: Double?
+
+    /// What the bar is waiting on right now, or nil once the diffusion steps
+    /// have taken over and the percentage speaks for itself.
+    ///
+    /// ⚠️ Exists because a percentage alone was not enough. The bar sat at 0%
+    /// through the full-size render, the mask work, LaMa's base fill and the
+    /// model load — *„mnogo zaglavljan na pocetku na 0% laod bar"* — and a
+    /// number that does not move says "stuck" no matter what is behind it.
+    /// Naming the stage turns the same wait into a report.
+    @State private var aiEraseStage: String?
     // The AI erase is the one half of Remove that can fail for a reason the
     // user can act on (weights not installed yet), so unlike the exemplar
     // path it has somewhere to say so.
@@ -5707,9 +5728,24 @@ struct DevelopView: View {
     // reported — "shows 100% and holds there another 20 seconds". A bar that
     // is full is a bar that is finished, whatever it is doing with its
     // opacity. A travelling segment cannot be misread that way.
+    /// "Reading the photo… 4%", or "Cleaning up… 62%", or "Erasing…".
+    ///
+    /// The percentage is kept beside the stage rather than replaced by it: a
+    /// stage name says WHAT, a number says HOW FAR, and the complaint was about
+    /// the number never leaving zero.
+    private var eraseProgressLabel: String {
+        guard let aiEraseProgress else { return "Erasing…" }
+        let percent = Int((aiEraseProgress * 100).rounded())
+        return "\(aiEraseStage ?? "Cleaning up…") \(percent)%"
+    }
+
     private var eraseProgressBar: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(aiEraseProgress.map { "Cleaning up… \(Int($0 * 100))%" } ?? "Erasing…")
+            // The stage wins the label while there is one, because early on it
+            // is the only thing that distinguishes a bar at 4% from a bar that
+            // has stopped. Once the diffusion steps start, `aiEraseStage` goes
+            // nil and this reads "Cleaning up… 62%" as it always did.
+            Text(eraseProgressLabel)
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.muted)
 
@@ -7446,6 +7482,17 @@ struct DevelopView: View {
         let photoAtActionTime = selectedURL
         let confineTo = activeSelection
 
+        // Read confineTo FIRST, then fold AI Clean Up away. Turning the brush
+        // off does not clear an active Selection today — only turning it ON
+        // does — but this ordering means a later change to that cannot quietly
+        // drop the region the client asked to search inside.
+        //
+        // Closed here at the START, not on completion: the press has to be
+        // answered immediately, and the search runs for seconds. Waiting until
+        // the layers exist would leave the client looking at the clean-up
+        // brush wondering whether the button registered.
+        closeAICleanUp()
+
         developRenderQueue.async(qos: .userInitiated) {
             // applyCrop: false, because a layer's x/y/width/height live in
             // the pre-crop unit space — the same reason compositeLayers runs
@@ -7633,16 +7680,20 @@ struct DevelopView: View {
                 // models were only ever read from a folder nothing wrote — see
                 // SDModelInstall.swift.
                 //
-                // Shown ONLY while they are actually missing, and only on a Mac
-                // that could use them: on Intel the pipeline is compiled out
-                // entirely, so offering a 1.8 GB download there would be taking
-                // the client's afternoon for a button that still cannot run.
-                // Offered on BOTH processors now. It was arm64-only while the
-                // pipeline was compiled out on Intel — downloading 1.8 GB for a
-                // button that could not run would have been taking the client's
-                // afternoon for nothing. That is no longer the case.
+                // Shown ONLY while they are actually missing, and on BOTH
+                // processors. It was arm64-only while the pipeline was compiled
+                // out on Intel — downloading 1.8 GB for a button that could not
+                // run would have been taking the client's afternoon for
+                // nothing. That is no longer the case: an Intel Mac has
+                // installed these weights and run them.
+                //
+                // (The sentence that used to stand here, saying Intel compiles
+                // the pipeline out, contradicted the paragraph under it. It was
+                // left behind by the port and is removed rather than kept.)
                 if !SDInpaintPipeline.shared.isModelInstalled || modelInstaller.isWorking {
                     sdModelInstallRow
+                } else {
+                    sdModelReadinessRow
                 }
 
                 // Everything the Clean Up brush needs, appearing under the rows
@@ -7771,6 +7822,54 @@ struct DevelopView: View {
     /// makes a 1.8 GB wait tolerable. The percentage is real here — unlike the
     /// people search and the flatten, a download reports its own progress, so
     /// showing it is honest rather than invented.
+    /// One quiet line saying whether the Generative model is ready to go.
+    ///
+    /// ⚠️ THIS IS ALSO HOW THE TIMINGS GET MEASURED ON A MACHINE THAT IS NOT
+    /// THIS ONE. The load and priming costs are the whole subject of the
+    /// "why was the first one slow" question, and they differ completely
+    /// between a Neural Engine and a Radeon. The app logs them, but a GUI app's
+    /// log is somewhere a client has no reason to go — so the numbers are put
+    /// on screen, where they can simply be read out.
+    ///
+    /// Small and muted on purpose: it is a status line, not a feature. Once the
+    /// model is warm it says one short sentence and stops competing with the
+    /// two buttons above it.
+    private var sdModelReadinessRow: some View {
+        HStack(spacing: 6) {
+            if sdPipeline.isPreparing {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .frame(width: 12, height: 12)
+                Text("Getting the Generative model ready…")
+            } else if sdPipeline.isLoaded {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 10))
+                Text(sdReadinessDetail)
+            } else {
+                // Installed on disk but not loaded and not loading: the warm-up
+                // failed, or it has not been reached yet. Says neither "ready"
+                // nor "broken", because it is neither.
+                Text("Generative model installed. It loads on first use.")
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.custom("Figtree", size: 10))
+        .foregroundColor(AppColors.muted)
+    }
+
+    /// "Generative model ready (41s + 3s at launch)." — or without the numbers
+    /// on the launches where Core ML had everything cached and there was
+    /// nothing worth reporting.
+    private var sdReadinessDetail: String {
+        let load = sdPipeline.lastPrepareSeconds
+        let prime = sdPipeline.lastPrimeSeconds
+        guard let load, let prime, load + prime >= 1 else {
+            return "Generative model ready."
+        }
+        return String(format: "Generative model ready (%.0fs load + %.0fs warm-up).", load, prime)
+    }
+
     private var sdModelInstallRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             switch modelInstaller.state {
@@ -7895,13 +7994,34 @@ struct DevelopView: View {
             ? "Painting takes area back out of the selection."
             : "Painting adds to the selection."
 
-        guard isRemoveBrushActive || hasRemovalArea || reason != nil else {
+        // ⚠️ Says WHICH wait this is, and that is the entire point.
+        //
+        // The client's report was that the first Generative Clean Up after
+        // opening the app took 1.5–2 minutes and every one after it took 15
+        // seconds. Both numbers were correct and nothing was broken: the first
+        // one was also paying to load 1.6 GB of weights into Core ML, which
+        // happens once per launch. But the app said nothing while it did, so
+        // from the outside it was a button that sometimes hangs.
+        //
+        // The load is now started at launch (see BriefShowApp.init), so most
+        // of the time this line never appears. It appears when the client got
+        // here first — and then it is the difference between waiting and
+        // wondering.
+        //
+        // NOT a reason to disable the button. Pressing it during the load is
+        // fine: the erase blocks on the same lock, the load finishes, and the
+        // erase runs. Disabling would take away a press that works.
+        let preparing = sdPipeline.isPreparing
+            ? "Getting the Generative model ready — it loads once each time the app opens. Quick AI Clean Up is unaffected."
+            : nil
+
+        guard isRemoveBrushActive || hasRemovalArea || reason != nil || preparing != nil else {
             return nil
         }
         guard isRemoveBrushActive || hasRemovalArea else {
-            return reason
+            return [reason, preparing].compactMap { $0 }.joined(separator: "  ")
         }
-        return [reason, painting].compactMap { $0 }.joined(separator: "  ")
+        return [reason, preparing, painting].compactMap { $0 }.joined(separator: "  ")
     }
 
     // `textIcon` draws letters where the SF Symbol would go — used for "AI",
@@ -8053,6 +8173,31 @@ struct DevelopView: View {
                 if !isRemoveBrushActive {
                     toggleRemoveBrush()
                 }
+            }
+        }
+    }
+
+    /// Folds AI Clean Up away, whether or not it is open. `toggleAICleanUp()`
+    /// cannot be used for this — called while the block is already shut it
+    /// OPENS it, and puts the brush in the client's hand on the way.
+    ///
+    /// This exists because another tool taking over the canvas has to be able
+    /// to say so. While the AI brush is live the tool overlay chain picks
+    /// `removalPaintOverlay` first, so a layer's frame, handles and rotate
+    /// knob are simply not drawn — reported as Select People finishing and
+    /// *„ne pokazuje mi da je people selected, dok ja ne kliknem na close ai
+    /// clean up"*. The layer was selected all along; it just had nothing on
+    /// screen to say so.
+    ///
+    /// ⚠️ The painted AREA survives this, deliberately — see
+    /// `deactivateRemoveBrush`. Only the brush is put down, so clean-up work
+    /// already on the photo is not thrown away by pressing another tool.
+    private func closeAICleanUp() {
+        guard isAIManipulationVisible else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            aiManipulationExpanded = false
+            if isRemoveBrushActive {
+                toggleRemoveBrush()
             }
         }
     }
@@ -12698,6 +12843,28 @@ struct DevelopView: View {
         }
     }
 
+    // MARK: The Generative bar's lead-in
+    //
+    // The diffusion steps get 88% of the track and the four stages before them
+    // share the first 12%. The split is not arbitrary: the steps are the bulk
+    // of the work and must keep most of the bar, but the lead-in is the part
+    // that used to be invisible, and it needs enough room that each stage is a
+    // visible move rather than a rounding difference.
+    private static let eraseLeadInStart: Double = 0.02
+    private static let eraseLeadInEnd: Double = 0.12
+
+    /// Moves the Generative bar to `fraction`, but never backwards.
+    ///
+    /// ⚠️ The guard matters with more than one mark on the photo. Marks are
+    /// erased one at a time (see briefShowRemovalJobs) and each one walks its
+    /// own stages, so the second mark would report "reading the photo, 4%"
+    /// while the bar stood at 60%. A progress bar that goes back reads as a
+    /// failure and a restart.
+    private func advanceEraseProgress(to fraction: Double, stage: String?) {
+        aiEraseProgress = max(aiEraseProgress ?? 0, fraction)
+        aiEraseStage = stage
+    }
+
     private func eraseMaskedArea(using engine: RemovalEngine) {
         guard hasRemovalArea, let fullBaseImage, let selectedURL else {
             return
@@ -12706,7 +12873,17 @@ struct DevelopView: View {
         removeErrorMessage = nil
         // Only the generative path is slow enough to need a percentage; LaMa
         // finishes before a progress bar would finish appearing.
-        aiEraseProgress = engine == .generative ? 0 : nil
+        //
+        // ⚠️ STARTS AT 2%, NOT 0%, and that is not decoration. Zero is the one
+        // reading a progress bar cannot survive: it is what a bar shows when it
+        // has not started, so a bar that sits on it looks broken however much
+        // work is going on behind it. Asked for in exactly those words — *„tu
+        // bar me da se vidi da radi neka krene 2% (da nije nula)"*.
+        //
+        // Everything from here to the first diffusion step is reported by the
+        // stages below, which are real events finishing, not a timer counting.
+        aiEraseProgress = engine == .generative ? Self.eraseLeadInStart : nil
+        aiEraseStage = engine == .generative ? "Preparing…" : nil
         let settingsSnapshot = settings
         let photoAtActionTime = selectedURL
         let visionMask = removalMask
@@ -12796,8 +12973,42 @@ struct DevelopView: View {
                                 // the app going round in circles.
                                 let within = Double(done) / Double(max(total, 1))
                                 let overall = (Double(index) + within) / Double(max(jobs.count, 1))
+                                // Compressed into what is left after the
+                                // lead-in, so the steps start where the stages
+                                // stopped instead of snapping back to it.
+                                let placed = Self.eraseLeadInEnd
+                                    + (1 - Self.eraseLeadInEnd) * overall
                                 DispatchQueue.main.async {
-                                    aiEraseProgress = overall
+                                    // Stage goes nil here: from the first step
+                                    // on, the percentage is the honest account
+                                    // of what is happening and needs no label.
+                                    advanceEraseProgress(to: placed, stage: nil)
+                                }
+                            },
+                            // The four stages that run before any percentage
+                            // exists. Spread across the lead-in so each one is
+                            // a visible move — this is the stretch the client
+                            // watched sit at zero.
+                            stage: { stage in
+                                let (fraction, text): (Double, String) = {
+                                    switch stage {
+                                    case .readingPhoto:
+                                        return (0.04, "Reading the photo…")
+                                    case .baseFilled:
+                                        return (0.07, "Filling the gap…")
+                                    case .loadingModel:
+                                        // Usually instant now, because the
+                                        // weights are loaded and primed at
+                                        // launch. When it is not instant this
+                                        // is the longest wait in the job, and
+                                        // it finally says so.
+                                        return (0.08, "Loading the AI model…")
+                                    case .modelReady:
+                                        return (Self.eraseLeadInEnd, "Cleaning up…")
+                                    }
+                                }()
+                                DispatchQueue.main.async {
+                                    advanceEraseProgress(to: fraction, stage: text)
                                 }
                             }
                         )
@@ -12817,6 +13028,7 @@ struct DevelopView: View {
             DispatchQueue.main.async {
                 isRemoving = false
                 aiEraseProgress = nil
+                aiEraseStage = nil
                 // Same guard as performSelectionExtraction: the repair is
                 // pixels belonging to ONE photo, so it is dropped rather
                 // than misapplied if the client moved on while it ran.
@@ -13195,10 +13407,25 @@ struct DevelopView: View {
             editSlider("Shadows", key: "layer.shadows", value: layerAdjustmentBinding(\.shadows), range: -1...1)
             editSlider("Whites", key: "layer.whites", value: layerAdjustmentBinding(\.whites), range: -1...1)
             editSlider("Blacks", key: "layer.blacks", value: layerAdjustmentBinding(\.blacks), range: -1...1)
-            editSlider("Temperature", key: "layer.temperature", value: layerAdjustmentBinding(\.temperature), range: -1...1)
-            editSlider("Tint", key: "layer.tint", value: layerAdjustmentBinding(\.tint), range: -1...1)
-            editSlider("Saturation", key: "layer.saturation", value: layerAdjustmentBinding(\.saturation), range: -1...1)
-            editSlider("Vibrance", key: "layer.vibrance", value: layerAdjustmentBinding(\.vibrance), range: -1...1)
+            // ⚠️ The SAME four tracks the photo's Color section uses, and they
+            // belong here for the same reason they belong there: the colour on
+            // the track is what the slider does. Left plain they were the one
+            // visible difference between editing a layer and editing the
+            // photo — reported as *„temperatue tint slide bar u toj sekciji
+            // nisu u boji… mora da bude taj slide bar edit isti kao kad
+            // editujem normalnu sliku"*.
+            //
+            // Safe to share: all four are static constants built from fixed
+            // colours (see temperatureTrack below), so none of them reads the
+            // photo. A layer gets the identical track, not a lookalike.
+            editSlider("Temperature", key: "layer.temperature", value: layerAdjustmentBinding(\.temperature), range: -1...1,
+                       trackGradient: DevelopView.temperatureTrack)
+            editSlider("Tint", key: "layer.tint", value: layerAdjustmentBinding(\.tint), range: -1...1,
+                       trackGradient: DevelopView.tintTrack)
+            editSlider("Saturation", key: "layer.saturation", value: layerAdjustmentBinding(\.saturation), range: -1...1,
+                       trackGradient: DevelopView.saturationTrack)
+            editSlider("Vibrance", key: "layer.vibrance", value: layerAdjustmentBinding(\.vibrance), range: -1...1,
+                       trackGradient: DevelopView.vibranceTrack)
             editSlider("Sharpness", key: "layer.sharpness", value: layerAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
             // Same rule the photo's panel uses: a radius with the amount at
             // zero is a control that cannot do anything.

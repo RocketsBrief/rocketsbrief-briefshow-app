@@ -3,6 +3,7 @@ import CoreML
 import ImageIO
 import UniformTypeIdentifiers
 import Foundation
+import Combine
 
 // Stable Diffusion 1.5 inpainting, on the machine, as the "Erase (AI)" half
 // of the Remove tool.
@@ -24,24 +25,25 @@ import Foundation
 // one-button path never loads the 235 MB text encoder at all. Editing the
 // prompt is what pulls it (and DevelopCLIPTokenizer.swift) into play.
 
-// ⚠️ APPLE SILICON ONLY, and the reason is a compiler error, not a policy.
+// ⚠️ THIS FILE BUILDS AND RUNS ON BOTH PROCESSORS. It used to be arm64-only
+// and this comment used to say so; that stopped being true in KORAK 105 and
+// the note is left here because the old wording was still sitting at the top
+// of the file afterwards, telling the next reader the opposite of the truth.
 //
-// Everything below packs tensors as `Float16`, which is the layout the
-// converted UNet expects — and `Float16` DOES NOT EXIST on x86_64 macOS.
-// Building this file for Intel fails outright with seven copies of
-// "'Float16' is unavailable in macOS"; it is not a matter of running slower.
+// The obstacle was never speed, it was a type: everything below packs tensors
+// as half-precision, the layout the converted UNet expects, and `Float16` DOES
+// NOT EXIST on x86_64 macOS — the file failed to compile with seven copies of
+// "'Float16' is unavailable in macOS".
 //
-// So the whole file is arm64-only, and the `#else` at the bottom supplies the
-// handful of names the rest of the app reads — the defaults, the debug flag,
-// `warmUp()` and `aiRemoval` — as a stub that reports the feature as
-// unavailable. Everything else in the app is architecture-neutral: BriefShow,
-// ShowGrid, LumenoLab, and Quick AI Clean Up (LaMa is Float32 and ships inside
-// the bundle) all work on Intel, where CoreML falls back to CPU/GPU.
+// That is now `SDHalf` (see "Half-precision, on both processors" below). On
+// arm64 it IS `Float16` and nothing about the Apple Silicon path moved, proved
+// across every float bit pattern by Tools/run-half-conversion-test.py. On
+// x86_64 the half is written by hand from its bits.
 //
-// Rewriting the packing in Float32 would make Generative Clean Up compile for
-// Intel, and it is deliberately NOT done: SD 1.5 at twelve steps through a
-// Radeon is slow enough that offering it would be worse than not having it.
-// If that changes, this is the one file to revisit.
+// ⚠️ WHAT IS STILL UNKNOWN is the SPEED on Intel, not whether it runs. It has
+// been run by the client on a Radeon Pro 560X and it works; per-image timings
+// from that machine are the thing to collect, and `lastPrepareSeconds` below
+// exists because there is no Intel Mac here to take them on.
 
 // MARK: - Shared with the LaMa path, so NOT behind the arm64 gate
 
@@ -479,7 +481,50 @@ struct SeededGaussian {
 
 // MARK: - The pipeline
 
-final class SDInpaintPipeline {
+final class SDInpaintPipeline: ObservableObject {
+
+    // MARK: Load state, published
+    //
+    // ⚠️ INSTALLING AND LOADING ARE TWO DIFFERENT COSTS, and confusing them is
+    // what made the first Generative Clean Up look broken.
+    //
+    // Installing is the 1.8 GB download onto disk. It happens ONCE, ever.
+    // Loading is pulling those weights into Core ML and letting it compile
+    // them for this machine's hardware. That happens ONCE PER LAUNCH, every
+    // launch, and it dies with the process.
+    //
+    // Reported from an Intel Mac, 3 September: *„ta prva generative ai clean
+    // up action… trajalo je 1.5 mozda 2 minuta… sledeci… je odradio za 15
+    // sekundi"*, and again after quitting and reopening the app. The 1m45s
+    // gap between the first and the second is this load, and nothing else —
+    // there is no Neural Engine on that machine to take it.
+    //
+    // These three exist so the panel can say what is happening. A button that
+    // sits silent for two minutes reads as broken; the same two minutes with
+    // "Preparing the model" written over it reads as work.
+
+    /// The weights are on their way into this process right now.
+    @Published private(set) var isPreparing = false
+
+    /// The weights are in this process and the next erase pays nothing for
+    /// them. Resets to false on every launch, because it is true of a process,
+    /// not of a disk.
+    @Published private(set) var isLoaded = false
+
+    /// How long the load actually took, in seconds.
+    ///
+    /// ⚠️ Kept because there is NO INTEL MAC HERE to measure on. The "~18
+    /// seconds" written further down was taken on Apple silicon through the
+    /// Neural Engine and says nothing about a Radeon. This number comes off
+    /// whichever machine the app is running on, so the client's own figure can
+    /// be read back instead of guessed at from this one.
+    @Published private(set) var lastPrepareSeconds: Double?
+
+    /// How long the one throwaway pass in `primeGraphs()` took. Same reason as
+    /// `lastPrepareSeconds`: this is the cost the priming ADDS to every launch,
+    /// and it should be a number somebody can read rather than a promise that
+    /// it is cheap.
+    @Published private(set) var lastPrimeSeconds: Double?
 
     enum Failure: Error, LocalizedError {
         case modelsMissing
@@ -579,6 +624,24 @@ final class SDInpaintPipeline {
     private var encodedPrompts: [String: MLMultiArray] = [:]
     private let loadLock = NSLock()
 
+    /// Serialises whole inference passes.
+    ///
+    /// ⚠️ ADDED WITH `primeGraphs()`, and it is that call that needs it. Every
+    /// real erase has always run on `developRenderQueue`, which is SERIAL, so
+    /// two fills could never overlap and no lock was required. Priming runs on
+    /// a global queue at launch and is the first thing in this app that can be
+    /// inside `fill` at the same time as an erase — and `fill` writes shared
+    /// state on the way through (`encodedPrompts`).
+    ///
+    /// Colliding needs the client to press Generative within a second or two of
+    /// the app opening, having already picked a photo and painted, which is not
+    /// a thing a person can do. That is an argument for it being rare, not for
+    /// it being impossible, so it is made impossible here instead.
+    ///
+    /// ⚠️ Lock order is inferenceLock → loadLock, always. `prepare()` takes
+    /// only loadLock and nothing ever takes them the other way round.
+    private let inferenceLock = NSLock()
+
     var isModelInstalled: Bool { SDModelStore.isAvailable }
 
     /// Loads the models in the background if they are installed and not loaded
@@ -586,8 +649,79 @@ final class SDInpaintPipeline {
     /// installed — it simply does nothing, so no caller has to check first.
     func warmUp() {
         guard SDModelStore.isAvailable else { return }
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            try? self?.prepare()
+        // ⚠️ .userInitiated, NOT .utility, and this was a real cost.
+        //
+        // .utility is the band macOS runs behind everything else, on the
+        // understanding that nobody is waiting for it. Somebody is: this is
+        // the exact work the next Generative Clean Up blocks on, and on a busy
+        // six-core Intel being deferred behind thumbnail decoding and the
+        // render queue turns a long load into a longer one.
+        //
+        // Started early enough this costs nothing — it runs while the client
+        // is picking a photo. Started late AND deprioritised, it costs them
+        // the whole wait this call exists to remove.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                try self.prepare()
+            } catch {
+                // A half-unpacked install or missing prompt data. Not this
+                // call's job to report — the erase itself will say so, with
+                // the error, at the moment somebody is actually asking.
+                return
+            }
+            self.primeGraphs()
+        }
+    }
+
+    /// Runs ONE diffusion step over a throwaway buffer, so Core ML compiles its
+    /// compute graphs before the client's first real erase instead of during it.
+    ///
+    /// ⚠️ LOADING IS NOT THE SAME AS BEING READY, and that gap is what was
+    /// left after the load was moved to launch. `prepare()` gets the weights
+    /// into memory; Core ML still defers building the graph for this machine's
+    /// hardware until something actually asks it to predict. So the first erase
+    /// after every launch paid for that build and every later one did not —
+    /// which is precisely what was reported, and it survived quitting and
+    /// reopening the app.
+    ///
+    /// ONE step, not the twelve a real erase runs. The graph is the same graph
+    /// whether it is walked once or twelve times, so a single pass buys the
+    /// whole compilation for roughly a twelfth of the compute. Measured on this
+    /// machine and printed below; the client's Intel figure is the one that
+    /// decides whether this stays.
+    ///
+    /// The result is thrown away. Nothing here touches a photograph — the
+    /// buffer is flat grey with a square hole in it, never rendered, never
+    /// saved.
+    private func primeGraphs() {
+        let side = Self.imageSide
+        var buffers = ExemplarInpainter.Buffers(
+            pixels: [UInt8](repeating: 128, count: side * side * 4),
+            known: [UInt8](repeating: 1, count: side * side),
+            width: side, height: side)
+
+        // A hole in the middle, because a job with nothing to fill is not the
+        // same shape of work and might not build the same graphs.
+        let holeSide = 64
+        let origin = (side - holeSide) / 2
+        for y in origin..<(origin + holeSide) {
+            for x in origin..<(origin + holeSide) {
+                buffers.known[y * side + x] = 0
+            }
+        }
+
+        DispatchQueue.main.async { self.isPreparing = true }
+        let startedAt = Date()
+        // refineStrength nil: this is not refining anything, and going through
+        // LaMa first would prime a different pipeline for no reason — LaMa is
+        // already fast and already warm from its own warmUp().
+        try? fill(&buffers, steps: 1, refineStrength: nil)
+        let seconds = Date().timeIntervalSince(startedAt)
+        Self.note(String(format: "[sd] compute graphs primed in %.1f s", seconds))
+        DispatchQueue.main.async {
+            self.lastPrimeSeconds = seconds
+            self.isPreparing = false
         }
     }
 
@@ -617,6 +751,30 @@ final class SDInpaintPipeline {
         print("  [sd] wrote \(url.path)")
     }
 
+    /// A diagnostic line, on stderr.
+    ///
+    /// ⚠️ NOT `print`, and the reason is why the first attempt to measure this
+    /// came back empty. stdout is BLOCK-BUFFERED when it is a file rather than
+    /// a terminal, so a few short lines sit in a 4 KB buffer and are never seen
+    /// unless the process exits cleanly. stderr is unbuffered. These lines
+    /// exist to be read off a client's machine — a diagnostic that only appears
+    /// if the app shuts down tidily is no diagnostic at all.
+    ///
+    /// ⚠️ AND `NSLog`, which is the half that actually works for a shipped app.
+    /// A GUI app is started by launchd, not by a shell, so its stdout and
+    /// stderr go nowhere a person can reach — measured here by redirecting both
+    /// to a file and getting an empty file. NSLog goes to the unified log, so
+    /// the same line can be read back on a client's Mac in Console.
+    ///
+    /// The numbers are also PUBLISHED and shown in the panel, which is the
+    /// route that does not require anybody to open Console at all.
+    ///
+    /// Durations only. Nothing about a photograph goes through here.
+    static func note(_ message: String) {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+        NSLog("%@", message)
+    }
+
     private static func report(_ label: String, _ values: [Float]) {
         guard debugging, !values.isEmpty else { return }
         let mean = values.reduce(0, +) / Float(values.count)
@@ -631,6 +789,19 @@ final class SDInpaintPipeline {
         guard unet == nil else { return }
 
         guard let directory = SDModelStore.resolve() else { throw Failure.modelsMissing }
+
+        // Announced from HERE, past the two guards above, so the flag means
+        // "weights are being loaded right now" and nothing else. Set before
+        // the guards it would flicker true on every warmUp() of an already
+        // loaded pipeline, and the panel would say it was preparing when it
+        // was ready.
+        //
+        // Cleared in a defer so a throw — missing prompt embeds, a half
+        // unpacked install — puts the panel back rather than leaving it
+        // preparing forever.
+        let startedAt = Date()
+        DispatchQueue.main.async { self.isPreparing = true }
+        defer { DispatchQueue.main.async { self.isPreparing = false } }
 
         // The UNet is converted ANE-friendly and is ~95% of the compute; the
         // VAE passes run once each and are quicker on the GPU.
@@ -687,6 +858,18 @@ final class SDInpaintPipeline {
         vaeEncoder = loadedEncoder
         vaeDecoder = loadedDecoder
         promptEmbeds = embeds
+
+        // Printed as well as published, and not behind BRIEFSHOW_SD_DEBUG: this
+        // is the one number that explains the whole "why was the first one slow"
+        // question, and it has to be readable from a shipped build on a machine
+        // that is not this one. It is a duration, not photo data — nothing about
+        // the client's pictures goes into it.
+        let seconds = Date().timeIntervalSince(startedAt)
+        Self.note(String(format: "[sd] weights loaded into Core ML in %.1f s", seconds))
+        DispatchQueue.main.async {
+            self.lastPrepareSeconds = seconds
+            self.isLoaded = true
+        }
     }
 
     // The blob is already in the UNet's layout — [2, 768, 1, 77] Float16,
@@ -798,6 +981,11 @@ final class SDInpaintPipeline {
         progress: ((Int, Int) -> Void)? = nil,
         shouldContinue: () -> Bool = { true }
     ) throws {
+        // See inferenceLock: this is what keeps the launch-time priming pass
+        // from running through here beside a real erase.
+        inferenceLock.lock()
+        defer { inferenceLock.unlock() }
+
         try prepare()
         // Overridable only so the recipe can be swept from the test harness;
         // the shipping defaults are the arguments.
@@ -1112,6 +1300,33 @@ final class SDInpaintPipeline {
 
 // MARK: - The Remove tool's second button
 
+/// The parts of a Generative Clean Up that happen BEFORE the first diffusion
+/// step, so the progress bar has something true to report while they run.
+///
+/// ⚠️ WHY THIS EXISTS. The bar was driven only by `progress: (done, total)`,
+/// which the pipeline first calls after step one has finished. Everything
+/// ahead of that — rendering the photo at full size, cutting the working
+/// region, LaMa's base fill, and loading 1.6 GB of weights into Core ML —
+/// happened at a displayed **0%**. Reported as exactly that: *„kada kliknem ai
+/// generativ on je mnogo zaglavljan na pocetku na 0% laod bar"*.
+///
+/// The answer is not to animate a fake number up from zero. It is to report
+/// the stages that are genuinely finishing, which is what these are. Each case
+/// is posted after the work it names is DONE, so a bar that moves has actually
+/// moved past something.
+enum SDRemovalStage {
+    /// The photo has been rendered, the region cut, and the 512 buffers built.
+    case readingPhoto
+    /// LaMa has put a base picture in the hole for SD to finish.
+    case baseFilled
+    /// About to pull the weights into Core ML. On a cold process this is the
+    /// long one, and naming it is the whole point — see the load-state block
+    /// at the top of SDInpaintPipeline.
+    case loadingModel
+    /// Weights are in. The diffusion steps start now and take over the bar.
+    case modelReady
+}
+
 extension InpaintPipeline {
 
     /// The SD counterpart to `removal(mask:from:context:)`, returning the same
@@ -1131,6 +1346,9 @@ extension InpaintPipeline {
         seed: UInt64 = 3,
         refineStrength: Float? = SDInpaintPipeline.defaultRefineStrength,
         progress: ((Int, Int) -> Void)? = nil,
+        /// Posted as each pre-diffusion stage finishes, so the bar can move
+        /// before `progress` has anything to say. See SDRemovalStage.
+        stage: ((SDRemovalStage) -> Void)? = nil,
         shouldContinue: @escaping () -> Bool = { true }
     ) throws -> Removal? {
         let extent = image.extent
@@ -1152,6 +1370,11 @@ extension InpaintPipeline {
 
         let originalKnown = buffers.known
 
+        // Everything above this line is full-resolution Core Image work on the
+        // client's photo — on a 5176x3448 NEF it is not instant, and it used to
+        // run under a bar reading 0%.
+        stage?(.readingPhoto)
+
         // LaMa FIRST, then SD over the top of it.
         //
         // Both models work on this same 512 buffer over this same region, so
@@ -1170,6 +1393,7 @@ extension InpaintPipeline {
         if refineStrength != nil, LaMaInpaintPipeline.isAvailable {
             do {
                 try LaMaInpaintPipeline.shared.fill(&buffers)
+                stage?(.baseFilled)
             } catch {
                 // A missing or failing LaMa is not a reason to refuse the
                 // removal; without a starting picture this simply becomes the
@@ -1178,9 +1402,20 @@ extension InpaintPipeline {
                     mask: mask, from: image, context: context, prompt: prompt,
                     negativePrompt: negativePrompt, feather: feather, steps: steps,
                     seed: seed, refineStrength: nil, progress: progress,
-                    shouldContinue: shouldContinue)
+                    stage: stage, shouldContinue: shouldContinue)
             }
         }
+
+        // ⚠️ Called HERE as well as inside fill(), and on purpose. fill() has
+        // always begun with `try prepare()`, and prepare() returns immediately
+        // once the weights are loaded — so this costs nothing and duplicates
+        // nothing. What it buys is a place to stand: the load is the longest
+        // single thing in a cold Generative Clean Up, and from out here the UI
+        // can be told when it starts and when it ends. Inside fill() it was
+        // invisible, which is how a two-minute wait ended up displayed as 0%.
+        stage?(.loadingModel)
+        try SDInpaintPipeline.shared.prepare()
+        stage?(.modelReady)
 
         try SDInpaintPipeline.shared.fill(
             &buffers, prompt: prompt, negativePrompt: negativePrompt,

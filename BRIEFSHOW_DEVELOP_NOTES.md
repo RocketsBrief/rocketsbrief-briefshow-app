@@ -11895,3 +11895,233 @@ kraju ovog. Ne raditi bez pitanja.
 Ovo je jedini korak koji odmah pogađa klijente, i **radi se poslednji** — posle
 toga što je release već gore i preuzimljiv. Obrnut redosled znači ekran „mora
 update" koji upućuje na nešto što ne postoji.
+
+## KORAK 106 — prvi Generative je bio spor, i traka je to krila (3. septembar 2026)
+
+### ⚠️ PRVO: INTEL JE POTVRĐEN NA PRAVOJ MAŠINI
+
+KORAK 105 se završava rečenicom da Intel put nikad **nije pokrenut** na Intel
+Mac-u, samo dokazano da se prevodi, i da preuzimanje modela nije viđeno na
+čistoj mašini. **Oboje je 3.09. potvrđeno od klijenta.**
+
+Njegovim rečima: *„Pustio sam app C4S Suit na intel procesor i radi normalno,
+posle sam kliknuo na ai clean up, i ispod je bilo dugme da downlodujem ai model
+SD 1.8 gb, jesam sacekao da se unpackuje kako je pisalo i selektovao nesto malo
+na slici i kliknuo generative"*.
+
+Dakle: **preuzimanje, raspakivanje i Generative Clean Up rade na Radeon Pro
+560X.** To je bila najveća neizmerena tvrdnja u dokumentu i više nije otvorena.
+
+**Ostaje neizmereno samo VREME po slici na Intelu**, ne da li radi.
+
+### Prijava koja je iz toga izašla
+
+*„ta prva generative ai clean up action… trajalo je 1.5 mozda 2 minuta…
+sledeci generative ai action u istoj sesiji samo drugi je odradio za 15
+sekundi"*, i — što je ključno — **isto i posle gašenja i ponovnog pokretanja
+app-e**: *„opet taj prvi action traje duze nego svaki sledeci zasto i jel mozemo
+to da popravimo"*.
+
+### ⚠️ TRI RAZLIČITA TROŠKA SU SE MEŠALA U JEDAN, i tek razdvojena su rešiva
+
+Ovo je ceo nalaz. Sve ostalo ispod je posledica.
+
+| trošak | koliko puta | šta je bilo |
+|---|---|---|
+| **instalacija** — 1,8 GB na disk | **jednom, zauvek** | radilo |
+| **prilagođavanje modela mašini** — Core ML kompajlira UNet za ovaj hardver | **jednom PO MAŠINI**, keširano na disk | radilo, ali je palo na prvi klik |
+| **učitavanje u proces** | jednom po pokretanju | zvano prerano da bi zateklo instalaciju |
+| **sklapanje računskog grafa** — prvi `predict` | jednom po pokretanju | **niko ga nikad nije platio unapred** |
+
+**IZMERENO** novim harness-om `Tools/run-model-load-test.py`, na ovoj mašini
+(M-čip, Neural Engine):
+
+```
+run 1 (hladan Core ML keš):   Unet 40,4 s   VAEEncoder 0,7 s   VAEDecoder 0,4 s   ukupno 41,5 s
+run 2 (topao keš):            Unet  0,7 s   VAEEncoder 0,1 s   VAEDecoder 0,0 s   ukupno  0,8 s
+```
+
+Taj odnos **40 s : 0,8 s** je ono što je razrešilo prijavu. Core ML čuva
+prilagođen model na disku, pa klijentovih „2 minuta" prvi put **ne mogu biti**
+ono što se ponavlja posle svakog pokretanja app-e. Ostatak je bio četvrti red
+tabele.
+
+### Greška u kodu 1 — posle instalacije niko nije budio model
+
+`Develop.swift` zove `warmUp()` kad se otvori LumenoLab, a `warmUp()` počinje sa
+`guard SDModelStore.isAvailable`. U trenutku kad je klijent otvorio LumenoLab
+model **još nije bio instaliran**, pa se ta funkcija ispravno vratila odmah.
+Onda je instalacija završila i **ništa je nije pozvalo ponovo**.
+
+Zato je baš njegov prvi Generative platio pun hladan start — 40 s prilagođavanja
+plus učitavanje plus graf, sve unutar jednog klika.
+
+Popravka: `SDModelInstall.swift` zove `warmUp()` tamo gde već diže
+`installGeneration`. To je jedino mesto u app-i koje zna da se odgovor na onaj
+`guard` upravo promenio.
+
+### Greška u kodu 2 — zagrevanje je kretalo prekasno i na najnižem prioritetu
+
+Kretalo je pri otvaranju LumenoLab-a, na `.utility`. Oba su pomerena:
+
+- poziv je sada u `BriefShowApp.init()` — dok klijent bira folder, ne kad je već
+  pet sekundi od farbanja. Poziv u LumenoLab-u je **ostavljen** kao rezerva; ta
+  funkcija je idempotentna;
+- `.utility` → `.userInitiated`. `.utility` je red koji macOS gura iza svega, na
+  pretpostavci da niko ne čeka — a ovde čeka.
+
+### ⚠️ Greška u kodu 3 — `warmUp()` je model UČITAVAO, ali ga nikad nije POKRENUO
+
+Ovo je bio pravi ostatak, i objašnjava zašto je prvi bio sporiji **i posle
+ponovnog pokretanja**, kad je keš već bio topao i učitavanje trajalo sekundu.
+
+Core ML odloži sklapanje računskog grafa do prvog `predict`-a. Model u memoriji
+**nije isto što i model spreman.**
+
+`primeGraphs()` sada, posle učitavanja, provuče **jedan** korak kroz sintetički
+bafer. Graf je isti bilo da se prošeta jednom ili dvanaest puta, pa se cela
+kompilacija plaća za otprilike dvanaestinu računa.
+
+⚠️ **Ne dodiruje nijednu fotografiju.** Bafer je ravno sivo 512×512 sa
+kvadratnom rupom u sredini, nikad se ne prikaže i nikad ne sačuva. Klijentovo
+pravilo od 3.09. — *„nikako nemoj da smanjujes preview ili nesto qualitet slika…
+jer je to photography suit"* — ovde nije ni dotaknuto; nijedan broj vezan za
+rezoluciju nije menjan.
+
+### ⚠️ Nova brava, i zašto je morala
+
+`inferenceLock`. Do sada je svako brisanje išlo kroz `developRenderQueue`, koji
+je **serijski**, pa se dva prolaza nikad nisu mogla preklopiti i brava nije
+trebala. Zagrevanje ide na globalnom redu pri pokretanju i **prvo je u ovoj
+app-i što može da bude unutar `fill`-a istovremeno sa pravim brisanjem** — a
+`fill` usput piše u `encodedPrompts`.
+
+Da bi se sudarili, klijent bi morao da pritisne Generative sekundu-dve od
+pokretanja app-e, pošto je već izabrao sliku i nafarbao. To je argument da je
+retko, ne da je nemoguće, pa je učinjeno nemogućim.
+
+⚠️ Redosled brava je **uvek** `inferenceLock` → `loadLock`. `prepare()` uzima
+samo `loadLock` i nigde se ne uzimaju obrnuto.
+
+### Traka je stajala na 0% — druga prijava iz istog dana
+
+*„kada kliknem ai generativ on je mnogo zaglavljan na pocetku na 0% laod bar, tu
+bar me da se vidi da radi neka krene 2% (da nije nula) pa onda jedna sekunda pa
+neka skoci na 8% pa onda neka bude real time tracking"*.
+
+Uzrok: traku je vodio **samo** `progress: (done, total)`, koji pipeline prvi put
+zove **posle prvog difuzionog koraka**. Sve pre toga — render fotografije u punoj
+veličini, sečenje radne oblasti, LaMa osnovni ispun i učitavanje 1,6 GB — teklo
+je na prikazanih **0%**.
+
+**⚠️ NIJE rešeno lažnom animacijom od 0 do 8.** Takva traka laže čim posao
+potraje drugačije nego što je neko pretpostavio. Umesto toga je uveden
+`SDRemovalStage` — četiri stanja koja se **stvarno završavaju**, i svako se javi
+tek kad je posao koji nosi ime gotov:
+
+| stanje | traka | tekst |
+|---|---|---|
+| pritisak | **2%** | Preparing… |
+| `.readingPhoto` | 4% | Reading the photo… |
+| `.baseFilled` | 7% | Filling the gap… |
+| `.loadingModel` | 8% | Loading the AI model… |
+| `.modelReady` | 12% | Cleaning up… |
+| difuzioni koraci | 12% → 100% | Cleaning up… N% |
+
+Dva detalja koja nisu očigledna:
+
+- **Nula je jedino stanje koje traka ne preživi.** To je ono što se vidi kad
+  posao nije ni počeo, pa traka koja stoji na njoj izgleda pokvareno bez obzira
+  koliko se iza nje radi. Otud 2%, i to je doslovno traženo.
+- **`advanceEraseProgress` nikad ne ide unazad.** Sa više tragova na slici
+  brisanje ide jedan po jedan (v. `briefShowRemovalJobs`) i svaki prolazi svoja
+  stanja — bez ovoga bi drugi trag javio „Reading the photo… 4%" dok traka stoji
+  na 60%. Traka koja se vrati unazad čita se kao pad i restart.
+
+⚠️ `stage?(.loadingModel)` je izveden tako što se `prepare()` zove **izričito** u
+`aiRemoval`, iznad `fill`-a. `fill` ga i dalje zove prvi — bezbedno, jer se
+`prepare()` vraća odmah kad je učitano. Dobija se mesto sa kog se UI može javiti
+pre i posle najdužeg pojedinačnog posla; unutar `fill`-a je bio nevidljiv, i tako
+je dvominutno čekanje završilo prikazano kao 0%.
+
+### Merenje na klijentovoj mašini — i zašto je izašlo iz loga u panel
+
+Prva dva pokušaja da se vreme izmeri **nisu uspela i to je zapisano**:
+
+1. `print` u fajl je **blok-baferovan** kad izlaz nije terminal. Kratke linije
+   ostanu u baferu i nikad se ne vide. `stderr` nije baferovan.
+2. `stderr` takođe ne pomaže: GUI app pokreće **launchd**, ne shell, pa i stdout
+   i stderr idu nikuda. Mereno preusmeravanjem oba u fajl → **prazan fajl**.
+
+Zato `SDInpaintPipeline.note` sada ide i kroz `NSLog` (čita se u Console-u), ali
+prava ruta je druga: brojevi su **objavljeni i ispisani u panelu**, jer klijent
+nema razloga da otvara Console.
+
+`sdModelReadinessRow` piše jednu tihu liniju u AI Clean Up sekciji:
+`Generative model ready (41s load + 3s warm-up).` — pa se broj sa Intela
+jednostavno pročita naglas.
+
+### Ostale dve stavke iz istog zahteva
+
+**Select People sam zatvara AI Clean Up.** Prijava: posle Select People se ne
+vidi da je sloj izabran dok se AI Clean Up ne zatvori ručno.
+
+⚠️ **Sloj JESTE bio izabran sve vreme.** `selectPeopleAsLayer` odavno postavlja
+`selectedLayerID` i `panelTab = .layers`. Uzrok je u lancu overlay-a: dok je AI
+četkica živa, prva grana uzima `removalPaintOverlay`, pa se okvir sloja, ručke i
+kvaka za rotaciju **prosto ne crtaju**. Nije bio bag u traženju ljudi nego u
+tome što je alat koji je preuzeo platno ostao upaljen.
+
+Nov `closeAICleanUp()`, jer se `toggleAICleanUp()` ne sme zvati naslepo —
+pozvan nad zatvorenom sekcijom je **otvara** i usput daje četkicu u ruke.
+
+⚠️ Provereno pre obećanja: **nafarbana površina preživljava** gašenje četkice
+(`deactivateRemoveBrush` je namerno čuva), pa klik na Select People ne baca posao
+koji je već označen za Clean Up.
+
+**Slajderi na sloju u boji.** Glavni panel prosleđuje `trackGradient:`, panel
+sloja nije — prosto izostavljeno. Nedostajale su **četiri**, ne dve:
+Temperature, Tint, Saturation, Vibrance. Sve četiri sada dobijaju iste statične
+trake kao glavni panel (nijedna ne čita fotografiju, pa je deljenje bezbedno).
+
+Klijent je tražio *„mora da bude taj slide bar edit isti kao kad editujem
+normalnu sliku"*, pa su uzete sve četiri, ne samo dve koje je naveo.
+⚠️ **Ista rupa i dalje postoji u sekciji za masku** (local adjustment,
+`editSlider("Temperature", key: "mask.temperature"…)`) — nije bila u prijavi i
+nije dirana.
+
+### Usput popravljeno, jer je aktivno lagalo sledećeg čitaoca
+
+- **Zaglavlje `DevelopSDInpaint.swift`** je i dalje tvrdilo „APPLE SILICON ONLY"
+  i da Intel „namerno NIJE urađen" — KORAK 105 ga je upravo uradio. Prepisano.
+- **Komentar iznad `sdModelInstallRow`** je u prvoj rečenici tvrdio da je na
+  Intelu pipeline isključen, a u sledećoj da nije. Zaostatak selidbe, uklonjen.
+- **`Tools/README.txt`** je tvrdio da postoji `BRIEFSHOW_MODELS` override.
+  **Ne postoji u kodu** — provereno grep-om po celom projektu. Umesto tihog
+  brisanja upisano je da ne postoji, jer je tvrdnja već jednom bila poverovana
+  (v. „I dalje otvoreno", tačka 4 u KORAKU 105).
+
+### Provereno
+
+- `BUILD SUCCEEDED` posle svake od tri izmene.
+- `Tools/run-editsettings-decode-test.py` → **129 slogova, nijedan broj se nije
+  pomerio**, 27 polja, nijedna deklaracija ne fali.
+- `Tools/run-layer-pixel-store-test.py` → **ALL PASS**, dekodiranje 4,9 ms.
+- `Tools/run-model-load-test.py` → brojevi u tabeli gore.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Sve iz ovog koraka. App je pokrenuta i predata klijentu na proveru; nijedna od
+četiri izmene nije potvrđena gledanjem u trenutku pisanja.
+
+**Konkretno neizmereno:**
+
+1. **Koliko `primeGraphs()` košta na Intelu.** Ovde je jedan korak otprilike
+   dvanaestina od dvanaest, ali Radeon nije Neural Engine. Broj se čita iz
+   panela. ⚠️ **Ako ispadne skup, ovo je izmena koju treba povući** — trošiti
+   grafičku na svakom pokretanju za funkciju koju klijent tog dana možda neće ni
+   dotaći nije pošteno.
+2. **Da li je prvi Generative posle ovoga zaista isto brz kao svaki sledeći.**
+   To je bio zahtev; ovde se ne može proveriti bez Intel mašine.
+3. **Da li traka sada vidljivo prolazi kroz sva četiri stanja**, ili neka
+   prolete pa se čini da preskače.

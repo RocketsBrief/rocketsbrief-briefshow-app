@@ -101,6 +101,27 @@ struct BriefShowApp: App {
         // BriefShow editor, LumenoLab or a full-screen slideshow, and the
         // seat has to keep being verified in all four.
         Task { @MainActor in SeatManager.shared.start() }
+
+        // ⚠️ THE EARLIEST HONEST MOMENT to start loading the AI weights, and
+        // the reason it moved here.
+        //
+        // Loading them is once per LAUNCH, not once ever — see the load-state
+        // block in DevelopSDInpaint.swift. It used to start when LumenoLab
+        // opened, which sounds early but is not: by then the client has picked
+        // a photo and is a few seconds from painting, and on a Mac with no
+        // Neural Engine the load is far longer than that. Reported from an
+        // Intel Mac as a first Generative Clean Up of 1.5–2 minutes against 15
+        // seconds for every one after it.
+        //
+        // Here it runs while the client is still choosing a folder — minutes
+        // of real time, on a machine doing nothing else yet.
+        //
+        // Costs nothing when the feature is not in play: `warmUp()` returns
+        // immediately if the weights are not installed, which is every client
+        // who has not downloaded them. LumenoLab still calls it too, and that
+        // is deliberate — it is idempotent, and it is the backstop for a
+        // process where this ran before an install finished.
+        SDInpaintPipeline.shared.warmUp()
     }
 
     /// Makes a NEW APP ICON actually appear after the client replaces the app

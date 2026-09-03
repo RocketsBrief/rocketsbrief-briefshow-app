@@ -202,6 +202,21 @@ extension SDModelInstaller: URLSessionDownloadDelegate {
                 if complete {
                     self.state = .idle
                     self.installGeneration += 1
+                    // ⚠️ THE MISSING HALF OF THE INSTALL, and its absence is
+                    // what made the client's very first Generative Clean Up
+                    // take two minutes.
+                    //
+                    // `warmUp()` is called when LumenoLab opens, and it begins
+                    // `guard SDModelStore.isAvailable`. At that moment the
+                    // weights were not installed yet, so it returned at once —
+                    // correctly. Then the install finished here and NOTHING
+                    // called it again, so the whole load fell onto the first
+                    // click instead of onto the minutes just spent watching a
+                    // download.
+                    //
+                    // This is the one moment the app knows the answer to that
+                    // guard has just changed.
+                    SDInpaintPipeline.shared.warmUp()
                 } else {
                     self.state = .failed(Failure.incomplete.localizedDescription)
                 }

@@ -12763,3 +12763,85 @@ iste dve rupe (suncobran i kamena staza).
 ### ⚠️ NEPROVERENO NA EKRANU
 
 Sve — u app-i nije viđeno. App je pokrenuta i predata klijentu.
+
+## KORAK 113 — AI Clean Up se sklapa kad drugi alat preuzme platno; oznaka verzije uvek vidljiva; RELEASE v11.2 (3. septembar 2026)
+
+### 1. Klik na bilo šta drugo sada zatvara AI Clean Up
+
+Prijava: *„uvek kada kliknemo negde drugde a pre toga ai builder je bio otvoren
+a mi kliknemo recimo na crop ili bilo gde drugde ili select people uvek zatvori
+skroz ai cleaner, jer neki put ai cleaner je otvoren jer sam kliknuo na crop pa
+ja trebam da ga zatvorim pa otvorim opet da bi dobio paint brush"*.
+
+⚠️ **Uzrok je bio pola posla, ne propušten posao.** Ta mesta su već zvala
+`deactivateRemoveBrush()` — četkica se gasila — ali **panel je ostajao
+razmotan**. Otvoren AI Clean Up bez četkice u ruci izgleda pokvareno, i jedini
+izlaz je bio zatvoriti ga pa otvoriti opet: dva pritiska na isto dugme da se
+vratiš tamo gde već izgleda da jesi.
+
+`closeAICleanUp()` je sada JEDINA ulazna tačka za „drugi alat preuzima platno" i
+prepravljena je tako da četkicu spušta **prvo i bezuslovno**, izvan straže na
+vidljivost — to dvoje ume da se raziđe, a četkica koja i dalje drži platno dok
+je blok sklopljen bio bi isti bag bez ičega na ekranu da ga objasni.
+
+Zakačena na svih šest mesta (ranije samo Select People, KORAK 106):
+
+| mesto | pre |
+|---|---|
+| `addLocalAdjustment` | gasila četkicu, panel ostajao |
+| `selectLocalAdjustment` | isto |
+| `addSelection` | isto |
+| **crop** | isto — ovo je klijent i naveo |
+| `selectLayer` | ⚠️ **nije radila ni to** |
+| lepljenje sloja (`pasteLayer`) | ⚠️ **nije radila ni to** |
+
+⚠️ Poslednja dva su bila latentni bag iste vrste koji je KORAK 106 opisao za
+Select People: dok je AI četkica živa, `removalPaintOverlay` je prva grana
+lanca, pa se okvir sloja, ručke i kvaka za rotaciju **ne crtaju**. Običan klik
+na sloj u listi je to i dalje radio.
+
+⚠️ Nafarbana površina i dalje preživljava — `deactivateRemoveBrush` je namerno
+čuva, spušta se samo četkica.
+
+### 2. Oznaka verzije je sada uvek na ekranu
+
+Klijent je ovo tražio **dvaput**. KORAK 108 je odgovorio „već postoji, na
+hover" — što nije isto. Sada stoji ispod „C4S Suite" natpisa na prvoj strani,
+čita se iz `CFBundleShortVersionString`, dakle ne može da se raziđe sa tagom
+(razlog je KORAK 74, gde je `CFBundleVersion` stajao na 17 kroz sve build-ove).
+Hover kartica je ostala i dalje ga pokazuje.
+
+### 3. RELEASE v11.2
+
+⚠️ **NIJE v11.1, iako je tako traženo.** `v11.1` postoji, pokazuje na
+`6d8be1a` i objavljen je danas u 15:43 — pomeranje objavljenog taga značilo bi
+da isti broj verzije nosi dva različita build-a, što se na klijentovoj mašini
+ne može razlikovati. Klijent je pitan i izabrao v11.2.
+
+⚠️ **SD model NIJE upakovan, iako je tako traženo** — i to na osnovu klijentove
+sopstvene napomene u istoj poruci. SD je 1891 MB: pakovanje bi arhivu diglo sa
+109 MB na ~1,9 GB i nateralo **svakoga, uključujući one koji SD već imaju**, da
+povuče 1,8 GB uz svaki update. Klijent je baš napisao da postojeće instalacije
+treba da zadrže model. Sadašnji raspored to već radi — model živi u Application
+Support, odvojen od app-e — pa je posle pitanja ostavljen kako jeste.
+
+| provera na PAKETU | rezultat |
+|---|---|
+| `lipo -archs` | **`x86_64 arm64`** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.2** / **22** |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` (netaknut) |
+| `LaMa.mlmodelc` u paketu | **da** |
+| SD15-Inpainting u paketu | **ne**, namerno |
+| lične fotografije | **nula** |
+| veličina app-e | 140 MB |
+
+Build je rađen sa `-destination "generic/platform=macOS"` — bez toga
+`xcodebuild` tiho suzi na arhitekturu mašine koja gradi, a
+`-showBuildSettings` i dalje tvrdi da je sve u redu (zamka zapisana u KORAKU
+108). Mereno `lipo -archs` na **rezultatu**.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Zatvaranje AI Clean Up-a na svih šest mesta i uvek-vidljiva oznaka verzije —
+build prolazi, u app-i nije viđeno.

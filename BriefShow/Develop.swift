@@ -8200,13 +8200,26 @@ struct DevelopView: View {
     /// ⚠️ The painted AREA survives this, deliberately — see
     /// `deactivateRemoveBrush`. Only the brush is put down, so clean-up work
     /// already on the photo is not thrown away by pressing another tool.
+    /// ⚠️ This is now THE call for "another tool is taking over", and every
+    /// such place uses it instead of `deactivateRemoveBrush()` alone.
+    ///
+    /// Those places used to put the brush down and leave the block UNFOLDED,
+    /// which is the state the client reported: *„neki put ai cleaner je otvoren
+    /// jer sam kliknuo na crop pa ja trebam da ga zatvorim pa otvorim opet da
+    /// bi dobio paint brush"*. An open AI Clean Up with no brush in hand reads
+    /// as broken, and the only way out was to close it and open it again —
+    /// pressing the same button twice to get back where you already looked to
+    /// be.
+    ///
+    /// The brush goes down FIRST and unconditionally, outside the visibility
+    /// guard: the two can come apart, and a brush still owning the canvas
+    /// while the block is folded away would be the same bug with nothing on
+    /// screen to explain it.
     private func closeAICleanUp() {
+        deactivateRemoveBrush()
         guard isAIManipulationVisible else { return }
         withAnimation(.easeInOut(duration: 0.18)) {
             aiManipulationExpanded = false
-            if isRemoveBrushActive {
-                toggleRemoveBrush()
-            }
         }
     }
 
@@ -15022,7 +15035,7 @@ struct DevelopView: View {
         isCropping = false
         activeSelection = nil
         selectedLayerID = nil
-        deactivateRemoveBrush()
+        closeAICleanUp()
     }
 
     // Tapping the already-selected mask's row deselects it (back to
@@ -15034,7 +15047,7 @@ struct DevelopView: View {
             isCropping = false
             activeSelection = nil
             selectedLayerID = nil
-            deactivateRemoveBrush()
+            closeAICleanUp()
         }
         brushCursor.stroke = []
         activePatchDrawPoints.points = []
@@ -15091,7 +15104,7 @@ struct DevelopView: View {
         selectedLocalAdjustmentID = nil
         selectedLayerID = nil
         isCropping = false
-        deactivateRemoveBrush()
+        closeAICleanUp()
     }
 
     private func deselectSelection() {
@@ -15206,6 +15219,7 @@ struct DevelopView: View {
         selectedLocalAdjustmentID = nil
         activeSelection = nil
         isCropping = false
+        closeAICleanUp()
     }
 
     // Tapping the already-selected layer's row deselects it — same
@@ -15217,6 +15231,13 @@ struct DevelopView: View {
             isCropping = false
             selectedLocalAdjustmentID = nil
             activeSelection = nil
+            // ⚠️ This one did not even put the brush down, let alone fold the
+            // block: picking a layer while the AI brush was live left
+            // `removalPaintOverlay` first in the chain, so the layer's frame,
+            // handles and rotate knob were not drawn. That is precisely the bug
+            // KORAK 106 fixed for Select People, still sitting here on the
+            // ordinary way of selecting a layer.
+            closeAICleanUp()
         }
     }
 
@@ -15279,7 +15300,7 @@ struct DevelopView: View {
             } else {
                 selectedCropAspectRatio = .free
             }
-            deactivateRemoveBrush()
+            closeAICleanUp()
             scheduleRender()
         }
     }

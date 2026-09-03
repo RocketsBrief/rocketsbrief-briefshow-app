@@ -21783,6 +21783,26 @@ struct PhotoShowSheet: View {
                     }
                 }
 
+                // The release tag, always on screen rather than only on hover.
+                //
+                // It was hover-only (BriefShowAboutHoverCard, which still shows
+                // it too) and the client asked twice for it to be visible —
+                // KORAK 108 answered "it already exists, on hover", which is
+                // not the same thing. Anyone reporting a bug can now read the
+                // version off the first screen without knowing to point at the
+                // wordmark first.
+                //
+                // Read from the bundle for the same reason the hover card does:
+                // a version typed into the UI by hand disagrees with the build
+                // the moment one of the two changes (KORAK 74).
+                if let short = Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+                    Text("v\(short)")
+                        .font(.custom("Figtree", size: 10.5).weight(.semibold))
+                        .foregroundColor(AppColors.muted)
+                        .padding(.top, -4)
+                }
+
                 // ⚠️ The three theme dots that used to sit here are GONE, on
                 // request: the theme now lives in Edit ▸ Theme, where a
                 // preference belongs, and three unlabelled circles under the

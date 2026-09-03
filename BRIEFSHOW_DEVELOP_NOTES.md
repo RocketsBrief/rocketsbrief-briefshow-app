@@ -11627,6 +11627,210 @@ Arhiva **nije raspakovana i pokrenuta na drugom Mac-u**, ni na Intelu.
 fajlu, ne o tome da se pokreće — a KORAK 35 je već jednom pokazao razliku
 (radilo u Xcode-u, palo potpisano).
 
+## KORAK 104 — preimenovanje u C4S Suite, logo, meniji, tema (3. septembar 2026)
+
+Vizuelno preimenovanje, po planu iz razgovora: **sloj 1 da, sloj 2 (folder na
+Desktopu) NE.**
+
+| bilo | sada |
+|---|---|
+| BriefShow (suite) | **C4S Suite** |
+| Showcase (slideshow) | **BriefShow** |
+| LumenoLab (editor) | **Create** |
+
+Izmenjeno **60 korisnički vidljivih tekstova** — disclaimer, about, nalog,
+update ekrani. Debug logovi (`BriefShow mux:`, `export codec:`) su **namerno
+ostavljeni**: nisu korisnički tekst i preimenovanje bi bilo čista buka.
+
+### ⚠️ MINA 3 JE POGOĐENA — moj skript je preimenovao PUTANJE
+
+Skript za zamenu stringova nije razlikovao prozu od putanje i prepravio je:
+
+```
+BriefShow/LayerPixels  →  C4S Suite/LayerPixels
+BriefShow/Flattened    →  C4S Suite/Flattened
+BriefShow/CoreMLModels/SD15-Inpainting
+Desktop/BriefShow/CoreMLModels/…   (SD i LaMa)
+BriefShow (Show App Files in Finder)
+```
+
+Posledice da je ovo prošlo: **77 blobova slojeva osirotelo** (sloj u listi,
+prazan na fotografiji), **1,5 GB flatten kopija nedostupno**, i **SD mrtav i na
+razvojnoj mašini** — jedinoj gde je do tada radio.
+
+**`run-layer-pixel-store-test.py` je to uhvatio**, pao je sa „46 layers came
+back empty". Prvo sam pomislio da je kvar u meraču (radi van sandboksa, pa gleda
+drugi folder) i dopunio ga da prekopira blobove iz kontejnera — i tek kad je
+**i posle toga pao**, ispalo je da nije merač nego prava šteta. Sve vraćeno, i
+na svako od tih mesta je upisano upozorenje da je to **putanja, ne ime
+proizvoda**.
+
+**Pouka, i vredi je zapisati šire:** zamena stringova preko celog fajla ne sme
+da se pusti bez razlikovanja proze od ključeva i putanja. Filter je propustio
+sve što ima `/` u sebi.
+
+### Naslovi prozora — bag star tri dana je usput nestao
+
+Glavni prozor i slideshow prozor su **oba** nosila naslov „BriefShow", a oba
+monitora tastature se ograničavaju baš po naslovu — pa je sa slideshow-om u
+fokusu ShowGrid-ov monitor obrađivao ⌘C/⌘X/⌘V, ocene, Space i Escape sa
+pogrešnim kontekstom. To je MINA 2 iz plana od 31.08, zapisana i još živa.
+
+Sada su **tri različita naslova**, i **svaki iz imenovane konstante**:
+`C4S Suite` / `BriefShow` / `Create`. Guard koji je poredio sa literalom sada
+čita konstantu, pa ne može da odluta nazad.
+
+⚠️ Pri tome je moj isti skript prepravio i `BriefShowWindowController.windowTitle`
+na „C4S Suite" — čime bi oba prozora **ponovo** delila naslov i bag bi vaskrsao
+istog dana kad je ubijen. Vraćeno, sa napomenom na samoj konstanti.
+
+### Logo
+
+Bela pozadina isečena **flood-fill-om od ivica**, ne pragom na belo — tako
+svetla četvorka unutar tamnog tela preživi (30,9% slike postalo prozirno,
+centar pun, uglovi prazni). Za **ikonicu** je istom tehnikom skinut i **žuti
+obrub**, na klijentov zahtev: ostaje crna zaobljena pločica sa C4S.
+
+Logo stoji na **dva** mesta: ikonica app-a i zaglavlje Disclaimer-a.
+
+**Zaglavlje nosi SLOVA, ne sliku.** `C4SWordmark` — „C4S" u istom fontu
+(Unbounded Black) i sa istim negativnim tracking-om koji je nosio „BriefShow",
+C i S svetli, **četvorka u prigušenom tonu**. To je ista dvotonska podela koju
+je stari wordmark imao („Brief" svetlo, „Show" prigušeno), preneta na glif koji
+i logo izdvaja drugom bojom.
+
+### Ime za macOS — tri ključa, ne jedan
+
+`CFBundleDisplayName` sam nije bio dovoljan: **meni čita `CFBundleName`**, a
+**Dock ime fajla**. Zato su svi postavljeni:
+
+```
+CFBundleName        C4S Suite      (INFOPLIST_KEY / PRODUCT_NAME)
+CFBundleDisplayName C4S Suite
+CFBundleExecutable  C4S Suite
+CFBundleIdentifier  com.rocketsbrief.BriefShow   ← NETAKNUT
+```
+
+⚠️ Posledica koja je najavljena pre nego što je urađena: fajl je sada
+`C4S Suite.app`, pa ko update-uje dobija **drugu ikonicu pored stare
+`BriefShow.app`**. Podaci ostaju (identifikator je isti), staru briše sam.
+
+### Meniji i tema
+
+**File:** Import…, Open Folder… (⌘O), Import from Camera…, Show App Files in
+Finder. **Edit:** Keyboard Shortcuts… (⇧⌘K), Reset Shortcuts to Defaults,
+**Theme** (White / Sand / Dark). **Help:** Help, Check for Updates…
+
+- Open Folder ide kroz `ExternalFolderOpen` — ista vrata kroz koja ulazi folder
+  pušten na ikonicu, pa nema novog vodovodstva.
+- Import from Camera je **onemogućen** bez kamere, ne sakriven.
+- ⚠️ **Undo/Redo NISU u meniju.** Menijski ⌘Z bi bio drugi polagač prava na
+  isti pritisak, u trci sa monitorom, a klijentova izmena prečice bi se videla
+  samo u jednom od njih.
+- Tri tačkice za temu su sklonjene sa prve strane. `AppTheme.buttery` se
+  **prikazuje** kao „Sand"; raw vrednost nije dirana, jer je u `UserDefaults`.
+
+## KORAK 105 — SD se konačno isporučuje, radi i na Intelu, i RELEASE v11.0 (3. septembar 2026)
+
+### ⚠️ 1. Generative Clean Up je radio na TAČNO JEDNOJ MAŠINI na svetu
+
+`SDModelStore.resolve()` gleda `installedDirectory` (kontejner) pa
+`developmentDirectory` (`~/Desktop/BriefShow/CoreMLModels`). Druga je
+programerski folder. **Prvu nijedna linija koda nikad nije upisivala** — nema
+nijednog `downloadTask` u celoj app-i.
+
+Znači svaki klijent je viđao isto sivo dugme i istu poruku, a funkcija koja je
+gradnjom trajala nedeljama bila je mrtva svuda osim na mašini koja ju je
+napravila. To je stajalo zapisano u planu od 2.09 i **nije podignuto pre
+release-a 10.8** — moj propust.
+
+**`SDModelInstall.swift`:** preuzimanje sa progresom, raspakivanje kroz
+**AppleArchive** (ne `ditto`, jer pokretanje procesa iz sandboksa je klasa
+greške koja radi u razvoju a pada potpisana), raspakivanje **pored** odredišta
+pa premeštanje tek kad je celo — da prekid na pola ne ostavi tri modela od
+četiri koje klijent mora ručno da nađe i obriše.
+
+**Zašto nije u bundle-u:** 2,0 GB (UNet sam 1,6 GB). U `BriefShow/BriefShow/`
+(sinhronizovana grupa) bi ušlo u paket i napravilo app od 2,1 GB, a GitHub
+odbija fajl preko 100 MB u repou — projekat se više ne bi ni klonirao.
+Ide kao **release asset**: **1,8 GB kao Apple Archive** (mereno; sirovo 2,0 GB).
+
+`SDModelStore` je izvučen iz `#if arch(arm64)` — putanje nisu procesorski
+zavisne, a treba ih i instalater i Intel.
+
+### ⚠️ 2. Intel — Float16 ne postoji na x86_64, pa je ceo fajl bio isključen
+
+1050 linija iza `#if arch(arm64)`, jer tenzori idu kao `Float16`, tip koji
+x86_64 macOS **nema**.
+
+Rešeno preko `SDHalf`:
+
+- **arm64: `SDHalf` JESTE `Float16`, `sdHalf(x)` JESTE `Float16(x)`.** Puko
+  preimenovanje. To je bio uslov da se fajl uopšte dira — rezultat AI Clean
+  Up-a je zaključan od 31.08.
+- **x86_64:** half se nosi kao sirovih 16 bita, pisano ručno, sa IEEE-754
+  zaokruživanjem na najbliže-parno, subnormalama i specijalnim vrednostima.
+
+### ⚠️ IZMERENO — svih 4.294.967.296 bit-uzoraka
+
+Nov harness **`Tools/run-half-conversion-test.py`** vadi x86_64 granu iz
+`DevelopSDInpaint.swift` po tekstu, prevodi je **na ovoj mašini** pored pravog
+`Float16`, i pušta **ceo prostor** `Float` bit-uzoraka kroz obe.
+
+**Rezultat: 0 razlika, bit u bit.** Ne uzorak — ceo prostor, jer se greška u
+zaokruživanju krije baš u vrednostima koje uzorak promaši. NaN se poredi po
+tome da li je i dalje NaN, što je jedino što je o njemu definisano.
+
+Time je tvrdnja „arm64 se nije pomerio" **dokazana**, ne izjavljena.
+
+### Deljenje posla na Intelu
+
+Bez Neural Engine-a, pa UNet ide sa **`MLComputeUnits.all`** — Core ML stavlja
+na diskretnu grafičku šta stane, ostalo na jezgra. VAE prolazi ostaju na GPU-u.
+
+⚠️ Zapisano da se ne obećava kasnije: **32 GB sistemske memorije se NE dodaje na
+4 GB video memorije.** To su dve memorije preko PCIe. SD 1.5 na 512×512 u fp16
+staje u 4 GB, pa to nije zid — ali RAM neće nadoknaditi karticu.
+
+### ⚠️ ŠTA NIJE PROVERENO, I TO JE NAJVAŽNIJA REČENICA OVDE
+
+Intel put je dokazano **da se prevodi**. Nije nikad **pokrenut na Intel Mac-u** —
+ovde ga nema. Beleške predviđaju **minute po slici** na Radeon Pro 560X. Ako se
+to potvrdi, pošten potez je da to piše u panelu, ne da klijent čeka.
+
+Isto tako, **preuzimanje modela nije viđeno na čistoj mašini**: na razvojnoj
+mašini `resolve()` uvek nađe dev kopiju, pa se dugme „Install Model" **nikad ne
+pojavi ovde**. Klijent je to i prijavio — i to je ispravno ponašanje, ne kvar.
+
+### RELEASE v11.0
+
+| provera | rezultat |
+|---|---|
+| `lipo -archs` | **`x86_64 arm64`** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.0** / **20** |
+| `CFBundleDisplayName` / `Name` / `Executable` | **C4S Suite** |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` (netaknut) |
+| lične fotografije u paketu | **nula** |
+| app / arhiva | 139 MB / **109 MB** |
+| SD asset | **1891 MB**, uploaded |
+| preuzimanje oba | **HTTP 200** |
+
+- direktno: `…/releases/download/v11.0/C4S-Suite-11.0.zip`
+- stranica: `…/releases/tag/v11.0`
+
+Verzija se u app-i prikazuje iz bundle-a, pa ne može da se raziđe sa tagom.
+
+### ⚠️ I dalje otvoreno
+
+1. **Nije potpisano Developer ID sertifikatom** — ad-hoc, kao 10.1 i 10.8.
+2. **`latest_version` u BriefControl-u je i dalje 6.0.** Niko ne dobija „mora
+   update". Podizanje je klijentova odluka.
+3. **Istorija commit-ova nosi 214 MB** starog `build_universal/`. Čišćenje je
+   prepisivanje istorije i čeka odluku.
+4. **`BRIEFSHOW_MODELS` override** koji `Tools/README.txt` tvrdi da postoji —
+   u kodu ga i dalje NEMA. Sledeća selidba foldera će opet biti izmena koda.
+
 ## ✅ ZAVRŠENO — bivši plan za 10.67, isporučeno kao v10.8 (v. KORAK 103)
  (nije počelo, 2.09. uveče)
 

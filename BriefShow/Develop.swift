@@ -2,8 +2,8 @@
 //  Develop.swift
 //  BriefShow
 //
-//  "LumenoLab" — a standalone, Lightroom-style non-destructive photo editor,
-//  opened from ShowGrid's own "LumenoLab" header button (see ContentView.swift).
+//  "Create" — a standalone, Lightroom-style non-destructive photo editor,
+//  opened from ShowGrid's own "Create" header button (see ContentView.swift).
 //  Everything in here is still named Develop: the window was renamed, the code
 //  was not, and chasing the rename through nine thousand lines would be a large
 //  diff that changes no behaviour.
@@ -863,6 +863,15 @@ enum LayerPixelStore {
                                                   in: .userDomainMask).first else {
             return nil
         }
+        // ⚠️ THE NAME ON DISK IS "BriefShow" AND IT STAYS THAT WAY.
+        //
+        // This is not the product's name, it is a PATH. The suite was renamed
+        // to C4S Suite on 3.09 and a search-and-replace over string literals
+        // rewrote this one too — which would have orphaned every blob already
+        // written here, so the client's layers would sit in the list and show
+        // nothing on the photo. The harness caught it; nothing else would have.
+        // Same rule as the UserDefaults keys: what the client SEES is renamed,
+        // what points at his data is not.
         let directory = base.appendingPathComponent("BriefShow/LayerPixels", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
@@ -1238,7 +1247,7 @@ enum PhotoEditStore {
     // hundred times. Same shape as the decode problem above — cost that grows
     // with how long the app has been used rather than with what is being done.
     //
-    // Half a second, and flushed outright when the LumenoLab window closes, so
+    // Half a second, and flushed outright when the Create window closes, so
     // the window that owns the edits cannot go away with anything unwritten.
     private static let flushDelay: TimeInterval = 0.5
     private static var flushWorkItem: DispatchWorkItem?
@@ -1299,7 +1308,7 @@ enum PhotoEditStore {
     // pass — so opening a folder of 300 photos meant 300 full decodes of a
     // dictionary holding every edit the client has ever made, before the
     // window could be shown. That was the four seconds of nothing between
-    // double-clicking a photo and LumenoLab appearing. It grew with BOTH the
+    // double-clicking a photo and Create appearing. It grew with BOTH the
     // folder size and the client's edit history, so it got worse the longer
     // the app was used, which is the worst shape a slowdown can have.
     //
@@ -1386,6 +1395,15 @@ enum FlattenedImageStore {
                                                   in: .userDomainMask).first else {
             return nil
         }
+        // ⚠️ THE NAME ON DISK IS "BriefShow" AND IT STAYS THAT WAY.
+        //
+        // This is not the product's name, it is a PATH. The suite was renamed
+        // to C4S Suite on 3.09 and a search-and-replace over string literals
+        // rewrote this one too — which would have orphaned every blob already
+        // written here, so the client's layers would sit in the list and show
+        // nothing on the photo. The harness caught it; nothing else would have.
+        // Same rule as the UserDefaults keys: what the client SEES is renamed,
+        // what points at his data is not.
         let directory = base.appendingPathComponent("BriefShow/Flattened", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
@@ -1530,11 +1548,11 @@ extension Notification.Name {
 
 let photoEditsChangedURLsKey = "urls"
 
-/// A ShowGrid thumbnail with the client's LumenoLab edits applied.
+/// A ShowGrid thumbnail with the client's Create edits applied.
 ///
 /// The grid used to show the untouched file no matter how much work had been
 /// done on a photo, so a folder looked identical before and after an editing
-/// session — the edits existed but were only ever visible inside LumenoLab.
+/// session — the edits existed but were only ever visible inside Create.
 ///
 /// Edits are applied to the THUMBNAIL, not to a full decode that is then
 /// shrunk. That is the whole reason this is affordable in a grid: the small
@@ -3930,7 +3948,7 @@ private let briefEditsDefaultSharpenRadius: Double = 1.69
 // A CIContext serializes internally: every render through it takes the same
 // `-[CIContext lock]`. So a single shared context makes every render in the
 // app queue behind every other one, no matter how many DispatchQueues they
-// were spread across. That was caught with `sample` on a LumenoLab that would
+// were spread across. That was caught with `sample` on a Create that would
 // not show a photo:
 //
 //     renderNow          → briefEditsDisplayCGImage → -[CIContext lock]  (waiting)
@@ -3952,7 +3970,7 @@ private func makeBriefEditsCIContext() -> CIContext {
     ])
 }
 
-// The one the client is watching: LumenoLab's interactive preview, and NOTHING
+// The one the client is watching: Create's interactive preview, and NOTHING
 // else — not even the refine that later replaces what it drew.
 //
 // That exclusion is the whole value of this context and it was got wrong once
@@ -3969,7 +3987,7 @@ private func makeBriefEditsCIContext() -> CIContext {
 // with something interactive".
 private let briefEditsPreviewCIContext = makeBriefEditsCIContext()
 
-// ShowGrid's tiles and LumenoLab's filmstrip — many small renders, none of
+// ShowGrid's tiles and Create's filmstrip — many small renders, none of
 // them urgent, and the ones that were blocking the preview.
 private let briefEditsThumbnailCIContext = makeBriefEditsCIContext()
 
@@ -4051,7 +4069,7 @@ private let developRenderQueue = DispatchQueue(label: "com.rocketsbrief.briefsho
 /// Baking a photo's render in, and duplicating a photo beside itself.
 ///
 /// Lives here rather than inside `DevelopView` because BOTH menus need it —
-/// LumenoLab's filmstrip and ShowGrid's grid — and because the CIContext and
+/// Create's filmstrip and ShowGrid's grid — and because the CIContext and
 /// the render queue it uses are private to this file. Two copies of this
 /// would be two places for "Duplicate" to come to mean different things.
 enum PhotoBakeService {
@@ -4219,7 +4237,7 @@ private final class ClickThroughHostingView: NSHostingView<DevelopView> {
     }
 }
 
-/// Drives the card ShowGrid puts up while LumenoLab is opening.
+/// Drives the card ShowGrid puts up while Create is opening.
 ///
 /// Opening was never instant, and it used to give no sign at all: the client
 /// double-clicked a photo and the app sat there looking hung — the report was
@@ -4292,7 +4310,7 @@ final class DevelopWindowController {
     ///
     /// So renaming the window is a one-line change here and cannot silently
     /// leave a guard behind.
-    static let windowTitle = "LumenoLab"
+    static let windowTitle = "Create"
 
 
     private var windowController: NSWindowController?
@@ -4321,7 +4339,7 @@ final class DevelopWindowController {
         if let controller = windowController {
             // A window that is on screen: bring it forward.
             //
-            // One that is NOT is stale, and it is reachable: closing LumenoLab
+            // One that is NOT is stale, and it is reachable: closing Create
             // with the red titlebar button never ran `close()`, so the
             // controller stayed set, pointing at a hidden window built around
             // whatever photo list was open when it was made. Re-showing it
@@ -4357,7 +4375,7 @@ final class DevelopWindowController {
     }
 
     private func openNow(photoURLs: [URL], initialSelection: URL?) {
-        DevelopLaunchProgress.shared.report(0.25, "Opening LumenoLab…")
+        DevelopLaunchProgress.shared.report(0.25, "Opening Create…")
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1500, height: 940),
@@ -5395,6 +5413,10 @@ struct DevelopView: View {
     private var effectiveFilmstripHeight: Double { filmstripHeightLive ?? filmstripHeight }
 
     @State private var isFlattening = false
+
+    /// Watched so the install row and the Generative button agree about what
+    /// is happening. See SDModelInstall.swift.
+    @ObservedObject private var modelInstaller = SDModelInstaller.shared
     @State private var flattenErrorMessage: String?
     @State private var showSyncDialog = false
 
@@ -7201,7 +7223,7 @@ struct DevelopView: View {
                 }
 
                 // "Grid", not "Done", and named after where it goes rather
-                // than after finishing something: it closes LumenoLab and puts
+                // than after finishing something: it closes Create and puts
                 // the client back in ShowGrid. "Done" also implied a commit,
                 // which is not what happens — edits are saved as they are made,
                 // and nothing here is waiting to be confirmed.
@@ -7605,6 +7627,24 @@ struct DevelopView: View {
                     Spacer(minLength: 0)
                 }
 
+                // ⚠️ The way in for the 1.8 GB weights, and the first time this
+                // app has ever offered one. Until now the Generative button sat
+                // greyed out on every machine but the developer's, because the
+                // models were only ever read from a folder nothing wrote — see
+                // SDModelInstall.swift.
+                //
+                // Shown ONLY while they are actually missing, and only on a Mac
+                // that could use them: on Intel the pipeline is compiled out
+                // entirely, so offering a 1.8 GB download there would be taking
+                // the client's afternoon for a button that still cannot run.
+                // Offered on BOTH processors now. It was arm64-only while the
+                // pipeline was compiled out on Intel — downloading 1.8 GB for a
+                // button that could not run would have been taking the client's
+                // afternoon for nothing. That is no longer the case.
+                if !SDInpaintPipeline.shared.isModelInstalled || modelInstaller.isWorking {
+                    sdModelInstallRow
+                }
+
                 // Everything the Clean Up brush needs, appearing under the rows
                 // only while the brush is in play.
                 //
@@ -7724,6 +7764,81 @@ struct DevelopView: View {
     // being fixed here — the client reported exactly that: two dead buttons
     // and no way to know whether the problem was the selection, the size, or
     // the app.
+    /// Install / progress / failure for the Generative weights, in one row.
+    ///
+    /// Three states in one place rather than three scattered views: the client
+    /// presses one button and watches the same strip answer, which is what
+    /// makes a 1.8 GB wait tolerable. The percentage is real here — unlike the
+    /// people search and the flatten, a download reports its own progress, so
+    /// showing it is honest rather than invented.
+    private var sdModelInstallRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch modelInstaller.state {
+            case .idle:
+                HStack(spacing: 8) {
+                    Button {
+                        modelInstaller.install()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Install Model (\(SDModelInstaller.downloadSizeText))")
+                        }
+                    }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                    .help("Downloads the Generative Clean Up weights once. Quick Clean Up works without them.")
+
+                    Spacer(minLength: 0)
+                }
+
+            case .downloading(let fraction):
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Downloading the model… \(Int(fraction * 100))%")
+                            .font(.custom("Figtree", size: 11))
+                            .foregroundColor(AppColors.muted)
+
+                        Spacer()
+
+                        Button("Cancel") { modelInstaller.cancel() }
+                            .buttonStyle(.plain)
+                            .font(.custom("Figtree", size: 11))
+                            .foregroundColor(AppColors.muted)
+                    }
+
+                    ProgressView(value: fraction)
+                        .progressViewStyle(.linear)
+                        .tint(accentColor)
+                }
+
+            case .unpacking:
+                VStack(alignment: .leading, spacing: 4) {
+                    // No percentage: unpacking reports none, and an invented
+                    // one is worse than none — the same rule the people search
+                    // and the flatten bar already follow.
+                    Text("Unpacking the model…")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(accentColor)
+                }
+
+            case .failed(let message):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(message)
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(.red.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button("Try Again") { modelInstaller.install() }
+                        .buttonStyle(ShowHeaderButtonStyle())
+                }
+            }
+        }
+    }
+
     private func cleanUpUnavailableReason(_ engine: RemovalEngine) -> String? {
         if selectedURL == nil {
             return "Open a photo first."
@@ -7744,9 +7859,18 @@ struct DevelopView: View {
         // letting the client press it and read an error afterwards.
         if engine == .generative, !SDInpaintPipeline.shared.isModelInstalled {
             #if arch(arm64)
-            return "The Generative Clean Up model is not installed on this Mac. Quick AI Clean Up works without it."
+            // ⚠️ This no longer means "you are out of luck". The weights are a
+            // 1.8 GB release asset and the app installs them itself now — see
+            // SDModelInstall.swift for why they cannot ride in the bundle. The
+            // sentence points at the button that does it.
+            return "The Generative Clean Up model isn't installed yet — use Install Model below (\(SDModelInstaller.downloadSizeText)). Quick AI Clean Up works without it."
             #else
-            return "Generative Clean Up needs an Apple Silicon Mac. Quick AI Clean Up works here."
+            // ⚠️ Intel used to be told "you need an Apple Silicon Mac", because
+            // the pipeline was compiled out here. It is not any more — the
+            // tensors go through SDHalf now — so the model can be installed and
+            // run on this machine too. The wait is the honest caveat, not the
+            // architecture.
+            return "The Generative Clean Up model isn't installed yet — use Install Model below (\(SDModelInstaller.downloadSizeText)). On an Intel Mac it runs, but slowly. Quick AI Clean Up is instant either way."
             #endif
         }
         return nil
@@ -8333,7 +8457,7 @@ struct DevelopView: View {
     /// crop frame" — an arc with an arrowhead at each end, asked for in exactly
     /// those words: *„bela kriva sa strelicama na point a i b"*.
     ///
-    /// Hand-drawn, like OpenFolderShape and LumenoLabMark elsewhere in this
+    /// Hand-drawn, like OpenFolderShape and CreateMark elsewhere in this
     /// app, because SF Symbols has no double-headed arc on any macOS version.
     ///
     /// ⚠️ PURE WHITE, no outline, by request. It is therefore faint over a
@@ -14523,7 +14647,7 @@ struct DevelopView: View {
             lines.append("\(failed) could not be read.")
         }
         if !missing.isEmpty {
-            lines.append("Not carried over (LumenoLab has no equivalent): "
+            lines.append("Not carried over (Create has no equivalent): "
                          + missing.sorted().joined(separator: ", ") + ".")
         }
         presetImportNotice = lines.joined(separator: " ")
@@ -15062,7 +15186,7 @@ struct DevelopView: View {
                 previewBaseImage = preview
                 isLoadingPreview = false
                 renderNow()
-                // The photo is on screen — this is the moment LumenoLab is
+                // The photo is on screen — this is the moment Create is
                 // genuinely usable, so it is the moment the opening card comes
                 // down. A no-op on every later photo switch, since the card is
                 // only up during a launch.

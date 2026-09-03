@@ -11824,7 +11824,7 @@ struct HeaderView: View {
 
     var body: some View {
         HStack {
-            // No wordmark or theme circles here — "BriefShow" branding and
+            // No wordmark or theme circles here — "C4S Suite" branding and
             // theme switching now live on the folder-tree/grid screen this
             // editor is reached from (via "Browse" below); the editor
             // itself just inherits whichever theme is already active.
@@ -11932,11 +11932,11 @@ struct FundMissionHoverCard: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Enjoying BriefShow?")
+            Text("Enjoying C4S Suite?")
                 .font(.custom("Figtree", size: 14).weight(.medium))
                 .foregroundColor(AppColors.ink)
 
-            Text("BriefShow is free to use. Your support helps RocketsBrief build more AI-powered tools, creative apps, and digital products — including some that may stay free for the community.")
+            Text("C4S Suite is free to use. Your support helps RocketsBrief build more AI-powered tools, creative apps, and digital products — including some that may stay free for the community.")
                 .font(.custom("Figtree", size: 11).weight(.regular))
                 .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -11966,7 +11966,7 @@ struct DisclaimerHoverCard: View {
                 .font(.custom("Figtree", size: 14).weight(.medium))
                 .foregroundColor(AppColors.ink)
 
-            Text("Read the usage notice for BriefShow — Showcase and LumenoLab — and RocketsBrief products, including user responsibility, voluntary support terms, limitations, and prohibited use.")
+            Text("Read the usage notice for C4S Suite — BriefShow and Create — and RocketsBrief products, including user responsibility, voluntary support terms, limitations, and prohibited use.")
                 .font(.custom("Figtree", size: 11).weight(.regular))
                 .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -12013,7 +12013,7 @@ struct BriefShowAboutHoverCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("BriefShow")
+            Text("C4S Suite")
                 .font(.custom("Figtree", size: 15).weight(.semibold))
                 .foregroundColor(AppColors.ink)
 
@@ -12048,19 +12048,19 @@ struct DisclaimerNoticeModal: View {
     private let noticeSections: [(String, String)] = [
         (
             "Paid product, sold as is",
-            "BriefShow is paid software from RocketsBrief. BriefShow is the suite; Showcase is its slideshow and LumenoLab is its photo editor. Buying them grants you a licence to use the application; it does not transfer ownership of the software or of anything in it. The price, what a purchase includes, and how it is billed are whatever is stated where you bought it. The software is offered “as is” and “as available,” without guarantees that it will always be error-free, uninterrupted, or suitable for every specific purpose."
+            "C4S Suite is paid software from RocketsBrief. C4S Suite is the suite; BriefShow is its slideshow and Create is its photo editor. Buying them grants you a licence to use the application; it does not transfer ownership of the software or of anything in it. The price, what a purchase includes, and how it is billed are whatever is stated where you bought it. The software is offered “as is” and “as available,” without guarantees that it will always be error-free, uninterrupted, or suitable for every specific purpose."
         ),
         (
             "User responsibility",
-            "You are responsible for the images, music, files, prompts, content, exports, and any other materials you upload, create, process, publish, share, or use through BriefShow, Showcase, LumenoLab, or any RocketsBrief product."
+            "You are responsible for the images, music, files, prompts, content, exports, and any other materials you upload, create, process, publish, share, or use through C4S Suite, BriefShow, Create, or any RocketsBrief product."
         ),
         (
             "Prohibited use",
-            "You may not use BriefShow, Showcase, LumenoLab, RocketsBrief, or any related tool to create, promote, distribute, or support unlawful, harmful, fraudulent, abusive, infringing, or prohibited activity. This includes scams, phishing, malware, spam, impersonation, copyright infringement, illegal products or services, or any activity that violates applicable laws, third-party rights, platform rules, or payment processor policies."
+            "You may not use C4S Suite, BriefShow, Create, RocketsBrief, or any related tool to create, promote, distribute, or support unlawful, harmful, fraudulent, abusive, infringing, or prohibited activity. This includes scams, phishing, malware, spam, impersonation, copyright infringement, illegal products or services, or any activity that violates applicable laws, third-party rights, platform rules, or payment processor policies."
         ),
         (
             "Review before use",
-            "Any output or exported photos created with BriefShow should be reviewed by you before publishing, selling, sharing, or relying on it. RocketsBrief does not guarantee legal compliance, business results, earnings, conversions, or that any output will meet a specific requirement."
+            "Any output or exported photos created with C4S Suite should be reviewed by you before publishing, selling, sharing, or relying on it. RocketsBrief does not guarantee legal compliance, business results, earnings, conversions, or that any output will meet a specific requirement."
         ),
         (
             "Fund Mission support",
@@ -12071,24 +12071,24 @@ struct DisclaimerNoticeModal: View {
             "RocketsBrief may refuse, limit, suspend, or remove access to any product or service if it believes a user is violating these terms, applicable law, third-party rights, payment processor rules, or creating risk for RocketsBrief, other users, or the public."
         ),
         (
-            "Future changes to BriefShow",
-            "RocketsBrief may change, add, remove, lock, or discontinue any feature, theme, or part of BriefShow, Showcase, or LumenoLab at any time, without notice. This includes requiring an account sign-up to continue use, and changing pricing, introducing subscriptions, or moving features between paid tiers in the future. By continuing to use the software, you agree that these changes may happen at any time."
+            "Future changes to C4S Suite",
+            "RocketsBrief may change, add, remove, lock, or discontinue any feature, theme, or part of C4S Suite, BriefShow, or Create at any time, without notice. This includes requiring an account sign-up to continue use, and changing pricing, introducing subscriptions, or moving features between paid tiers in the future. By continuing to use the software, you agree that these changes may happen at any time."
         ),
         (
             "Copyright and ownership",
-            "BriefShow, including Showcase and LumenoLab, is created by and is the property of the RocketsBrief Team, apart from the third-party components listed below, which remain the property of their own authors and are used under their own licences. You are welcome to share or recommend the app to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of BriefShow, Showcase, or LumenoLab, in whole or in part."
+            "C4S Suite, including BriefShow and Create, is created by and is the property of the RocketsBrief Team, apart from the third-party components listed below, which remain the property of their own authors and are used under their own licences. You are welcome to share or recommend the app to others free of charge. You may not sell, resell, rebrand, redistribute for payment, or claim ownership of C4S Suite, BriefShow, or Create, in whole or in part."
         ),
         (
             "Account data and email use",
-            "If BriefShow requires an account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
+            "If C4S Suite requires an account to continue use, your email address is stored securely using Supabase, a third-party database provider. RocketsBrief does not have access to your email inbox or password, and never asks for them. By creating an account, you agree that RocketsBrief may use your email address to send you marketing material, product updates, and promotional messages about RocketsBrief and its products."
         ),
         (
             "Usage analytics",
-            "BriefShow shares only basic metrics with RocketsBrief: how many videos have been exported from Showcase, and how many separate machines run BriefShow. To protect your privacy, the app generates a strictly randomized installation ID that has no connection to your hardware, device serial numbers, or network configuration. This does not include your files, photos, music, exported videos, or any personal information — and it is completely separate from, and in addition to, the email address you provide only if you create an account."
+            "C4S Suite shares only basic metrics with RocketsBrief: how many videos have been exported from BriefShow, and how many separate machines run C4S Suite. To protect your privacy, the app generates a strictly randomized installation ID that has no connection to your hardware, device serial numbers, or network configuration. This does not include your files, photos, music, exported videos, or any personal information — and it is completely separate from, and in addition to, the email address you provide only if you create an account."
         ),
         (
             "AI features run on your own Mac",
-            "LumenoLab’s Quick AI Clean Up and Generative Clean Up run entirely on your own machine. Your photographs are not uploaded, not sent to a server, and not used to train anything. The two AI models are included with the app: LaMa, from the Samsung AI Center, and Stable Diffusion v1.5 Inpainting. Both remove and rebuild parts of a photograph by inventing plausible pixels — the result is a new image, not a recovery of something that was really there, and it should be looked at before the photograph is published, sold, or relied on."
+            "Create’s Quick AI Clean Up and Generative Clean Up run entirely on your own machine. Your photographs are not uploaded, not sent to a server, and not used to train anything. The two AI models are included with the app: LaMa, from the Samsung AI Center, and Stable Diffusion v1.5 Inpainting. Both remove and rebuild parts of a photograph by inventing plausible pixels — the result is a new image, not a recovery of something that was really there, and it should be looked at before the photograph is published, sold, or relied on."
         ),
         (
             "Restrictions on AI use",
@@ -12096,23 +12096,30 @@ struct DisclaimerNoticeModal: View {
         ),
         (
             "Third-party components",
-            "BriefShow includes work by others, each under its own licence: the LaMa inpainting model, code and pre-trained weights alike, under the Apache License 2.0 (Samsung AI Center — the same weights are also published under Apache 2.0 by the OpenCV project); Stable Diffusion v1.5 Inpainting (CreativeML Open RAIL-M); OpenAI’s CLIP tokenizer data (MIT License); and the Figtree and Unbounded typefaces (SIL Open Font License 1.1). Those licences govern those components — the “Copyright and ownership” section above is about this application itself, not about them. THIRD_PARTY_LICENSES, shipped inside the app, lists each one in full, names the exact model build in use, and records what is settled and what is not."
+            "C4S Suite includes work by others, each under its own licence: the LaMa inpainting model, code and pre-trained weights alike, under the Apache License 2.0 (Samsung AI Center — the same weights are also published under Apache 2.0 by the OpenCV project); Stable Diffusion v1.5 Inpainting (CreativeML Open RAIL-M); OpenAI’s CLIP tokenizer data (MIT License); and the Figtree and Unbounded typefaces (SIL Open Font License 1.1). Those licences govern those components — the “Copyright and ownership” section above is about this application itself, not about them. THIRD_PARTY_LICENSES, shipped inside the app, lists each one in full, names the exact model build in use, and records what is settled and what is not."
         ),
         (
             "Reading Lightroom presets",
-            "LumenoLab can read Lightroom / Camera Raw preset files (.xmp) that you already have. It contains no Adobe software and is not connected with, endorsed by, or certified by Adobe. Adobe, Lightroom, and Camera Raw are trademarks of Adobe Inc., used here only to say which files can be read. A preset is read into LumenoLab’s own controls, which are not Lightroom’s: what it can carry across, and what it cannot, is reported every time you import one. Presets you have bought or licensed remain governed by whatever terms came with them."
+            "Create can read Lightroom / Camera Raw preset files (.xmp) that you already have. It contains no Adobe software and is not connected with, endorsed by, or certified by Adobe. Adobe, Lightroom, and Camera Raw are trademarks of Adobe Inc., used here only to say which files can be read. A preset is read into Create’s own controls, which are not Lightroom’s: what it can carry across, and what it cannot, is reported every time you import one. Presets you have bought or licensed remain governed by whatever terms came with them."
         )
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center) {
+                // The mark, where the notice names the product. This is the
+                // one screen a client opens to find out WHAT this is and who
+                // made it, so it is the second place the logo belongs after
+                // the header — same asset, same view, so the two cannot drift.
+                C4SMark(size: 22)
+                    .padding(.trailing, 12)
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Disclaimer & Usage Notice")
                         .font(.custom("Figtree", size: 24).weight(.semibold))
                         .foregroundColor(AppColors.ink)
 
-                    Text("For BriefShow — Showcase, LumenoLab — and RocketsBrief products")
+                    Text("For C4S Suite — BriefShow, Create — and RocketsBrief products")
                         .font(.custom("Figtree", size: 12.5).weight(.regular))
                         .foregroundColor(AppColors.muted)
                 }
@@ -12148,7 +12155,7 @@ struct DisclaimerNoticeModal: View {
                         }
                     }
 
-                    Text("By using BriefShow, Showcase, or LumenoLab, you agree to this entire Disclaimer & Usage Notice, including the third-party licence terms it passes on to you, and including that you are responsible for your own use of the tool and any content or output you create with it.")
+                    Text("By using C4S Suite, BriefShow, or Create, you agree to this entire Disclaimer & Usage Notice, including the third-party licence terms it passes on to you, and including that you are responsible for your own use of the tool and any content or output you create with it.")
                         .font(.custom("Figtree", size: 12).weight(.semibold))
                         .foregroundColor(AppColors.hoverInk)
                         .lineSpacing(3)
@@ -13299,7 +13306,7 @@ struct ThemePickerPopover: View {
                 .buttonStyle(HeaderLinkButtonStyle())
             }
 
-            Text("Pick the slideshow style. New themes are added regularly as BriefShow keeps improving.")
+            Text("Pick the slideshow style. New themes are added regularly as C4S Suite keeps improving.")
                 .font(.custom("Figtree", size: 12).weight(.regular))
                 .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -13403,7 +13410,7 @@ struct ThemePickerPopover: View {
 
                 ThemePickerInfoCard(
                     icon: "hammer.fill",
-                    text: "BriefShow is still in active development, so new themes can show up at any time. Keep the app updated to unlock them as soon as they're ready."
+                    text: "C4S Suite is still in active development, so new themes can show up at any time. Keep the app updated to unlock them as soon as they're ready."
                 )
 
                 ThemePickerInfoCard(
@@ -20888,6 +20895,19 @@ struct FlowLayout: Layout {
 final class ShowGridWindowController {
     static let shared = ShowGridWindowController()
 
+    /// ⚠️ A CONSTANT, and the keyboard monitor reads it — see the guard that
+    /// used to compare against a literal "C4S Suite".
+    ///
+    /// This window and the slideshow window BOTH used to be titled
+    /// "C4S Suite", and the monitor's guard could not tell them apart: with
+    /// the slideshow in front, ShowGrid's monitor passed the guard and handled
+    /// ⌘C/⌘X/⌘V, ratings, Space and Escape with the wrong window's context.
+    /// The bug was written down on 31.08 and was still live. Renaming the
+    /// suite to C4S Suite gives the two windows different titles and ends it —
+    /// but only because this is a constant now, so the guard cannot drift back
+    /// to a literal that says something else.
+    static let windowTitle = "C4S Suite"
+
     private var windowController: NSWindowController?
 
     private init() {}
@@ -20911,7 +20931,7 @@ final class ShowGridWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "BriefShow"
+        window.title = Self.windowTitle
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
@@ -20997,11 +21017,20 @@ private struct WindowAccessor: NSViewRepresentable {
 
 // Owns the BriefShow editor window's lifecycle the same way
 // ShowGridWindowController owns ShowGrid's — needed because ShowGrid's
-// "BriefShow" header button must be able to open (or refocus) the main
+// "C4S Suite" header button must be able to open (or refocus) the main
 // editor even when it isn't currently open (e.g. the Welcome window
 // already closed after the user chose ShowGrid instead).
 final class BriefShowWindowController {
     static let shared = BriefShowWindowController()
+
+    /// The slideshow's own title, distinct from the suite window's — see
+    /// ShowGridWindowController.windowTitle for why that matters.
+    ///
+    /// ⚠️ Briefly got rewritten to "C4S Suite" by the rename pass, which would
+    /// have put both windows back on one title and revived the guard bug this
+    /// rename exists to kill. Left here as a reminder that this string is not
+    /// the suite's name: it is the slideshow's.
+    static let windowTitle = "BriefShow"
 
     private var windowController: NSWindowController?
 
@@ -21024,7 +21053,9 @@ final class BriefShowWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "BriefShow"
+        // The slideshow keeps the name BriefShow, which is now ITS name and
+        // not the suite's.
+        window.title = Self.windowTitle
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
@@ -21090,7 +21121,7 @@ struct PhotoShowSheet: View {
     // Live width DURING a drag, kept apart from the stored one. Writing
     // @AppStorage on every mouse-move frame means a UserDefaults write per
     // frame; this holds the in-flight value and only the final one is stored.
-    // Same split LumenoLab's panel uses — see KORAK 46, where writing through
+    // Same split Create's panel uses — see KORAK 46, where writing through
     // on every frame was half of why that drag shook.
     @State private var sidebarWidthLive: Double?
     @State private var sidebarWidthAtDragStart: Double?
@@ -21234,7 +21265,7 @@ struct PhotoShowSheet: View {
     // window when it replaced the old Welcome chooser — but the
     // update-required / account-lock overlays were left behind on
     // ContentView, the old first window that's now just the secondary
-    // "BriefShow" editor most clients never open. That silently broke
+    // "C4S Suite" editor most clients never open. That silently broke
     // remote update checks and the remote kill-switch for anyone who
     // never clicks through to the editor: bumping "Latest Version" in
     // the admin panel had nothing left to check it against. Observing
@@ -21389,7 +21420,7 @@ struct PhotoShowSheet: View {
                     HStack {
                         // Leading padding accounts for the folder-tree
                         // sidebar's width plus its drag handle, so this
-                        // lands under the "BriefShow" wordmark in the main
+                        // lands under the "C4S Suite" wordmark in the main
                         // content area instead of covering the tree next
                         // to it, on the window's actual left edge.
                         //
@@ -21571,7 +21602,7 @@ struct PhotoShowSheet: View {
             guard let newValue else { return }
             loadImages(inFolder: newValue)
         }
-        // The card that says LumenoLab is opening. An overlay rather than a
+        // The card that says Create is opening. An overlay rather than a
         // sheet: a sheet animates in over about a third of a second, which on
         // a fast open is most of the wait it is supposed to be explaining.
         .overlay {
@@ -21580,7 +21611,7 @@ struct PhotoShowSheet: View {
             }
         }
         .onAppear { CameraBrowser.shared.start() }
-        // LumenoLab saves an edit, this grid shows it. Without this the grid
+        // Create saves an edit, this grid shows it. Without this the grid
         // only picked up edits when the folder was re-opened, so a client
         // could finish retouching a photo, close the editor, and see the
         // untouched original still sitting in the grid behind it.
@@ -21644,7 +21675,7 @@ struct PhotoShowSheet: View {
     // the cursor reaches it — with a 7pt transparent hit area centred on it,
     // because a 1pt drag target is a target the client hunts for.
     //
-    // Built the same way LumenoLab's panelResizeHandle is, deliberately: that
+    // Built the same way Create's panelResizeHandle is, deliberately: that
     // one had two separate reasons for shaking and both are already fixed
     // there (KORAK 46). A second, independently-written splitter would have
     // been a second chance to make the same two mistakes.
@@ -21680,7 +21711,7 @@ struct PhotoShowSheet: View {
                         sidebarWidthAtDragStart = start
                         // Plus: this panel is on the LEFT, so dragging its
                         // edge right (positive translation) makes it wider.
-                        // LumenoLab's is minus for the mirror-image reason.
+                        // Create's is minus for the mirror-image reason.
                         sidebarWidthLive = min(max(start + value.translation.width,
                                                    Self.sidebarMinWidth),
                                                sidebarDragMaxWidth)
@@ -21745,18 +21776,21 @@ struct PhotoShowSheet: View {
                 // itself and never gets squeezed into wrapping ("Show"
                 // breaking onto its own line) now that the header shares
                 // this row with the folder tree next to it.
-                BriefShowWordmark(size: 20)
+                C4SWordmark(size: 20)
                 .onHover { hovering in
                     withAnimation(.linear(duration: 0.12)) {
                         isShortcutsHovered = hovering
                     }
                 }
 
-                HStack(spacing: 8) {
-                    ThemeToggleButton(theme: .white, selected: $themeManager.current)
-                    ThemeToggleButton(theme: .buttery, selected: $themeManager.current)
-                    ThemeToggleButton(theme: .dark, selected: $themeManager.current)
-                }
+                // ⚠️ The three theme dots that used to sit here are GONE, on
+                // request: the theme now lives in Edit ▸ Theme, where a
+                // preference belongs, and three unlabelled circles under the
+                // logo were branding-adjacent noise on the app's first screen.
+                // ⚠️ ThemeToggleButton is now UNUSED and kept on purpose: it is
+                // the only control in the app that shows the three themes as
+                // their actual colours, and a menu item cannot. If a theme
+                // picker is ever wanted on screen again, it is already written.
 
                 if !photoURLs.isEmpty {
                     // "labeled" and "starred", not "liked" — reported directly,
@@ -21785,16 +21819,20 @@ struct PhotoShowSheet: View {
 
             Spacer()
 
-            // "Showcase", on request. It was "BriefShow", which named the
-            // thing it opens — and that was the problem: the app is called
-            // BriefShow too, so a button reading BriefShow inside BriefShow,
-            // directly under the BriefShow wordmark, says nothing about where
-            // it goes. Showcase names the ACTION, next to LumenoLab beside it.
+            // "BriefShow" — which is now the SLIDESHOW's name, not the
+            // suite's, so the button finally says where it goes.
             //
-            // ONLY THE LABEL. The window's title stays "BriefShow" — both key
-            // monitors in this app scope themselves by window title
-            // (`NSApp.keyWindow?.title == "BriefShow"`), so renaming the window
-            // silently unhooks every shortcut on this screen. See MINA 2 in
+            // This label has been round the houses: it read "BriefShow" when
+            // that was also the app's name (a button reading BriefShow inside
+            // BriefShow, under the BriefShow wordmark, said nothing), then
+            // "Showcase" to name the action instead. With the suite renamed to
+            // C4S Suite the original name is free again and means one thing.
+            //
+            // ⚠️ The window's title is a CONSTANT now
+            // (BriefShowWindowController.windowTitle) and so is the suite
+            // window's — both key monitors scope themselves by window title,
+            // and while those two titles were the same string the guards could
+            // not tell the windows apart. See MINA 2 in
             // BRIEFSHOW_DEVELOP_NOTES.md.
             //
             // Set in the plain button font, NOT the wordmark: the wordmark was
@@ -21808,7 +21846,7 @@ struct PhotoShowSheet: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "film")
-                    Text("Showcase")
+                    Text("BriefShow")
                 }
             }
             .buttonStyle(ShowHeaderButtonStyle())
@@ -21828,10 +21866,10 @@ struct PhotoShowSheet: View {
                 HStack(spacing: 6) {
                     // Hand-drawn: SF Symbols has no flask at all on macOS 13,
                     // and none of its versions has one with a sun cut in
-                    // behind it. See LumenoLabMark.
-                    LumenoLabMark()
+                    // behind it. See CreateMark.
+                    CreateMark()
                         .frame(width: 15, height: 15)
-                    Text("LumenoLab")
+                    Text("Create")
                 }
             }
             .buttonStyle(ShowHeaderButtonStyle())
@@ -22493,7 +22531,7 @@ struct PhotoShowSheet: View {
 
         Divider()
 
-        // The same three the LumenoLab filmstrip has, running the same
+        // The same three the Create filmstrip has, running the same
         // PhotoBakeService — one implementation, so "Duplicate" cannot come
         // to mean two different things depending on which window it was
         // pressed in.
@@ -23321,7 +23359,7 @@ struct PhotoShowSheet: View {
         }
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Scoped to only fire while THIS (ShowGrid/"BriefShow") window
+            // Scoped to only fire while THIS (ShowGrid/"C4S Suite") window
             // is key — local NSEvent monitors are app-wide, not per-window,
             // so without this check these shortcuts also fired while the
             // separate "Develop" window was frontmost (same reasoning as
@@ -23339,7 +23377,7 @@ struct PhotoShowSheet: View {
             // and had to be force-quit — from a client just trying to
             // cut/copy a Selection inside Develop, never touching ShowGrid
             // at all.
-            guard NSApp.keyWindow?.title == "BriefShow" else {
+            guard NSApp.keyWindow?.title == ShowGridWindowController.windowTitle else {
                 return event
             }
 
@@ -23352,7 +23390,7 @@ struct PhotoShowSheet: View {
             // in the grid earlier — that Cmd+V then ran a real file copy
             // behind the open modal.
             //
-            // LumenoLab's monitor has had exactly this guard all along
+            // Create's monitor has had exactly this guard all along
             // (Develop.swift, `isTyping`); this one never got it, because
             // until the sign-in modal arrived there was nothing on this
             // screen to type into.
@@ -23914,7 +23952,7 @@ struct PhotoShowSheet: View {
                 .onTapGesture {}
 
             VStack(alignment: .leading, spacing: 14) {
-                Text("Opening LumenoLab")
+                Text("Opening Create")
                     .font(.custom("Figtree", size: 15).weight(.bold))
                     .foregroundColor(AppColors.ink)
 
@@ -23955,7 +23993,7 @@ struct PhotoShowSheet: View {
         .transition(.opacity)
     }
 
-    // Same pair as the Clean Up bar in LumenoLab, and for the same reason: the
+    // Same pair as the Clean Up bar in Create, and for the same reason: the
     // app's accentColor is only yellow in dark mode.
     private var developLaunchBarColor: Color {
         ThemeManager.shared.current == .dark
@@ -24011,7 +24049,7 @@ struct PhotoShowSheet: View {
             var pendingBatch: [URL: NSImage] = [:]
 
             for (index, url) in urls.enumerated() {
-                // Edited, not raw. A photo worked on in LumenoLab shows the
+                // Edited, not raw. A photo worked on in Create shows the
                 // work here — the grid used to show the original file no
                 // matter what had been done to it.
                 if let thumbnail = makeEditedShowGridThumbnail(from: url) {
@@ -24119,7 +24157,7 @@ enum RootFolderAccess {
         panel.allowsMultipleSelection = false
         panel.directoryURL = homeURL
         panel.prompt = "Grant Access"
-        panel.message = "Let BriefShow browse your folders (Desktop, Documents, Pictures, ...) so you can review photos straight from them."
+        panel.message = "Let C4S Suite browse your folders (Desktop, Documents, Pictures, ...) so you can review photos straight from them."
 
         guard panel.runModal() == .OK, let grantedURL = panel.url else {
             return nil
@@ -24744,7 +24782,7 @@ private struct OpenFolderShape: Shape {
         )
         .contentShape(Rectangle())
         // A folder can be picked up and dropped on another folder, which is
-        // the second half of "and everything else in BriefShow" — the tree
+        // the second half of "and everything else in C4S Suite" — the tree
         // was already a drop target for photos by the time this was added,
         // and a tree you can drop into but not drag from is half a tree.
         .onDrag {
@@ -24953,7 +24991,7 @@ private struct ShowHeaderButtonLabel: View {
     var body: some View {
         configuration.label
             .font(.custom("Figtree", size: 12).weight(.semibold))
-            // "LumenoLab" was wrapping to "LumenoLa / b" once the header
+            // "Create" was wrapping to "LumenoLa / b" once the header
             // had one more control in it. A button label that wraps reads
             // as a rendering fault, so it stays on one line. Shared style,
             // so every header button gets it.

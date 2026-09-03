@@ -17,7 +17,7 @@ What it does, in the order that matters:
 Anything short of "identical" is a failure. It also prints what the record
 weighs before and after, which is the whole reason for the change.
 """
-import importlib.util, json, pathlib, subprocess, sys, tempfile
+import importlib.util, json, pathlib, shutil, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location(
@@ -31,6 +31,39 @@ src = decode_test.SRC.read_text(encoding="utf-8")
 # copy here is what this line used to do, and it made the two collide with
 # "invalid redeclaration of 'LayerPixelStore'". One list, one copy.
 types = "\n\n".join(decode_test.extract(src, header) for header in decode_test.DECLARATIONS)
+
+# ⚠️ THE SANDBOX BOUNDARY, and it made this harness lie once already.
+#
+# LayerPixelStore asks for `.applicationSupportDirectory`. Inside the sandboxed
+# app that resolves to the app's CONTAINER; this script is not sandboxed, so
+# for it the very same code resolves to ~/Library/Application Support. Run as
+# it was, the test read an empty directory and reported "46 layers came back
+# empty" on a store whose every reference was in fact intact — checked by hand:
+# 46 refs, 0 missing.
+#
+# So the blobs the app wrote are copied next to where this process will look,
+# before the extracted code runs. Copied, never moved: the app's own directory
+# is the live one and nothing here may touch it.
+def stage_blobs():
+    container = pathlib.Path.home() / ("Library/Containers/com.rocketsbrief.BriefShow/Data"
+                                       "/Library/Application Support/BriefShow/LayerPixels")
+    local = pathlib.Path.home() / "Library/Application Support/BriefShow/LayerPixels"
+    if not container.is_dir():
+        return 0
+    local.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for blob_file in container.glob("*.bin"):
+        target = local / blob_file.name
+        if not target.exists():
+            shutil.copy2(blob_file, target)
+            copied += 1
+    return copied
+
+
+staged = stage_blobs()
+if staged:
+    print(f"staged {staged} layer blobs from the app's container so the "
+          f"extracted code can find them outside the sandbox")
 
 blob = decode_test.load_blob([sys.argv[0]])
 scratch = pathlib.Path(tempfile.mkdtemp()) / "store.json"

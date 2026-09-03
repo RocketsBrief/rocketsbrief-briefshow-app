@@ -14,7 +14,7 @@
 
 import SwiftUI
 
-// MARK: - LumenoLab
+// MARK: - Create
 
 /// The photo editor's mark: a laboratory flask half full, with bubbles in the
 /// liquid and a few rising through the neck.
@@ -28,7 +28,7 @@ import SwiftUI
 /// liquid and the bubbles are the same colour at lower opacity, which is what
 /// keeps that true: a second hard-coded tone would have to be picked per theme
 /// and would drift the moment one of them changed.
-struct LumenoLabMark: View {
+struct CreateMark: View {
     /// Stroke weight on the 100-unit design grid. 8 lands at about 1.2pt when
     /// the mark is drawn at 15pt. Heavier than the 7 the first draft used,
     /// because the reference's outline is noticeably chunky and that weight is
@@ -133,35 +133,63 @@ private struct FlaskLiquid: Shape {
     }
 }
 
-// MARK: - The BriefShow wordmark
+// MARK: - The C4S wordmark
 
-/// "BriefShow" in the app's own two-tone wordmark, at whatever size is asked
-/// for — the big one in ShowGrid's header and the small one inside the button
-/// that opens the slideshow are the SAME mark, which is the point of it being
-/// one view rather than two copies of the same two Text views.
-struct BriefShowWordmark: View {
+/// "C4S" set in the app's own wordmark face, with the 4 a shade off the two
+/// letters around it.
+///
+/// ⚠️ This is the TEXT mark, and it is what the header wears. The drawn logo
+/// (C4SMark, below) is the app icon and the Disclaimer's heading; on the
+/// header it was tried and sent back — *„ovde neka piše slovima C4S, u slovima
+/// koji je bio BriefShow"*. The name in the header is type, not a picture, the
+/// way "BriefShow" was before it.
+///
+/// The two-tone treatment is the old wordmark's, kept deliberately: "Brief" was
+/// bright and "Show" was muted, and here the C and the S are bright while the 4
+/// takes the muted tone. That is the "shade different" the client asked for —
+/// it is the same contrast the mark has always had, moved onto the one glyph
+/// the logo also picks out in a different colour.
+struct C4SWordmark: View {
     var size: CGFloat = 20
     @ObservedObject private var themeManager = ThemeManager.shared
 
     var body: some View {
         HStack(spacing: 0) {
-            Text("Brief")
+            Text("C")
                 .foregroundColor(AppColors.wordmarkBright)
-            Text("Show")
+            Text("4")
                 .foregroundColor(AppColors.inkSecondary)
+            Text("S")
+                .foregroundColor(AppColors.wordmarkBright)
         }
         .font(.custom("Unbounded", size: size).weight(.black))
-        // Tracking is negative and scales with the size: Unbounded Black is a
-        // wide face, and at the header's 20pt it needs -1.7 to hold together.
-        // Keeping the same ratio is what makes the button's smaller copy read
-        // as the same wordmark rather than as a looser relative of it.
-        .tracking(-1.7 / 20 * size)
-        // A wordmark that wraps is not a wordmark — squeezed, this broke as
-        // "Brief Sho / w", with the W alone on a second line. Putting it on
-        // its own row in the header was meant to prevent that, and it does
-        // not: a row still hands out less width when the things beside it
-        // want more. This says the mark simply does not compress.
+        // The same negative tracking ratio the BriefShow wordmark used —
+        // Unbounded Black is a wide face and needs it to hold together. Three
+        // glyphs need less than nine did, hence the gentler figure.
+        .tracking(-1.0 / 20 * size)
+        // A wordmark that wraps is not a wordmark.
         .lineLimit(1)
         .fixedSize()
+    }
+}
+
+// MARK: - The C4S logo
+
+/// The drawn logo: the app icon, and the mark at the head of the Disclaimer.
+///
+/// Not used in the header — see C4SWordmark for why. The asset is the logo with
+/// its white background cut away (flood-filled from the edges, so the light "4"
+/// inside the dark body survives), which is what lets it sit on any of the
+/// three themes without a card behind it.
+struct C4SMark: View {
+    var size: CGFloat = 20
+
+    var body: some View {
+        Image("C4SLogo")
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: size * 1.55, height: size * 1.55)
+            .accessibilityLabel("C4S Suite")
     }
 }

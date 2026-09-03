@@ -5,7 +5,7 @@
 //  Every keyboard shortcut in the app, in one place, and editable.
 //
 //  Before this, each shortcut was a literal buried in one of the two local
-//  NSEvent monitors — `key == "x"` in ShowGrid, `key == "z"` in LumenoLab — so
+//  NSEvent monitors — `key == "x"` in ShowGrid, `key == "z"` in Create — so
 //  there was no list of them, no way for a client to change one, and no way to
 //  find out what was already taken before adding another. This file is the
 //  list. The monitors ask it rather than deciding for themselves.
@@ -166,12 +166,12 @@ struct KeyCombo: Codable, Equatable, Hashable {
 /// Everything in the app a key can be bound to.
 ///
 /// Grouped by the window it belongs to, because the same key means different
-/// things in ShowGrid and in LumenoLab and always has — the two monitors are
+/// things in ShowGrid and in Create and always has — the two monitors are
 /// scoped by window title precisely so it can. A duplicate WITHIN a group is a
 /// conflict; the same key in both groups is not.
 enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
 
-    // LumenoLab
+    // Create
     case nextPhoto, previousPhoto
     case undo, redo
     case copySelection, cutSelection, pasteLayer
@@ -200,12 +200,12 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
 
     /// The two windows a shortcut can belong to.
     ///
-    /// "BriefShow" is the main window — the folder tree and the photo grid.
+    /// "C4S Suite" is the main window — the folder tree and the photo grid.
     /// It is not a separate product: BriefShow is the suite, Showcase is the
-    /// slideshow, LumenoLab is the editor.
+    /// slideshow, Create is the editor.
     enum Group: String, CaseIterable, Identifiable {
-        case lumenoLab = "LumenoLab"
-        case showGrid = "BriefShow"
+        case lumenoLab = "Create"
+        case showGrid = "C4S Suite"
         var id: String { rawValue }
     }
 
@@ -277,7 +277,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .increaseToolSize: return .key("]")
         // R, because that is what Lightroom uses for the crop tool and this
         // client works in Lightroom alongside this app all day. Free in the
-        // LumenoLab group, and the ShowGrid group is a separate namespace —
+        // Create group, and the ShowGrid group is a separate namespace —
         // see the doc comment on this enum.
         case .toggleCrop: return .key("r")
         // The same X as ShowGrid's Reject, and deliberately a SEPARATE action
@@ -287,7 +287,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         // have it move in the other. Free in this group — cut is ⌘X.
         case .rejectPhoto: return .key("x")
 
-        // ⚠️ Every default below was checked against what the LumenoLab group
+        // ⚠️ Every default below was checked against what the Create group
         // already takes — e, q, ⌘z, ⌘⇧z, ⌘c, ⌘x, ⌘v, ⌘a, ⌘=, ⌘-, ⌘0, [, ], r,
         // x — because a duplicate WITHIN a group is a conflict (see this
         // enum's own doc comment). None of these collide.
@@ -429,7 +429,7 @@ enum ShortcutStore {
     /// Which OTHER action in the same group already answers to this key.
     ///
     /// Only within a group: the two monitors are scoped by window, so ⌘C
-    /// meaning one thing in ShowGrid and another in LumenoLab is how the app
+    /// meaning one thing in ShowGrid and another in Create is how the app
     /// has always worked, not a clash.
     static func conflict(for candidate: KeyCombo, excluding action: ShortcutAction) -> ShortcutAction? {
         ShortcutAction.allCases.first {

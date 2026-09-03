@@ -18,7 +18,7 @@ import Combine
 import CoreServices
 
 /// A folder handed to BriefShow from OUTSIDE the app — dropped on the Dock
-/// icon, or opened through Finder's "Open With ▸ BriefShow".
+/// icon, or opened through Finder's "Open With ▸ C4S Suite".
 ///
 /// A holding place rather than a direct call into the view, because the two
 /// events do not happen in a fixed order. Dropping a folder on the icon of an
@@ -162,8 +162,12 @@ struct BriefShowApp: App {
     // ShowGrid — Desktop folder tree on the left, photo grid on the
     // right — is the app's first (and main) screen now, replacing the old
     // two-card BriefShow/ShowGrid Welcome chooser. BriefShow itself is
-    // still reachable from ShowGrid's own "BriefShow" header button,
+    // still reachable from ShowGrid's own "C4S Suite" header button,
     // which opens it as a separate window via BriefShowWindowController.
+    /// Only so Edit ▸ Theme has something to bind to. The rest of the app
+    /// reads ThemeManager.shared directly.
+    @ObservedObject private var themeManager = ThemeManager.shared
+
     var body: some Scene {
         WindowGroup {
             PhotoShowSheet(onClose: {})
@@ -199,6 +203,25 @@ struct BriefShowApp: App {
                 // binding it clears is visible in the window it does not open.
                 Button("Reset Shortcuts to Defaults") {
                     ShortcutStore.resetAll()
+                }
+
+                Divider()
+
+                // Edit ▸ Theme, where the three dots under the logo used to be.
+                //
+                // A theme is a preference, and a preference belongs in a menu
+                // with a name on it — three unlabelled circles on the app's
+                // first screen said nothing about what they were. Written in
+                // the order the client names them: White, Sand, Dark.
+                //
+                // A Picker rather than three Buttons: it draws the tick beside
+                // whichever theme is on, which is the one thing three separate
+                // buttons could not do without each of them checking the state
+                // itself.
+                Picker("Theme", selection: $themeManager.current) {
+                    ForEach([AppTheme.white, .buttery, .dark]) { theme in
+                        Text(theme.title).tag(theme)
+                    }
                 }
 
                 Divider()
@@ -299,7 +322,7 @@ struct BriefShowApp: App {
 
             // Help ▸ the two things a client actually looks for there.
             CommandGroup(replacing: .help) {
-                Button("BriefShow Help") {
+                Button("C4S Suite Help") {
                     if let url = URL(string: "https://github.com/\(Self.repositoryPath)") {
                         NSWorkspace.shared.open(url)
                     }

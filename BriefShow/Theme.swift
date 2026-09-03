@@ -1,10 +1,25 @@
 import SwiftUI
 import Combine
 
-enum AppTheme: String {
+enum AppTheme: String, CaseIterable, Identifiable {
+    // ⚠️ These raw values are STORED in UserDefaults. `buttery` is shown to
+    // the client as "Sand" — the name he uses — and renaming the case or its
+    // raw value would silently drop every existing choice back to the default.
+    // The label lives in `title`, which is the only place the name is decided.
     case buttery
     case white
     case dark
+
+    var id: String { rawValue }
+
+    /// What the client sees. White, Sand, Dark — his words.
+    var title: String {
+        switch self {
+        case .white: return "White"
+        case .buttery: return "Sand"
+        case .dark: return "Dark"
+        }
+    }
 }
 
 final class ThemeManager: ObservableObject {
@@ -129,6 +144,9 @@ enum AppColors {
     }
 }
 
+/// ⚠️ Currently UNUSED — see the note where the header's three theme dots were
+/// removed. Kept because it is the only control that shows the themes as
+/// colours; the menu can only name them.
 struct ThemeToggleButton: View {
     let theme: AppTheme
     @Binding var selected: AppTheme

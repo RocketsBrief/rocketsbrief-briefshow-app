@@ -421,11 +421,11 @@ struct UpdateRequiredOverlay: View {
                         .foregroundColor(AppColors.hoverInk)
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("A new version of BriefShow is required")
+                        Text("A new version of C4S Suite is required")
                             .font(.custom("Figtree", size: 15).weight(.bold))
                             .foregroundColor(AppColors.ink)
 
-                        Text("Update to version \(latestVersion) to keep using BriefShow.")
+                        Text("Update to version \(latestVersion) to keep using C4S Suite.")
                             .font(.custom("Figtree", size: 12).weight(.regular))
                             .foregroundColor(AppColors.muted)
                     }
@@ -469,13 +469,13 @@ struct UpdateRequiredOverlay: View {
 
                 if showInstallGuide {
                     VStack(alignment: .leading, spacing: 10) {
-                        installStep(1, "Click \"Download Update\" above. It opens the BriefShow release page on GitHub in your browser.")
+                        installStep(1, "Click \"Download Update\" above. It opens the C4S Suite release page on GitHub in your browser.")
                         installStep(2, "On that page, under \"Assets\", click the file named \"BriefShow-macOS-Universal.zip\" to start the download.")
-                        installStep(3, "Quit BriefShow if it's currently open.")
-                        installStep(4, "Open the downloaded file, then drag the new BriefShow into your Applications folder. Choose \"Replace\" when asked.")
-                        installStep(5, "BriefShow is still in active development, so it isn't distributed through the Mac App Store yet. When you first open it, macOS will say it \"was blocked to protect your Mac.\" Open System Settings → Privacy & Security, scroll down to the Security section, and click \"Open Anyway\" next to BriefShow.")
-                        installStep(6, "Open BriefShow again. Click \"Open Anyway\" once more in the dialog, then enter your Mac's login password when asked. Choose \"Always Allow\" so you won't be asked again.")
-                        installStep(7, "That's it. BriefShow will open normally from then on.")
+                        installStep(3, "Quit C4S Suite if it's currently open.")
+                        installStep(4, "Open the downloaded file, then drag the new C4S Suite into your Applications folder. Choose \"Replace\" when asked.")
+                        installStep(5, "C4S Suite is still in active development, so it isn't distributed through the Mac App Store yet. When you first open it, macOS will say it \"was blocked to protect your Mac.\" Open System Settings → Privacy & Security, scroll down to the Security section, and click \"Open Anyway\" next to C4S Suite.")
+                        installStep(6, "Open C4S Suite again. Click \"Open Anyway\" once more in the dialog, then enter your Mac's login password when asked. Choose \"Always Allow\" so you won't be asked again.")
+                        installStep(7, "That's it. C4S Suite will open normally from then on.")
                     }
                     .padding(14)
                     .background(AppColors.panel)
@@ -485,7 +485,7 @@ struct UpdateRequiredOverlay: View {
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 14))
 
-                    Text("Why this extra step? BriefShow is still being finished and we haven't decided yet whether it will launch on the Mac App Store or stay a direct download. Once it's complete, it will be fully verified by Apple. Thanks for being an early user.")
+                    Text("Why this extra step? C4S Suite is still being finished and we haven't decided yet whether it will launch on the Mac App Store or stay a direct download. Once it's complete, it will be fully verified by Apple. Thanks for being an early user.")
                         .font(.custom("Figtree", size: 10.5).weight(.regular))
                         .italic()
                         .foregroundColor(AppColors.muted)
@@ -563,13 +563,13 @@ struct LockedAccessOverlay: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(isDismissible ? "Sign in to RocketsBrief" : "Continue using BriefShow")
+                        Text(isDismissible ? "Sign in to RocketsBrief" : "Continue using C4S Suite")
                             .font(.custom("Figtree", size: 18).weight(.bold))
                             .foregroundColor(AppColors.ink)
 
                         Text(isDismissible
                              ? "Your RocketsBrief account works here and on rocketsbrief.com — same email, same password."
-                             : (lockMessage ?? "Sign up for a free RocketsBrief account to keep using BriefShow."))
+                             : (lockMessage ?? "Sign up for a free RocketsBrief account to keep using C4S Suite."))
                             .font(.custom("Figtree", size: 12.5).weight(.regular))
                             .foregroundColor(AppColors.muted)
                             .fixedSize(horizontal: false, vertical: true)

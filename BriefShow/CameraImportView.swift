@@ -315,7 +315,7 @@ struct CameraImportView: View {
                 Text("The camera reported an empty card.")
                     .font(.custom("Figtree", size: 12))
                     .foregroundColor(AppColors.inkSecondary)
-                Text("Finished reading, and nothing came back. Check that the card is in the camera and that its USB mode is MTP/PTP — and if Image Capture cannot see the card either, the problem is the camera or the cable rather than BriefShow.")
+                Text("Finished reading, and nothing came back. Check that the card is in the camera and that its USB mode is MTP/PTP — and if Image Capture cannot see the card either, the problem is the camera or the cable rather than C4S Suite.")
                     .font(.custom("Figtree", size: 11))
                     .multilineTextAlignment(.center)
                     .foregroundColor(AppColors.muted.opacity(0.8))

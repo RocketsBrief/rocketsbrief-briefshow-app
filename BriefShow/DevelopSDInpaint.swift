@@ -96,9 +96,87 @@ extension InpaintPipeline {
     }
 }
 
+// MARK: - Half-precision, on both processors
+
+/// The UNet's tensors are `Float16`, and `Float16` DOES NOT EXIST on x86_64
+/// macOS — the compiler rejects the type outright, which is why this whole
+/// pipeline used to be compiled out on Intel.
+///
+/// ⚠️ ON ARM64 THIS IS A RENAME AND NOTHING ELSE. `SDHalf` IS `Float16` and
+/// `sdHalf(x)` IS `Float16(x)`, so every tensor the Apple Silicon path packs is
+/// byte-for-byte what it packed before. That was the condition for touching
+/// this file at all: the AI Clean Up result is signed off, and an Intel port
+/// must not cost a single bit of it. Proved rather than asserted — see
+/// Tools/run-half-conversion-test.py, which compiles both implementations on
+/// this machine and compares them across every float bit pattern.
+///
+/// On x86_64 the half is carried as its raw 16 bits and written by hand, with
+/// IEEE-754 round-to-nearest-even, subnormals and the specials. CoreML reads
+/// the buffer as float16 either way; it never sees the Swift type.
 #if arch(arm64)
+typealias SDHalf = Float16
+
+@inline(__always)
+func sdHalf(_ value: Float) -> SDHalf { Float16(value) }
+#else
+typealias SDHalf = UInt16
+
+@inline(__always)
+func sdHalf(_ value: Float) -> SDHalf {
+    let bits = value.bitPattern
+    let sign = UInt16((bits >> 16) & 0x8000)
+    let rawExponent = Int32((bits >> 23) & 0xFF)
+    let mantissa = bits & 0x007F_FFFF
+
+    // Inf and NaN keep their meaning; a NaN stays a NaN rather than collapsing
+    // to infinity.
+    if rawExponent == 0xFF {
+        return sign | (mantissa != 0 ? 0x7E00 : 0x7C00)
+    }
+
+    let exponent = rawExponent - 127 + 15
+
+    // Too big for a half: saturate to infinity, which is what the hardware
+    // instruction does.
+    if exponent >= 0x1F {
+        return sign | 0x7C00
+    }
+
+    // Subnormal, or small enough to be nothing at all.
+    if exponent <= 0 {
+        if exponent < -10 {
+            return sign
+        }
+        let implicit = mantissa | 0x0080_0000
+        let shift = UInt32(14 - exponent)
+        var half = UInt16(truncatingIfNeeded: implicit >> shift)
+        let roundBit = (implicit >> (shift - 1)) & 1
+        let sticky = (implicit & ((UInt32(1) << (shift - 1)) - 1)) != 0
+        if roundBit == 1 && (sticky || (half & 1) == 1) {
+            half &+= 1
+        }
+        return sign | half
+    }
+
+    // Normal. The round may carry into the exponent, and that is correct: one
+    // above the largest finite half is infinity, which is what rounding a value
+    // just under the maximum should give.
+    var half = UInt16(truncatingIfNeeded: (UInt32(exponent) << 10) | (mantissa >> 13))
+    let roundBit = (mantissa >> 12) & 1
+    let sticky = (mantissa & 0xFFF) != 0
+    if roundBit == 1 && (sticky || (half & 1) == 1) {
+        half &+= 1
+    }
+    return sign | half
+}
+#endif
 
 // MARK: - Where the weights live
+//
+// ⚠️ OUTSIDE `#if arch(arm64)` on purpose. Nothing here touches Float16 — it is
+// paths and file checks — and two things need it regardless of processor: the
+// downloader that installs the weights, and the Intel build of the pipeline
+// below.
 
 enum SDModelStore {
 
@@ -153,6 +231,25 @@ enum SDModelStore {
         }
     }
 }
+
+
+// ⚠️ THE ARM64 GATE IS GONE FROM HERE.
+//
+// Everything below used to be compiled out on Intel because it packs tensors
+// as Float16 and that type does not exist on x86_64. It goes through SDHalf
+// now (see the top of this file), which IS Float16 on Apple Silicon and raw
+// 16-bit halves written by hand on Intel — so the same pipeline compiles and
+// runs on both.
+//
+// ⚠️ WHAT IS PROVED AND WHAT IS NOT. The Apple Silicon path is proved
+// unchanged: SDHalf is a rename there, and the conversion is compared against
+// Float16 across every float bit pattern by Tools/run-half-conversion-test.py.
+// The Intel path is proved to COMPILE and nothing more — it has never been run
+// on an Intel Mac, because there isn't one here. The note in
+// BRIEFSHOW_DEVELOP_NOTES.md predicts minutes per image on a Radeon Pro 560X,
+// and if that turns out to be the case the honest answer is to say so in the
+// panel rather than to leave a client waiting.
+
 
 // MARK: - Scheduler
 
@@ -543,9 +640,26 @@ final class SDInpaintPipeline {
         // No Neural Engine at all is what an Intel Mac looks like; this is
         // here to measure that case rather than guess at it.
         case "cpu": aneConfiguration.computeUnits = .cpuOnly
-        default: aneConfiguration.computeUnits = .cpuAndNeuralEngine
+        default:
+            #if arch(arm64)
+            aneConfiguration.computeUnits = .cpuAndNeuralEngine
+            #else
+            // ⚠️ Intel: there IS no Neural Engine, so `.all` is the most work
+            // that can be shared — Core ML puts what fits on the discrete GPU
+            // and runs the rest on the cores. Asked for in those terms: *„da
+            // deli rad da bi bio brži i bolji jer nije M procesor"*.
+            //
+            // What sharing does NOT mean, so nobody promises it later: on an
+            // Intel Mac the 32 GB of system memory does not add to the 4 GB on
+            // the card. They are two memories across PCIe. SD 1.5 at 512×512
+            // in fp16 fits in 4 GB, so this is not a wall — but RAM will not
+            // make up for the card, and that was measured reasoning, not hope.
+            aneConfiguration.computeUnits = .all
+            #endif
         }
         let gpuConfiguration = MLModelConfiguration()
+        // The VAE passes run once each. On both processors the GPU is the right
+        // place for them; on Intel that is the discrete card.
         gpuConfiguration.computeUnits = .cpuAndGPU
 
         func model(_ name: String, _ configuration: MLModelConfiguration) throws -> MLModel {
@@ -580,7 +694,7 @@ final class SDInpaintPipeline {
     private func loadPromptEmbeds(from url: URL) throws -> MLMultiArray {
         let data = try Data(contentsOf: url)
         let expected = 2 * Self.embedWidth * Self.contextLength
-        guard data.count == expected * MemoryLayout<Float16>.size else {
+        guard data.count == expected * MemoryLayout<SDHalf>.size else {
             throw Failure.badOutput("prompt embeds are \(data.count) bytes, expected \(expected * 2)")
         }
         let array = try MLMultiArray(
@@ -642,12 +756,12 @@ final class SDInpaintPipeline {
             // layout this UNet was converted with.
             hidden.withUnsafeBufferPointer(ofType: Float.self) { source in
                 array.withUnsafeMutableBytes { raw, _ in
-                    let destination = raw.bindMemory(to: Float16.self)
+                    let destination = raw.bindMemory(to: SDHalf.self)
                     let base = batch * Self.embedWidth * Self.contextLength
                     for token in 0..<Self.contextLength {
                         for channel in 0..<Self.embedWidth {
                             destination[base + channel * Self.contextLength + token] =
-                                Float16(source[token * Self.embedWidth + channel])
+                                sdHalf(source[token * Self.embedWidth + channel])
                         }
                     }
                 }
@@ -715,13 +829,13 @@ final class SDInpaintPipeline {
             let encoderInput = try MLMultiArray(
                 shape: [1, 3, NSNumber(value: side), NSNumber(value: side)], dataType: .float16)
             encoderInput.withUnsafeMutableBytes { raw, _ in
-                let destination = raw.bindMemory(to: Float16.self)
+                let destination = raw.bindMemory(to: SDHalf.self)
                 for index in 0..<pixelCount {
                     let hole = flattenHole && buffers.known[index] == 0
                     for channel in 0..<3 {
                         let value = hole
-                            ? Float16(0)
-                            : Float16(Float(buffers.pixels[index * 4 + channel]) / 127.5 - 1)
+                            ? sdHalf(0)
+                            : sdHalf(Float(buffers.pixels[index * 4 + channel]) / 127.5 - 1)
                         destination[channel * pixelCount + index] = value
                     }
                 }
@@ -839,24 +953,27 @@ final class SDInpaintPipeline {
             // other cond. The converted UNet's batch is fixed at 2 precisely
             // because classifier-free guidance is not optional here.
             sample.withUnsafeMutableBytes { raw, _ in
-                let destination = raw.bindMemory(to: Float16.self)
+                let destination = raw.bindMemory(to: SDHalf.self)
                 for batch in 0..<2 {
                     let base = batch * 9 * cells
                     for offset in 0..<latentCount {
-                        destination[base + offset] = Float16(latents[offset])
+                        destination[base + offset] = sdHalf(latents[offset])
                     }
                     for offset in 0..<cells {
-                        destination[base + 4 * cells + offset] = Float16(latentMask[offset])
+                        destination[base + 4 * cells + offset] = sdHalf(latentMask[offset])
                     }
                     for offset in 0..<latentCount {
-                        destination[base + 5 * cells + offset] = Float16(maskedLatent[offset])
+                        destination[base + 5 * cells + offset] = sdHalf(maskedLatent[offset])
                     }
                 }
             }
             timestepInput.withUnsafeMutableBytes { raw, _ in
-                let destination = raw.bindMemory(to: Float16.self)
-                destination[0] = Float16(timestep)
-                destination[1] = Float16(timestep)
+                let destination = raw.bindMemory(to: SDHalf.self)
+                // `timestep` is an Int here; Float16(Int) used to convert
+                // implicitly, and sdHalf takes a Float on purpose so the
+                // Intel path has one conversion to be correct about.
+                destination[0] = sdHalf(Float(timestep))
+                destination[1] = sdHalf(Float(timestep))
             }
 
             let prediction = try unet.prediction(from: MLDictionaryFeatureProvider(dictionary: [
@@ -947,8 +1064,8 @@ final class SDInpaintPipeline {
                     NSNumber(value: Self.latentSide), NSNumber(value: Self.latentSide)],
             dataType: .float16)
         decoderInput.withUnsafeMutableBytes { raw, _ in
-            let destination = raw.bindMemory(to: Float16.self)
-            for offset in 0..<latentCount { destination[offset] = Float16(latents[offset] / Self.latentScale) }
+            let destination = raw.bindMemory(to: SDHalf.self)
+            for offset in 0..<latentCount { destination[offset] = sdHalf(latents[offset] / Self.latentScale) }
         }
         let decoded = try vaeDecoder.prediction(from: MLDictionaryFeatureProvider(
             dictionary: ["z": MLFeatureValue(multiArray: decoderInput)]))
@@ -1080,72 +1197,3 @@ extension InpaintPipeline {
 
 }
 
-#else
-
-// MARK: - Intel stand-in
-
-/// What the rest of the app can still ask for on a Mac where the real
-/// pipeline above cannot be compiled. Every name here is one that something
-/// outside this file reads; nothing more is provided, on purpose, so that
-/// adding a new use of SD fails to build on Intel rather than silently
-/// doing nothing there.
-enum SDModelStore {
-    static var isAvailable: Bool { false }
-}
-
-final class SDInpaintPipeline {
-    static let shared = SDInpaintPipeline()
-
-    // The same values the real pipeline publishes, because they are read as
-    // plain defaults elsewhere (LaMa's feather, the panel's initial state)
-    // and have nothing to do with whether SD can run.
-    static let defaultPrompt = "empty background, plain continuous surface, uniform texture, seamless continuation"
-    static let defaultNegativePrompt = "person, people, human, face, body, animal, object, sign, text, letters, watermark, logo, ornament, duplicate"
-    static let defaultFeather = 0.35
-    static let defaultSteps = 12
-    // Read by squareRegion, which is shared with the LaMa path and so lives
-    // outside the gate.
-    static let imageSide = 512
-    static let defaultRefineStrength: Float? = 0.3
-    static let isDebugging = false
-
-    enum Failure: Error, LocalizedError {
-        case unsupportedArchitecture
-
-        var errorDescription: String? {
-            "Generative Clean Up needs an Apple Silicon Mac. Everything else, including Quick AI Clean Up, works here."
-        }
-    }
-
-    private init() {}
-
-    var isModelInstalled: Bool { false }
-
-    /// A no-op rather than a fatalError: the app warms the model up on launch
-    /// without asking whether it exists, and launching is not the moment to
-    /// find out this Mac is an Intel one.
-    func warmUp() {}
-}
-
-extension InpaintPipeline {
-    static func aiRemoval(
-        mask: CIImage,
-        from image: CIImage,
-        context: CIContext,
-        prompt: String = SDInpaintPipeline.defaultPrompt,
-        negativePrompt: String = SDInpaintPipeline.defaultNegativePrompt,
-        feather: Double = SDInpaintPipeline.defaultFeather,
-        steps: Int = SDInpaintPipeline.defaultSteps,
-        seed: UInt64 = 3,
-        refineStrength: Float? = SDInpaintPipeline.defaultRefineStrength,
-        progress: ((Int, Int) -> Void)? = nil,
-        shouldContinue: @escaping () -> Bool = { true }
-    ) throws -> Removal? {
-        // Throws rather than returning nil: nil means "there was nothing to
-        // do", and this is "this cannot be done here", which the client
-        // should be told in those words.
-        throw SDInpaintPipeline.Failure.unsupportedArchitecture
-    }
-}
-
-#endif

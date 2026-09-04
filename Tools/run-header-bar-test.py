@@ -67,14 +67,24 @@ cell_start = src.index("    private func headerBarCell(")
 cell_end = src.index("    /// What the pointer is over", cell_start)
 cell = src[cell_start:cell_end]
 face = cell[cell.index("let face = Group {"):cell.index("return Group {")]
-check(".help(" not in face,
-      "no .help() inside the button's label, where macOS would swallow it")
-check(".help(item.help)" in cell[cell.index("return Group {"):],
-      ".help() is on the control itself")
+# The white system tooltip is deliberately gone: the caption under the bar says
+# it already, immediately, and two labels for one button — one of them a second
+# late — is worse than the one that is there.
+# ⚠️ Comments stripped first. The check matched the comment that EXPLAINS why
+# there is no .help() here, and reported the code as broken because the code
+# says so in words.
+cell_code = "\n".join(line for line in cell.splitlines()
+                      if not line.strip().startswith("//"))
+check(".help(" not in cell_code,
+      "no system tooltip on the cells; the caption under the bar is the one way in")
 check(".onHover { inside in" in cell,
       "every cell reports hover, so the caption under the bar can name it")
 check("private var headerHoverCaption: some View" in src,
       "there is a caption under the bar that does not depend on the system tooltip")
+hover_text = re.findall(r'help: "([^"]+)"', items_body) + re.findall(
+    r'return "((?:Edit|Retouch|Layers)[^"]+)"', src)
+check(hover_text and all(" - " in t and " — " not in t for t in hover_text),
+      "every hover line uses the short dash, never the long one (%d lines)" % len(hover_text))
 
 # ---- 1d. exactly ONE cell can be lit ---------------------------------------
 # Reported as "edit ostaje uvek ukljucen": each cell used to decide its own lit

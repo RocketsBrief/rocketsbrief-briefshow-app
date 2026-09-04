@@ -13283,3 +13283,45 @@ odmah i da li sistemski tooltip sad izlazi, i da li ostaje **tačno jedna**
 upaljena ćelija u svakoj kombinaciji (Crop → tab → AI → Presets).
 
 ⚠️ Ovo NIJE u release-u v11.4. Paketi na GitHub-u su od commit-a `61c83b7`.
+
+## KORAK 118 — bela kartica se gasi, natpis ispod ostaje, i kratka crtica (4. septembar 2026)
+
+Klijent, pošto je video natpis iz KORAKA 117: *„aha vidim da pise ispod nisam
+znao okay onda nemora da pise opet kao hovered kartica ona bela moze da pise
+ispod samo… neka bude Grid pa mala crtica ova - ne ona velika"*.
+
+### Sistemski tooltip je UKLONJEN, i to je odluka
+
+`.help` je zakačen u KORAKU 117 pošto je nađeno da stari nikad nije mogao da
+opali. Sada je skinut sa svih ćelija: natpis ispod trake kaže isto, odmah, a
+dva natpisa za isto dugme — od kojih jedan kasni sekundu — gori su od jednog
+koji je već tu.
+
+⚠️ Ovo je jedino mesto u panelu bez `.help` na dugmetu, i namerno je. Ako neko
+kasnije bude „popravljao" nedostatak tooltipa, ovo je razlog zašto ga nema.
+
+### Crtica
+
+Sve linije za hover idu sa običnom crticom: „Grid - back to the grid of
+photos." Izmenjeno na svih 11 (8 akcija + Unflatten + 3 taba; Flatten nosi dve
+varijante teksta). Duge crtice ostaju samo u komentarima koda, gde ih niko ne
+čita sa ekrana.
+
+### ⚠️ Harness je pao na SOPSTVENOM komentaru
+
+Provera „nema `.help(` u ćeliji" je matchovala komentar koji **objašnjava zašto
+ga nema**, pa je kod prijavljen kao pokvaren zato što o sebi piše. Sada se
+komentari skidaju pre provere. Treći put u dva dana da harness kaže nešto što
+nije o kodu nego o tekstu oko koda — vredi pamtiti kao klasu.
+
+### Provereno
+
+- `BUILD SUCCEEDED`, Release, universal.
+- `Tools/run-header-bar-test.py` → **RESULT: OK**; sada tvrdi i da tooltipa
+  NEMA i da svih 11 hover linija koristi kratku crticu.
+- decode 129 slogova **OK**, layer pixel store **ALL PASS**, crop rotation
+  **OK**, update-quit **OK**.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Kao i KORAK 117 — nije viđeno odavde. I dalje van release-a v11.4.

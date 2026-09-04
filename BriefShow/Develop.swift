@@ -5129,9 +5129,9 @@ enum DevelopPanelTab: String, CaseIterable, Identifiable {
     /// so the tooltip has to say both what it is called and what is in it.
     var helpText: String {
         switch self {
-        case .edit: return "Edit — light, colour, curves and detail."
-        case .retouch: return "Retouch — tools, masks, selections and removal."
-        case .layers: return "Layers — the layers on this photo."
+        case .edit: return "Edit - light, colour, curves and detail."
+        case .retouch: return "Retouch - tools, masks, selections and removal."
+        case .layers: return "Layers - the layers on this photo."
         }
     }
 }
@@ -8115,19 +8115,19 @@ struct DevelopView: View {
             // they are made, so nothing here is waiting to be confirmed.
             HeaderBarItem(id: "grid",
                           glyph: .symbol("square.grid.2x2"),
-                          help: "Grid — back to the grid of photos.",
+                          help: "Grid - back to the grid of photos.",
                           behaviour: .tap { onClose() }),
 
             HeaderBarItem(id: "original",
                           glyph: .symbol("photo"),
-                          help: "Original — hold to see this photo as it came out of the camera.",
+                          help: "Original - hold to see this photo as it came out of the camera.",
                           isActive: activeHeaderCellID == "original",
                           isDisabled: noPhoto,
                           behaviour: .holdForOriginal),
 
             HeaderBarItem(id: "ai",
                           glyph: .badge("AI"),
-                          help: "AI Clean Up — paint over what should go, then let the model fill it in.",
+                          help: "AI Clean Up - paint over what should go, then let the model fill it in.",
                           isActive: activeHeaderCellID == "ai",
                           isDisabled: noPhoto,
                           behaviour: .tap {
@@ -8140,7 +8140,7 @@ struct DevelopView: View {
 
             HeaderBarItem(id: "crop",
                           glyph: .symbol("crop"),
-                          help: "Crop — crop, straighten and rotate this photo.",
+                          help: "Crop - crop, straighten and rotate this photo.",
                           isActive: activeHeaderCellID == "crop",
                           isDisabled: noPhoto,
                           behaviour: .tap {
@@ -8157,13 +8157,13 @@ struct DevelopView: View {
             // where it started" where a u-turn says "one step back".
             HeaderBarItem(id: "reset",
                           glyph: .symbol("arrow.counterclockwise"),
-                          help: "Reset — put this photo back to the original.",
+                          help: "Reset - put this photo back to the original.",
                           isDisabled: settings.isNeutral,
                           behaviour: .tap { resetAllSettings() }),
 
             HeaderBarItem(id: "people",
                           glyph: .symbol("person.crop.rectangle"),
-                          help: "Select People — lift the people in this photo onto their own layer, with the background on a second one.",
+                          help: "Select People - lift the people in this photo onto their own layer, with the background on a second one.",
                           isDisabled: isFindingPeople || isRemoving || noPhoto,
                           behaviour: .tap { selectPeopleAsLayer() }),
 
@@ -8172,20 +8172,20 @@ struct DevelopView: View {
                           help: isFlattening
                               ? "Flattening…"
                               : (isFlattenedPhoto
-                                 ? "Flatten Again — bake what has been done since the last flatten into the photo. Your original file is never touched."
-                                 : "Flatten Photo — bake the grade, the masks and the AI Clean Up into the photo. Your original file is never touched."),
+                                 ? "Flatten Again - bake what has been done since the last flatten into the photo. Your original file is never touched."
+                                 : "Flatten Photo - bake the grade, the masks and the AI Clean Up into the photo. Your original file is never touched."),
                           isDisabled: isFlattening || noPhoto || !hasUnbakedEdits,
                           behaviour: .tap { flattenPhoto() }),
 
             HeaderBarItem(id: "unflatten",
                           glyph: .symbol("arrow.uturn.backward"),
-                          help: "Unflatten — go back to the original file and the settings from before the first flatten. Anything done since is discarded.",
+                          help: "Unflatten - go back to the original file and the settings from before the first flatten. Anything done since is discarded.",
                           isDisabled: isFlattening || !isFlattenedPhoto,
                           behaviour: .tap { unflattenPhoto() }),
 
             HeaderBarItem(id: "presets",
                           glyph: .symbol("paintpalette"),
-                          help: "Presets — save this look, apply a saved one, or import from Lightroom.",
+                          help: "Presets - save this look, apply a saved one, or import from Lightroom.",
                           isActive: activeHeaderCellID == "presets",
                           behaviour: .presets),
 
@@ -8247,15 +8247,13 @@ struct DevelopView: View {
                 }
             }
         }
-        // ⚠️ OUT HERE, on the control itself — not inside the Button's label,
-        // which is where it was and why the client saw no tooltip at all:
-        // *„nisi mi stavio hover info kada hoverujem preko tih dugmica"*. A
-        // macOS Button lays its own tracking area over its label, so a .help
-        // attached INSIDE that label never gets the chance to fire.
-        .help(item.help)
-        // And a second, independent way of saying it — see headerHoverCaption.
-        // A tooltip that silently does not appear is exactly the failure this
-        // step is fixing, so the bar no longer depends on one.
+        // ⚠️ NO .help() here, and that is a decision, not an omission. KORAK 117
+        // put one on this control after finding the old one could never fire;
+        // the client then saw the caption under the bar and said the white
+        // hover card need not say it a second time: *„nemora da pise opet kao
+        // hovered kartica ona bela moze da pise ispod samo"*. Two labels for
+        // one button, one of them a second late, is worse than the one that is
+        // already there.
         .onHover { inside in
             if inside {
                 hoveredHeaderItemID = item.id

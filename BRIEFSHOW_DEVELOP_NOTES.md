@@ -13350,3 +13350,13 @@ kratka crtica).
 ⚠️ Sve što je zapisano u KORAKU 116 i dalje važi: model ne sme u repo, `v11.0`
 se ne sme brisati (ugrađeno preuzimanje SD-a pokazuje na njegov asset), i
 `latest_version` u BriefControl-u diže klijent sam.
+
+### ✅ Objavljeno — v11.5, oba paketa gore
+
+| asset | bajtova | HTTP |
+|---|---|---|
+| `C4S-Suite-11.5.zip` | 114.650.851 | **200** |
+| `C4S-Suite-11.5-AI-Models.zip` | 2.086.979.252 | **200** |
+
+Veličine na GitHub-u su **bajt u bajt** iste kao lokalni fajlovi. Release je
+`Latest`, tag pokazuje na `4aa850a` na `briefshow-develop` (pushovano).

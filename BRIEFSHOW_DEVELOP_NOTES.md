@@ -13185,3 +13185,21 @@ release-a v11.0 obara Download dugme u malom paketu.**
   potpisan, universal, i da su modeli na mestu; da SD iz paketa stvarno radi
   vidi se tek kad ga neko otvori na mašini koja nema preuzetu kopiju.
 - Intel: v11.0 je potvrđen na pravoj mašini (KORAK 106), 11.4 nije.
+
+### ✅ Objavljeno — v11.4, oba paketa gore i preuzimljiva
+
+| asset | bajtova | provera |
+|---|---|---|
+| `C4S-Suite-11.4.zip` | 114.635.689 | HTTP **200** |
+| `C4S-Suite-11.4-AI-Models.zip` | 2.086.964.089 | HTTP **200** |
+
+Veličina na GitHub-u je **bajt u bajt** ista kao lokalni fajl — dakle upload
+nije skraćen. Release je `Latest`, nije draft ni prerelease, tag pokazuje na
+`61c83b7` na grani `briefshow-develop` (pushovano).
+
+- stranica: `…/releases/tag/v11.4`
+- direktno (update): `…/releases/download/v11.4/C4S-Suite-11.4.zip`
+- direktno (sve u jednom): `…/releases/download/v11.4/C4S-Suite-11.4-AI-Models.zip`
+
+⚠️ `latest_version` u BriefControl-u diže **klijent sam** (v. KORAK 114). Dok ne
+digne na 11.4, niko ne dobija karticu „mora update".

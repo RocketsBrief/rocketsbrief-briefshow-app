@@ -12958,3 +12958,131 @@ sam tajmer i to kako je povezan.
 ⚠️ Ako klijent proba i app se **ne** ugasi, prvo pitanje nije tajmer nego da li
 je povratni poziv vratio grešku (jedina grana koja otkazuje) — vidi se tako što
 browser **nije** otvorio stranicu preuzimanja.
+
+## KORAK 115 — zaglavlje panela: jedna traka, samo ikonice, bez ijednog praznog mesta (4. septembar 2026)
+
+Prijava, uz tri slike: *„ovo sve da bude bez texta samo dugmad sa ikonicom i da
+se sve stavi pod jednu sekciju i sva dugmad da budu iste velicine i da nikad ne
+ostavlja prostor prazan izmedju ikonica ili sa strane.. ali da kada mis
+hoveruje preko buttona da pise sta je to dugme"*, pa *„ovo isto ukloni [presets
+sekcija] i stavi novo dugme presets"*, pa *„ovo ukloni isto [Crop & Rotate] jer
+bi se to otvorilo kad bi kliknuo na crop dugme"*.
+
+Dopune u toku rada, obe su promenile rešenje:
+
+- na pitanje da li i Edit/Retouch/Layers idu bez teksta u istu traku —
+  **„I tabovi bez teksta, isti red"**;
+- pa: *„moze d bude dva reda"*, i odmah zatim *„zavisno kako se desna strana
+  siri ili suzava.. moze i tri reda i cetri ako me razumes ali uvek isto gore
+  isto dole"*.
+
+### Šta je traka
+
+Devet akcija + tri taba = **dvanaest ćelija**, sve iste veličine, bez razmaka.
+Umesto reči — ikonica, a reč je otišla u tooltip (`.help`). Tooltipovi su
+prepravljeni u **rečenice** („Reset — put this photo back to the original."):
+kad natpis nestane sa ekrana, tooltip je jedino mesto koje još može da objasni
+crtež.
+
+Poredak: Original, Crop, Reset, Select People, AI, Flatten, Unflatten, Presets,
+Grid, pa Edit, Retouch, Layers.
+
+### ⚠️ ZAŠTO IH JE BAŠ DVANAEST — i zašto je Unflatten sada stalan
+
+Broj kolona se računa iz širine panela, ali se bira **isključivo među
+DELIOCIMA broja dugmadi**. Time je „nikad prazno mesto" aritmetika, a ne nada:
+ako kolona deli ukupan broj, poslednji red je pun kao i prvi, i „uvek isto gore
+isto dole" ispada samo od sebe.
+
+Zato je **Unflatten dobio stalnu ćeliju** (posivi kad nema šta da se
+odflatuje), umesto da se pojavljuje samo na spljoštenoj fotografiji:
+
+| broj dugmadi | delioci upotrebljivi za traku |
+|---|---|
+| 11 (Unflatten se pojavljuje/nestaje) | **nijedan** — svaki raspored ostavlja krnj red |
+| **12** | 12×1, 6×2, 4×3, 3×4, 2×6 |
+
+Flatten je i pre sivio umesto da nestaje, i to iz istog razloga (da red ne menja
+dužinu pod pokazivačem) — sad se par ponaša isto.
+
+### ⚠️ PRVO PRAVILO JE IZMERENO PA BAČENO
+
+Prva verzija je uzimala **najveći delilac koji stane** uz minimalnu ćeliju od
+42 pt. Harness je pokazao šta to zaista radi:
+
+| panel | prvo pravilo | sada |
+|---|---|---|
+| 300–339 pt | 6×2 | **4×3** |
+| 340–531 pt | 6×2 | **6×2** |
+| 532–546 pt | 12×1 | 6×2 |
+| 547–560 pt | 12×1 | **12×1** |
+
+Dakle prvo pravilo je sedelo na 6 po redu kroz gotovo ceo raspon — formalno
+ispravno, ali je **ignorisalo širinu umesto da je prati**, što je suprotno od
+onoga što je traženo. Sada se cilja **širina ćelije oko 64 pt** i bira delilac
+čije ćelije padnu najbliže tome, uz pod od 34 pt da ćelija nikad ne postane
+iverje.
+
+### Presets — popover, ne sekcija
+
+Sekcija „PRESETS" je izvađena iz Edit taba. Isti `presetsSection` sada živi u
+popover-u sa ćelije Presets. Dobitak koji sekcija nije mogla da ima: **otvara se
+iz bilo kog taba**, jer sekcija je bila zakopana u Edit.
+
+### Crop & Rotate — postoji samo dok se kropuje
+
+Sekcija je ostala kakva jeste, ali je sada u `if isCropping`. Klik na Crop već
+prebacuje na Edit tab i skroluje do nje (`toggleCropMode`, KORAK 77), pa
+sekcija stigne tačno kad je zatražena i ne zauzima ništa ostatak vremena.
+
+⚠️ **Cena, i klijent treba da je zna:** okretanje za 90° i **Straighten** su u
+toj sekciji. Do njih se sada dolazi kroz Crop. Ako se to pokaže kao smetnja,
+rešenje nije vraćanje sekcije nego dve ćelije u traci — ali onda broj dugmadi
+više nije 12, pa se mora ići na 14 ili 16 (v. tabelu delilaca gore).
+
+### Šta je obrisano, a ne ostavljeno da leži
+
+`beforeAfterButton`, `cropHeaderButton`, `aiCleanUpHeaderButton` i `panelTabBar`
+su **uklonjeni**, ne zaobiđeni — grep vraća nulu na sva četiri imena.
+`toggleAICleanUp()` i `closeAICleanUp()` su netaknuti, jer njih zove i tastatura
+i svih šest mesta iz KORAKA 113.
+
+### Merenje — nov harness `Tools/run-header-bar-test.py`
+
+Vadi **pravu** `headerBarColumns` iz `Develop.swift` i pušta je kroz ceo raspon
+panela (300…560, korak 1 pt):
+
+- svaki broj kolona **deli** dvanaest — nijedan red ne može da bude krnj;
+- redovi su međusobno jednaki po definiciji, i to se proverava posebno;
+- raspored se **stvarno prelama** (tri različita u rasponu), ne stoji na jednom;
+- širenje panela nikad ne daje **manje** ćelija po redu;
+- najmanja ćelija u svakom rasporedu je iznad 34 pt.
+
+Takođe broji dugmad u `headerBarItems` (9 + 3 = 12) i tvrdi da Unflatten ima
+stalnu ćeliju — jer bez toga pada ceo dokaz o punim redovima.
+
+### ⚠️ Greška u samom harness-u, uhvaćena i zapisana
+
+Prva verzija je pokretala `swift shim.swift test.swift` — **dva fajla**. Izašlo
+je: **prazan izlaz, izlazni kod 0**, i to je pročitano kao prolaz. Kroz `swift`
+se top-level kod izvršava samo iz prvog fajla. Sad se, po uzoru na
+`run-slider-drag-test.py`, izvučeni kod **ubacuje u jedan fajl** na markiranu
+liniju, a runner **pada ako u izlazu nema linije `RESULT:`** — tiha zelena boja
+je gora od crvene.
+
+### Provereno
+
+- `BUILD SUCCEEDED`, Release, universal.
+- `Tools/run-header-bar-test.py` → **RESULT: OK**.
+- `Tools/run-editsettings-decode-test.py` → **RESULT: OK**, 129 slogova.
+- `Tools/run-layer-pixel-store-test.py` → **ALL PASS**.
+- `Tools/run-crop-rotation-test.py` → **RESULT: OK**.
+- `Tools/run-update-quit-test.py` → **RESULT: OK** (KORAK 114 nije pomeren).
+- grep: nema više nijedne reference na četiri uklonjena pogleda.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Sve vizuelno. Na ovoj mašini nema dozvole ni za snimanje ekrana ni za
+Accessibility (v. KORAK 114), pa traka nije viđena — ni kako se prelama pri
+vučenju panela, ni da li su ikonice čitljive bez natpisa, ni da li se popover
+Presets otvara tamo gde treba. App je pokrenuta i predata klijentu.

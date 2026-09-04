@@ -5124,6 +5124,16 @@ enum DevelopPanelTab: String, CaseIterable, Identifiable {
         case .layers: return "square.2.layers.3d"
         }
     }
+
+    /// The tab bar lost its printed names when the tabs joined the header bar,
+    /// so the tooltip has to say both what it is called and what is in it.
+    var helpText: String {
+        switch self {
+        case .edit: return "Edit — light, colour, curves and detail."
+        case .retouch: return "Retouch — tools, masks, selections and removal."
+        case .layers: return "Layers — the layers on this photo."
+        }
+    }
 }
 
 // Reordering a layer by dragging its row. A DropDelegate rather than the
@@ -5313,6 +5323,8 @@ struct DevelopView: View {
     @State private var kelvinFieldText = ""
     @State private var isEditingKelvin = false
     @State private var isAddingPreset = false
+    /// Presets is a popover off the header bar now, not a section in the panel.
+    @State private var showPresetsPopover = false
     @State private var newPresetName = ""
     /// Which preset is being renamed, and what it is being renamed to.
     @State private var renamingPresetID: UUID?
@@ -7123,166 +7135,18 @@ struct DevelopView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // FLOWS rather than sits in one HStack. Five buttons at this font
-            // are wider than a 340pt panel, and the panel is draggable from 300
-            // to 560 — so on one width they fit and on another they would all
-            // truncate to "Origi…", "Res…". Wrapping to a second line is the
-            // honest way to run out of width for a row of NAMED buttons: the
-            // names are the point, and at 560 they are all on one line anyway.
+            // ONE bar, icon only, every cell the same size and no gap
+            // anywhere in it — asked for in those terms: *„sve da bude bez
+            // texta samo dugmad sa ikonicom i da se sve stavi pod jednu
+            // sekciju i sva dugmad da budu iste velicine i da nikad ne
+            // ostavlja prostor prazan izmedju ikonica ili sa strane"*.
             //
-            // Same FlowLayout the ShowGrid thumbnails use. No Spacer before
-            // Done any more — a spacer means nothing to a flow, and Done now
-            // simply follows the button before it.
-            FlowLayout(spacing: 8, lineSpacing: 8) {
-                beforeAfterButton
-
-                // Crop lives up here for the same reason Reset does, and it
-                // was reported the same way: it was a bare icon, third in a
-                // row, inside the "Crop & Rotate" section — reachable only by
-                // scrolling to it and knowing which section it had been filed
-                // under. Lightroom keeps crop in a strip directly under the
-                // histogram that never scrolls away, and that is the standard
-                // the client is comparing against.
-                //
-                // The one in "Crop & Rotate" STAYS. It is the same state
-                // (isCropping), not a second mode, and the client has already
-                // learned where it is — taking it away to avoid a duplicate
-                // would be fixing the report by breaking the habit.
-                cropHeaderButton
-
-                // Reset lives up here, beside Done, because it acts on the
-                // WHOLE photo — the same scope as Done — and because a client
-                // who wants the original back wants it now. It was only at the
-                // very bottom of the scroll, under every section, which is far
-                // enough down that it was missed entirely: the photo that
-                // prompted this was put back to its original by dragging every
-                // slider to zero by hand.
-                Button {
-                    resetAllSettings()
-                } label: {
-                    HStack(spacing: 6) {
-                        // The undo arrow, not "arrow.uturn.backward": this puts
-                        // back EVERY setting at once, and a full circle says
-                        // "all the way round to where it started" where a
-                        // u-turn says "one step back".
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("Reset")
-                    }
-                }
-                .buttonStyle(ShowHeaderButtonStyle())
-                .opacity(settings.isNeutral ? 0.4 : 1)
-                .disabled(settings.isNeutral)
-                .help("Put this photo back to the original.")
-
-                // Select People up here beside the rest, asked for in those
-                // terms: *„ispod reset dodaj jos jedno dugme kao quick action
-                // button select people"*. It is the same call the one in Tools
-                // makes — one action, two ways in, like Crop already has — so
-                // there is nothing to keep in step between them.
-                //
-                // The FlowLayout puts it directly under Reset at the panel
-                // widths this row wraps at, which is where it was asked for.
-                Button {
-                    selectPeopleAsLayer()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "person.crop.rectangle")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("Select People")
-                    }
-                }
-                .buttonStyle(ShowHeaderButtonStyle())
-                .disabled(isFindingPeople || isRemoving || selectedURL == nil)
-                .opacity((isFindingPeople || isRemoving || selectedURL == nil) ? 0.4 : 1)
-                .help("Lift the people in this photo onto their own layer, with the background on a second one.")
-
-                // The way in to AI Clean Up, and now the ONLY way in — the
-                // block below is no longer a permanently visible titled line,
-                // it appears when this is pressed. Up here for the same reason
-                // Crop is: a tool you reach by pressing a named button in a row
-                // that never scrolls away.
-                aiCleanUpHeaderButton
-
-                // Flatten up here as well as in its section below, asked for
-                // in those terms: *„već ga ima dole ali dodaj i ovde gore"*.
-                // Same call, same state, same wording as the one in the panel
-                // — a second way in, like Crop and Select People already have,
-                // not a second implementation.
-                //
-                // ⚠️ Disabled rather than hidden when there is nothing to bake.
-                // Hiding it would make this row change length depending on the
-                // photo, and the buttons after it would move under the
-                // pointer; Reset up here already greys out the same way for
-                // the same reason. `hasUnbakedEdits` is what the panel's own
-                // section tests, so the two can never disagree about whether
-                // there is anything to flatten.
-                Button {
-                    flattenPhoto()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "square.stack.3d.down.forward")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(isFlattening
-                             ? "Flattening…"
-                             : ((selectedURL.map { FlattenedImageStore.isFlattened($0) } ?? false)
-                                ? "Flatten Again" : "Flatten Photo"))
-                    }
-                }
-                .buttonStyle(ShowHeaderButtonStyle())
-                .disabled(isFlattening || selectedURL == nil || !hasUnbakedEdits)
-                .opacity((isFlattening || selectedURL == nil || !hasUnbakedEdits) ? 0.4 : 1)
-                .help("Bake the grade, the masks and the AI Clean Up into the photo. Your original file is never touched.")
-
-                // ⚠️ Unflatten belongs beside Flatten, and leaving it out was a
-                // real defect — reported as *„kada flatujem sliku ne mogu više
-                // da je unflatujem"*.
-                //
-                // The mechanism was never broken: checked on the client's own
-                // machine, 11 flattened copies, 11 saved snapshots, every key
-                // matching its file, and the panel's own Unflatten showing
-                // correctly. What broke was where he was LOOKING. Flatten moved
-                // up here (KORAK 99) and its opposite did not, so the way in
-                // was in the header and the way back was at the bottom of a
-                // long scroll. A pair of actions has to live in one place.
-                //
-                // Shown only when there IS a flattened copy — unlike Flatten,
-                // which greys out instead. Flatten greys because its slot in
-                // the row is permanent; this one has no permanent slot and a
-                // dead button on most photos would be noise.
-                if selectedURL.map({ FlattenedImageStore.isFlattened($0) }) ?? false {
-                    Button {
-                        unflattenPhoto()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.uturn.backward")
-                                .font(.system(size: 11, weight: .semibold))
-                            Text("Unflatten")
-                        }
-                    }
-                    .buttonStyle(ShowHeaderButtonStyle())
-                    .disabled(isFlattening)
-                    .opacity(isFlattening ? 0.4 : 1)
-                    .help("Go back to the original file and the settings from before the first flatten. Anything done since is discarded.")
-                }
-
-                // "Grid", not "Done", and named after where it goes rather
-                // than after finishing something: it closes Create and puts
-                // the client back in ShowGrid. "Done" also implied a commit,
-                // which is not what happens — edits are saved as they are made,
-                // and nothing here is waiting to be confirmed.
-                Button {
-                    onClose()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "square.grid.2x2")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("Grid")
-                    }
-                }
-                .buttonStyle(ShowHeaderButtonStyle())
-                .help("Back to the grid.")
-            }
+            // The words are not lost, they moved into the tooltip: hovering a
+            // cell says what it does. That is also why the tooltips are
+            // sentences rather than the old labels — with the label gone from
+            // the screen, the tooltip is the only place left that can explain
+            // a glyph.
+            panelHeaderActionBar
 
             // Directly under the buttons, because that is where the client
             // pressed and where he is looking: *„kada kliknem gore na quick
@@ -8100,59 +7964,286 @@ struct DevelopView: View {
     // original is a quick glance, not an extra click to undo — the same
     // interaction Lightroom's own "\\" before/after key gives you, just on
     // a button since this has no keyboard shortcut plumbing yet.
-    private var beforeAfterButton: some View {
-        // "Original", not "Before / After", by request — and it is the better
-        // name for what the button does: it does not show two things side by
-        // side, it shows the original for as long as it is held. The label no
-        // longer changes while held either; the highlight already says that,
-        // and a word that swaps under the pointer is a word that has to be read
-        // twice.
-        HStack(spacing: 6) {
-            Image(systemName: "photo")
-                .font(.system(size: 11, weight: .semibold))
-            Text("Original")
-        }
-            .font(.custom("Figtree", size: 12).weight(.semibold))
-            .foregroundColor(showOriginal ? AppColors.hoverInk : AppColors.ink)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(showOriginal ? AppColors.panelAlt : Color.clear)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
-            )
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in showOriginal = true }
-                    .onEnded { _ in showOriginal = false }
-            )
+    // MARK: Header action bar
+
+    /// What a header cell draws. One glyph, never a word.
+    private enum HeaderGlyph {
+        case symbol(String)
+        /// The letters "AI". There is no SF Symbol that says AI, and a wand
+        /// would say the same thing as the Clean Up buttons it opens.
+        case badge(String)
     }
 
-    // Named, not a bare icon: this sits in a row of words (Original, Reset,
-    // AI Clean Up, Grid) and an unlabelled glyph among them reads as
-    // decoration.
-    // The icon stays alongside the word so it is still findable by shape.
-    private var cropHeaderButton: some View {
-        Button {
-            toggleCropMode()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "crop")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("Crop")
+    private struct HeaderBarItem: Identifiable {
+        enum Behaviour {
+            case tap(() -> Void)
+            /// Shows the original for as long as it is HELD — a gesture, not a
+            /// press, which is why it cannot just be a Button like the rest.
+            case holdForOriginal
+            /// Opens the Presets popover, anchored to its own cell.
+            case presets
+        }
+
+        let id: String
+        let glyph: HeaderGlyph
+        /// The tooltip — and now the ONLY place this button's name survives.
+        /// It says what the button does rather than only what it was called,
+        /// because a glyph with no label has nothing else to explain it.
+        let help: String
+        var isActive = false
+        var isDisabled = false
+        let behaviour: Behaviour
+    }
+
+    private static let headerCellHeight: CGFloat = 34
+
+    /// How many cells go in one row.
+    ///
+    /// ⚠️ Only DIVISORS of the button count are ever returned, and that is the
+    /// whole trick. With a divisor every row is full, so the bar can never end
+    /// in a hole — which is the requirement, stated twice: *„da nikad ne
+    /// ostavlja prostor prazan izmedju ikonica ili sa strane"* and *„uvek isto
+    /// gore isto dole"*. The panel is draggable from 300 to 560, so the count
+    /// per row has to change with it: twelve buttons go 12×1, 6×2, 4×3, 3×4,
+    /// 2×6 and nothing else.
+    ///
+    /// ⚠️ It is also why the Unflatten cell is PERMANENT (greyed out when there
+    /// is nothing to unflatten) instead of appearing only on a flattened
+    /// photo: twelve divides six ways, eleven divides none at all — a row
+    /// would have to end short. Flatten already greys out for its own reason,
+    /// so the pair behaves alike.
+    private static func headerBarColumns(for width: CGFloat, count: Int) -> Int {
+        guard count > 1 else {
+            return max(count, 1)
+        }
+        // 28 = the panel's own horizontal padding, which is not the bar's to use.
+        let available = max(width - 28, 60)
+        // Aimed at, not required: the split whose cells land NEAREST this is
+        // the one taken. A minimum alone was tried first and it sat on six per
+        // row across almost the whole drag range — technically legal, but it
+        // ignored the width instead of following it, which is the opposite of
+        // what was asked (*„zavisno kako se desna strana siri ili suzava"*).
+        let idealCell: CGFloat = 64
+        // A floor, so a very narrow panel gives up a row rather than a target
+        // too small to hit.
+        let smallestCell: CGFloat = 34
+
+        let divisors = (1...count).filter { count % $0 == 0 }.sorted()
+        var best = divisors.first ?? 1
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+
+        for columns in divisors {
+            // The seams between cells are a pixel each, and they come out of
+            // the same width the cells divide.
+            let cell = (available - CGFloat(columns - 1)) / CGFloat(columns)
+            guard cell >= smallestCell else {
+                continue
+            }
+            let distance = abs(cell - idealCell)
+            if distance < bestDistance {
+                bestDistance = distance
+                best = columns
             }
         }
-        .buttonStyle(ShowHeaderButtonStyle())
-        .foregroundColor(isCropping ? AppColors.hoverInk : AppColors.ink)
-        .background(
+
+        return best
+    }
+
+    private var headerBarItems: [HeaderBarItem] {
+        let noPhoto = selectedURL == nil
+        let isFlattenedPhoto = selectedURL.map { FlattenedImageStore.isFlattened($0) } ?? false
+
+        let actions: [HeaderBarItem] = [
+            HeaderBarItem(id: "original",
+                          glyph: .symbol("photo"),
+                          help: "Original — hold to see this photo as it came out of the camera.",
+                          isActive: showOriginal,
+                          isDisabled: noPhoto,
+                          behaviour: .holdForOriginal),
+
+            HeaderBarItem(id: "crop",
+                          glyph: .symbol("crop"),
+                          help: "Crop — crop, straighten and rotate this photo.",
+                          isActive: isCropping,
+                          isDisabled: noPhoto,
+                          behaviour: .tap { toggleCropMode() }),
+
+            // The full circle, not "arrow.uturn.backward": this puts back EVERY
+            // setting at once, and a full circle says "all the way round to
+            // where it started" where a u-turn says "one step back".
+            HeaderBarItem(id: "reset",
+                          glyph: .symbol("arrow.counterclockwise"),
+                          help: "Reset — put this photo back to the original.",
+                          isDisabled: settings.isNeutral,
+                          behaviour: .tap { resetAllSettings() }),
+
+            HeaderBarItem(id: "people",
+                          glyph: .symbol("person.crop.rectangle"),
+                          help: "Select People — lift the people in this photo onto their own layer, with the background on a second one.",
+                          isDisabled: isFindingPeople || isRemoving || noPhoto,
+                          behaviour: .tap { selectPeopleAsLayer() }),
+
+            HeaderBarItem(id: "ai",
+                          glyph: .badge("AI"),
+                          help: "AI Clean Up — paint over what should go, then let the model fill it in.",
+                          isActive: isAIManipulationVisible,
+                          isDisabled: noPhoto,
+                          behaviour: .tap { toggleAICleanUp() }),
+
+            HeaderBarItem(id: "flatten",
+                          glyph: .symbol("square.stack.3d.down.forward"),
+                          help: isFlattening
+                              ? "Flattening…"
+                              : (isFlattenedPhoto
+                                 ? "Flatten Again — bake what has been done since the last flatten into the photo. Your original file is never touched."
+                                 : "Flatten Photo — bake the grade, the masks and the AI Clean Up into the photo. Your original file is never touched."),
+                          isDisabled: isFlattening || noPhoto || !hasUnbakedEdits,
+                          behaviour: .tap { flattenPhoto() }),
+
+            HeaderBarItem(id: "unflatten",
+                          glyph: .symbol("arrow.uturn.backward"),
+                          help: "Unflatten — go back to the original file and the settings from before the first flatten. Anything done since is discarded.",
+                          isDisabled: isFlattening || !isFlattenedPhoto,
+                          behaviour: .tap { unflattenPhoto() }),
+
+            // New, and the way in to what used to be a permanently open section
+            // in the panel: *„stavi novo dugme presets, i kada se klikne na
+            // dugme preset onda otvara ovo presets"*.
+            HeaderBarItem(id: "presets",
+                          glyph: .symbol("paintpalette"),
+                          help: "Presets — save this look, apply a saved one, or import from Lightroom.",
+                          isActive: showPresetsPopover,
+                          behaviour: .presets),
+
+            // "Grid", not "Done", and named after where it goes rather than
+            // after finishing something: edits are saved as they are made, so
+            // there is nothing here waiting to be confirmed.
+            HeaderBarItem(id: "grid",
+                          glyph: .symbol("square.grid.2x2"),
+                          help: "Grid — back to the grid.",
+                          behaviour: .tap { onClose() })
+        ]
+
+        // The tabs join the same bar, by request. They keep their own glyphs
+        // and their lit state, and the tooltip carries the name that used to
+        // be printed beside it.
+        let tabs: [HeaderBarItem] = DevelopPanelTab.allCases.map { tab in
+            HeaderBarItem(id: "tab." + tab.rawValue,
+                          glyph: .symbol(tab.systemImage),
+                          help: tab.helpText,
+                          isActive: panelTab == tab,
+                          behaviour: .tap { panelTab = tab })
+        }
+
+        return actions + tabs
+    }
+
+    private func headerBarCell(_ item: HeaderBarItem) -> some View {
+        let face = Group {
+            switch item.glyph {
+            case .symbol(let name):
+                Image(systemName: name)
+                    .font(.system(size: 14, weight: .semibold))
+            case .badge(let text):
+                Text(text)
+                    .font(.system(size: 12, weight: .heavy, design: .rounded))
+            }
+        }
+        .foregroundColor(item.isActive ? AppColors.hoverInk : AppColors.ink)
+        .opacity(item.isDisabled ? 0.35 : 1)
+        // maxWidth .infinity is what makes every cell the same width and the
+        // row full: the cells divide whatever the panel gives them, so there
+        // is nothing left over at either end.
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.headerCellHeight)
+        .background(item.isActive ? AppColors.panelAlt : Color.clear)
+        // Load-bearing, not decoration: without it only the glyph itself is
+        // hit-testable and the space around it is dead — the same omission was
+        // a real bug on the Crop/Rotate and aspect-ratio buttons (a50776f).
+        .contentShape(Rectangle())
+        .help(item.help)
+
+        return Group {
+            switch item.behaviour {
+            case .tap(let action):
+                Button(action: action) {
+                    face
+                }
+                .buttonStyle(.plain)
+                .disabled(item.isDisabled)
+
+            case .holdForOriginal:
+                face
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { _ in showOriginal = true }
+                            .onEnded { _ in showOriginal = false }
+                    )
+
+            case .presets:
+                Button {
+                    showPresetsPopover.toggle()
+                } label: {
+                    face
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showPresetsPopover, arrowEdge: .bottom) {
+                    presetsPopover
+                }
+            }
+        }
+    }
+
+    private var panelHeaderActionBar: some View {
+        let items = headerBarItems
+        let columns = Self.headerBarColumns(for: CGFloat(effectivePanelWidth),
+                                            count: items.count)
+        let rows: [[HeaderBarItem]] = stride(from: 0, to: items.count, by: columns).map {
+            Array(items[$0..<min($0 + columns, items.count)])
+        }
+
+        // Hairlines rather than spacing. A gap between cells is exactly what
+        // was asked to go, but a bar with no seam at all reads as one wide
+        // button, so the seam is a single pixel and the cells still touch.
+        return VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+                if rowIndex > 0 {
+                    Rectangle()
+                        .fill(AppColors.border.opacity(0.5))
+                        .frame(height: 1)
+                }
+
+                HStack(spacing: 0) {
+                    ForEach(Array(row.enumerated()), id: \.element.id) { cellIndex, item in
+                        if cellIndex > 0 {
+                            Rectangle()
+                                .fill(AppColors.border.opacity(0.5))
+                                .frame(width: 1, height: Self.headerCellHeight)
+                        }
+
+                        headerBarCell(item)
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .fill(isCropping ? AppColors.panelAlt : Color.clear)
+                .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
         )
-        .help("Crop and straighten this photo.")
+    }
+
+    /// The Presets section, in a popover instead of a permanent block in the
+    /// panel. It opens from any tab this way, which the old section could not
+    /// do — it lived inside Edit.
+    private var presetsPopover: some View {
+        ScrollView {
+            presetsSection
+                .padding(16)
+        }
+        .frame(width: 320)
+        .frame(maxHeight: 420)
+        .background(AppColors.panel)
     }
 
     // Opens and closes the AI Manipulation block above the tabs.
@@ -8221,42 +8312,6 @@ struct DevelopView: View {
         withAnimation(.easeInOut(duration: 0.18)) {
             aiManipulationExpanded = false
         }
-    }
-
-    private var aiCleanUpHeaderButton: some View {
-        Button {
-            // ONE press puts the brush in your hand. It used to only unfold the
-            // block, leaving a second press on a second "Clean Up" button
-            // before anything could be painted — reported as exactly that:
-            // *„kada kliknem na AI Clean Up odmah da mi da da mogu da paintujem
-            // a ne da opet kliknem ispod"*. The button inside the block is gone
-            // for the same reason: it was the second half of a two-step that
-            // should never have been two steps.
-            //
-            // Off turns the brush off with it. On stays on even if the brush is
-            // later switched off from "Exit Clean Up" — Quick and Generative
-            // live in that block and act on paint that is ALREADY down, so
-            // folding it away the moment painting stops would put them out of
-            // reach at the one moment they are wanted.
-            toggleAICleanUp()
-        } label: {
-            HStack(spacing: 6) {
-                Text("AI")
-                    .font(.system(size: 10, weight: .heavy, design: .rounded))
-                    .frame(width: 14, height: 12)
-                Text("Clean Up")
-            }
-        }
-        .buttonStyle(ShowHeaderButtonStyle())
-        // Lit whenever the block is on the panel, however it got there —
-        // including from the Remove section's own button, which does not touch
-        // aiManipulationExpanded.
-        .foregroundColor(isAIManipulationVisible ? AppColors.hoverInk : AppColors.ink)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(isAIManipulationVisible ? AppColors.panelAlt : Color.clear)
-        )
-        .help("Paint over what should go, then let the model fill it in.")
     }
 
     // MARK: Center preview + crop overlay
@@ -11147,10 +11202,6 @@ struct DevelopView: View {
                 Divider()
             }
 
-            panelTabBar
-
-            Divider()
-
             ScrollViewReader { panelScroll in
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -11160,14 +11211,23 @@ struct DevelopView: View {
 
                         Divider()
 
-                        presetsSection
+                        // ⚠️ Crop & Rotate is here ONLY while the crop tool is
+                        // on. It used to sit in the panel whether or not anyone
+                        // was cropping, and the client asked for it to go for a
+                        // precise reason: *„ovo ukloni isto jer bi se to
+                        // otvorilo kad bi kliknuo na crop dugme"*. Pressing Crop
+                        // already switches to this tab and scrolls here
+                        // (toggleCropMode), so the section arrives exactly when
+                        // it is wanted and takes no room the rest of the time.
+                        //
+                        // Presets is gone from this scroll altogether — it is
+                        // the Presets cell in the header bar now, in a popover.
+                        if isCropping {
+                            cropRotateSection
+                                .id(Self.cropSectionAnchor)
 
-                        Divider()
-
-                        cropRotateSection
-                            .id(Self.cropSectionAnchor)
-
-                        Divider()
+                            Divider()
+                        }
 
                         lightSection
 
@@ -11231,52 +11291,6 @@ struct DevelopView: View {
         }
         .frame(width: CGFloat(effectivePanelWidth))
         .background(AppColors.panel)
-    }
-
-    // Pinned above the scroll, so switching tabs never depends on where the
-    // panel happens to be scrolled to. Hand-built buttons rather than
-    // Picker(.segmented): every other control in this panel is styled by hand
-    // (ShowHeaderButtonStyle, AppColors), and a segmented Picker would be the
-    // single macOS-default control sitting in the middle of it.
-    //
-    // .contentShape(Rectangle()) on each label is load-bearing, not decorative
-    // — the same omission was a real bug on the Crop/Rotate and aspect-ratio
-    // buttons (see a50776f): without it only the glyph and the text glyphs
-    // themselves are hit-testable, and the padding around them is dead.
-    private var panelTabBar: some View {
-        HStack(spacing: 4) {
-            ForEach(DevelopPanelTab.allCases) { tab in
-                let isActive = panelTab == tab
-
-                Button {
-                    panelTab = tab
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: tab.systemImage)
-                            .font(.system(size: 11))
-                        Text(tab.rawValue)
-                            .font(.custom("Figtree", size: 12).weight(isActive ? .bold : .medium))
-                    }
-                    .foregroundColor(isActive ? AppColors.ink : AppColors.muted)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 7)
-                    .background(AppColors.panelAlt.opacity(isActive ? 1 : 0))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    // Outlined like every other button in the app: the fill
-                    // alone marked the ACTIVE tab, which left the other two
-                    // reading as plain text.
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(isActive ? AppColors.border : AppColors.border.opacity(0.7),
-                                    lineWidth: 1)
-                    )
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
     }
 
     // Settings, Reset and Export act on the whole photo, not on whichever tab

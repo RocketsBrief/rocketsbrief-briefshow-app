@@ -11824,8 +11824,9 @@ Verzija se u app-i prikazuje iz bundle-a, pa ne može da se raziđe sa tagom.
 ### ⚠️ I dalje otvoreno
 
 1. **Nije potpisano Developer ID sertifikatom** — ad-hoc, kao 10.1 i 10.8.
-2. **`latest_version` u BriefControl-u je i dalje 6.0.** Niko ne dobija „mora
-   update". Podizanje je klijentova odluka.
+2. ~~**`latest_version` u BriefControl-u je i dalje 6.0.**~~ ⚠️ **NETAČNO od
+   4.09.** — izmereno, stoji **11.2**. Klijent ga sam podiže na svaku novu
+   verziju i to radi bez pitanja. V. KORAK 114.
 3. **Istorija commit-ova nosi 214 MB** starog `build_universal/`. Čišćenje je
    prepisivanje istorije i čeka odluku.
 4. **`BRIEFSHOW_MODELS` override** koji `Tools/README.txt` tvrdi da postoji —
@@ -12845,3 +12846,115 @@ Build je rađen sa `-destination "generic/platform=macOS"` — bez toga
 
 Zatvaranje AI Clean Up-a na svih šest mesta i uvek-vidljiva oznaka verzije —
 build prolazi, u app-i nije viđeno.
+
+## KORAK 114 — Update gasi app na sat, ne na povratni poziv (4. septembar 2026)
+
+Prijava: *„kada klijent updatuje app, kada klikne update da ugasis app skroz
+(quit) posle 4 sekundi.. prosli put si mi rekao da ce da mozda prekine download
+grab. ali nece posle 4 sekundi znaci kad se klikne update, posle 4 sekundi C4S
+da se ugasi totalno taj koji je ponudio update!"*
+
+### ⚠️ KORAK 110 je gasio na POGREŠAN OKIDAČ, i to je bio pravi kvar
+
+Gašenje je stajalo **unutar completion handler-a** `NSWorkspace.open`, iza
+`guard error == nil`. Obrazloženje zapisano tamo („gašenje uporedo sa predajom
+ume da pretekne predaju") bilo je tačno kao briga, ali lek je bio pogrešan:
+vezao je gašenje za **povratni poziv koji app ne kontroliše**. Ako taj poziv
+kasni ili ne stigne, app ne umire uopšte — a klijent gleda otvoren C4S Suite
+koji je maločas obećao da će se skloniti.
+
+Sada je gašenje na **satu koji kreće od pritiska**: `DispatchWorkItem` +
+`asyncAfter(.now() + 4)`. Četiri sekunde su klijentov broj i one rešavaju baš
+onu brigu zbog koje je 110 vezao gašenje za povratni poziv — predaja URL-a
+browseru traje milisekunde, dakle sat je red veličine duži od posla koji čeka.
+
+⚠️ **Preuzimanje se ovim ne prekida, i to je činjenica o tome ČIJI je posao.**
+Fajl vuče browser, u svom procesu; naša app u tome ne učestvuje ni jednim
+bajtom. Provereno i da `download_url` u BriefControl-u pokazuje **direktno na
+`.zip` asset**, ne na stranicu — dakle preuzimanje kreće samo od sebe i traje
+u browseru posle nas.
+
+### Jedini slučaj koji NE gasi, i zašto je zadržan
+
+`DispatchWorkItem` je zadržan (umesto golog `asyncAfter`) da bi mogao da se
+**otkaže** ako predaja stvarno padne (`error != nil`). Bez toga bi neuspešno
+otvaranje browsera ostavilo klijenta i bez preuzimanja i bez app-e. Taj povratni
+poziv, kad stigne, stiže u milisekundama — dakle uvek duboko unutar četiri
+sekunde.
+
+⚠️ Razlika prema 110: povratni poziv sada sme samo da **otkaže**, nikad da
+pokrene gašenje. Ako ne stigne nikad, app se ipak gasi.
+
+### Dugme se ne može pritisnuti dvaput, i kaže šta radi
+
+- `quittingForUpdate` straža — drugi pritisak ne pravi drugi sat.
+- Dugme se onemogući i piše „Opening your browser…".
+- Ispod njega izađe rečenica da će se C4S Suite zatvoriti za nekoliko sekundi
+  da bi mogao da se zameni, i da preuzimanje ide dalje u browseru. ⚠️ Bez toga
+  gašenje na ekranu izgleda kao pad app-e, a ne kao deo instalacije.
+- Korak 1 uputstva usklađen: „a few seconds later C4S Suite closes itself".
+
+### ⚠️ ISPRAVKA — `latest_version` NIJE 6.0, i nikad nije trebalo da bude
+### zapisano kao otvoreno pitanje
+
+Klijent: *„Oco sto mi uvek bricas ja uvek promenim u Brief control na najnoviju
+verziju."*
+
+Izmereno danas, direktno na `app_config`:
+
+| polje | vrednost |
+|---|---|
+| `latest_version` | **11.2** |
+| `download_url` | `…/releases/download/v11.2/C4S-Suite-11.2.zip` |
+
+Dakle svaki klijent na starijem od 11.2 **već dobija „mora update"**, i to je
+tako svaki put — klijent to podiže sam čim release izađe. Sve linije u ovom
+fajlu koje kažu „6.0" bile su tačne kad su pisane i **sada su zastarele**;
+nabrajane su kao otvorena stavka kroz najmanje četiri koraka, što je bilo
+pogrešno prenošenje, ne merenje. Ovim se to zatvara: **to nije naša stavka.**
+
+⚠️ Posledica koja se ovim menja u planiranju: gašenje na Update **nije** teško
+proverljivo „jer se kartica ne pojavljuje" (kako je KORAK 110 zapisao) — ona se
+pojavljuje kod svakog klijenta na starijoj verziji, čim release izađe.
+
+### Merenje — nov harness `Tools/run-update-quit-test.py`
+
+Dugme se ne može skriptovati odavde (SwiftUI zatvorenje iza sloja koji se crta
+samo kad server nudi noviju verziju), pa harness radi dvoje:
+
+1. čita **pravi** `UpdateRequiredOverlay` iz `AccountUI.swift` i tvrdi kako je
+   gašenje povezano — 4 s, sat kreće od pritiska, `terminate` **nije** u
+   completion handler-u, handler samo otkazuje i to samo na grešci;
+2. pokreće `Tools/test-update-quit.swift`, koji **meri** da GCD zaista opali na
+   četiri sekunde i da otkazan posao ostane otkazan i posle roka.
+
+Rezultat: **RESULT: OK**, izmereno paljenje **4,20 s** (GCD-jev dozvoljeni
+raspon oko roka; klijentov zahtev je „posle 4 sekunde", ne „tačno u 4,000").
+
+### Provereno
+
+- `BUILD SUCCEEDED`, Release, `-destination "generic/platform=macOS"`.
+- `Tools/run-update-quit-test.py` → **RESULT: OK** (8 tvrdnji o kodu + 3 merenja).
+- `Tools/run-editsettings-decode-test.py` → **RESULT: OK**, 129 slogova.
+- `Tools/run-layer-pixel-store-test.py` → **ALL PASS**.
+- `Tools/run-crop-rotation-test.py` → **RESULT: OK**.
+
+### ⚠️ NEPROVERENO NA EKRANU — i pokušano je, pa palo
+
+Pokušaj je bio pošten i treba da se zna dokle je stigao: napravljena je kopija
+sagrađenog paketa sa `CFBundleShortVersionString` spuštenim na **11.1** (pa
+potpisana ad-hoc sa **pravim** entitlement-ima, izvučenim iz originala), da bi
+server na 11.2 naterao karticu da se pojavi. App se pokrenula, ali:
+
+- `screencapture` na ovoj mašini vraća **samo pozadinu** — nema dozvole za
+  snimanje ekrana, pa se ne vidi ni da li je kartica iskočila;
+- `System Events` ne vraća nijedan prozor procesa — nema dozvole za
+  Accessibility, pa dugme ne može ni da se pritisne skriptom.
+
+Kopija je posle toga ugašena i obrisana. **Dakle: pritisak na „Download Update"
+u pravoj app-i nije viđen, ni gašenje posle njega.** Ono što jeste izmereno je
+sam tajmer i to kako je povezan.
+
+⚠️ Ako klijent proba i app se **ne** ugasi, prvo pitanje nije tajmer nego da li
+je povratni poziv vratio grešku (jedina grana koja otkazuje) — vidi se tako što
+browser **nije** otvorio stranicu preuzimanja.

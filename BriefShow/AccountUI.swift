@@ -408,6 +408,16 @@ struct UpdateRequiredOverlay: View {
     let releaseNotes: String?
 
     @State private var showInstallGuide = false
+    /// Set the moment "Download Update" is pressed, so the button cannot be
+    /// pressed twice (two quit timers) and so the client is told, on screen,
+    /// that the app is about to close on purpose rather than crash.
+    @State private var quittingForUpdate = false
+
+    /// How long the app stays alive after the download is handed to the
+    /// browser. The client asked for this by the number: press Update, and
+    /// four seconds later C4S Suite is gone so the new one can be dragged over
+    /// it in Applications.
+    private static let quitDelay: TimeInterval = 4
 
     var body: some View {
         ZStack {
@@ -447,28 +457,58 @@ struct UpdateRequiredOverlay: View {
                     // it (which is what install step 3 used to say) was making
                     // them do the app's job.
                     //
-                    // Quit AFTER the browser has actually been handed the URL,
-                    // not alongside it: terminating in the same turn can beat
-                    // the hand-off and leave the client with neither a download
-                    // nor an app. On a failure it deliberately does NOT quit,
-                    // so the button is still there to press again.
+                    // ⚠️ The quit is on a CLOCK, not on the hand-off's
+                    // completion. Earlier it waited for `open` to call back,
+                    // which meant that on a slow or silent callback the app
+                    // could sit there open — exactly what the client reported.
+                    // Four seconds is his number, and it is comfortably more
+                    // than a browser needs to be handed a URL: the hand-off is
+                    // the browser's job from the first instant, and nothing of
+                    // ours is still transferring when we go.
                     guard let downloadURL, let url = URL(string: downloadURL) else { return }
+                    guard !quittingForUpdate else { return }
+                    quittingForUpdate = true
+
+                    // Kept so the ONE case that must not quit can cancel it:
+                    // if the browser never took the URL, quitting would leave
+                    // the client with neither a download nor an app. That
+                    // callback lands in milliseconds when it lands at all, so
+                    // it is always well inside the four seconds.
+                    let quit = DispatchWorkItem { NSApplication.shared.terminate(nil) }
+                    DispatchQueue.main.asyncAfter(
+                        deadline: .now() + Self.quitDelay, execute: quit
+                    )
+
                     NSWorkspace.shared.open(
                         url, configuration: NSWorkspace.OpenConfiguration()
                     ) { _, error in
-                        guard error == nil else { return }
-                        DispatchQueue.main.async { NSApplication.shared.terminate(nil) }
+                        guard error != nil else { return }
+                        DispatchQueue.main.async {
+                            quit.cancel()
+                            quittingForUpdate = false
+                        }
                     }
                 } label: {
                     HStack {
                         Spacer()
-                        Text("Download Update")
+                        Text(quittingForUpdate ? "Opening your browser…" : "Download Update")
                             .font(.custom("Figtree", size: 13).weight(.semibold))
                         Spacer()
                     }
                     .padding(.vertical, 10)
                 }
                 .buttonStyle(PrimaryBrutalButtonStyle())
+                .disabled(quittingForUpdate)
+
+                // Without this the quit looks like a crash: the browser opens
+                // behind the app and a few seconds later the app is simply
+                // gone. Said out loud, it reads as the install doing its job.
+                if quittingForUpdate {
+                    Text("C4S Suite will close in a few seconds so you can replace it in your Applications folder. Your download continues in the browser.")
+                        .font(.custom("Figtree", size: 11.5).weight(.regular))
+                        .foregroundColor(AppColors.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) {
@@ -486,7 +526,7 @@ struct UpdateRequiredOverlay: View {
 
                 if showInstallGuide {
                     VStack(alignment: .leading, spacing: 10) {
-                        installStep(1, "Click \"Download Update\" above. It opens the C4S Suite release page on GitHub in your browser, and then C4S Suite closes itself so you can replace it.")
+                        installStep(1, "Click \"Download Update\" above. It opens the C4S Suite release page on GitHub in your browser, and a few seconds later C4S Suite closes itself so you can replace it. The download keeps going in the browser.")
                         installStep(2, "On that page, under \"Assets\", click the file named \"BriefShow-macOS-Universal.zip\" to start the download.")
                         installStep(3, "Open the downloaded file, then drag the new C4S Suite into your Applications folder. Choose \"Replace\" when asked.")
                         installStep(4, "C4S Suite is still in active development, so it isn't distributed through the Mac App Store yet. When you first open it, macOS will say it \"was blocked to protect your Mac.\" Open System Settings → Privacy & Security, scroll down to the Security section, and click \"Open Anyway\" next to C4S Suite.")

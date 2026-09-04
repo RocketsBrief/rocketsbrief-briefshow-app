@@ -213,8 +213,32 @@ enum SDModelStore {
         }
     }
 
+    /// Shipped INSIDE the app, when this build carries the model.
+    ///
+    /// ⚠️ NOT a target resource, and it cannot be one: the model is 2.0 GB and
+    /// GitHub refuses any file over 100 MB IN A REPO, so it must not go into
+    /// `BriefShow/BriefShow/` — that folder is a file system synchronized
+    /// group, meaning anything dropped there is both tracked by git and copied
+    /// into the bundle. The packaging step copies it into the BUILT app's
+    /// Resources and re-signs, which is why this looks the folder up at run
+    /// time rather than through `Bundle.main.url(forResource:)`.
+    ///
+    /// A build without it simply has no such folder, `isComplete` says no, and
+    /// the in-app download from KORAK 105 takes over exactly as before.
+    static var bundledDirectory: URL? {
+        Bundle.main.resourceURL?.appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    /// ⚠️ Order matters, and it is chosen for the client who ALREADY has the
+    /// model: a downloaded copy in Application Support wins over the bundled
+    /// one. They are the same 2.0 GB of weights either way, so preferring the
+    /// installed copy costs nothing and means an update cannot orphan the
+    /// download somebody already paid for — *„oni su downlodovali vec SD Ai
+    /// model ali neki nisu"*.
     static func resolve() -> URL? {
-        [installedDirectory, developmentDirectory].first(where: isComplete)
+        [installedDirectory, bundledDirectory, developmentDirectory]
+            .compactMap { $0 }
+            .first(where: isComplete)
     }
 
     static var isAvailable: Bool { resolve() != nil }

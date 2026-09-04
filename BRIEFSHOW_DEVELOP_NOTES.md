@@ -13086,3 +13086,102 @@ Sve vizuelno. Na ovoj mašini nema dozvole ni za snimanje ekrana ni za
 Accessibility (v. KORAK 114), pa traka nije viđena — ni kako se prelama pri
 vučenju panela, ni da li su ikonice čitljive bez natpisa, ni da li se popover
 Presets otvara tamo gde treba. App je pokrenuta i predata klijentu.
+
+## KORAK 116 — RELEASE v11.4: oba modela u paketu, i dva različita paketa (4. septembar 2026)
+
+Zahtev: *„Zapakuj clean up app da bude univerzalan, za Intel i M procesore kao i
+minimum verziju 13 mac os do najnovije… tag je v11.4… znaci zapakuj oba ai
+modela i LaMa i SD, i naravno da SD Radi na intel procesorima ali da deli rad"*,
+uz napomenu: *„vec instaliran C4S apps na drugim kompjuterima ce dobiti ovaj
+update novi i oni su downlodovali vec SD Ai model ali neki nisu, tako da ovaj
+zapakovani app bude universalan i za vec koji imaju C4S Suit na Mac-ovima i za
+nove klijente"*.
+
+### ⚠️ Dva paketa, ne jedan — i to je odgovor na klijentovu SOPSTVENU napomenu
+
+Ta dva zahteva se ne mogu ispuniti jednim fajlom, i evo brojeva:
+
+| paket | veličina | ko ga uzima |
+|---|---|---|
+| `C4S-Suite-11.4.zip` | **109 MB** | postojeće instalacije (update) |
+| `C4S-Suite-11.4-AI-Models.zip` | **1,94 GB** | nov klijent, sve u jednom |
+
+Da je pušten samo veliki, **svaki** postojeći klijent — uključujući one koji su
+SD već preuzeli (4 preuzimanja na v11.0) — vukao bi 1,94 GB na svaki update, da
+bi dobio 2,0 GB težina koje već ima na disku. Da je pušten samo mali, nov
+klijent mora da pritisne Download u app-i. Sa oba, obe grupe dobijaju najkraći
+put, a **ni jedna ni druga ne ostaje bez Generative-a**.
+
+⚠️ **Veliki paket je 2.086.964.089 bajta, a GitHub-ov limit za asset je 2 GiB =
+2.147.483.648.** Rezerva je **60 MB**. Ako model ikad poraste, ovaj paket više
+ne prolazi kao jedan fajl — i to je granica koju treba znati pre nego što se u
+njega doda još nešto.
+
+### Kako SD ulazi u paket, i zašto NE kroz Xcode
+
+Model se **ne dodaje u target**. `BriefShow/BriefShow/` je synchronized group:
+sve što se tamo spusti i uđe u paket **i uđe u git**, a GitHub odbija fajl preko
+100 MB u repou — Unet sam je 1641 MB. Umesto toga:
+
+1. Xcode napravi običan (mali) paket.
+2. `SD15-Inpainting` se **kopira u `Contents/Resources` gotovog paketa**.
+3. Paket se ponovo potpisuje ad-hoc, sa **pravim** entitlement-ima izvučenim iz
+   originala (`codesign -d --entitlements --xml`), pa `codesign -v` proverava.
+
+Zato `SDModelStore.bundledDirectory` gleda `Bundle.main.resourceURL` u vreme
+izvršavanja, a ne `Bundle.main.url(forResource:)` — resurs ne postoji u projektu
+i ne sme da postoji.
+
+### ⚠️ Redosled traženja je izabran zbog onih koji SU već preuzeli
+
+`resolve()` sada gleda: **installed → bundled → development**.
+
+Preuzeta kopija u Application Support **pobeđuje** onu iz paketa. Iste su
+težine, pa to ništa ne košta, a znači da update ne može da obesmisli preuzimanje
+koje je neko već platio vremenom. Mali paket nema `SD15-Inpainting` u
+Resources, `isComplete` kaže ne, i preuzimanje iz KORAKA 105 radi kao i pre.
+
+### Intel — bilo je već urađeno, i evo gde tačno
+
+Ništa novo nije trebalo: `DevelopSDInpaint.swift` na x86_64 postavlja
+`computeUnits = .all` za UNet (Core ML deli posao između diskretne grafičke i
+jezgara) i `.cpuAndGPU` za VAE prolaze. Fajl je van `#if arch(arm64)` od
+KORAKA 105, `SDModelStore` takođe.
+
+⚠️ Ono što deljenje posla **ne** znači, da se ne obeća: 32 GB sistemske memorije
+se ne sabira sa 4 GB na kartici. SD 1.5 na 512×512 u fp16 staje u 4 GB, pa to
+nije zid — ali RAM ne nadoknađuje karticu.
+
+### Provere na PAKETU, ne na projektu
+
+| provera | mali | veliki |
+|---|---|---|
+| `lipo -archs` | **x86_64 arm64** | **x86_64 arm64** |
+| `LSMinimumSystemVersion` | **13.0** | 13.0 |
+| verzija / build | **11.4 / 23** | 11.4 / 23 |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` | isto |
+| `LaMa.mlmodelc` | **da** | da |
+| `SD15-Inpainting` | ne, namerno | **da** (4 modela, 2036 MB) |
+| lične fotografije | **nula** | nula |
+| `codesign -v` | ok | **ok posle ponovnog potpisa** |
+
+Provera da bundled kopija zaista razrešava nije pretpostavljena: ista provera
+koju `isComplete` radi puštena je nad `Contents/Resources` velikog paketa —
+sva četiri `.mlmodelc` na broju.
+
+⚠️ Build je rađen sa `-destination "generic/platform=macOS"`. Bez toga
+`xcodebuild` tiho suzi na arhitekturu mašine koja gradi (zamka iz KORAKA 108).
+
+### ⚠️ v11.0 se NE SME obrisati
+
+Ugrađeno preuzimanje SD-a (`SDModelInstall.swift`) i dalje pokazuje na
+`…/releases/download/v11.0/SD15-Inpainting.aar`. Nije prebačeno na v11.4 da se
+ne bi uz release slalo još 1,89 GB istih težina. Dok je tako, **brisanje
+release-a v11.0 obara Download dugme u malom paketu.**
+
+### ⚠️ NEPROVERENO
+
+- Veliki paket **nije pokrenut** — ni ovde ni bilo gde. Provereno je da je
+  potpisan, universal, i da su modeli na mestu; da SD iz paketa stvarno radi
+  vidi se tek kad ga neko otvori na mašini koja nema preuzetu kopiju.
+- Intel: v11.0 je potvrđen na pravoj mašini (KORAK 106), 11.4 nije.

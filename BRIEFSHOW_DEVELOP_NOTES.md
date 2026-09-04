@@ -13325,3 +13325,28 @@ nije o kodu nego o tekstu oko koda — vredi pamtiti kao klasu.
 ### ⚠️ NEPROVERENO NA EKRANU
 
 Kao i KORAK 117 — nije viđeno odavde. I dalje van release-a v11.4.
+
+## KORAK 119 — RELEASE v11.5 (4. septembar 2026)
+
+Isti postupak kao KORAK 116, sa istim dvojnim pakovanjem i iz istog razloga —
+postojeće instalacije ne smeju da vuku 1,94 GB težina koje već imaju.
+
+Šta je unutra a nije bilo u 11.4: KORAK 117 (redosled trake, hover natpis koji
+se stvarno vidi, samo jedna upaljena ćelija) i KORAK 118 (bela kartica skinuta,
+kratka crtica).
+
+| provera na PAKETU | mali | veliki |
+|---|---|---|
+| `lipo -archs` | **x86_64 arm64** | **x86_64 arm64** |
+| `LSMinimumSystemVersion` | **13.0** | 13.0 |
+| verzija / build | **11.5 / 24** | 11.5 / 24 |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` | isto |
+| LaMa | da | da |
+| SD15-Inpainting (`isComplete`) | ne, namerno | **YES** |
+| lične fotografije | **0** | 0 |
+| `codesign -v` | ok | **ok posle ponovnog potpisa** |
+| zip | 114.650.851 B | **2.086.979.252 B** (rezerva do 2 GiB: 60 MB) |
+
+⚠️ Sve što je zapisano u KORAKU 116 i dalje važi: model ne sme u repo, `v11.0`
+se ne sme brisati (ugrađeno preuzimanje SD-a pokazuje na njegov asset), i
+`latest_version` u BriefControl-u diže klijent sam.

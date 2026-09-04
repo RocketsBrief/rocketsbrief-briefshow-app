@@ -49,6 +49,49 @@ check(12 % 6 == 0 and 12 % 4 == 0 and 12 % 3 == 0,
 check("isDisabled: isFlattening || !isFlattenedPhoto" in items_body,
       "Unflatten keeps a permanent cell and greys out, so the count never changes")
 
+# ---- 1b. the order the client asked for, and it is an ORDER, not a set ------
+order = re.findall(r'HeaderBarItem\(id: "([a-z]+)"|tabItem\(\.([a-z]+)\)', items_body)
+# tabItem()'s own body builds its id by concatenation ("tab." + rawValue), so
+# it does not match the literal-id pattern and the list is the array's order.
+sequence = [a or ("tab." + b) for a, b in order]
+wanted = ["grid", "original", "ai", "crop", "tab.edit"]
+check(sequence[:5] == wanted,
+      "the bar opens with %s (found %s)" % (" → ".join(wanted), " → ".join(sequence[:5])))
+check(sequence[-2:] == ["tab.retouch", "tab.layers"],
+      "Retouch and Layers close the bar (found %s)" % " → ".join(sequence[-2:]))
+
+# ---- 1c. the tooltip is attached to the CONTROL, not inside the label -------
+# This is the bug the client reported: a macOS Button lays its own tracking
+# area over its label, so .help() inside that label never fires.
+cell_start = src.index("    private func headerBarCell(")
+cell_end = src.index("    /// What the pointer is over", cell_start)
+cell = src[cell_start:cell_end]
+face = cell[cell.index("let face = Group {"):cell.index("return Group {")]
+check(".help(" not in face,
+      "no .help() inside the button's label, where macOS would swallow it")
+check(".help(item.help)" in cell[cell.index("return Group {"):],
+      ".help() is on the control itself")
+check(".onHover { inside in" in cell,
+      "every cell reports hover, so the caption under the bar can name it")
+check("private var headerHoverCaption: some View" in src,
+      "there is a caption under the bar that does not depend on the system tooltip")
+
+# ---- 1d. exactly ONE cell can be lit ---------------------------------------
+# Reported as "edit ostaje uvek ukljucen": each cell used to decide its own lit
+# state, so Edit sat lit under a live Crop or AI brush.
+lit = re.findall(r"isActive: ([^,\n]+)", items_body)
+check(lit and all(l.strip().startswith("activeHeaderCellID ==") for l in lit),
+      "every lit state comes from the single activeHeaderCellID (%d cells)" % len(lit))
+active = src[src.index("    private var activeHeaderCellID: String {"):]
+active = active[:active.index("\n    }")]
+check(active.count("return ") == 5,
+      "activeHeaderCellID answers with exactly one id, in priority order")
+check("releaseCanvasTools()" in items_body,
+      "pressing a tab puts down whatever was holding the canvas")
+check("releaseCanvasTools(keepAI: true)" in items_body
+      and "releaseCanvasTools(keepCrop: true)" in items_body,
+      "Crop and AI each put the other down")
+
 # ---- 2. the real layout rule, compiled and measured -------------------------
 marker = "    private static func headerBarColumns(for width: CGFloat, count: Int) -> Int {"
 start = src.find(marker)

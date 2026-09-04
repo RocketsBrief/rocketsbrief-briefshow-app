@@ -5325,6 +5325,8 @@ struct DevelopView: View {
     @State private var isAddingPreset = false
     /// Presets is a popover off the header bar now, not a section in the panel.
     @State private var showPresetsPopover = false
+    /// Which header cell the pointer is over, so the bar can say what it is.
+    @State private var hoveredHeaderItemID: String?
     @State private var newPresetName = ""
     /// Which preset is being renamed, and what it is being renamed to.
     @State private var renamingPresetID: UUID?
@@ -8049,25 +8051,107 @@ struct DevelopView: View {
         return best
     }
 
+    /// One tool at a time. Pressing a header cell puts down whatever else was
+    /// holding the canvas — reported as *„i kada kliknem na nesto sve ostalo da
+    /// iskljuci! jer edit ostaje uvek ukljucen koliko vidim"*.
+    ///
+    /// ⚠️ The crop is COMMITTED, not cancelled. Pressing the Crop cell a second
+    /// time commits too, so leaving by another door must not mean losing the
+    /// frame that was just dragged.
+    private func releaseCanvasTools(keepCrop: Bool = false, keepAI: Bool = false) {
+        if !keepAI {
+            closeAICleanUp()
+        }
+        if !keepCrop && isCropping {
+            commitCrop()
+        }
+    }
+
+    /// The ONE cell that is lit, and the reason it is computed in one place
+    /// rather than each cell deciding for itself: with each deciding, Edit sat
+    /// lit under a live Crop or AI brush, and two lit cells read as two things
+    /// running at once.
+    ///
+    /// A tab is lit only when nothing is holding the canvas. Since pressing a
+    /// tab now also puts those tools down, pressing one always lights it.
+    private var activeHeaderCellID: String {
+        if showOriginal {
+            return "original"
+        }
+        if isCropping {
+            return "crop"
+        }
+        if isAIManipulationVisible {
+            return "ai"
+        }
+        if showPresetsPopover {
+            return "presets"
+        }
+        return "tab." + panelTab.rawValue
+    }
+
     private var headerBarItems: [HeaderBarItem] {
         let noPhoto = selectedURL == nil
         let isFlattenedPhoto = selectedURL.map { FlattenedImageStore.isFlattened($0) } ?? false
 
-        let actions: [HeaderBarItem] = [
+        // A tab is a cell like any other now, so it is built here rather than
+        // appended as a block — the client's order interleaves them with the
+        // actions: *„grid button da bude prvi pa posle original button posle
+        // toga Ai pa Crop pa Edit.. pa ostalo"*.
+        func tabItem(_ tab: DevelopPanelTab) -> HeaderBarItem {
+            HeaderBarItem(id: "tab." + tab.rawValue,
+                          glyph: .symbol(tab.systemImage),
+                          help: tab.helpText,
+                          isActive: activeHeaderCellID == "tab." + tab.rawValue,
+                          behaviour: .tap {
+                              releaseCanvasTools()
+                              panelTab = tab
+                          })
+        }
+
+        return [
+            // First, by request. "Grid", not "Done", and named after where it
+            // goes rather than after finishing something: edits are saved as
+            // they are made, so nothing here is waiting to be confirmed.
+            HeaderBarItem(id: "grid",
+                          glyph: .symbol("square.grid.2x2"),
+                          help: "Grid — back to the grid of photos.",
+                          behaviour: .tap { onClose() }),
+
             HeaderBarItem(id: "original",
                           glyph: .symbol("photo"),
                           help: "Original — hold to see this photo as it came out of the camera.",
-                          isActive: showOriginal,
+                          isActive: activeHeaderCellID == "original",
                           isDisabled: noPhoto,
                           behaviour: .holdForOriginal),
+
+            HeaderBarItem(id: "ai",
+                          glyph: .badge("AI"),
+                          help: "AI Clean Up — paint over what should go, then let the model fill it in.",
+                          isActive: activeHeaderCellID == "ai",
+                          isDisabled: noPhoto,
+                          behaviour: .tap {
+                              // Commits a crop in progress first: the brush and
+                              // the crop frame both own the canvas, and only one
+                              // of them can have it.
+                              releaseCanvasTools(keepAI: true)
+                              toggleAICleanUp()
+                          }),
 
             HeaderBarItem(id: "crop",
                           glyph: .symbol("crop"),
                           help: "Crop — crop, straighten and rotate this photo.",
-                          isActive: isCropping,
+                          isActive: activeHeaderCellID == "crop",
                           isDisabled: noPhoto,
-                          behaviour: .tap { toggleCropMode() }),
+                          behaviour: .tap {
+                              releaseCanvasTools(keepCrop: true)
+                              toggleCropMode()
+                          }),
 
+            tabItem(.edit),
+
+            // ⚠️ "pa ostalo" — the rest keep the order they already had, so
+            // nothing moves that was not asked to move.
             // The full circle, not "arrow.uturn.backward": this puts back EVERY
             // setting at once, and a full circle says "all the way round to
             // where it started" where a u-turn says "one step back".
@@ -8082,13 +8166,6 @@ struct DevelopView: View {
                           help: "Select People — lift the people in this photo onto their own layer, with the background on a second one.",
                           isDisabled: isFindingPeople || isRemoving || noPhoto,
                           behaviour: .tap { selectPeopleAsLayer() }),
-
-            HeaderBarItem(id: "ai",
-                          glyph: .badge("AI"),
-                          help: "AI Clean Up — paint over what should go, then let the model fill it in.",
-                          isActive: isAIManipulationVisible,
-                          isDisabled: noPhoto,
-                          behaviour: .tap { toggleAICleanUp() }),
 
             HeaderBarItem(id: "flatten",
                           glyph: .symbol("square.stack.3d.down.forward"),
@@ -8106,36 +8183,15 @@ struct DevelopView: View {
                           isDisabled: isFlattening || !isFlattenedPhoto,
                           behaviour: .tap { unflattenPhoto() }),
 
-            // New, and the way in to what used to be a permanently open section
-            // in the panel: *„stavi novo dugme presets, i kada se klikne na
-            // dugme preset onda otvara ovo presets"*.
             HeaderBarItem(id: "presets",
                           glyph: .symbol("paintpalette"),
                           help: "Presets — save this look, apply a saved one, or import from Lightroom.",
-                          isActive: showPresetsPopover,
+                          isActive: activeHeaderCellID == "presets",
                           behaviour: .presets),
 
-            // "Grid", not "Done", and named after where it goes rather than
-            // after finishing something: edits are saved as they are made, so
-            // there is nothing here waiting to be confirmed.
-            HeaderBarItem(id: "grid",
-                          glyph: .symbol("square.grid.2x2"),
-                          help: "Grid — back to the grid.",
-                          behaviour: .tap { onClose() })
+            tabItem(.retouch),
+            tabItem(.layers)
         ]
-
-        // The tabs join the same bar, by request. They keep their own glyphs
-        // and their lit state, and the tooltip carries the name that used to
-        // be printed beside it.
-        let tabs: [HeaderBarItem] = DevelopPanelTab.allCases.map { tab in
-            HeaderBarItem(id: "tab." + tab.rawValue,
-                          glyph: .symbol(tab.systemImage),
-                          help: tab.helpText,
-                          isActive: panelTab == tab,
-                          behaviour: .tap { panelTab = tab })
-        }
-
-        return actions + tabs
     }
 
     private func headerBarCell(_ item: HeaderBarItem) -> some View {
@@ -8161,7 +8217,6 @@ struct DevelopView: View {
         // hit-testable and the space around it is dead — the same omission was
         // a real bug on the Crop/Rotate and aspect-ratio buttons (a50776f).
         .contentShape(Rectangle())
-        .help(item.help)
 
         return Group {
             switch item.behaviour {
@@ -8192,6 +8247,44 @@ struct DevelopView: View {
                 }
             }
         }
+        // ⚠️ OUT HERE, on the control itself — not inside the Button's label,
+        // which is where it was and why the client saw no tooltip at all:
+        // *„nisi mi stavio hover info kada hoverujem preko tih dugmica"*. A
+        // macOS Button lays its own tracking area over its label, so a .help
+        // attached INSIDE that label never gets the chance to fire.
+        .help(item.help)
+        // And a second, independent way of saying it — see headerHoverCaption.
+        // A tooltip that silently does not appear is exactly the failure this
+        // step is fixing, so the bar no longer depends on one.
+        .onHover { inside in
+            if inside {
+                hoveredHeaderItemID = item.id
+            } else if hoveredHeaderItemID == item.id {
+                hoveredHeaderItemID = nil
+            }
+        }
+    }
+
+    /// What the pointer is over, said in words directly under the bar.
+    ///
+    /// The system tooltip is still attached and still correct, but it waits
+    /// about a second and it is easy to miss — and once the labels came off the
+    /// buttons, "what is this one?" cannot depend on a delay. This answers
+    /// instantly and cannot fail to appear.
+    ///
+    /// ⚠️ Fixed height, and a space when nothing is hovered. Letting the line
+    /// come and go would move every section under it up and down as the pointer
+    /// crosses the bar.
+    private var headerHoverCaption: some View {
+        let hovered = headerBarItems.first { $0.id == hoveredHeaderItemID }
+
+        return Text(hovered?.help ?? " ")
+            .font(.custom("Figtree", size: 10.5).weight(.medium))
+            .foregroundColor(AppColors.muted)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 13)
     }
 
     private var panelHeaderActionBar: some View {
@@ -8205,7 +8298,8 @@ struct DevelopView: View {
         // Hairlines rather than spacing. A gap between cells is exactly what
         // was asked to go, but a bar with no seam at all reads as one wide
         // button, so the seam is a single pixel and the cells still touch.
-        return VStack(spacing: 0) {
+        return VStack(alignment: .leading, spacing: 5) {
+        VStack(spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
                 if rowIndex > 0 {
                     Rectangle()
@@ -8231,6 +8325,9 @@ struct DevelopView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
         )
+
+            headerHoverCaption
+        }
     }
 
     /// The Presets section, in a popover instead of a permanent block in the

@@ -13203,3 +13203,83 @@ nije skraćen. Release je `Latest`, nije draft ni prerelease, tag pokazuje na
 
 ⚠️ `latest_version` u BriefControl-u diže **klijent sam** (v. KORAK 114). Dok ne
 digne na 11.4, niko ne dobija karticu „mora update".
+
+## KORAK 117 — traka: redosled, hover koji se NIJE video, i samo jedna upaljena ćelija (4. septembar 2026)
+
+Tri prijave iz istog gledanja: *„grid button da bude prvi pa posle original
+button posle toga Ai pa Crop pa Edit.. pa ostalo"*, *„e ali nisi mi stavio hover
+info kada hoverujem preko tih dugmica, da pise tacno sta je!"*, i *„i kada
+kliknem na nesto sve ostalo da iskljuci! jer edit ostaje uvek ukljucen koliko
+vidim!"*.
+
+### ⚠️ 1. Hover JE bio napisan — i nije mogao da radi
+
+KORAK 115 je stavio `.help(item.help)` **unutar labele dugmeta**. macOS Button
+postavlja svoju tracking area preko labele, pa tooltip zakačen ispod nje nikad
+ne dobije priliku da opali. Napisano, izmereno kao „postoji u kodu", i
+nevidljivo na ekranu — tačno ona vrsta greške koju merenje bez gledanja pušta
+dalje.
+
+Popravka je na dva nivoa, i drugi postoji zato što je prvi već jednom tiho pao:
+
+1. `.help` je izašao **na sam kontrol**, izvan labele.
+2. Nov `headerHoverCaption` — red teksta odmah ispod trake koji, dok je
+   pokazivač na ćeliji, ispiše celu rečenicu („Reset — put this photo back to
+   the original."). Ne čeka sekundu kao sistemski tooltip i **ne može tiho da
+   izostane**.
+
+⚠️ Natpis ima **stalnu visinu** i razmak kad se ništa ne hoveruje. Da se
+pojavljuje i nestaje, ceo panel ispod njega bi poskakivao dok pokazivač prelazi
+preko trake.
+
+### 2. Redosled
+
+Grid, Original, AI, Crop, Edit, pa **ostalo kako je i bilo** — Reset, Select
+People, Flatten, Unflatten, Presets, Retouch, Layers. Tabovi se više ne dodaju
+kao blok na kraj, jer klijentov redosled ih meša sa akcijama (Edit je peti).
+
+### ⚠️ 3. Zašto je Edit „uvek bio uključen" — svaka ćelija je odlučivala sama
+
+Tabovi rade tako da je jedan uvek izabran, pa je Edit svetleo i dok je Crop
+vukao okvir ili dok je AI četkica bila u ruci. Dve upaljene ćelije čitaju se kao
+dve stvari koje rade odjednom.
+
+Sada o tome odlučuje **jedno mesto**, `activeHeaderCellID`, i to po redosledu
+prvenstva: Original (dok se drži) → Crop → AI → Presets → **tab**. Tab svetli
+samo kad ništa ne drži platno.
+
+Uz to, i ponašanje, jer bi inače prikaz lagao: pritisak na **tab** spušta i
+četkicu i krop; **AI** prvo *commit*-uje krop; **Crop** zatvara AI (to je već
+radilo od KORAKA 113).
+
+⚠️ Krop se pri izlasku **commit-uje, ne poništava**. Drugi pritisak na Crop ga
+ionako commit-uje, pa izlazak na druga vrata ne sme da znači gubitak okvira koji
+je upravo namešten.
+
+### Merenje — `Tools/run-header-bar-test.py` dopunjen
+
+Harness sada tvrdi i:
+
+- redosled počinje sa grid → original → ai → crop → tab.edit, a završava se
+  Retouch → Layers (redosled je **redosled**, ne skup);
+- u labeli dugmeta **nema** `.help(` — baš uzrok ove prijave;
+- `.help` stoji na kontrolu, svaka ćelija javlja hover, i natpis postoji;
+- **svaka** upaljenost dolazi iz `activeHeaderCellID` (5 ćelija), koji odgovara
+  tačno jednim id-em;
+- klik na tab spušta alate, a Crop i AI spuštaju jedan drugog.
+
+### Provereno
+
+- `BUILD SUCCEEDED`, Release, universal.
+- `Tools/run-header-bar-test.py` → **RESULT: OK** (sada 14 tvrdnji + merenje rasporeda).
+- decode 129 slogova **OK**, layer pixel store **ALL PASS**, crop rotation **OK**,
+  update-quit **OK**.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Sve vizuelno — nema dozvola za snimanje ekrana ni Accessibility na ovoj mašini
+(KORAK 114). Naročito treba pogledati: da li se natpis ispod trake pojavljuje
+odmah i da li sistemski tooltip sad izlazi, i da li ostaje **tačno jedna**
+upaljena ćelija u svakoj kombinaciji (Crop → tab → AI → Presets).
+
+⚠️ Ovo NIJE u release-u v11.4. Paketi na GitHub-u su od commit-a `61c83b7`.

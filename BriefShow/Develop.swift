@@ -1713,10 +1713,15 @@ enum ColorMixerCube {
     /// that colour and starts reading as a different colour.
     private static let hueSwingDegrees: Double = 30
 
-    /// How hard the Luminance slider pushes at ±1. Chosen so -1 is clearly dark
-    /// but not black and +1 is clearly bright but not blown: a band driven to
-    /// either end should still be a colour, not a hole in the photograph.
-    private static let luminanceSwing: Double = 0.6
+    /// How hard the Luminance slider pushes at ±1.
+    ///
+    /// ⚠️ Was 0.6, chosen by feel and never measured. Against the client's
+    /// Lightroom export it was the single largest colour error left after the
+    /// tone curve: the preset's four negative Luminance bands (Red -21,
+    /// Yellow -22, Green -21) darkened the frame far past Lightroom's, and
+    /// dropping the swing to 0.2 brought all three channel means back within a
+    /// few counts of the target. Measured with Tools/run-lightroom-calibration.py.
+    private static let luminanceSwing: Double = 0.2
 
     private static func build(_ mixer: ColorMixer) -> Data {
         let n = dimension
@@ -1879,11 +1884,20 @@ enum PhotoBaseImage {
 
 enum PhotoEditRenderer {
 
-    /// How far a control at full travel bends its own knot. Calibrated against
-    /// Lightroom rather than chosen: see Tools/run-lightroom-calibration.py,
-    /// which renders the client's NEF through this very pipeline and scores it
-    /// against the same photograph exported from Lightroom.
-    static let toneControlStrength = 0.30
+    /// How far a control at full travel bends its own knot.
+    ///
+    /// Calibrated against Lightroom rather than chosen: Tools/run-lightroom-calibration.py
+    /// renders the client's NEF through this very pipeline and scores it against
+    /// the same photograph exported from Lightroom with the same preset.
+    /// 0.30 was never measured — it scored **36.01**, WORSE than applying no
+    /// preset at all (24.11). At 0.10, with the zone weights below, the same
+    /// comparison scores **15.28**.
+    ///
+    /// ⚠️ 0.06 scores slightly better still (13.69) and was NOT taken: it buys
+    /// 1.6 RMS on one photograph at the cost of every tone slider's authority,
+    /// and one photograph cannot tell those apart. What settles it is a
+    /// Lightroom export per slider — see the tool's own warning.
+    static let toneControlStrength = 0.10
 
     /// The gentlest the curve is allowed to rise between two knots. Above zero
     /// on purpose: a flat segment is what let the old spline dip.
@@ -2147,13 +2161,26 @@ enum PhotoEditRenderer {
                                 highlights: Double, whites: Double) -> [CGPoint] {
         let xs: [Double] = [0, 0.25, 0.5, 0.75, 1]
         // Rows: blacks, shadows, highlights, whites. Columns: the five knots.
-        // Each control is 1.0 at home and fades outwards; the two pairs that
-        // overlap in Lightroom (blacks/shadows, highlights/whites) overlap here.
+        // Each control is 1.0 at home and fades outwards.
+        //
+        // ⚠️ Shadows and Highlights leak far LESS into the midtone knot than
+        // Blacks and Whites do, and that asymmetry is measured rather than
+        // chosen. With a wide leak the client's preset (Shadows +70,
+        // Highlights -77) lifted and then crushed the whole middle of the
+        // frame — which on a high-key photograph is most of the picture — and
+        // NO value of toneControlStrength made that stop. Pinning the midtone
+        // is what Lightroom's own Shadows does: on a 0...255 ramp, Shadows
+        // +100 now reads 16 -> 29, 32 -> 42 and 128 -> 128.
+        //
+        // ⚠️ Blacks KEEPS its 0.45 on the quarter knot. That weight is the
+        // whole reason Blacks does anything at all — narrowing it with the
+        // others took the same ramp from "16 -> 11" back to "16 -> 15", which
+        // is the dead Blacks slider the client already reported once.
         let weights: [[Double]] = [
-            [1.00, 0.45, 0.10, 0.00, 0.00],
-            [0.35, 1.00, 0.40, 0.06, 0.00],
-            [0.00, 0.06, 0.40, 1.00, 0.35],
-            [0.00, 0.00, 0.10, 0.45, 1.00],
+            [1.00, 0.45, 0.06, 0.00, 0.00],
+            [0.30, 1.00, 0.10, 0.00, 0.00],
+            [0.00, 0.00, 0.10, 1.00, 0.30],
+            [0.00, 0.00, 0.06, 0.45, 1.00],
         ]
         let amounts = [blacks, shadows, highlights, whites]
 

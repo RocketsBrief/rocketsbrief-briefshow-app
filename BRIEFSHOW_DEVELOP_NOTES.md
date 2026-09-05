@@ -13572,3 +13572,88 @@ Uz to ostaje činjenica koju nijedan prikaz ne rešava: **Core Image i Adobe ne
 neće poklopiti sam od sebe bez korekcije od +351 K, a ta korekcija je izmerena na
 **jednom** fajlu i ne sme se generalizovati bez još NEF-ova.
 
+## KORAK 121 — Camilo preset kalibrisan po Lightroom-u: 36,01 → 15,00 (5. septembar 2026)
+
+Klijent je pogledao KORAK 120 na ekranu i rekao: *„nije dobro"*, uz dve slike —
+naš render i Lightroom-ov. Brojevi jesu bili tačni, slika nije.
+
+### Šta se videlo na slikama
+
+Bela fasada hotela je kod nas bila **isposterizovana u zeleno-tirkizne blokove**,
+koža crvenija, more tamnije, cela slika tamnija. Kod Lightroom-a je fasada bela,
+sve mekano i prozračno.
+
+**Lanac koji je to pravio, i on objašnjava BAŠ te blokove:** tonska kriva je
+povlačila skoro bele piksele nadole → oni time dobiju boju → mikser je tu boju
+pojačavao (Aqua +28, Blue +39) → zeleni blokovi. Da kriva ne vuče, pikseli ostanu
+beli, a mikser neutralne **ne dira** (`colourDistanceFromGrey` ih pinuje).
+
+### Izmereno, ne naštelovano
+
+`Tools/run-lightroom-calibration.py` sa podesivim konstantama (kroz okruženje, u
+build kopiji) i pretragom po vrednostima:
+
+| | RMS |
+|---|---|
+| bez preseta (kontrola) | 24,11 |
+| **pre: ceo preset** | **36,01** ← gore nego da preset nije primenjen |
+| **posle: ceo preset** | **15,00** |
+
+### Tri izmene, sve tri izmerene
+
+**1. Zone Shadows/Highlights su sužene, Blacks/Whites nisu.** Stara postavka je
+puštala Shadows i Highlights da po 0,40 pomeraju **srednji** čvor. Na visokom
+ključu je to cela slika, i **nijedna jačina to nije popravljala** — probano
+0,30/0,20/0,12/0,06 i uža/šira raspodela, tamnjenje je ostajalo.
+
+⚠️ Ali sužavanje **svih** zona je ubilo `Blacks`: na stepeništu je pao sa
+`16 → 11` na `16 → 15`, a to je tačno onaj mrtav slajder koji je klijent već
+jednom prijavio. Zato Blacks **zadržava** svojih 0,45 na četvrtinskom čvoru, a
+sužavaju se samo Shadows i Highlights. Posle toga:
+
+    Shadows +100:  16 -> 29,  32 -> 42,  128 -> 128   (srednji ton miran)
+    Blacks  -100:  16 -> 11,  32 -> 28,  128 -> 128
+    Highlights -100: 240 -> 228, 192 -> 159, 128 -> 93
+
+**2. `toneControlStrength` 0,30 → 0,10.** 0,30 nikad nije bilo mereno.
+
+⚠️ **0,06 daje bolji rezultat (13,69) i NIJE uzeto.** Kupuje 1,6 RMS na jednoj
+fotografiji po cenu autoriteta svakog tonskog slajdera, a jedna fotografija to
+dvoje ne razlikuje. To rešava po jedan izvoz iz Lightroom-a po slajderu.
+
+**3. `luminanceSwing` 0,6 → 0,2.** Takođe nikad mereno („chosen so -1 is clearly
+dark"). Bila je najveća preostala greška u boji: četiri negativne Luminance trake
+u presetu (Red -21, Yellow -22, Green -21) tamnile su daleko preko Lightroom-a.
+Sa 0,2 sve tri srednje vrednosti kanala padnu na nekoliko jedinica od cilja.
+
+### Šta je probano i ODBAČENO
+
+**`CIHighlightShadowAdjust` umesto krive.** Lokalni operator je logičan kandidat
+jer su Lightroom-ovi Shadows/Highlights lokalni. Izmereno: 36,01 → 34,01, i slika
+i dalje pretamna za ~30 po kanalu. **Ne rešava problem**, pa nije uzeto — obrazac
+iz KORAKA 39 i 107: neizmerena zamena se ne uvodi zato što zvuči tačnije.
+
+### Provereno
+
+- `Tools/run-lightroom-calibration.py` → **RESULT: OK**, 15,00 naspram 24,11.
+- `BUILD SUCCEEDED`.
+- Svih 8 alata iz `Tools/` → **OK**, decode 129 zapisa, 9 migrirano tačno jednom.
+- **Viđeno u živoj app-i** posle restarta: blokovi nestali, brojevi i dalje
+  -0,10 / -5 / -77 / +70 / +25 / -28, i migracija nije obrnula znak drugi put.
+
+### ⚠️ Šta OVA kalibracija ne rešava, i zašto
+
+Sve gore je fitovano na **jednoj** fotografiji sa presetom koji pomera **sve**
+slajdere odjednom. To određuje ZBIR, ne pojedinačne slajdere. Ostaje:
+
+- **`toneControlStrength` između 0,06 i 0,10** — ova slika ih ne razlikuje.
+- **Temperatura promašuje 351 K** (KORAK 120): Core Image čita as-shot kao
+  4.999 K, Adobe kao 5.350 K. Izmereno na **jednom** fajlu, ne generalizovati.
+- **Ekspozicija** — bez `exposure -0,10` rezultat je bolji (14,02 naspram 15,00),
+  što znači da EV kod `CIRAWFilter` nije iste jačine kao Adobe-ov. Nedirano.
+
+**Traženo od klijenta:** po jedan izvoz iz Lightroom-a sa jednim pomerenim
+slajderom na istom NEF-u — neutralan (sve nule), samo Shadows +70, samo
+Highlights -77, i jedan potez u mikseru. Neutralan izvoz sam za sebe rešava i
+351 K i ekspoziciju.
+

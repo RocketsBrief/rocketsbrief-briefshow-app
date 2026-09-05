@@ -1629,23 +1629,23 @@ func makeEditedShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> 
     // still show its original in the grid and the filmstrip.
     let source = FlattenedImageStore.sourceURL(for: url)
     let settings = PhotoEditStore.settings(for: url)
-    guard !settings.isNeutral else {
+
+    // ⚠️ The SAME base the canvas opens, only smaller — including when there
+    // are no edits at all. A neutral RAW went through ImageIO here too, so an
+    // untouched photograph's tile did not match its own canvas either; the
+    // edited case was simply the one loud enough to be reported.
+    guard let base = PhotoEditRenderer.loadBaseImage(from: source, maxPixelSize: maxPixelSize) else {
         return makeShowGridThumbnail(from: source, maxPixelSize: maxPixelSize)
     }
 
-    guard let plain = makeShowGridThumbnail(from: source, maxPixelSize: maxPixelSize),
-          let plainCG = plain.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-        return nil
-    }
-
-    let rendered = PhotoEditRenderer.render(settings, on: .standard(CIImage(cgImage: plainCG)))
+    let rendered = PhotoEditRenderer.render(settings, on: base)
     guard rendered.extent.width >= 1, rendered.extent.height >= 1,
           let out = briefEditsDisplayCGImage(rendered, from: rendered.extent,
                                              context: briefEditsThumbnailCIContext) else {
         // Falls back to the unedited thumbnail rather than to nothing: a photo
         // that renders as a blank tile in the grid is worse than one that
         // renders as its original.
-        return plain
+        return makeShowGridThumbnail(from: source, maxPixelSize: maxPixelSize)
     }
     return NSImage(cgImage: out, size: NSSize(width: out.width, height: out.height))
 }
@@ -2032,6 +2032,50 @@ enum PhotoEditRenderer {
     // per photo by DevelopView and reused for the full-resolution export.
     // See loadPreviewBaseImage for the separate, independently-scaled
     // instance used by the live preview.
+    /// The same base image as `loadBaseImage`, but no larger than
+    /// `maxPixelSize` on the long edge — for thumbnails.
+    ///
+    /// ⚠️ THE POINT IS THAT IT IS THE SAME PIPELINE, not that it is small.
+    /// The filmstrip and the grid used to ask ImageIO for a reduced image and
+    /// then run the edit over that as if it were an ordinary photograph. On a
+    /// RAW file ImageIO hands back the CAMERA's own JPEG rendering, and
+    /// `render` then takes its `.standard` branch — a different demosaic AND a
+    /// different treatment of exposure and white balance. Measured on the
+    /// client's NEF with his own preset (Tools/run-thumbnail-parity-test.py):
+    /// the thumbnail came out **30.7 levels darker**, RMS 36.2 against the
+    /// canvas. He reported it as the strip disagreeing with the picture above
+    /// it, which is exactly what it was.
+    ///
+    /// ⚠️ And it bought nothing. The old path measured 0.64 s against 0.61 s
+    /// for the full-quality decode, because `kCGImageSourceCreateThumbnail`
+    /// `FromImageAlways` decodes the whole RAW anyway. Draft mode here is a
+    /// real reduction on top of that, not a swap of one cost for another.
+    static func loadBaseImage(from photoURL: URL, maxPixelSize: CGFloat) -> PhotoBaseImage? {
+        let url = FlattenedImageStore.sourceURL(for: photoURL)
+        if isRAW(url), let rawFilter = CIRAWFilter(imageURL: url) {
+            // Draft mode IS wanted here — this is the filmstrip thumbnail the
+            // full-quality path's comment refers to.
+            rawFilter.isDraftModeEnabled = true
+            if let full = rawFilter.outputImage?.extent,
+               full.width >= 1, full.height >= 1 {
+                let longest = max(full.width, full.height)
+                if longest > maxPixelSize {
+                    rawFilter.scaleFactor = Float(maxPixelSize / longest)
+                }
+            }
+            return .raw(
+                filter: rawFilter,
+                asShotTemperature: rawFilter.neutralTemperature,
+                asShotTint: rawFilter.neutralTint
+            )
+        }
+
+        guard let image = downsampledImage(from: url, maxPixelSize: maxPixelSize) else {
+            return loadBaseImage(from: photoURL)
+        }
+        return .standard(image)
+    }
+
     static func loadBaseImage(from photoURL: URL) -> PhotoBaseImage? {
         // A flattened photo opens its baked copy instead of the original, and
         // it does so HERE so that every path — preview, refine, export, the

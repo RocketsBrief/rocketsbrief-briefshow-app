@@ -14273,3 +14273,88 @@ imenu fajla dodaje broj.
 Ova mašina nema dozvolu za snimanje ekrana, pa nijedno od ovoga nije viđeno u
 prozoru. Klijentu je otvorena app da proveri oboje: da Backspace u imenu preseta
 briše slovo, i da Export napiše `.xmp`.
+
+## KORAK 128 — sličica i platno nisu bile isti lanac (5. septembar 2026)
+
+Klijent: *„ova slika je dobra u Create a dole u filmstrip nije"*, pa dopuna koja
+je odmah suzila traženje: *„a kao sto je u film stripu takva je i u gridu?? samo
+je drugacija kad se uvelicana u Create"*.
+
+Dakle grid i filmstrip se međusobno slažu, a razilaze se sa platnom — što znači
+da nije reč o osvežavanju sličice nego o **dva različita lanca**.
+
+### Uzrok
+
+Sličica je tražila smanjenu sliku od ImageIO-a
+(`kCGImageSourceCreateThumbnailFromImageAlways`), a to na NEF-u vraća **JPEG koji
+je upisala sama kamera** — Nikonov render, ne naš. Zatim se izmena puštala preko
+toga kao da je obična fotografija, dakle kroz `.standard` granu `render`-a:
+druga demozaika, i druga grana za ekspoziciju i belu ravnotežu (`CIExposureAdjust`
+i `CITemperatureAndTint` oko 6500 K umesto `CIRAWFilter`-a i as-shot vrednosti).
+
+Izmereno na klijentovom NEF-u sa njegovim presetom — nov alat
+`Tools/run-thumbnail-parity-test.py`:
+
+    sličica naspram platna:   RMS 36,2, i 30,7 nivoa TAMNIJA
+
+### ⚠️ Stari put nije bio ni brži — a prvo merenje je reklo suprotno
+
+Prva verzija harnessa je merila samo `render(...)`, a Core Image je lenj: taj
+poziv sklopi lanac i ne uradi ništa. Zbog toga je ispalo da je put za sličicu
+**četiri puta sporiji** od punog dekoda, što nema smisla i zato je premereno sa
+realizacijom piksela unutar merenog bloka:
+
+    stari put (ImageIO + .standard)   0,64 s
+    pun dekod platna                  0,61 s
+
+Dakle „brzi" put nije štedeo ništa, jer `...FromImageAlways` na RAW-u ionako
+dekodira ceo fajl.
+
+### Popravka
+
+Nov `loadBaseImage(from:maxPixelSize:)` — **isti** `CIRAWFilter` kao platno, samo
+sa `isDraftModeEnabled = true` i `scaleFactor`-om do tražene veličine.
+`makeEditedShowGridThumbnail` sada ide kroz njega, pa grid i filmstrip dele lanac
+sa platnom.
+
+⚠️ I kad izmene NE postoje: neutralan RAW je i dalje išao kroz ImageIO, pa se ni
+netaknuta fotografija nije slagala sa svojim platnom. Izmenjena je bila samo ona
+glasna.
+
+    | | pre | posle |
+    |---|---|---|
+    | RMS naspram platna | 36,20 | **9,63** |
+    | razlika u svetlini | −30,7 | **+1,8** |
+    | vreme po sličici (mediana, 6 NEF-ova) | ~0,55 s | **0,11 s** |
+
+Draft mode je zadržan posle merenja, ne po osećaju: mediana 0,11 s naspram 0,15 s
+bez njega, uz razliku od 0,5 RMS koju na 384 px niko ne vidi. ⚠️ Jedno rano
+merenje je reklo obrnuto (0,49 naspram 0,26 s) — to je bila buka jednog uzorka,
+uhvaćena tek ponavljanjem preko šest fajlova.
+
+### ⚠️ Zašto presuda NIJE sirovi RMS
+
+Ostatak od 9,63 nije greška koja se može popraviti. `Sharpness`, `Clarity` i
+`Texture` rade u **pikselima**: na 384 px ne mogu da padnu tamo gde padaju na
+5.176 px. Razloženo:
+
+    pun preset                                   blok RMS 5,42
+    sa isključena sva četiri detalja                      3,60   <- pod
+    i sa isključenim draft mode-om                       ~3,5
+
+Dakle ~3,6 je sama rezolucija, a ostatak su kontrole detalja. Zato alat sudi po
+proseku 4×4 blokova i po razlici u svetlini — po tome da li je **ista slika**, ne
+isti pikseli. Lightroom-ove sličice rade istu stvar.
+
+### Provereno
+
+- `Tools/run-thumbnail-parity-test.py` → **RESULT: OK**.
+- Slika pogledana: stara sličica, nova sličica, platno jedno pored drugog — stara
+  je vidljivo zelenkasta i tamna, nova se poklapa sa platnom.
+- `BUILD SUCCEEDED`, svih 13 alata iz `Tools/` prolazi.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Nije viđeno u prozoru — ova mašina nema dozvolu za snimanje ekrana. Klijentu je
+otvorena app; sličice se ponovo dekodiraju pri prvom prikazu, pa je dovoljno
+otvoriti folder.

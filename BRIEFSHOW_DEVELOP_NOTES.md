@@ -13719,11 +13719,16 @@ tamnijom, 0,2 → 10, 0,1 → 4).
   `Tools/measure-texture-density.py` već nosi u zaglavlju.
 - `BUILD SUCCEEDED`, svih 8 alata iz `Tools/` **OK**, 129 zapisa, 9 migrirano.
 
-### ⚠️ NEPROVERENO NA EKRANU
+### ✅ POTVRĐENO NA EKRANU (5. septembar 2026)
 
-Prva kalibracija (KORAK 121) **jeste** viđena u živoj app-i. Ova druga **nije** —
-mašina se zaključala pre snimka, a šifra je klijentova. Poređenje gore je iz
-harnessa, koji vozi isti kod, ali to nije isto što i videti u app-i.
+Klijent je otključao mašinu, app je otvoren i fotografija ponovo učitana iz
+sačuvane izmene. Fasada hotela je **prebeljena kao kod Lightroom-a**, slika je
+prozračna, a panel i dalje piše Lightroom-ove brojeve: -0,10 / -5 / **-77** /
++70 / +25 / -28.
+
+Time je potvrđeno i troje odjednom: kalibracija iz ovog koraka, obrtanje znaka
+iz KORAKA 120, i to da **migracija ne obrće znak drugi put** — fotografija je
+učitana iz zapisa koji je već jednom migriran i vratila je -77, ne +77.
 
 ### ⚠️ ZAŠTO OVO I DALJE NIJE ZAVRŠENO
 

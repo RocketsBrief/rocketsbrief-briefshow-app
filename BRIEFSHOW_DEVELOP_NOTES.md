@@ -13937,3 +13937,114 @@ mrtav slajder, kvar koji je ova app već jednom isporučila na `Blacks`.
 Oba su u mikseru boja, i oba čekaju isto: **neutralan izvoz** iz Lightroom-a
 (sve nule, isti NEF), pa po jedan sa jednim pomerenim slajderom.
 
+## KORAK 125 — CHECKPOINT: kraj sesije 5.09. Kalibracija po Lightroom-u, i gde se sutra kreće
+
+### CILJ, klijentovim rečima
+
+*„izkalibriraj da napravis taku sliku original sa istim values kao taj preset i
+tako ce nas slide bar da bude izkalibriran kao lightroom"*
+
+Dakle **dve stvari odjednom**, i obe se moraju držati:
+
+1. **Brojevi na desnom panelu moraju biti isti kao u Lightroom-u.**
+2. **Slika mora izgledati isto kao Lightroom-ova**, sa tim istim brojevima.
+
+Materijal: preset `Classic Edits Lightroom.xmp` (u app-i se zove **„Camilo"**),
+original `C4S_9331.NEF`, i ista slika izvezena iz Lightroom-a `CAS-5.jpg`.
+
+### Stanje na kraju sesije
+
+| | početak | kraj |
+|---|---|---|
+| RMS naspram Lightroom-a | **36,01** | **13,01** |
+| (bez preseta, kontrola) | 24,11 | 24,11 |
+| greška po oblastima | 136,3 | **81,2** |
+| udeo slike iznad 250 | 2,8% | **22,3%** (cilj 23,3%) |
+| oštrina (Laplasijan) | 4,65 | **7,92** (cilj 7,96) |
+
+Na početku je preset **odvodio sliku DALJE od Lightroom-a** nego da nije ni
+primenjen (36,01 naspram 24,11). Sada je približava.
+
+### Šta je urađeno, po uzrocima
+
+| # | nađeno | popravka |
+|---|---|---|
+| 1 | tonska kriva **nemonotona** — slika tamni dok ulaz raste (48→59, 96→50) | `toneCurvePoints()`, monotona po konstrukciji |
+| 2 | `Highlights` obrnutog znaka — preset kaže −77, panel pisao +77 | Lightroom-ov znak + `schemaVersion` migracija |
+| 3 | `Highlights` vuče celu gornju polovinu slike | sopstvena, blaža jačina (`highlightControlScale`) |
+| 4 | `luminanceSwing` 0,6 tamnio sredinu za 20 | 0,3, izmereno |
+| 5 | **`Contrast` sivio belu tačku** — `0,95` pretvara 255 u 249 | S-kriva sa prikovanim krajevima |
+| 6 | `Sharpness 40` oduzimano na nulu, slika mekša od Lightroom-ove | Lightroom-ovih 40 = naših 0,15, izmereno |
+| 7 | Kelvin promašivao 351 K (Adobe čita 5.350, Core Image 4.999) | `temperatureKelvin` — apsolutna vrednost kad je preset zada |
+
+Stavka **5 je bila ceo jaz** u onome što je klijent zvao *„svetlija i čistija"*:
+naš neutralan render ima 32,6% slike iznad 250, Lightroom 23,3%, a naš lanac
+preseta je to obarao na 2,8% — jednim slajderom.
+
+### Alat koji je za to napravljen
+
+`Tools/run-lightroom-calibration.py` + `Tools/lightroom-calibration.swift` —
+kompajlira **app-ove sopstvene izvore** i renderuje kroz pravi lanac, pa boduje
+protiv Lightroom-ovog izvoza. Ima i `--ramp` (sivo stepenište kroz lanac).
+Padа namerno kad preset odvodi sliku dalje od cilja nego ništa.
+
+### ⚠️ Tri puta je POKVARENA MERNA SPRAVA dala nalaz koji izgleda kao nalaz
+
+Vredi zapamtiti kao klasu, jer je sve tri uhvatilo poređenje sa ranije izmerenim
+brojem, a ne sumnja:
+
+1. `repairToggleVisibility` vraća **samo dodatke** — čitanje njegovog rezultata
+   kao celog stylesheet-a obrnulo je presudu.
+2. `previewNavigationScript()` vraća runtime **već umotan u `<script>`** — drugo
+   umotavanje ga ubije, a mrtav runtime izgleda identično kao popravka koja lomi
+   navigaciju.
+3. Build kopija `Develop.swift` u harnessu bila je **starija od koda koji se
+   meri** — zbog toga je `luminanceSwing = 0,1` iz KORAKA 121 bio pogrešan.
+
+**Pravilo:** harness se presinhronizuje sa izvorom **pre svake serije merenja**,
+i pri svakoj promeni konstanti se ponovi jedno već izmereno podešavanje kao
+kontrola.
+
+### ⚠️ SLEDEĆE — 6. septembar
+
+**1. LICE MORA BITI SVETLIJE.** Klijentov zahtev sa kraja sesije. Na
+`C4S_9331.NEF` je lice tamnije nego na Lightroom-ovoj verziji. **Nije još ni
+izmereno** — prvi korak je izmeriti razliku na samom licu, kao zasebnu oblast,
+istim alatom kojim su merene ostale četiri (nebo, more, fasada, pod).
+⚠️ Ne dirati globalne konstante zbog lica dok se ne izmeri da li je razlika
+globalna ili lokalna — postoji `SubjectMasker`, i ako je lokalna, tu joj je
+mesto.
+
+**2. Ono što je i dalje izmereno kao razlika:**
+- **nebo +21 crvenog** — Lightroom-ovo je tirkiznije;
+- **pod +17 zelenog / +9 plavog** — Lightroom-ov je topliji.
+Oba su u mikseru boja. Sužavanje praga za neutralne (`fullyColoured`, probano
+0,04 → 0,002) ovo NE menja, dakle uzrok nije prikivanje neutrala.
+
+**3. ⚠️ ŠTA JE TRAŽENO OD KLIJENTA I NIJE STIGLO — i to je sada PREPREKA, ne
+poboljšanje.** Sve gore je fitovano na **jednoj** fotografiji sa presetom koji
+pomera **sve** slajdere odjednom. To određuje ZBIR, ne pojedinačne slajdere, i
+to se u ovoj sesiji videlo kao tvrda činjenica: dve konfiguracije koje se slažu
+po jednoj meri **oštro se razilaze** po drugoj.
+
+Traži se, na istom `C4S_9331.NEF`:
+
+- **neutralan izvoz** (svi slajderi na nuli) — **najvažniji**; jedini razdvaja
+  „naš RAW dekod se razlikuje od Adobe-ovog" od „naš slajder je pogrešno
+  skaliran", i usput zatvara i pitanje ekspozicije;
+- samo `Shadows +70`;
+- samo `Highlights -77`;
+- jedan potez u mikseru boja.
+
+### Provereno na kraju sesije
+
+- `BUILD SUCCEEDED`.
+- Svih 8 alata iz `Tools/` → **OK**; decode **129 zapisa**, 9 `Highlights`
+  migrirano tačno jednom, kontrola protiv oscilacije prolazi.
+- `Tools/run-lightroom-calibration.py` → **RESULT: OK**, 13,01 naspram 24,11.
+- **Viđeno u živoj app-i** posle restarta.
+- Preset „Camilo" je **sačuvan** i preživljava restart —
+  `com.rocketsbrief.briefshow.photoEditPresets` u preferencama.
+
+**Nije push-ovano, po klijentovoj reči:** *„ne push dok ne sredimo"*.
+

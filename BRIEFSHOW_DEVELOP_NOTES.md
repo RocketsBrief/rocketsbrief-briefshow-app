@@ -14048,3 +14048,158 @@ Traži se, na istom `C4S_9331.NEF`:
 
 **Nije push-ovano, po klijentovoj reči:** *„ne push dok ne sredimo"*.
 
+
+## KORAK 126 — lice i oči: kriva je propadala IZMEĐU čvorova (5. septembar 2026, posle checkpointa)
+
+Klijentov zahtev, njegovim rečima: *„trebalo je da pojacas svetlo na licu zadnji
+put gde smo dosli i da pojacas da se vide oci vise plave na original slici da bi
+kalibrirao nas slidebar editor"*. Isti par: `C4S_9331.NEF`, preset „Camilo",
+Lightroom-ov izvoz `CAS-5.jpg`.
+
+### ⚠️ PRVO: broj iz tabele KORAKA 125 se NE reprodukuje
+
+Prvo merenje ove sesije dalo je **15,05**, a checkpoint piše **13,01**. Po
+pravilu iz istog checkpointa, prvo je provereno merilo, a ne nalaz:
+`run-lightroom-calibration.py` i nov `run-region-compare.py` daju **isti** broj
+(15,05), dakle sprava je ispravna. Sam KORAK 124 u tekstu kaže da izoštravanje
+diže RMS **13,36 → 14,79** — dakle **13,01 u tabeli je zastareo broj, izmeren
+pre izoštravanja**, i nikad nije opisivao isporučeno stanje. Tabela je bila
+pogrešna, kod nije.
+
+### Merenje po oblastima, sa licem i rukom kao PAROM
+
+Nov alat `Tools/run-region-compare.py`. Lice i ruka su tu namerno zajedno: ista
+koža, isto svetlo, pa razlika između njih razdvaja **lokalno** od **globalnog**.
+
+    oblast    naše             Lightroom        razlika (luma)
+    lice      198 149 126      212 171 152          -20,8
+    ruka      201 177 151      212 185 165           -9,4
+    fasada    249 247 234      250 247 240           -0,3
+
+### Ablacija: koji slajder gasi lice
+
+    varijanta        lice    ruka   oko-plavo
+    pun preset      -20,8   -9,4      -15,8
+    highlights=0     -6,3   +2,5      -14,1   <- Highlights gasi lice
+    shadows=0       -21,3   -9,8      -15,7   <- Shadows +70 ne radi NIŠTA
+
+Rampa je zatim rekla i zašto. Sa isključenim svime osim krive:
+
+    ulaz   šta čvorovi kažu   šta je CIToneCurve davao
+      96              104                        88
+     128              128                       118
+     160              157                       150
+
+### 🔴 Uzrok: čvorovi jesu monotoni, splajn IZMEĐU njih nije
+
+To je **druga polovina kvara iz KORAKA 120**, i sakrila ju je prva polovina.
+KORAK 120 je učinio pet čvorova monotonim; `CIToneCurve` zatim kroz te čvorove
+provlači SVOJU kubnu krivu, a kubna kroz čvorove čiji nagib prvo pada pa raste —
+što je tačno oblik koji prave `Shadows +70` i `Highlights −77` zajedno —
+**propada između njih**, 8 do 16 nivoa kroz ceo srednji ton. Lice sedi baš tu.
+
+Nijedna konstanta to nije mogla da skloni, jer konstante postavljaju čvorove, a
+propadanje živi između njih. Zato je i `highlights=0` izgledao kao lek: gasio je
+oblik koji pravi propadanje.
+
+**Popravka:** `toneCurveSamples` (Fritsch–Carlson, monotona po konstrukciji)
+uzorkuje čvorove u 128 tačaka, i to ide kroz **`CIColorCurves`**, koji između
+uzoraka interpolira linearno i ne može da doda svoj oblik. Oba mesta poziva —
+globalno i ono za sloj/masku — idu kroz istu funkciju `applyToneCurve`.
+
+Posle popravke kriva prati svoje čvorove na ±3: 96 → **105**, 128 → **129**,
+160 → **156**.
+
+### Druga posledica: `Shadows` je bio pripijen zbog BAGA, ne zbog merenja
+
+Propust senki u srednji čvor je bio **0,10**, i tako je postavljen dok je kriva
+još propadala — propadanje je jelo podizanje, pa je širenje izgledalo kao da ne
+radi ništa. Sa uklonjenim propadanjem ista pretraga čita obrnuto:
+
+    propust   lice    ruka   oko-plavo   iznad 250 (Lightroom 19,8%)
+      0,10   -20,8   -9,4      -15,8            21,5%
+      0,30   -16,7   -6,9       -8,4            20,2%
+      0,60   -14,8   -5,1       -0,5            19,0%
+      0,80   -13,7   -4,1       +1,8            18,9%
+
+Uzeto je **0,60**: 0,80 kupuje jednu lumu na licu, ali prebacuje plavo u oku i
+obara belu tačku ispod cilja. `highlightControlScale` **nije diran** — 0,50
+ostaje.
+
+### Isporučeno
+
+| | pre | posle |
+|---|---|---|
+| RMS naspram Lightroom-a | 15,05 | **13,88** |
+| greška po oblastima (zbir luma) | 77,5 | **61,0** |
+| lice | −20,8 | **−14,8** |
+| obraz | −22,3 | **−14,5** |
+| ruka | −9,4 | **−5,1** |
+| **plavo u oku** (plavo−crveno, naspram Lightroom-a) | −15,8 | **−0,5** |
+| more | +2,5 | **−0,3** |
+| nebo | +1,8 | **+0,9** |
+| udeo iznad 250 | 21,5% | **19,0%** (cilj 19,8%) |
+
+⚠️ Ovo menja kako se renderuje **svaka već sačuvana izmena sa tonskim
+slajderima** — srednji tonovi izlaze svetliji nego pre. Migracije nema i ne
+treba je: staro ponašanje je bilo propadanje krive, dakle kvar, ne izbor. Isto
+obrazloženje kao za Contrast u KORAKU 124.
+
+### Novi alati
+
+- `Tools/run-region-compare.py` — greška po oblastima, sa parom lice/ruka.
+- `Tools/run-tone-search.py` — pretraga tri konstante nad JEDNIM prevodom;
+  konstante se ubacuju u **build kopiju** kao čitanje iz okruženja, pa
+  zastarele kopije nema.
+- `build()` u `run-lightroom-calibration.py` prima zakrpe za build kopiju, i
+  **pada ako se zakrpa ne primeni tačno jednom** — konstanta koja se preimenuje
+  ruši merenje umesto da ga tiho pokvari.
+- `lightroom-calibration.swift` prima `band.<boja>.<hue|sat|lum>=v`, pa se
+  mikser može gasiti po jednoj traci umesto ceo.
+
+### Provereno
+
+- Kontrola pre svake serije: zakrpljeni build daje **isti** broj kao
+  nezakrpljeni (15,05 / lice −20,8), u decimalu.
+- `BUILD SUCCEEDED` (Release, `xcodebuild`).
+- Alati: `run-editsettings-decode-test` **OK** (130 zapisa), `run-header-bar-test`
+  **OK**, `run-crop-rotation-test` **OK**, `run-update-quit-test` **OK**, i
+  `slider-drag`, `layer-reorder`, `layer-outline`, `layer-extract-color`,
+  `layer-decode-cache`, `layer-pixel-store` svi izlaze sa 0.
+- **Slika pogledana**, pre/posle/Lightroom jedno pored drugog — lice je svetlije
+  i oči čitaju plavo; more je prestalo da bude zasićenije od Lightroom-ovog.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Nije viđeno u živoj app-i — ova mašina nema dozvolu za snimanje ekrana. Prvo
+sledeće: otvoriti `C4S_9331.NEF` u LumenoLab-u sa presetom „Camilo".
+
+### Šta OSTAJE, i zašto to više nije stvar slajdera
+
+- **lice −14,8, ruka −5,1**;
+- **pod +18 zelenog / +14 plavog**;
+- **nebo +12 crvenog**.
+
+Novo i važno za sledeću sesiju: **ton kože se sada poklapa, samo je tamniji.**
+Naše lice je 197/156/138, Lightroom-ovo 212/171/152 — R−G je 41 naspram 41,
+R−B 59 naspram 60. Dakle nijansa i zasićenost su tačne, a razlika je **čista
+svetlina**, ravnomerno u sva tri kanala. To ne liči na pogrešno skaliran
+slajder nego na **razliku u samom RAW dekodu** (Adobe-ov profil naspram Core
+Image-ovog).
+
+Mikser je izmeren i nije krivac za taj ostatak: `LuminanceAdjustmentRed −21`
+nosi 3,6 lume na licu, `Orange −5` još 1,7 — ukupno oko 5 od 15, a gašenje tih
+traka kvari pod. Preset **nema masku** (provereno u XMP-u: nema
+`MaskGroupBasedCorrections`), pa Lightroom to postiže globalno.
+
+⚠️ Zato lice NIJE dirano lokalno. `SubjectMasker` bi ga posvetlio na ovoj slici
+i slagao na svakoj sledećoj.
+
+### ⚠️ TRAŽI SE OD KLIJENTA — i dalje isto, i sada je to jedina prava prepreka
+
+Na istom `C4S_9331.NEF`, izvoz iz Lightroom-a sa **svim slajderima na nuli**.
+On jedini razdvaja „naš RAW dekod je tamniji od Adobe-ovog" od „naš slajder je
+pogrešno skaliran", a merenje kože gore kaže da je odgovor verovatno prvo.
+Posle njega: samo `Shadows +70`, samo `Highlights −77`, i jedan potez u mikseru.
+
+**Nije push-ovano**, po ranijoj klijentovoj reči *„ne push dok ne sredimo"*.

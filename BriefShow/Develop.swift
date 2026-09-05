@@ -2220,14 +2220,27 @@ enum PhotoEditRenderer {
         // Rows: blacks, shadows, highlights, whites. Columns: the five knots.
         // Each control is 1.0 at home and fades outwards.
         //
-        // ⚠️ Shadows and Highlights leak far LESS into the midtone knot than
-        // Blacks and Whites do, and that asymmetry is measured rather than
-        // chosen. With a wide leak the client's preset (Shadows +70,
-        // Highlights -77) lifted and then crushed the whole middle of the
-        // frame — which on a high-key photograph is most of the picture — and
-        // NO value of toneControlStrength made that stop. Pinning the midtone
-        // is what Lightroom's own Shadows does: on a 0...255 ramp, Shadows
-        // +100 now reads 16 -> 29, 32 -> 42 and 128 -> 128.
+        // ⚠️ HIGHLIGHTS leaks far less into the midtone knot than Blacks and
+        // Whites do, and that asymmetry is measured rather than chosen: pulled
+        // wide, the client's Highlights -77 dragged the whole middle of a
+        // high-key frame down with it.
+        //
+        // ⚠️ SHADOWS USED TO BE PINNED THE SAME WAY (0.10), AND THAT WAS A
+        // CONSEQUENCE OF A BUG, NOT A MEASUREMENT. It was set while the curve
+        // still sagged between its knots (see toneCurveSamples): the sag ate
+        // the midtone lift, so widening Shadows appeared to do nothing while
+        // narrowing it appeared harmless. With the sag gone the same sweep
+        // reads the opposite, on the client's own photograph against his
+        // Lightroom export — 05.09, after KORAK 125, everything else held still:
+        //
+        //     leak   face    arm    eye-blue   frame above 250 (Lightroom 19.8%)
+        //     0.10  -20.8   -9.4      -15.8               21.5%
+        //     0.30  -16.7   -6.9       -8.4               20.2%
+        //     0.60  -14.8   -5.1       -0.5               19.0%
+        //
+        // 0.60 is also the shape Lightroom's Shadows has: it acts through the
+        // lower half and is spent by the three-quarter tone, which is what a
+        // 0.60 at the midtone knot and a 0.00 above it say.
         //
         // ⚠️ Blacks KEEPS its 0.45 on the quarter knot. That weight is the
         // whole reason Blacks does anything at all — narrowing it with the
@@ -2235,7 +2248,7 @@ enum PhotoEditRenderer {
         // is the dead Blacks slider the client already reported once.
         let weights: [[Double]] = [
             [1.00, 0.45, 0.06, 0.00, 0.00],
-            [0.30, 1.00, 0.10, 0.00, 0.00],
+            [0.30, 1.00, 0.60, 0.00, 0.00],
             [0.00, 0.00, 0.10, 1.00, 0.30],
             [0.00, 0.00, 0.06, 0.45, 1.00],
         ]
@@ -2261,6 +2274,109 @@ enum PhotoEditRenderer {
         }
 
         return (0..<5).map { CGPoint(x: xs[$0], y: ys[$0]) }
+    }
+
+    /// How many samples the tone curve is handed to Core Image as.
+    static let toneCurveSampleCount = 128
+
+    /// Samples the five knots into a curve that is monotone BETWEEN them too.
+    ///
+    /// ⚠️ This is the second half of the defect of KORAK 120, and it went
+    /// unnoticed because the first half hid it. That step made the five knots
+    /// monotone; `CIToneCurve` then draws its own cubic spline THROUGH those
+    /// knots, and a cubic through knots whose slopes fall and then rise —
+    /// which is exactly the shape a Shadows lift plus a Highlights pull makes —
+    /// sags in between. Measured on 05.09, after the checkpoint of KORAK 125, with everything but the curve turned
+    /// off, on the client's own preset (Shadows +70, Highlights -77):
+    ///
+    ///     input   the knots say   CIToneCurve gave
+    ///        96             104                 88
+    ///       128             128                118
+    ///       160             157                150
+    ///
+    /// Eight to sixteen levels of sag across the whole middle of the range, and
+    /// a face sits right in it: that is why the client's face rendered darker
+    /// than Lightroom's while his sky and façade matched. It is not a
+    /// calibration error — no value of any constant here removes it, because
+    /// the constants place the knots and the sag lives between them.
+    ///
+    /// Fritsch-Carlson, so a monotone set of knots produces a monotone curve by
+    /// construction rather than by luck. Handed to CIColorCurves, which
+    /// interpolates linearly between samples and so cannot add a shape of its
+    /// own — the reason for the switch away from CIToneCurve.
+    static func toneCurveSamples(_ points: [CGPoint], count: Int = toneCurveSampleCount) -> [Float] {
+        let xs = points.map { Double($0.x) }
+        let ys = points.map { Double($0.y) }
+        let n = xs.count
+        guard n >= 2, count >= 2 else { return [] }
+
+        var h = [Double](repeating: 0, count: n - 1)
+        var delta = [Double](repeating: 0, count: n - 1)
+        for i in 0..<(n - 1) {
+            h[i] = xs[i + 1] - xs[i]
+            delta[i] = h[i] > 0 ? (ys[i + 1] - ys[i]) / h[i] : 0
+        }
+
+        // Tangents: the endpoints take their neighbouring secant, the interior
+        // ones a weighted harmonic mean — zero wherever the data turns, which
+        // is what forbids the overshoot.
+        var m = [Double](repeating: 0, count: n)
+        m[0] = delta[0]
+        m[n - 1] = delta[n - 2]
+        for i in 1..<(n - 1) {
+            if delta[i - 1] * delta[i] <= 0 {
+                m[i] = 0
+            } else {
+                let w1 = 2 * h[i] + h[i - 1]
+                let w2 = h[i] + 2 * h[i - 1]
+                m[i] = (w1 + w2) / (w1 / delta[i - 1] + w2 / delta[i])
+            }
+        }
+
+        var samples = [Float]()
+        samples.reserveCapacity(count * 3)
+        for step in 0..<count {
+            let x = Double(step) / Double(count - 1)
+            var y: Double
+            if x <= xs[0] {
+                y = ys[0]
+            } else if x >= xs[n - 1] {
+                y = ys[n - 1]
+            } else {
+                var i = 0
+                while i < n - 2 && x > xs[i + 1] { i += 1 }
+                let t = (x - xs[i]) / h[i]
+                let t2 = t * t
+                let t3 = t2 * t
+                y = (2 * t3 - 3 * t2 + 1) * ys[i]
+                    + (t3 - 2 * t2 + t) * h[i] * m[i]
+                    + (-2 * t3 + 3 * t2) * ys[i + 1]
+                    + (t3 - t2) * h[i] * m[i + 1]
+            }
+            // Above 1 is left alone on purpose — that headroom is what lets
+            // Whites push tones into clipping, the same reason point4 was
+            // allowed past 1 in toneCurvePoints.
+            let v = Float(max(y, 0))
+            samples.append(v); samples.append(v); samples.append(v)
+        }
+        return samples
+    }
+
+    /// Applies the five knots as a dense, monotone curve.
+    ///
+    /// The colour space is named rather than inherited: these knots are read as
+    /// positions on the 0...255 ramp the panel and every measurement in
+    /// BRIEFSHOW_DEVELOP_NOTES speak in, and that ramp is sRGB.
+    static func applyToneCurve(_ points: [CGPoint], to image: CIImage) -> CIImage {
+        let samples = toneCurveSamples(points)
+        guard !samples.isEmpty,
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return image }
+        let filter = CIFilter.colorCurves()
+        filter.inputImage = image
+        filter.curvesData = samples.withUnsafeBufferPointer { Data(buffer: $0) }
+        filter.curvesDomain = CIVector(x: 0, y: 1)
+        filter.colorSpace = space
+        return filter.outputImage ?? image
     }
 
     static func render(_ settings: PhotoEditSettings, on base: PhotoBaseImage, applyCrop: Bool = true) -> CIImage {
@@ -2380,14 +2496,7 @@ enum PhotoEditRenderer {
             let points = PhotoEditRenderer.toneCurvePoints(
                 blacks: settings.blacks, shadows: settings.shadows,
                 highlights: settings.highlights, whites: settings.whites)
-            let filter = CIFilter.toneCurve()
-            filter.inputImage = output
-            filter.point0 = points[0]
-            filter.point1 = points[1]
-            filter.point2 = points[2]
-            filter.point3 = points[3]
-            filter.point4 = points[4]
-            output = filter.outputImage ?? output
+            output = PhotoEditRenderer.applyToneCurve(points, to: output)
         }
 
         // ⚠️ CONTRAST DOES NOT MOVE THE WHITE POINT, and that is the whole reason
@@ -3130,14 +3239,7 @@ enum PhotoEditRenderer {
             let points = PhotoEditRenderer.toneCurvePoints(
                 blacks: local.blacks, shadows: local.shadows,
                 highlights: local.highlights, whites: local.whites)
-            let filter = CIFilter.toneCurve()
-            filter.inputImage = output
-            filter.point0 = points[0]
-            filter.point1 = points[1]
-            filter.point2 = points[2]
-            filter.point3 = points[3]
-            filter.point4 = points[4]
-            output = filter.outputImage ?? output
+            output = PhotoEditRenderer.applyToneCurve(points, to: output)
         }
 
         if local.contrast != 0 || local.saturation != 0 {

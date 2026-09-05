@@ -41,7 +41,22 @@ func applyOverrides(_ s: inout PhotoEditSettings, _ kv: [String]) {
                 m.hue = 0; m.saturation = 0; m.luminance = 0
                 s.colorMixer[b] = m
             }
-        default: break
+        default:
+            // band.<red|orange|...>.<hue|sat|lum>=v — one band of the colour
+            // mixer at a time. The mixer is where the last of the difference
+            // against Lightroom lives (the deck, and the skin), and killing
+            // the whole mixer says only THAT it matters, never WHICH band.
+            let parts = p[0].split(separator: ".").map(String.init)
+            guard parts.count == 3, parts[0] == "band",
+                  let band = ColorBand(rawValue: parts[1]) else { break }
+            var m = s.colorMixer[band] ?? ColorMixerBand()
+            switch parts[2] {
+            case "hue": m.hue = v
+            case "sat": m.saturation = v
+            case "lum": m.luminance = v
+            default: break
+            }
+            s.colorMixer[band] = m
         }
     }
 }

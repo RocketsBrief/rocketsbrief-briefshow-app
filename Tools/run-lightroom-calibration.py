@@ -91,9 +91,26 @@ def grab(text: str, header: str) -> str:
     sys.exit(f"not found in BriefShowApp.swift — was it renamed?\n  {header}")
 
 
-def build(work: pathlib.Path) -> pathlib.Path:
+def build(work: pathlib.Path, patches=None) -> pathlib.Path:
+    """Compiles the app's sources into a harness binary in `work`.
+
+    `patches` is an optional list of (filename, old, new) applied to the BUILD
+    COPY only — never to the repo. It exists so a constant can be swept without
+    editing the source and forgetting to put it back; every patch must match
+    exactly once, so a renamed constant fails loudly instead of measuring the
+    unpatched code (KORAK 123: a stale build copy produced a finding that looked
+    like a finding).
+    """
     for name in SOURCES:
         shutil.copy(SRC / name, work / name)
+
+    for name, old, new in patches or []:
+        path = work / name
+        text = path.read_text()
+        if text.count(old) != 1:
+            sys.exit(f"patch does not apply exactly once in {name} "
+                     f"({text.count(old)} matches) — was the constant renamed?\n  {old}")
+        path.write_text(text.replace(old, new, 1))
 
     content = (work / "ContentView.swift").read_text()
     for old, new in IMAGE_RENDERER_SITES:

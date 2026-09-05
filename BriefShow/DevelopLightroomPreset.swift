@@ -43,7 +43,7 @@ enum LightroomPresetImport {
             case .unreadable:
                 return "The file could not be read as XMP."
             case .notAPreset:
-                return "No Camera Raw settings in this file."
+                return "No preset settings in this file."
             }
         }
     }

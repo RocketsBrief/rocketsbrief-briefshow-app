@@ -138,5 +138,34 @@ if let path = extra.first, !path.isEmpty {
     }
 }
 
+// ⚠️ THE SETTINGS MATCHING IS NOT THE QUESTION THE CLIENT ASKED. His was
+// *„taj preset kada exportujem i posle importujem u C4S u drugom macu radi
+// ce?"* — will the PICTURE be the same. So when a photograph is given, both
+// the original preset and the round-tripped one are rendered through the real
+// pipeline and the two are compared pixel for pixel.
+if extra.count > 1 {
+    let photo = URL(fileURLWithPath: extra[1])
+    print("\n5. the same photograph, before and after the round trip: \(photo.lastPathComponent)")
+    let source = extra.first ?? "-"
+    if let original = try? LightroomPresetImport.read(URL(fileURLWithPath: source)),
+       let back = roundTrip(original.preset, label: "render check"),
+       let base = PhotoEditRenderer.loadBaseImage(from: photo, maxPixelSize: 900) {
+        let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+        let ctx = CIContext(options: [.workingColorSpace: srgb])
+        func bytes(_ s: PhotoEditSettings) -> [UInt8]? {
+            let image = PhotoEditRenderer.render(s, on: base)
+            guard let cg = ctx.createCGImage(image, from: image.extent,
+                                             format: .RGBA8, colorSpace: srgb) else { return nil }
+            let rep = NSBitmapImageRep(cgImage: cg)
+            return rep.representation(using: .png, properties: [:]).map { [UInt8]($0) }
+        }
+        if let a = bytes(original.preset.settings), let b = bytes(back) {
+            let same = a == b
+            if !same { failures += 1 }
+            print("  \(same ? "ok  " : "FAIL") the rendered photograph is \(same ? "byte for byte identical" : "DIFFERENT")")
+        }
+    }
+}
+
 print(failures == 0 ? "\nRESULT: OK — 0 failures" : "\nRESULT: FAILED — \(failures)")
 exit(failures == 0 ? 0 : 1)

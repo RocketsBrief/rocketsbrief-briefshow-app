@@ -8620,7 +8620,7 @@ struct DevelopView: View {
 
             HeaderBarItem(id: "presets",
                           glyph: .symbol("paintpalette"),
-                          help: "Presets - save this look, apply a saved one, or import from Lightroom.",
+                          help: "Presets - save this look, apply a saved one, import or export presets.",
                           isActive: activeHeaderCellID == "presets",
                           behaviour: .presets),
 
@@ -12039,8 +12039,13 @@ struct DevelopView: View {
                     }
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
-                .help("Import presets. Supports Lightroom / Camera Raw .xmp "
-                      + "files — pick one, several, or a whole folder.")
+                // ⚠️ The client asked for the brand out of every one of these
+                // strings on 05.09: *„ne sme da pise lightroom mora da pise samo
+                // export preset"*. The file extension stays, because that is
+                // what the person picking a file needs to know; the name of
+                // whoever else writes that extension is not.
+                .help("Import presets. Supports .xmp preset files — pick one, "
+                      + "several, or a whole folder.")
 
                 // Export writes .xmp, the same thing Import reads, so a preset
                 // built here opens in Lightroom and comes back unchanged.
@@ -12065,7 +12070,7 @@ struct DevelopView: View {
                 .help(presets.count > 1
                       ? "Export all \(presets.count) presets as .xmp files into one folder. "
                         + "To export just one, use the arrow in its own row."
-                      : "Export this preset as a Lightroom / Camera Raw .xmp file.")
+                      : "Export this preset as an .xmp preset file.")
             }
 
             if let presetImportNotice {
@@ -12178,7 +12183,7 @@ struct DevelopView: View {
                         .foregroundColor(AppColors.muted)
                 }
                 .buttonStyle(.plain)
-                .help("Export \"\(preset.name)\" as a Lightroom / Camera Raw .xmp file")
+                .help("Export \"\(preset.name)\" as an .xmp preset file")
 
                 Button {
                     deletePreset(preset)
@@ -12285,8 +12290,8 @@ struct DevelopView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Click to type a colour temperature in Kelvin, the way "
-                          + "Lightroom states it, and the slider moves to match.")
+                    .help("Click to type a colour temperature in Kelvin, and "
+                          + "the slider moves to match.")
                 }
             }
         }
@@ -15464,7 +15469,7 @@ struct DevelopView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
-        panel.message = "Choose preset files, or a folder of them. Lightroom / Camera Raw .xmp is supported."
+        panel.message = "Choose preset files, or a folder of them. .xmp preset files are supported."
         panel.prompt = "Import"
         if let xmp = UTType(filenameExtension: "xmp") {
             panel.allowedContentTypes = [xmp, .folder]
@@ -15546,7 +15551,7 @@ struct DevelopView: View {
         if chosen.count == 1, let only = chosen.first {
             let panel = NSSavePanel()
             panel.nameFieldStringValue = LightroomPresetExport.fileName(for: only)
-            panel.message = "Export as a Lightroom / Camera Raw preset."
+            panel.message = "Export preset."
             panel.prompt = "Export"
             if let xmp = UTType(filenameExtension: "xmp") {
                 panel.allowedContentTypes = [xmp]
@@ -15585,7 +15590,7 @@ struct DevelopView: View {
             lines.append("\(failed) could not be written.")
         }
         if !missing.isEmpty {
-            lines.append("Not written to the file (Lightroom has no equivalent): "
+            lines.append("Not written to the file (a preset file has no equivalent): "
                          + missing.sorted().joined(separator: ", ") + ".")
         }
         presetImportNotice = lines.joined(separator: " ")

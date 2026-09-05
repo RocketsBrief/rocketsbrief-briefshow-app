@@ -14388,3 +14388,56 @@ liste, sa natpisom „Export", pored liste od dva imena čita se kao „izvezi o
 ### ⚠️ NEPROVERENO NA EKRANU
 
 Nema dozvole za snimanje ekrana na ovoj mašini; app je otvorena klijentu.
+
+## KORAK 130 — brend van poruka, i „radi li preset na drugom Mac-u" (5. septembar 2026)
+
+Dva zahteva istom prilikom.
+
+### 1. „ne sme da pise lightroom mora da pise samo export preset"
+
+Klijent je pokazao Save panel koji je pisao *„Export as a Lightroom / Camera Raw
+preset."* Brend je uklonjen iz **svake** poruke koju korisnik vidi, ne samo iz te
+jedne: iz oba panela (uvoz i izvoz), iz tooltip-a na Import-u, Export-u i strelici
+u redu, iz help-a na ikonici Presets, iz Kelvin polja, i iz poruke greške
+(*„No Camera Raw settings"* → *„No preset settings"*).
+
+Nastavak `.xmp` **ostaje** u tekstu: to je ono što treba čoveku koji bira fajl.
+Ime onoga ko još piše taj nastavak — ne treba.
+
+⚠️ **JEDNO MESTO JE NAMERNO OSTAVLJENO:** pravna napomena u „Licences" —
+*„Reading Lightroom presets… trademarks of Adobe Inc., used here only to say
+which files can be read"*. Ona **postoji zato** da bi upotreba tuđeg formata bila
+uredno objavljena, i brisati je dok se format i dalje čita bilo bi suprotno od
+njene svrhe. Ako klijent hoće i nju drugačije, to je odluka za njega, ne za
+sesiju — v. odeljak ZAKLJUČANO o licencama.
+
+Imena tipova u kodu (`LightroomPresetImport` / `LightroomPresetExport`) nisu
+dirana: nisu vidljiva korisniku, a preimenovanje je promena bez dobitka.
+
+### 2. „taj preset kada exportujem i posle importujem u C4S u drugom macu radi ce?"
+
+Odgovor je **da za look, izmereno**, i to je sada deo testa umesto obećanja.
+`Tools/run-preset-export-test.py` sada, kad mu se da i fotografija, renderuje istu
+sliku sa originalnim presetom i sa presetom koji je prošao izvoz pa uvoz:
+
+    5. the same photograph, before and after the round trip: C4S_9331.NEF
+      ok   the rendered photograph is byte for byte identical
+
+⚠️ Poređenje samih brojeva nije bilo dovoljno za to pitanje — klijent nije pitao
+da li se polja poklapaju nego da li je **slika ista**. Zato test sada renderuje.
+
+**Šta NE prelazi** (i app to piše posle izvoza): crop i odnos, rotacija i
+ispravljanje, maske, slojevi, `Soft Glow`.
+
+⚠️ **Drugi Mac mora da ima ovaj build ili noviji.** C4S stariji od 05.09. je pri
+uvozu OBRTAO znak `Highlights` (v. KORAK 120), pa bi preset izvezen odavde tamo
+pročitao −77 kao +77. Unutar istog builda toga nema.
+
+### Provereno
+
+- `BUILD SUCCEEDED`; `run-preset-export-test` → **RESULT: OK**, sada i sa
+  renderom; ostali alati prolaze.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Nema dozvole za snimanje ekrana; app je otvorena klijentu da vidi nove natpise.

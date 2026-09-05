@@ -159,18 +159,51 @@ print("decoded: \\(all.count) records")
 // Decoding is not enough: a record that decodes to DIFFERENT values is a
 // silent edit change, which is worse than a crash. Re-encoding and comparing
 // catches a field that decoded to the wrong default.
+//
+// ⚠️ ONE field is EXPECTED to move, and only once. On 05.09.2026 Highlights
+// took Lightroom's sign — positive brightens — because the panel now shows
+// Lightroom's own numbers and the old sign made the slider read +77 for a
+// preset that says -77. Every record written before that means the negative of
+// what it says, so init(from:) flips it when `schemaVersion` is missing.
+//
+// This is the one case where the test changes rather than the code, and the
+// reason is written here so a later session does not "fix" the flip away. What
+// the test still refuses to allow is the flip happening TWICE — that would be
+// a photo oscillating between two looks with nobody touching a slider — so the
+// migrated record is decoded a SECOND time below and must come back identical.
 var mismatches = 0
+var migrated = 0
 let rawAll = try! JSONSerialization.jsonObject(with: data) as! [String: [String: Any]]
 for (key, settings) in all {{
     guard let before = rawAll[key] else {{ continue }}
     let after = try! JSONSerialization.jsonObject(
         with: try! JSONEncoder().encode(settings)) as! [String: Any]
+    let hadVersion = before["schemaVersion"] != nil
     for (field, value) in before {{
         guard let lhs = value as? Double, let rhs = after[field] as? Double else {{ continue }}
         if abs(lhs - rhs) > 1e-9 {{
+            // The expected migration: an unversioned record's Highlights, and
+            // it must be an exact negation, not merely a different number.
+            if field == "highlights", !hadVersion, abs(lhs + rhs) < 1e-9 {{
+                migrated += 1
+                continue
+            }}
             print("DRIFT \\(key).\\(field): \\(lhs) -> \\(rhs)")
             mismatches += 1
         }}
+    }}
+}}
+
+// The negative control. Without it every check above passes on a build that
+// flips Highlights on EVERY decode, which is the failure this migration is
+// most likely to have.
+var flippedTwice = 0
+for (key, settings) in all {{
+    let encoded = try! JSONEncoder().encode(settings)
+    let again = try! JSONDecoder().decode(PhotoEditSettings.self, from: encoded)
+    if abs(again.highlights - settings.highlights) > 1e-9 {{
+        print("OSCILLATES \\(key).highlights: \\(settings.highlights) -> \\(again.highlights)")
+        flippedTwice += 1
     }}
 }}
 
@@ -178,7 +211,11 @@ if mismatches > 0 {{
     print("RESULT: FAILED — \\(mismatches) stored value(s) changed on the round trip")
     exit(1)
 }}
-print("RESULT: OK — every record survives, and no stored number moved")
+if flippedTwice > 0 {{
+    print("RESULT: FAILED — \\(flippedTwice) record(s) flip again on a second decode")
+    exit(1)
+}}
+print("RESULT: OK — every record survives; \\(migrated) Highlights migrated exactly once")
 '''
 
     print(f"extracted {len(DECLARATIONS)} declarations from Develop.swift, compiling…")

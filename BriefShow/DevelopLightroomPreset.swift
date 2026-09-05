@@ -147,7 +147,10 @@ enum LightroomPresetImport {
         if let v = number("Exposure2012") { s.exposure = clamp(v, -3, 3) }
 
         if let v = hundredths("Contrast2012") { s.contrast = v }
-        if let v = hundredths("Highlights2012", invert: true) { s.highlights = v }
+        // No longer inverted: since 05.09.2026 this app's Highlights carries
+        // Lightroom's own sign, so -77 in the file is -0.77 here and the
+        // slider shows the same -77 the photographer set in Lightroom.
+        if let v = hundredths("Highlights2012") { s.highlights = v }
         if let v = hundredths("Shadows2012") { s.shadows = v }
         if let v = hundredths("Whites2012") { s.whites = v }
         if let v = hundredths("Blacks2012") { s.blacks = v }

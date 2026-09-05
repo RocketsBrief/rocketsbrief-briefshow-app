@@ -134,7 +134,12 @@ struct ColorMixer: Codable, Equatable {
 struct PhotoEditSettings: Codable, Equatable {
     var exposure: Double = 0        // EV, roughly -3...3
     var contrast: Double = 0        // -1...1
-    var highlights: Double = 0      // -1 (recover blown highlights) ...1
+    // ⚠️ LIGHTROOM'S SIGN since 05.09.2026: positive BRIGHTENS the highlights,
+    // negative recovers them — the same direction the number on the slider now
+    // means in Lightroom. It used to be inverted. Records written before the
+    // flip carry no `schemaVersion` and are migrated on decode, so a photo
+    // edited under an older build still renders exactly as it did.
+    var highlights: Double = 0      // -1 (recover blown highlights) ...+1 (brighter)
     var shadows: Double = 0         // -1 (darken) ...1 (lift)
     var whites: Double = 0          // -1 (dull white point) ...1 (brighter/clips more)
     var blacks: Double = 0          // -1 (crush black point) ...1 (lift/brighter)
@@ -173,6 +178,16 @@ struct PhotoEditSettings: Codable, Equatable {
     var localAdjustments: [LocalAdjustment] = []   // masks — see LocalAdjustment
     var layers: [ImageLayer] = []        // pasted cut/copied pieces — see ImageLayer
 
+    /// Which meaning the numbers in this record carry.
+    ///
+    /// 1 (or absent) — everything written before 05.09.2026, where Highlights
+    /// was inverted with respect to Lightroom. 2 — Highlights carries
+    /// Lightroom's sign. Written on every encode, so a migrated record is
+    /// migrated exactly once; without it the flip would apply again on every
+    /// decode and the photo would oscillate.
+    var schemaVersion: Int = PhotoEditSettings.currentSchemaVersion
+    static let currentSchemaVersion = 2
+
     init() {}
 
     // Written by hand (instead of relying on synthesized Decodable) so that
@@ -184,6 +199,8 @@ struct PhotoEditSettings: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         exposure = try c.decodeIfPresent(Double.self, forKey: .exposure) ?? 0
         contrast = try c.decodeIfPresent(Double.self, forKey: .contrast) ?? 0
+        // Migration, and it must come with the version read below: a record
+        // from before the sign flip means the OPPOSITE of what it says.
         highlights = try c.decodeIfPresent(Double.self, forKey: .highlights) ?? 0
         shadows = try c.decodeIfPresent(Double.self, forKey: .shadows) ?? 0
         whites = try c.decodeIfPresent(Double.self, forKey: .whites) ?? 0
@@ -215,6 +232,28 @@ struct PhotoEditSettings: Codable, Equatable {
         cropAspect = try c.decodeIfPresent(CropAspectRatioOption.self, forKey: .cropAspect) ?? .free
         localAdjustments = try c.decodeIfPresent([LocalAdjustment].self, forKey: .localAdjustments) ?? []
         layers = try c.decodeIfPresent([ImageLayer].self, forKey: .layers) ?? []
+
+        // ⚠️ The Highlights migration, and it is the reason `schemaVersion`
+        // exists. Before 05.09.2026 a positive Highlights DARKENED, the
+        // opposite of Lightroom and of the number the slider showed. A record
+        // written then means the negative of what it says, so it is flipped
+        // here — once. The version is written on every encode, so a record
+        // that has already been migrated is left alone; without it the flip
+        // would apply on every decode and the photo would oscillate between
+        // two looks with nobody touching a slider.
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        if schemaVersion < 2 {
+            highlights = -highlights
+            // Masks and pasted layers carry their own copy of the same tone
+            // controls through the same curve, so they migrate with it.
+            for index in localAdjustments.indices {
+                localAdjustments[index].settings.highlights = -localAdjustments[index].settings.highlights
+            }
+            for index in layers.indices {
+                layers[index].adjustments.highlights = -layers[index].adjustments.highlights
+            }
+            schemaVersion = PhotoEditSettings.currentSchemaVersion
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -224,6 +263,7 @@ struct PhotoEditSettings: Codable, Equatable {
         case colorMixer
         case rotationQuarterTurns, straightenDegrees, crop, cropAspect
         case localAdjustments, layers
+        case schemaVersion
     }
 
     var isNeutral: Bool {
@@ -1838,6 +1878,17 @@ enum PhotoBaseImage {
 }
 
 enum PhotoEditRenderer {
+
+    /// How far a control at full travel bends its own knot. Calibrated against
+    /// Lightroom rather than chosen: see Tools/run-lightroom-calibration.py,
+    /// which renders the client's NEF through this very pipeline and scores it
+    /// against the same photograph exported from Lightroom.
+    static let toneControlStrength = 0.30
+
+    /// The gentlest the curve is allowed to rise between two knots. Above zero
+    /// on purpose: a flat segment is what let the old spline dip.
+    static let toneMinimumSlope = 0.08
+
     // RAW formats decode through CIRAWFilter instead of a plain CIImage
     // decode — a real demosaic with highlight-recovery headroom a JPEG/
     // HEIC preview embedded in the RAW file wouldn't have, rather than
@@ -2064,6 +2115,70 @@ enum PhotoEditRenderer {
     // — those already bend one CIToneCurve below, and doubling them up
     // with a second, differently-shaped native curve would make the same
     // slider value look different on RAW vs. JPEG for no clear benefit.
+    /// The five knots of the Blacks/Shadows/Highlights/Whites curve.
+    ///
+    /// ⚠️ Replaces a layout that could produce a NON-MONOTONIC curve — measured
+    /// on a 0...255 ramp through the real renderer with the client's own
+    /// "Classic Edits" preset (Highlights -77, Shadows +70, Whites +25,
+    /// Blacks -28):
+    ///
+    ///     in   48 ->  59      the image got DARKER as the input got BRIGHTER,
+    ///     in   64 ->  56      from 48 all the way to 112, and never recovered:
+    ///     in   96 ->  50      240 came out at 192/197/108.
+    ///     in  112 ->  50
+    ///
+    /// The old layout pinned the midtone knot at (0.5, 0.5) and moved only
+    /// point3 for Highlights, so a strong Highlights setting left the segment
+    /// between x=0.5 and x=0.75 almost flat (0.500 -> 0.519 here) and the
+    /// spline through it dipped. On a high-key photograph — this one has half
+    /// its pixels above 242 — that is most of the picture.
+    ///
+    /// Two things are different now. Each control moves EVERY knot, by a weight
+    /// that falls off away from the zone it owns, which is how Lightroom's
+    /// Blacks/Shadows/Highlights/Whites behave — they are zone-weighted, not
+    /// single knots. And the result is forced non-decreasing with a minimum
+    /// slope, so no combination of the four can invert the image again.
+    ///
+    /// **Highlights now carries LIGHTROOM'S SIGN: positive brightens.** It used
+    /// to be the other way round. Records written before that flip are migrated
+    /// on decode (see PhotoEditSettings.init(from:) and `schemaVersion`), so a
+    /// photo edited under an older build still renders the way it did.
+    static func toneCurvePoints(blacks: Double, shadows: Double,
+                                highlights: Double, whites: Double) -> [CGPoint] {
+        let xs: [Double] = [0, 0.25, 0.5, 0.75, 1]
+        // Rows: blacks, shadows, highlights, whites. Columns: the five knots.
+        // Each control is 1.0 at home and fades outwards; the two pairs that
+        // overlap in Lightroom (blacks/shadows, highlights/whites) overlap here.
+        let weights: [[Double]] = [
+            [1.00, 0.45, 0.10, 0.00, 0.00],
+            [0.35, 1.00, 0.40, 0.06, 0.00],
+            [0.00, 0.06, 0.40, 1.00, 0.35],
+            [0.00, 0.00, 0.10, 0.45, 1.00],
+        ]
+        let amounts = [blacks, shadows, highlights, whites]
+
+        var ys = xs
+        for knot in 0..<5 {
+            var delta = 0.0
+            for control in 0..<4 { delta += amounts[control] * weights[control][knot] }
+            ys[knot] = xs[knot] + delta * toneControlStrength
+        }
+
+        // Below black is not a place to go; above white is, because that is
+        // what lets Whites push tones into clipping instead of flattening
+        // toward it.
+        ys[0] = max(ys[0], 0)
+
+        // Monotonic by construction, not by hope. Without this the four
+        // controls can still cross each other at the extremes.
+        for knot in 1..<5 {
+            let floor = ys[knot - 1] + toneMinimumSlope * (xs[knot] - xs[knot - 1])
+            ys[knot] = max(ys[knot], floor)
+        }
+
+        return (0..<5).map { CGPoint(x: xs[$0], y: ys[$0]) }
+    }
+
     static func render(_ settings: PhotoEditSettings, on base: PhotoBaseImage, applyCrop: Bool = true) -> CIImage {
         var output: CIImage
         let isRAWSource: Bool
@@ -2173,17 +2288,16 @@ enum PhotoEditRenderer {
             // the layout in the first place. Blacks and Shadows now share
             // point1, and that is honest: both are controls over the bottom of
             // the range, and they overlap in Lightroom too.
-            let strength = 0.3
-            let blacksOnShadowPoint = 0.15
+            let points = PhotoEditRenderer.toneCurvePoints(
+                blacks: settings.blacks, shadows: settings.shadows,
+                highlights: settings.highlights, whites: settings.whites)
             let filter = CIFilter.toneCurve()
             filter.inputImage = output
-            // Clamped at 0: below black is not a place to go.
-            filter.point0 = CGPoint(x: 0, y: min(max(settings.blacks * strength, 0), 1))
-            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 + settings.shadows * strength
-                                                        + settings.blacks * blacksOnShadowPoint, 0), 1))
-            filter.point2 = CGPoint(x: 0.5, y: 0.5)
-            filter.point3 = CGPoint(x: 0.75, y: min(max(0.75 - settings.highlights * strength, 0), 1))
-            filter.point4 = CGPoint(x: 1, y: 1 + settings.whites * strength)
+            filter.point0 = points[0]
+            filter.point1 = points[1]
+            filter.point2 = points[2]
+            filter.point3 = points[3]
+            filter.point4 = points[4]
             output = filter.outputImage ?? output
         }
 
@@ -2889,19 +3003,21 @@ enum PhotoEditRenderer {
         }
 
         if local.blacks != 0 || local.shadows != 0 || local.highlights != 0 || local.whites != 0 {
-            // Same curve as the global one, and it carried the same dead
-            // Blacks slider — a mask's Blacks was as inert as the panel's. The
-            // measurements are on the global version.
-            let strength = 0.3
-            let blacksOnShadowPoint = 0.15
+            // The same curve as the global one, and deliberately the same
+            // FUNCTION: a mask that toned differently from the panel would be
+            // a second thing to calibrate and a second thing to get wrong. It
+            // carried the same non-monotonic Highlights defect until 05.09 —
+            // the measurements are on toneCurvePoints.
+            let points = PhotoEditRenderer.toneCurvePoints(
+                blacks: local.blacks, shadows: local.shadows,
+                highlights: local.highlights, whites: local.whites)
             let filter = CIFilter.toneCurve()
             filter.inputImage = output
-            filter.point0 = CGPoint(x: 0, y: min(max(local.blacks * strength, 0), 1))
-            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 + local.shadows * strength
-                                                        + local.blacks * blacksOnShadowPoint, 0), 1))
-            filter.point2 = CGPoint(x: 0.5, y: 0.5)
-            filter.point3 = CGPoint(x: 0.75, y: min(max(0.75 - local.highlights * strength, 0), 1))
-            filter.point4 = CGPoint(x: 1, y: 1 + local.whites * strength)
+            filter.point0 = points[0]
+            filter.point1 = points[1]
+            filter.point2 = points[2]
+            filter.point3 = points[3]
+            filter.point4 = points[4]
             output = filter.outputImage ?? output
         }
 

@@ -13275,14 +13275,13 @@ Harness sada tvrdi i:
 - decode 129 slogova **OK**, layer pixel store **ALL PASS**, crop rotation **OK**,
   update-quit **OK**.
 
-### ⚠️ NEPROVERENO NA EKRANU
+### ✅ POTVRĐENO NA EKRANU (5. septembar 2026)
 
-Sve vizuelno — nema dozvola za snimanje ekrana ni Accessibility na ovoj mašini
-(KORAK 114). Naročito treba pogledati: da li se natpis ispod trake pojavljuje
-odmah i da li sistemski tooltip sad izlazi, i da li ostaje **tačno jedna**
-upaljena ćelija u svakoj kombinaciji (Crop → tab → AI → Presets).
+Klijent, pošto je video v11.5: *„Korak 117 i 118 je super i radi."* Time je
+zatvoreno sve što je ovde stajalo kao neprovereno — natpis ispod trake, sistemski
+tooltip i tačno jedna upaljena ćelija.
 
-⚠️ Ovo NIJE u release-u v11.4. Paketi na GitHub-u su od commit-a `61c83b7`.
+Isporučeno u v11.5 (KORAK 119), ne u v11.4.
 
 ## KORAK 118 — bela kartica se gasi, natpis ispod ostaje, i kratka crtica (4. septembar 2026)
 
@@ -13322,9 +13321,10 @@ nije o kodu nego o tekstu oko koda — vredi pamtiti kao klasu.
 - decode 129 slogova **OK**, layer pixel store **ALL PASS**, crop rotation
   **OK**, update-quit **OK**.
 
-### ⚠️ NEPROVERENO NA EKRANU
+### ✅ POTVRĐENO NA EKRANU (5. septembar 2026)
 
-Kao i KORAK 117 — nije viđeno odavde. I dalje van release-a v11.4.
+Zatvoreno zajedno sa KORAKOM 117, istom klijentovom rečenicom. Isporučeno u
+v11.5 (KORAK 119).
 
 ## KORAK 119 — RELEASE v11.5 (4. septembar 2026)
 
@@ -13360,3 +13360,147 @@ se ne sme brisati (ugrađeno preuzimanje SD-a pokazuje na njegov asset), i
 
 Veličine na GitHub-u su **bajt u bajt** iste kao lokalni fajlovi. Release je
 `Latest`, tag pokazuje na `4aa850a` na `briefshow-develop` (pushovano).
+
+## KORAK 120 — kalibracija po Lightroom-u: tonska kriva je bila NEMONOTONA (5. septembar 2026)
+
+Klijentov zahtev, doslovno: *„izkalibriraj da napravis taku sliku original sa
+istim values kao taj preset i tako ce nas slide bar da bude izkalibriran kao
+lightroom"*. Dobio sam preset (`Classic Edits Lightroom.xmp`), original
+(`C4S_9331.NEF`) i istu sliku izvezenu iz Lightroom-a (`CAS-5.jpg`).
+
+### Prvo: da li su NEF i JPEG uopšte par
+
+U folderu je 7 NEF-ova i 9 JPEG-ova, a **JPEG nema nijedan EXIF podatak** —
+Lightroom ga je izvezao bez metapodataka, pa se par ne može potvrditi zaglavljem.
+Upareno je po samoj slici (sitna siva verzija, normalizovana korelacija, otporna
+na izmenu tonova):
+
+    0,8959  C4S_9331.NEF     <- par
+    0,4490  C4S_9357.NEF
+    0,4401  C4S_9366.NEF
+
+Klijentovo uparivanje je bilo tačno. **Ovo se proverava svaki put** — pogrešan
+par bi kalibraciju odveo bilo kuda, a ništa u fajlovima to ne bi odalo.
+
+### Nov alat: `Tools/run-lightroom-calibration.py`
+
+Kompajlira **app-ove sopstvene izvore** (`Develop.swift`,
+`DevelopLightroomPreset.swift` i ostale) zajedno sa
+`Tools/lightroom-calibration.swift`, pa renderuje fotografiju kroz **pravi**
+lanac i boduje je protiv Lightroom-ovog izvoza. Ništa se ne reimplementira.
+
+```bash
+python3 Tools/run-lightroom-calibration.py <foto.NEF> <preset.xmp> <lightroom.jpg>
+python3 Tools/run-lightroom-calibration.py --ramp <preset.xmp> [k=v ...]
+```
+
+`--ramp` provuče sivo stepenište 0...255 kroz lanac i ispiše šta izađe.
+**Fotografija pokazuje da nešto ne valja; stepenište kaže šta.**
+
+⚠️ Dva fajla se krpe **samo u build kopiji**, nikad u repou: `BriefShowApp.swift`
+se izostavlja (njegov `@main` se sudara sa harnessom), a dve `ImageRenderer`
+tačke u `ContentView.swift` se gase (vezane su za main actor i nemaju veze sa
+renderom fotografije).
+
+### Nalaz: kriva nije bila monotona
+
+Stepenište sa klijentovim presetom, kroz stari kod:
+
+    ulaz  48 -> 59
+    ulaz  64 -> 56      slika TAMNI dok ulaz RASTE, od 48 do 112
+    ulaz  96 -> 50
+    ulaz 112 -> 50
+    ulaz 240 -> R192 G197 B108
+
+Kontrola: bez preseta stepenište izlazi kao savršen identitet, dakle merna
+sprava je ispravna i kvar je u app-i.
+
+**Uzrok.** Stara postavka je pinovala srednji čvor na `(0,5, 0,5)` i za
+Highlights pomerala samo `point3`. Sa `Highlights` na punoj snazi segment između
+`x=0,5` i `x=0,75` ostane skoro ravan (`0,500 -> 0,519` ovde), a splajn kroz
+ravan segment **propadne**. Na fotografiji visokog ključa — ova ima polovinu
+piksela iznad 242 — to je najveći deo slike.
+
+Izolovano, krivac je bio samo `Highlights`; `Shadows`, `clarity`, `dehaze` i
+`texture` su svi bili monotoni.
+
+### Popravka
+
+`PhotoEditRenderer.toneCurvePoints(blacks:shadows:highlights:whites:)`. Dve
+stvari su drugačije:
+
+1. **Svaki kontroler pomera SVAKI čvor**, težinom koja opada od zone koju drži —
+   tako se Lightroom-ovi Blacks/Shadows/Highlights/Whites i ponašaju, oni su
+   zonski, ne pojedinačni čvorovi.
+2. **Rezultat se forsira neopadajućim** sa minimalnim nagibom, pa nijedna
+   kombinacija četiri kontrolera ne može više da invertuje sliku.
+
+Ista funkcija radi i za maske i za slojeve — lokalna kriva je nosila isti kvar.
+
+### `Highlights` je dobio LIGHTROOM-OV ZNAK
+
+Bio je obrnut: preset koji kaže `-77` prikazivao se kao `+77`. Pošto klijent
+traži da brojevi budu isti kao u Lightroom-u, znak je obrnut, a importer više ne
+invertuje.
+
+**Migracija.** Dodato je polje `schemaVersion`. Zapis bez njega je pisan pre
+obrtanja i znači **suprotno** od onoga što piše, pa se `highlights` obrne —
+**tačno jednom**. Bez verzije bi se obrtao pri svakom dekodiranju i fotografija
+bi oscilirala između dva izgleda a da niko ne dodirne slajder. Migriraju se i
+maske i slojevi, koji nose svoju kopiju istih kontrolera.
+
+`Tools/run-editsettings-decode-test.py` je **izmenjen, a ne zaobiđen**, i u
+njemu piše zašto: 129 zapisa preživljava, **9 Highlights migrirano tačno
+jednom**, i dodata je negativna kontrola koja odbija drugo obrtanje. Bez nje bi
+sve prolazilo i na buildu koji obrće pri svakom dekodiranju — što je najverovatniji
+način da ova migracija bude pogrešna.
+
+### Šta merenje kaže, i zašto posao NIJE gotov
+
+| | RMS | sredina |
+|---|---|---|
+| bez preseta (kontrola) | 24,11 | 229,2 |
+| ceo preset | **36,01** | 185,8 |
+| preset bez tonske krive | **15,14** | 208,6 |
+| samo WB + mikser boja | 16,41 | **216,4** |
+
+Cilj (Lightroom): **214,4**.
+
+Dve stvari se iz ovoga vide:
+
+- **Balans bele i mikser boja su skoro tačni.** Sami daju sredinu 216,4 naspram
+  Lightroom-ovih 214,4.
+- **Tonska kriva je i dalje prejaka.** Na ovoj fotografiji se Lightroom-ovi
+  `Shadows +70` i `Highlights -77` međusobno **potiru**, a C4S ih primenjuje
+  preko celog opsega.
+
+⚠️ **I to je strukturno, ne stvar broja.** Lightroom-ovi Shadows i Highlights su
+**lokalni** — rade po masci osvetljenja — dok su ovde **globalna kriva**. Zato na
+visokom ključu globalna kriva povuče celu sliku, a Lightroom samo najsvetlije
+delove. Nijedna vrednost `toneControlStrength` to ne može da nadoknadi, i zato
+**nije ni birana po ovoj jednoj slici**: `0,30` je ostavljeno kako je bilo, da
+ova izmena bude „popravka inverzije i znaka", a ne neizmereno preštelovanje.
+
+⚠️ **JEDAN PRESET NE MOŽE DA KALIBRIŠE DESET SLAJDERA.** Preset koji pomera sve
+odjednom određuje samo ZBIR. Da bi se slajder kalibrisao sam, par mora da pomera
+samo njega: jedan NEF i jedan izvoz iz Lightroom-a sa **samo** `Shadows`, pa
+**samo** `Highlights`, i tako redom. Sve drugo je jedna jednačina sa deset
+nepoznatih. **Tražene su te slike od klijenta.**
+
+### Provereno
+
+- `BUILD SUCCEEDED`.
+- `Tools/run-editsettings-decode-test.py` → **OK, 129 zapisa, 9 migrirano tačno
+  jednom**, kontrola protiv oscilacije prolazi.
+- `run-crop-rotation-test`, `run-header-bar-test`, `run-update-quit-test`,
+  `run-layer-pixel-store-test`, `run-slider-drag-test`, `run-layer-reorder-test`,
+  `run-double-click-test` → svi **OK**.
+- `--ramp` posle popravke: monoton na celom opsegu.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Ništa od ovoga nije viđeno u app-i — nema dozvola za snimanje ekrana ni
+Accessibility na ovoj mašini (KORAK 114). Naročito treba pogledati: da li
+`Highlights` sada pokazuje isti broj kao Lightroom, i da li fotografija
+editovana starim buildom izgleda isto posle migracije.
+

@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 1. septembar 2026 (v10.1).
+Beleška za nastavak rada. Poslednja izmena: 5. septembar 2026 (v11.7, objavljen).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -276,7 +276,58 @@ lično je — pitaj klijenta pre nego što uđe u build.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 5. septembar 2026, verzija 11.7 (OBJAVLJENA)
+
+**Isporučeno i gore na GitHub-u.** `v11.7`, oba paketa, `Latest`, tag na
+`05e39cb`. Postupak pakovanja je od ovog release-a skripta —
+`Tools/make-release.py`, koja odbija da isporuči ako ijedna od osam provera po
+paketu padne. Detalji i linkovi: **KORAK 131**.
+
+#### Šta je urađeno 5. septembra
+
+| | |
+|---|---|
+| 120–124 | kalibracija po Lightroom-u: nemonotona kriva, znak `Highlights`-a, `Contrast` koji je sivio belu, `Sharpness` iz preseta |
+| 125 | checkpoint (⚠️ njegova tabela nosi zastareo RMS — v. KORAK 126) |
+| **126** | **tonska kriva je propadala IZMEĐU čvorova** — lice i oči; RMS 15,05 → 13,88 |
+| 127 | Backspace u tekstualnom polju je brisao FOTOGRAFIJU; Export preseta |
+| 128 | sličica i platno nisu bile isti lanac — filmstrip i grid 30 nivoa tamniji |
+| 129 | Export je izvozio sve, bez izbora |
+| 130 | brend van svih poruka; izmereno da preset prelazi na drugi Mac |
+| 131 | **RELEASE v11.7** |
+
+#### ⚠️ PRVO ZA SLEDEĆU SESIJU — i to je jedna jedina stvar
+
+**Traži se od klijenta izvoz iz Lightroom-a istog `C4S_9331.NEF` sa SVIM
+SLAJDERIMA NA NULI.** Traženo je 5.09. i nije stiglo, i to više nije
+poboljšanje nego **prepreka**: sve dosad je fitovano na jednoj fotografiji sa
+presetom koji pomera sve slajdere odjednom, što određuje ZBIR, ne pojedinačne
+slajdere.
+
+Zašto baš neutralan izvoz: posle KORAKA 126 ton kože se **poklapa u nijansi i
+zasićenju** sa Lightroom-ovim (R−G 41 naspram 41), a razlikuje se samo u
+svetlini, ravnomerno u sva tri kanala. To ne liči na pogrešno skaliran slajder
+nego na razliku u samom RAW dekodu — a to razdvaja jedino neutralan izvoz.
+Posle njega: samo `Shadows +70`, samo `Highlights −77`, i jedan potez u mikseru.
+
+Ostaci koji čekaju isto: **lice −14,8 / ruka −5,1**, **pod +18 zelenog / +14
+plavog**, **nebo +12 crvenog**.
+
+#### Otvoreno, a nije na ovoj sesiji
+
+- **`latest_version` u BriefControl-u diže klijent sam.** Dok ne digne na 11.7,
+  niko ne dobija karticu „mora update".
+- **`v11.0` se NE SME brisati** — ugrađeno preuzimanje SD-a pokazuje na njegov
+  asset.
+- Veliki paket (2,09 GB) nije nigde **pokrenut**, i Intel nije potvrđen na
+  pravoj mašini od v11.0 (KORAK 106).
+
+---
+
 ### GDE SMO STALI — 1. septembar 2026, verzija 10.1
+
+⚠️ **Sve ispod ovog reda je ISTORIJA, ostavljena namerno.** Čita se zbog uzroka
+i zamki, ne kao spisak posla — v. odeljak od 5. septembra iznad.
 
 `MARKETING_VERSION` podignut sa 6.0 na **10.1**. `CURRENT_PROJECT_VERSION` je
 namerno ostavljen na 17 — nije traženo.
@@ -402,7 +453,11 @@ list) i `Tools/linstat.swift` (raspodela šuma u linearnom prostoru).
 kako je merenje u sRGB-u dvaput dalo pogrešan odgovor koji je izgledao kao
 merenje.
 
-### ⚠️ PRVO SADA — devet prijava od 1.09. uveče
+### ⚠️ ZAVRŠENO — devet prijava od 1.09. uveče (istorija)
+
+⚠️ **Ovo više nije „prvo sada".** Svih devet je obrađeno kroz KORAKE 68–77 i
+dalje, a SD na Intelu (C2) je isporučen u KORACIMA 105–106 i pušten u v11.0.
+Odeljak stoji zbog uzroka koji su u njemu zapisani.
 
 Klijent je prijavio devet stvari: kamera javlja „0 files", traka napretka izlazi
 iz panela, folder se ne može pustiti na ikonicu, levi panel se ne razvlači,
@@ -453,7 +508,14 @@ postavljanja" u KORAKU 56.
 kompjutera niko još ne poštuje. Zaključavanje app-e (`is_locked`) ide
 POSLEDNJE, tek kad su svi na novom build-u. Redosled je na dnu KORAKA 56.
 
-### ⚠️ PRVO ZA SLEDEĆU SESIJU — preimenovanje u „Afterburn Studio"
+### ⚠️ NE RADITI — preimenovanje u „Afterburn Studio" je NADIŠLO (istorija)
+
+🔴 **App se zove „C4S Suite", i preimenovana je u KORAKU 104 (3.09).** Ime
+„Afterburn Studio" je odbačeno pre nego što je išta urađeno. Ko god ovo pročita
+i krene da preimenuje app u Afterburn, pravi štetu — plan ispod se čita SAMO
+zbog dve mine koje su u njemu opisane i koje važe za svako preimenovanje.
+
+Zatečeni tekst, ostavljen kakav je bio 1.09:
 
 Dogovoreno 31.08, **nije počelo.** Plan i sve zamke su u odeljku
 „PLAN — preimenovanje u Afterburn Studio" na dnu dokumenta. **Pročitati ga pre

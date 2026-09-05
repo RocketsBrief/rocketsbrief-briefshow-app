@@ -13497,10 +13497,78 @@ nepoznatih. **Tražene su te slike od klijenta.**
   `run-double-click-test` → svi **OK**.
 - `--ramp` posle popravke: monoton na celom opsegu.
 
-### ⚠️ NEPROVERENO NA EKRANU
+### ✅ POTVRĐENO NA EKRANU — i dozvole SU dobijene (5. septembar 2026)
 
-Ništa od ovoga nije viđeno u app-i — nema dozvola za snimanje ekrana ni
-Accessibility na ovoj mašini (KORAK 114). Naročito treba pogledati: da li
-`Highlights` sada pokazuje isti broj kao Lightroom, i da li fotografija
-editovana starim buildom izgleda isto posle migracije.
+**⚠️ Prvo, i važnije od samog koraka: `screencapture` i Accessibility sada
+RADE na ovoj mašini.** Od KORAKA 114 je u dokumentu stajalo da ne rade i da se
+zato ništa ne može videti ni kliknuti odavde. To više ne važi — klijent je dao
+dozvole. App se može otvoriti, snimiti i **voditi klikom**.
+
+⚠️ Uz jednu zamku koja je već zapisana i koja se potvrdila: **System Events
+`click at` NE radi** na ručno crtanim SwiftUI kontrolama. Radi tek pravi miš
+preko `CGEvent` (`mouseMoved` + `leftMouseDown/Up` sa `mouseEventClickState`).
+Isto važi i za skrol (`CGEvent(scrollWheelEvent2Source:)`).
+
+**Šta je viđeno.** Otvoren `C4S_9331.NEF` (RAW), uvezen `Classic Edits` preset
+(uđe kao „Camilo") i primenjen. Panel pokazuje:
+
+| | Lightroom (.xmp) | C4S panel | |
+|---|---|---|---|
+| Exposure | -0,10 | **-0,10** | ✅ |
+| Contrast | -5 | **-5** | ✅ |
+| **Highlights** | **-77** | **-77** | ✅ **popravka potvrđena** |
+| Shadows | +70 | **+70** | ✅ |
+| Whites | +25 | **+25** | ✅ |
+| Blacks | -28 | **-28** | ✅ |
+
+**Obrtanje znaka radi.** Pre ove sesije je preset koji kaže `-77` pokazivao
+`+77`.
+
+### 🔴 NOVO NAĐENO UŽIVO — dva broja koja se i dalje NE poklapaju
+
+**1. Temperatura promašuje za 351 K, i uzrok je izmeren.** Panel piše
+`As shot 4,999 K` i sleti na **5.988 K**. Lightroom traži **6.339 K**.
+
+Pomeraj je prenet ispravno — `(6339 - 5350)/3000 = 0,33`, panel piše `+33` — ali
+**osnovica nije ista**: Core Image čita as-shot ovog NEF-a kao **4.999 K**, a
+Adobe kao **5.350 K**. `4999 + 0,33 x 3000 = 5988`. Razlika u dve nezavisne
+procene iste snimljene ravnoteže bele, ne greška u računu.
+
+**2. Tint piše -16, Lightroom piše -10.** Isti razlog: ovde se čuva pomeraj od
+as-shot vrednosti `(-10 - 6)/100 = -0,16`, a Lightroom prikazuje apsolutnu
+vrednost.
+
+⚠️ Ovo je **odluka o prikazu, ne bag**: čuvanje pomeraja je tačno i to je ono što
+omogućava da se look prenese na drugu fotografiju. Ali klijent je tražio da
+brojevi budu **isti kao u Lightroom-u**, a Temperatura i Tint to nisu.
+**Ne dirati bez klijentove reči** — vidi otvoreno pitanje ispod.
+
+### 🔴 SLIKA: vidljiv zeleno-tirkizni naliv
+
+Poređenje jedno uz drugo (C4S naspram Lightroom izvoza) pokazuje ono što je RMS
+samo nagovestio:
+
+- C4S je **pretaman** — potvrđuje merenje da je tonska kriva prejaka;
+- **zgrade su otišle u zeleno**, a more u prezasićen tirkiz, dok su kod
+  Lightroom-a zgrade bele/krem a more mekše.
+
+Neutralne površine sa zelenim nalivom znače da **mikser boja preteruje** — u
+presetu su Hue Yellow -31, Green -61, Aqua -35, Blue -42 i Saturation Aqua +28,
+Blue +39. To se slaže sa merenjem: `preset bez miksera` daje RMS **28,92**
+naspram **36,01** za ceo preset, dakle mikser **odmaže**.
+
+### ⚠️ OTVORENO PITANJE ZA KLIJENTA, ne za sledeću sesiju da odluči sama
+
+Temperatura i Tint mogu da pokazuju Lightroom-ove brojeve, ali to znači izbor:
+
+- **ostaviti kako jeste** — pomeraj, prenosiv na druge fotografije, ali broj se
+  ne poklapa sa Lightroom-om;
+- **prikazivati apsolutni Kelvin i apsolutni Tint** — poklapa se sa Lightroom-om,
+  ali onda preset nosi apsolutnu vrednost i na fotografiji snimljenoj pod drugim
+  svetlom daje drugi rezultat nego danas.
+
+Uz to ostaje činjenica koju nijedan prikaz ne rešava: **Core Image i Adobe ne
+čitaju istu as-shot vrednost** (4.999 naspram 5.350 K), pa se ni apsolutni Kelvin
+neće poklopiti sam od sebe bez korekcije od +351 K, a ta korekcija je izmerena na
+**jednom** fajlu i ne sme se generalizovati bez još NEF-ova.
 

@@ -14203,3 +14203,73 @@ pogrešno skaliran", a merenje kože gore kaže da je odgovor verovatno prvo.
 Posle njega: samo `Shadows +70`, samo `Highlights −77`, i jedan potez u mikseru.
 
 **Nije push-ovano**, po ranijoj klijentovoj reči *„ne push dok ne sredimo"*.
+
+## KORAK 127 — Backspace je brisao FOTOGRAFIJU, i Export za presete (5. septembar 2026)
+
+Klijent, uz snimak ekrana panela „Presets" sa imenom `C4S` u polju: *„kada pisem
+text u text field i pogresim i kliknem backspace to delete the text on hoce da
+obrise sliku"*.
+
+### Uzrok: dve grane monitora, jedine bez `isTyping`
+
+Monitor tastature u Develop-u ima zaštitu `isTyping` i ona stoji ispred **svake**
+grane — koraka kroz filmstrip, zuma, undo/redo, veličine alata, strelica za
+slajdere. Ispred obe `Delete` grane nije stajala.
+
+Zaštita na koju su se te dve grane oslanjale bila je *„puca samo kad ima šta da
+se briše"*, i ona je za ostale tastere dovoljna, jer je clipboard prazan ili
+undo stek prazan dovoljno često. Za `Delete` nije: **kad je fotografija
+otvorena, uvek ima šta da se briše.** Zato je Backspace u polju za ime preseta
+otvarao potvrdu za brisanje fotografije umesto da obriše slovo.
+
+Komentar iznad monitora je pritom tvrdio suprotno — *„these keys still reach
+normal text-field editing (e.g. typing/backspacing a preset name)"*. Komentar je
+bio tačan za sve tastere osim za dva koja su ga najviše trebala.
+
+### Popravka, i zašto je izvučena iz monitora
+
+Odluka je izvučena u `enum DeleteKeyAction` — čista funkcija, bez SwiftUI-ja —
+pa se **tablica istine vozi**, umesto da se o njoj raspravlja
+(`Tools/run-delete-key-test.py`, 21 slučaj). Redosled „maska pobeđuje
+fotografiju" je sačuvan i sad je proveren, a ne samo napisan u komentaru.
+
+⚠️ I sama detekcija kucanja je proširena. Stara je pitala samo da li je prvi
+odgovarač **field editor**; `NSTextField` koji ima fokus a još nije otvorio svoj
+editor, i editabilan `NSTextView` koji nije field editor, oba su čitala kao
+„ne kuca" — pa bi svaka grana monitora slovo primila kao komandu.
+
+### Export presets — traženo istom porukom
+
+Dugme **Export** pored Import-a, i piše **isti format koji Import čita**
+(Camera Raw `.xmp`), pa preset napravljen ovde otvara Lightroom i vraća se
+nepromenjen. Jedan preset dobija Save panel sa već upisanim imenom, više njih
+folder — isti razlog zbog kog Import prima ceo folder.
+
+`LightroomPresetExport` je namerno **inverz** uvoza, broj po broj: ista skala
+(×100), isti znak za vinjetu, isti merni delilac za `Sharpness` (265, iz
+KORAKA 124), i isti pojam apsolutnog Kelvina naspram pomeraja.
+
+**Ne ide u fajl, i piše se klijentu u izveštaju:** crop i njegov odnos, rotacija
+i ispravljanje, maske, slojevi, i `Soft Glow` (naša kontrola koju Camera Raw
+nema).
+
+⚠️ Dva preseta smeju da nose isto ime; drugi ne sme tiho da pregazi prvi, pa se
+imenu fajla dodaje broj.
+
+### Provereno
+
+- `Tools/run-delete-key-test.py` → **RESULT: OK**, 0 promašaja od 21 slučaja.
+- `Tools/run-preset-export-test.py` → **RESULT: OK**, 0 promašaja. Vozi izvoz pa
+  uvoz nad app-ovim sopstvenim izvorima: preset sa svim pomerenim kontrolama,
+  neutralan preset (mora da ostane „As Shot"), pomeraj temperature, i
+  **klijentov `Classic Edits Lightroom.xmp`** — svih 24 traka miksera se vraćaju
+  u decimalu.
+- `build()` u kalibracionom harnessu sad prima `main`, pa dva alata dele isto
+  prevođenje app-ovih izvora umesto da se ono duplira.
+- `BUILD SUCCEEDED`, i svih 12 alata iz `Tools/` prolazi.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Ova mašina nema dozvolu za snimanje ekrana, pa nijedno od ovoga nije viđeno u
+prozoru. Klijentu je otvorena app da proveri oboje: da Backspace u imenu preseta
+briše slovo, i da Export napiše `.xmp`.

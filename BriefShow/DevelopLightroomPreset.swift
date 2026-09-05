@@ -392,6 +392,168 @@ enum LightroomPresetImport {
 /// child ELEMENTS. Namespace processing is deliberately left OFF so element
 /// names arrive prefixed — `crs:Exposure2012` — which is what makes them
 /// telling apart from `rdf:` and `x:` a matter of reading the name.
+/// Writing this app's presets back out as Camera Raw `.xmp`.
+///
+/// The mirror of LightroomPresetImport, and deliberately the same numbers read
+/// backwards: every scale, sign and baseline below is the inverse of one there.
+/// A preset exported here and imported back must come out identical, and
+/// Tools/run-preset-export-test.py runs exactly that round trip rather than
+/// leaving it to be believed.
+///
+/// **What does NOT go into the file, because Lightroom has nowhere to put it:**
+/// the crop rectangle and its locked ratio, rotation and straightening, masks
+/// (local adjustments), pasted layers, and `softGlow` — which is this app's
+/// own control with no Camera Raw equivalent. Those are all per-PHOTOGRAPH
+/// work rather than a look, apart from softGlow, which is named in the
+/// exporter's own report so nobody has to discover it by comparing renders.
+enum LightroomPresetExport {
+
+    /// Everything an exported preset could not carry, in words that match the
+    /// panel the client is looking at.
+    static func unsupportedParts(of settings: PhotoEditSettings) -> [String] {
+        var parts: [String] = []
+        if settings.softGlow != 0 { parts.append("Soft Glow") }
+        if settings.crop != nil { parts.append("Crop") }
+        if settings.rotationQuarterTurns != 0 || settings.straightenDegrees != 0 {
+            parts.append("Rotation / Straighten")
+        }
+        if !settings.localAdjustments.isEmpty { parts.append("Masks") }
+        if !settings.layers.isEmpty { parts.append("Layers") }
+        return parts
+    }
+
+    /// A file name that survives a file system: the preset's own name, with the
+    /// characters a path cannot hold replaced.
+    static func fileName(for preset: PhotoEditPreset) -> String {
+        let cleaned = preset.name
+            .components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|"))
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (cleaned.isEmpty ? "Preset" : cleaned) + ".xmp"
+    }
+
+    static func write(_ preset: PhotoEditPreset, to url: URL) throws {
+        try xmp(for: preset).data(using: .utf8)?.write(to: url, options: .atomic)
+    }
+
+    static func xmp(for preset: PhotoEditPreset) -> String {
+        let s = preset.settings
+        var attributes: [(String, String)] = []
+
+        func put(_ key: String, _ value: String) { attributes.append((key, value)) }
+        /// Adobe writes its whole numbers signed, and reads them either way —
+        /// this matches the files it writes so a diff against one is readable.
+        func whole(_ key: String, _ value: Double) {
+            let n = Int(value.rounded())
+            put(key, n > 0 ? "+\(n)" : "\(n)")
+        }
+        func hundredths(_ key: String, _ value: Double, invert: Bool = false) {
+            whole(key, (invert ? -value : value) * 100)
+        }
+
+        put("crs:PresetType", "Normal")
+        put("crs:Cluster", "")
+        put("crs:UUID", preset.id.uuidString.replacingOccurrences(of: "-", with: ""))
+        put("crs:SupportsAmount", "False")
+        put("crs:SupportsColor", "True")
+        put("crs:SupportsMonochrome", "True")
+        put("crs:SupportsHighDynamicRange", "True")
+        put("crs:SupportsNormalDynamicRange", "True")
+        put("crs:SupportsSceneReferred", "True")
+        put("crs:SupportsOutputReferred", "True")
+        put("crs:CameraModelRestriction", "")
+        put("crs:Copyright", "")
+        put("crs:ContactInfo", "")
+        put("crs:Version", exportedVersion)
+        put("crs:ProcessVersion", exportedProcessVersion)
+
+        // White balance. An absolute Kelvin is written as itself; otherwise the
+        // offset is turned back into a Kelvin against the same assumed as-shot
+        // the import subtracts, so the pair round-trips. Neither set means the
+        // preset leaves the photo's own white balance alone, which is what
+        // Lightroom calls As Shot.
+        let kelvin = s.temperatureKelvin ?? (s.temperature != 0
+                                             ? LightroomPresetImport.assumedAsShotKelvin + s.temperature * 3000
+                                             : nil)
+        let tint = s.tintAbsolute ?? (s.tint != 0 ? s.tint * 100 : nil)
+        if kelvin != nil || tint != nil {
+            put("crs:WhiteBalance", "Custom")
+            if let kelvin { put("crs:Temperature", "\(Int(kelvin.rounded()))") }
+            if let tint { whole("crs:Tint", tint) }
+        } else {
+            put("crs:WhiteBalance", "As Shot")
+        }
+
+        put("crs:Exposure2012", String(format: "%+.2f", s.exposure))
+        hundredths("crs:Contrast2012", s.contrast)
+        // Since 05.09.2026 both sides carry Lightroom's sign, so there is no
+        // flip here — see the import's own note.
+        hundredths("crs:Highlights2012", s.highlights)
+        hundredths("crs:Shadows2012", s.shadows)
+        hundredths("crs:Whites2012", s.whites)
+        hundredths("crs:Blacks2012", s.blacks)
+        hundredths("crs:Texture", s.texture)
+        hundredths("crs:Clarity2012", s.clarity)
+        hundredths("crs:Dehaze", s.dehaze)
+        hundredths("crs:Vibrance", s.vibrance)
+        hundredths("crs:Saturation", s.saturation)
+
+        // Sharpening, back through the measured scale rather than the nominal
+        // one — 0.15 here is Lightroom's 40. See lightroomSharpnessDivisor.
+        whole("crs:Sharpness", s.sharpness * LightroomPresetImport.lightroomSharpnessDivisor)
+        put("crs:SharpenRadius", String(format: "%+.1f", s.sharpenRadius))
+
+        // Vignette: inverted, because Lightroom darkens with a negative Amount.
+        hundredths("crs:PostCropVignetteAmount", s.vignette, invert: true)
+        whole("crs:PostCropVignetteMidpoint", s.vignetteMidpoint * 100)
+        whole("crs:PostCropVignetteFeather", s.vignetteFeather * 100)
+        whole("crs:PostCropVignetteRoundness", s.vignetteRoundness * 100)
+        put("crs:PostCropVignetteStyle", "1")
+
+        for band in ColorBand.allCases {
+            let mixed = s.colorMixer[band] ?? ColorMixerBand()
+            hundredths("crs:HueAdjustment" + band.adobeSuffix, mixed.hue)
+            hundredths("crs:SaturationAdjustment" + band.adobeSuffix, mixed.saturation)
+            hundredths("crs:LuminanceAdjustment" + band.adobeSuffix, mixed.luminance)
+        }
+
+        let body = attributes
+            .map { "   \($0.0)=\"\(escaped($0.1))\"" }
+            .joined(separator: "\n")
+
+        return """
+        <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="C4S Suite">
+         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about=""
+           xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+        \(body)>
+           <crs:Name>
+            <rdf:Alt>
+             <rdf:li xml:lang="x-default">\(escaped(preset.name))</rdf:li>
+            </rdf:Alt>
+           </crs:Name>
+          </rdf:Description>
+         </rdf:RDF>
+        </x:xmpmeta>
+        """
+    }
+
+    /// What the import reads out of `crs:Version` / `crs:ProcessVersion`:
+    /// nothing at all today, but Lightroom refuses a preset whose process
+    /// version it does not know, so these name the one this app was calibrated
+    /// against rather than inventing one.
+    static let exportedVersion = "17.5"
+    static let exportedProcessVersion = "15.4"
+
+    private static func escaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+}
+
 private final class XMPParser: NSObject, XMLParserDelegate {
 
     /// crs keys with the prefix stripped: "Exposure2012" -> "-0.10".

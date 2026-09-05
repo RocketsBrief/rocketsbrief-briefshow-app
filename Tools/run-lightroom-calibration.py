@@ -91,8 +91,12 @@ def grab(text: str, header: str) -> str:
     sys.exit(f"not found in BriefShowApp.swift — was it renamed?\n  {header}")
 
 
-def build(work: pathlib.Path, patches=None) -> pathlib.Path:
+def build(work: pathlib.Path, patches=None, main=None) -> pathlib.Path:
     """Compiles the app's sources into a harness binary in `work`.
+
+    `main` names the file in Tools/ that becomes the binary's top level, so a
+    second harness can drive the same sources (Tools/test-preset-roundtrip.swift
+    does). It defaults to the calibration one.
 
     `patches` is an optional list of (filename, old, new) applied to the BUILD
     COPY only — never to the repo. It exists so a constant can be swept without
@@ -125,7 +129,7 @@ def build(work: pathlib.Path, patches=None) -> pathlib.Path:
         "import Foundation\nimport SwiftUI\nimport AppKit\n\n"
         + "\n\n".join(grab(app, h) for h in STUB_TYPES) + "\n")
 
-    shutil.copy(ROOT / "Tools" / "lightroom-calibration.swift", work / "main.swift")
+    shutil.copy(ROOT / "Tools" / (main or "lightroom-calibration.swift"), work / "main.swift")
 
     sdk = subprocess.run(["xcrun", "--show-sdk-path", "--sdk", "macosx"],
                          capture_output=True, text=True, check=True).stdout.strip()

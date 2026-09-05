@@ -5530,6 +5530,54 @@ struct LayerDropDelegate: DropDelegate {
     }
 }
 
+/// What the Delete key means at the moment it is pressed.
+///
+/// ⚠️ Extracted from the editing key monitor because of the bug it exists to
+/// prevent: backspacing a typo out of the preset-name field DELETED THE
+/// PHOTOGRAPH. Every other branch of that monitor was guarded by `isTyping`;
+/// these two were not, and they were the only two that could not afford to be
+/// unguarded — Backspace is the one key a person presses constantly WHILE
+/// typing, and the guard that was supposed to save it ("only fires when there
+/// is something to delete") is always true when a photo is open.
+///
+/// A pure function so the truth table can be run instead of argued about —
+/// Tools/run-delete-key-test.py.
+enum DeleteKeyAction: Equatable {
+    /// Let the event through to whatever has focus. Typing lands here.
+    case ignore
+    /// A mask or a layer is armed: Delete removes THAT, never the photo.
+    case removeSelectedItem
+    /// Nothing inside the photo is selected, so Delete means the photo itself.
+    case trashPhoto
+
+    /// Backspace (51) and Forward Delete (117).
+    static let keyCodes: Set<UInt16> = [51, 117]
+
+    static func forKeyPress(keyCode: UInt16,
+                            flags: NSEvent.ModifierFlags,
+                            isTyping: Bool,
+                            hasSelectedItem: Bool,
+                            hasPhotoTargets: Bool) -> DeleteKeyAction {
+        guard keyCodes.contains(keyCode) else { return .ignore }
+
+        // A field editor has focus. Backspace belongs to the text and to
+        // nothing else, Command or no Command.
+        guard !isTyping else { return .ignore }
+
+        // The mask/layer branch wins on purpose, and the order is
+        // load-bearing: Delete pressed while a mask is armed must remove the
+        // mask, never the whole photograph.
+        if hasSelectedItem {
+            return flags.isEmpty ? .removeSelectedItem : .ignore
+        }
+
+        if flags.isEmpty || flags == .command, hasPhotoTargets {
+            return .trashPhoto
+        }
+        return .ignore
+    }
+}
+
 struct DevelopView: View {
     /// The photos in the filmstrip.
     ///
@@ -6359,7 +6407,17 @@ struct DevelopView: View {
             //
             // A press inside a text field is left alone throughout: in a field
             // ⌘A means select the TEXT, and Q and E are letters.
-            let isTyping = (NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false
+            // ⚠️ Widened on 05.09 after Backspace in the preset-name field
+            // deleted the PHOTOGRAPH. The old test asked only whether the
+            // first responder was a field editor; an NSTextField that has
+            // focus but has not spawned its editor yet, and an editable text
+            // view that is not a field editor, both read as "not typing" —
+            // and every branch below then treats a letter as a command.
+            let isTyping: Bool = {
+                guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+                if let text = responder as? NSTextView { return text.isFieldEditor || text.isEditable }
+                return responder is NSTextField
+            }()
 
             if !event.isARepeat, !isTyping {
                 if ShortcutStore.matches(event, .pasteLayer), layerClipboard != nil {
@@ -6506,27 +6564,23 @@ struct DevelopView: View {
                nudgeSelectedSlider(increase: event.keyCode == 124, coarse: flags == .shift) {
                 return nil
             }
-            if flags.isEmpty, (event.keyCode == 51 || event.keyCode == 117),
-               selectedLayerID != nil || selectedLocalAdjustmentID != nil {
+            // Delete: the mask, or the photograph, or the text being typed —
+            // decided in one place, see DeleteKeyAction.
+            switch DeleteKeyAction.forKeyPress(
+                keyCode: event.keyCode,
+                flags: flags,
+                isTyping: isTyping,
+                hasSelectedItem: selectedLayerID != nil || selectedLocalAdjustmentID != nil,
+                hasPhotoTargets: !keyboardDeleteTargets.isEmpty) {
+            case .removeSelectedItem:
                 deleteSelectedItem()
                 return nil
-            }
-
-            // Nothing INSIDE the photo is selected, so Delete means the
-            // photo itself — the same action as the filmstrip's right-click
-            // Delete.
-            //
-            // ⚠️ The mask/layer branch above wins on purpose, and the order
-            // of these two is load-bearing: Delete pressed while a mask is
-            // armed must remove the mask, never the whole photograph. That
-            // is also why this one cannot be folded into the branch above.
-            if flags.isEmpty || flags == .command,
-               event.keyCode == 51 || event.keyCode == 117,
-               selectedLayerID == nil, selectedLocalAdjustmentID == nil,
-               !keyboardDeleteTargets.isEmpty {
+            case .trashPhoto:
                 pendingTrashPhotoURLs = keyboardDeleteTargets
                 isTrashPhotoConfirmationPresented = true
                 return nil
+            case .ignore:
+                break
             }
 
             return event
@@ -11943,6 +11997,25 @@ struct DevelopView: View {
                 .buttonStyle(ShowHeaderButtonStyle())
                 .help("Import presets. Supports Lightroom / Camera Raw .xmp "
                       + "files — pick one, several, or a whole folder.")
+
+                // Export writes .xmp, the same thing Import reads, so a preset
+                // built here opens in Lightroom and comes back unchanged.
+                // Disabled with nothing to write rather than hidden: a button
+                // that disappears reads as a feature that broke.
+                Button {
+                    exportPresets()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Export")
+                    }
+                }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .opacity(presets.isEmpty ? 0.4 : 1)
+                .disabled(presets.isEmpty)
+                .help(presets.count == 1
+                      ? "Export this preset as a Lightroom / Camera Raw .xmp file."
+                      : "Export all \(presets.count) presets as Lightroom / Camera Raw .xmp files into a folder.")
             }
 
             if let presetImportNotice {
@@ -15374,6 +15447,83 @@ struct DevelopView: View {
         }
         if !missing.isEmpty {
             lines.append("Not carried over (Create has no equivalent): "
+                         + missing.sorted().joined(separator: ", ") + ".")
+        }
+        presetImportNotice = lines.joined(separator: " ")
+    }
+
+    /// Writes the presets out as Camera Raw .xmp — the same format Import
+    /// reads, so a look built here opens in Lightroom and comes back unchanged.
+    ///
+    /// One preset gets a Save panel with its own name already filled in; more
+    /// than one gets a folder, because naming forty files one at a time is not
+    /// how anyone would use this — the same reasoning that lets Import take a
+    /// whole folder.
+    ///
+    /// The report says what could not be written, for the same reason the
+    /// import says what it could not read: a preset that quietly loses the crop
+    /// leaves the client comparing two pictures with nothing to explain the
+    /// difference. See LightroomPresetExport.unsupportedParts.
+    private func exportPresets() {
+        guard !presets.isEmpty else { return }
+
+        var written = 0
+        var failed = 0
+        var missing: Set<String> = []
+
+        func record(_ preset: PhotoEditPreset, _ url: URL) {
+            do {
+                try LightroomPresetExport.write(preset, to: url)
+                written += 1
+                missing.formUnion(LightroomPresetExport.unsupportedParts(of: preset.settings))
+            } catch {
+                failed += 1
+            }
+        }
+
+        if presets.count == 1, let only = presets.first {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = LightroomPresetExport.fileName(for: only)
+            panel.message = "Export as a Lightroom / Camera Raw preset."
+            panel.prompt = "Export"
+            if let xmp = UTType(filenameExtension: "xmp") {
+                panel.allowedContentTypes = [xmp]
+            }
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            record(only, url)
+        } else {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = true
+            panel.message = "Choose a folder. One .xmp file is written per preset."
+            panel.prompt = "Export"
+            guard panel.runModal() == .OK, let folder = panel.url else { return }
+
+            // Two presets can carry the same name — nothing stops that — and
+            // the second must not overwrite the first in silence.
+            var used: Set<String> = []
+            for preset in presets {
+                var name = LightroomPresetExport.fileName(for: preset)
+                var attempt = 2
+                while used.contains(name.lowercased()) {
+                    name = LightroomPresetExport.fileName(for: preset)
+                        .replacingOccurrences(of: ".xmp", with: " \(attempt).xmp")
+                    attempt += 1
+                }
+                used.insert(name.lowercased())
+                record(preset, folder.appendingPathComponent(name))
+            }
+        }
+
+        guard written > 0 || failed > 0 else { return }
+
+        var lines = ["Exported \(written) preset\(written == 1 ? "" : "s")."]
+        if failed > 0 {
+            lines.append("\(failed) could not be written.")
+        }
+        if !missing.isEmpty {
+            lines.append("Not written to the file (Lightroom has no equivalent): "
                          + missing.sorted().joined(separator: ", ") + ".")
         }
         presetImportNotice = lines.joined(separator: " ")

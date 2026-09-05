@@ -1722,7 +1722,14 @@ enum ColorMixerCube {
     /// dropping the swing brought all three channel means back within a few
     /// counts of the target. Measured with Tools/run-lightroom-calibration.py:
     /// 0.6 left the midtones 20 counts dark, 0.2 left 10, 0.1 left 4.
-    private static let luminanceSwing: Double = 0.1
+    ///
+    /// ⚠️ 0.1 was WRONG, and the way it was wrong is worth keeping. It came out
+    /// of a harness whose copy of this file predated the calibration being
+    /// measured — stale defaults, and a constant the copy did not have at all.
+    /// Rebuilt from the shipping source, the same search prefers 0.3, and the
+    /// deck stops washing out (green/blue error +24/+23 down to +13/+10).
+    /// A measurement is only as current as the code it was taken against.
+    private static let luminanceSwing: Double = 0.3
 
     private static func build(_ mixer: ColorMixer) -> Data {
         let n = dimension
@@ -1892,7 +1899,7 @@ enum PhotoEditRenderer {
     /// the same photograph exported from Lightroom with the same preset.
     /// 0.30 was never measured — it scored **36.01**, WORSE than applying no
     /// preset at all (24.11).
-    static let toneControlStrength = 0.20
+    static let toneControlStrength = 0.10
 
     /// Highlights alone is gentler, and it is the ONLY control that is.
     ///
@@ -1908,14 +1915,18 @@ enum PhotoEditRenderer {
     ///
     ///     full strength      midtones -55.8   near-white -0.6   the buildings crush
     ///     x0.50              midtones -19.8   near-white +2.5
-    ///     x0.35              midtones  -4.2   near-white +3.4   <- taken
+    ///     x0.35              midtones  -4.2   near-white +3.4
     ///     x0.25              midtones  +1.5   near-white +4.2   too bright
+    ///
+    /// Re-measured on 05.09 by REGION rather than by tone zone — sky, sea,
+    /// façade, deck — because that is what the client was pointing at, and
+    /// 0.50 wins there: the sky's red error falls from +21 to +9.
     ///
     /// Moving the weight to the TOP knot instead was tried and is worse, not
     /// better: it drops the white point, so the blown façade that Lightroom
     /// keeps blown came back at -69. Recovery is not the same move as lowering
     /// the white point, and this is where that shows.
-    static let highlightControlScale = 0.35
+    static let highlightControlScale = 0.50
 
     /// The gentlest the curve is allowed to rise between two knots. Above zero
     /// on purpose: a flat segment is what let the old spline dip.

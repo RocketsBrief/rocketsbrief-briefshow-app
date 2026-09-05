@@ -13745,3 +13745,85 @@ Traženo od klijenta, i sada je to prepreka a ne poboljšanje:
    skaliran". Rešava usput i 351 K iz KORAKA 120 i pitanje ekspozicije.
 2. Samo `Shadows +70`. 3. Samo `Highlights -77`. 4. Jedan potez u mikseru.
 
+## KORAK 123 — merenje po OBLASTIMA, i jedna pokvarena merna sprava (5. septembar 2026)
+
+Klijent je i treći put rekao *„nije dobro"*, i ovaj put je razlika bila jasna na
+oku: **njegovo nebo je oprano tirkizom, naše je belo**, a njegov pod je dublje
+narandžast.
+
+### Nova mera: greška po OBLASTIMA, ne globalni RMS
+
+Globalni RMS meša sve u jedan broj i ne kaže GDE greši. Uvedeno je merenje po
+četiri oblasti koje je klijent i pokazivao — nebo, more, fasada, pod — i ono je
+odmah pokazalo pravu sliku:
+
+    oblast    naše R G B        Lightroom R G B     razlika
+    nebo      241 244 244       220 251 252         +21  -7  -8
+    more      136 222 201       167 223 206         -31  -1  -5
+    pod       233 215 180       237 205 173          -4 +10  +7
+
+Dakle nebo nam je imalo **21 crvenog previše** — zato je belo umesto tirkizno —
+a pod je bio ispran.
+
+### ⚠️ MERNA SPRAVA JE BILA POKVARENA, i to je najvažnija stavka ovog koraka
+
+Prve dve pretrage u ovoj sesiji dale su brojeve koji se **nisu slagali** sa
+ranijim merenjem istog podešavanja (94,2 naspram 127,4 za isti unos). To je
+uhvaćeno jer se ta dva broja NISU POKLOPILA, a ne zato što je nešto izgledalo
+sumnjivo.
+
+Uzrok: build kopija `Develop.swift` u harnessu je bila **starija od koda koji se
+meri** — imala je stare podrazumevane vrednosti (`0.10` i `0.2` umesto `0.20` i
+`0.1`) i **uopšte nije imala** `highlightControlScale`, pa je `S_HIGHLIGHTS`
+prosto ignorisan. Sve iz te dve pretrage je bačeno.
+
+**Posledica koja je promenila isporučenu vrednost:** `luminanceSwing = 0.1` iz
+KORAKA 121 je bio **pogrešan** — izmeren je na toj zastareloj kopiji. Sa svežom
+kopijom ista pretraga bira **0.3**, i pod prestaje da bledi (greška u zelenom i
+plavom pada sa +24/+23 na +13/+10).
+
+⚠️ **Pravilo koje iz ovoga sledi:** harness se **presinhronizuje sa izvorom pre
+svake serije merenja**, i pri svakoj promeni konstanti se ponovi jedno već
+izmereno podešavanje kao kontrola. Merenje vredi tačno onoliko koliko je svež kod
+nad kojim je izvedeno. Ovo je treći put danas da pokvarena sprava daje nalaz koji
+izgleda kao nalaz — v. KORAK 120 (obrnuta presuda o kaskadi) i KORAK 121
+(dvostruko umotan runtime).
+
+### Isporučeno
+
+| | pre | posle |
+|---|---|---|
+| RMS naspram Lightroom-a | 15,71 | **12,51** |
+| greška po oblastima (zbir) | 136,3 | **95,9** |
+| nebo, crveni kanal | +21 | **+9** |
+| pod, zeleni/plavi | +24 / +23 | **+13 / +10** |
+
+- `toneControlStrength` 0,20 → **0,10**
+- `highlightControlScale` 0,35 → **0,50**
+- `luminanceSwing` 0,1 → **0,3** (ispravka pogrešnog merenja iz KORAKA 121)
+
+**Prvi put je `bez tonske krive` (13,17) GORE od punog preseta (12,70)** — dakle
+kriva sada pomaže umesto da odmaže. Do ovog koraka je bilo obrnuto.
+
+### Provereno
+
+- `Tools/run-lightroom-calibration.py` → **RESULT: OK**, 12,70 naspram 24,11.
+- `BUILD SUCCEEDED`, svih 8 alata iz `Tools/` **OK**, 129 zapisa, 9 migrirano.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Mašina se zaključala pre snimka (klijent odsutan). Poređenje je iz harnessa
+sagrađenog iz **isporučenog** izvora, bez ijedne env promenljive — ali to nije
+isto što i videti u app-i.
+
+### Šta se i dalje razlikuje, izmereno
+
+- **nebo +9 crvenog** — Lightroom-ovo nebo je i dalje tirkiznije od našeg;
+- **more −15 crvenog** — naše je zasićenije;
+- **pod +13/+10** — Lightroom-ov je topliji.
+
+Sve tri su ostaci iste stvari: **naš mikser boja i Adobe-ov ne rade u istom
+prostoru**, a to se ne može razrešiti presetom koji pomera sve odjednom.
+Traženo, i dalje: **neutralan izvoz** (sve na nuli, isti NEF), pa `Shadows +70`
+sam, `Highlights -77` sam, i jedan potez u mikseru.
+

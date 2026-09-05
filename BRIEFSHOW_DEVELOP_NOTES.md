@@ -13810,11 +13810,11 @@ kriva sada pomaže umesto da odmaže. Do ovog koraka je bilo obrnuto.
 - `Tools/run-lightroom-calibration.py` → **RESULT: OK**, 12,70 naspram 24,11.
 - `BUILD SUCCEEDED`, svih 8 alata iz `Tools/` **OK**, 129 zapisa, 9 migrirano.
 
-### ⚠️ NEPROVERENO NA EKRANU
+### ✅ POTVRĐENO NA EKRANU (5. septembar 2026)
 
-Mašina se zaključala pre snimka (klijent odsutan). Poređenje je iz harnessa
-sagrađenog iz **isporučenog** izvora, bez ijedne env promenljive — ali to nije
-isto što i videti u app-i.
+Fotografija ponovo otvorena u živoj app-i posle restarta: slika odgovara onome
+što harness daje, a panel i dalje piše Lightroom-ove brojeve
+(-0,10 / -5 / -77 / +70 / +25 / -28).
 
 ### Šta se i dalje razlikuje, izmereno
 

@@ -14507,3 +14507,22 @@ label tamo gde čovek gleda. Sada stoji i na dnu desnog panela, čita se iz
 - Veliki paket nije pokrenut, ovde ni bilo gde — provereno je da je universal,
   potpisan i da su modeli na mestu i kompletni.
 - Intel: v11.0 je potvrđen na pravoj mašini (KORAK 106), 11.7 nije.
+
+### ✅ Objavljeno — v11.7, oba paketa gore
+
+| asset | bajtova | HTTP |
+|---|---|---|
+| `C4S-Suite-11.7.zip` | 114.693.303 | **200** |
+| `C4S-Suite-11.7-AI-Models.zip` | 2.087.021.481 | **200** |
+
+Veličine na GitHub-u su **bajt u bajt** iste kao lokalni fajlovi — upload nije
+skraćen. Release je `Latest` (provereno preko `releases/latest`), nije draft ni
+prerelease, tag `v11.7` pokazuje na `05e39cb` na grani `briefshow-develop`
+(pushovano).
+
+- stranica: `…/releases/tag/v11.7`
+- direktno (update): `…/releases/download/v11.7/C4S-Suite-11.7.zip`
+- direktno (sve u jednom): `…/releases/download/v11.7/C4S-Suite-11.7-AI-Models.zip`
+
+⚠️ `latest_version` u BriefControl-u i dalje diže klijent sam — dok ne digne na
+11.7, niko ne dobija karticu „mora update".

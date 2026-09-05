@@ -14441,3 +14441,69 @@ pročitao −77 kao +77. Unutar istog builda toga nema.
 ### ⚠️ NEPROVERENO NA EKRANU
 
 Nema dozvole za snimanje ekrana; app je otvorena klijentu da vidi nove natpise.
+
+## KORAK 131 — RELEASE v11.7: isti dvojni paket, sada skriptom (5. septembar 2026)
+
+Isti zahtev kao KORAK 116 i 119, sa istom napomenom klijenta o onima koji su SD
+već preuzeli — pa isti odgovor: **dva paketa**, jer se ta dva zahteva ne mogu
+ispuniti jednim fajlom.
+
+Šta je unutra a nije bilo u 11.5: KORACI 126–130 — kalibracija po Lightroom-u
+(tonska kriva koja je propadala između čvorova), Backspace koji je brisao
+fotografiju, izvoz preseta sa izborom po redu, i sličice koje sada idu kroz isti
+lanac kao platno.
+
+### Pakovanje je sada `Tools/make-release.py`
+
+Treći put ručno je bio treći put previše: postupak ima osam provera **po paketu**
+i tri koraka koji su nosivi (`generic/platform=macOS`, kopiranje modela u gotov
+paket umesto kroz Xcode, ponovni potpis sa entitlement-ima izvučenim iz
+originala). Sve to je sada jedna komanda koja **odbija da isporuči** ako bilo
+koja provera padne — uključujući i onu koju je lako zaboraviti: da mali paket
+slučajno NE nosi SD, jer bi to bilo 2 GB koje niko nije tražio da ponovo skida.
+
+    python3 Tools/make-release.py 11.7
+
+| provera na PAKETU | mali | veliki |
+|---|---|---|
+| `lipo -archs` | **arm64 x86_64** | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** | 13.0 |
+| verzija / build | **11.7 / 25** | 11.7 / 25 |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` | isto |
+| `LaMa.mlmodelc` | da | da |
+| `SD15-Inpainting` (`isComplete`) | ne, namerno | **YES** |
+| lične fotografije | **0** | **0** |
+| `codesign -v` | ok | **ok posle ponovnog potpisa** |
+| zip | 114.693.303 B | **2.087.021.481 B** |
+
+Rezerva do GitHub-ovog limita od 2 GiB: **60 MB**.
+
+### Intel — provereno, ne pretpostavljeno
+
+Klijent je opet tražio da SD na Intelu *„deli rad"*. Kod je na mestu i od ranije:
+na x86_64 UNet ide sa `computeUnits = .all` (Core ML deli posao između diskretne
+kartice i jezgara), VAE prolazi sa `.cpuAndGPU`. ⚠️ I dalje važi ono što
+deljenje NE znači: 32 GB sistemske memorije se ne sabira sa 4 GB na kartici.
+
+### Label sa verzijom — dodat tamo gde klijent gleda
+
+Jedan label već postoji ispod wordmark-a na prvom ekranu, ali klijent radi u
+Create-u koji popuni prozor. ⚠️ KORAK 108 je na slično pitanje odgovorio *„već
+postoji, na hover"* i to je bio pogrešan odgovor; label na drugom mestu nije
+label tamo gde čovek gleda. Sada stoji i na dnu desnog panela, čita se iz
+`CFBundleShortVersionString`, dakle iz istog broja iz kog se seče tag.
+
+### ⚠️ Šta i dalje važi iz KORAKA 116
+
+- Model **ne sme** u repo (synchronized group + GitHub-ov limit od 100 MB).
+- **`v11.0` se ne sme brisati** — ugrađeno preuzimanje SD-a i dalje pokazuje na
+  njegov asset.
+- `resolve()` traži: **installed → bundled → development**, pa preuzeta kopija
+  pobeđuje onu iz paketa i update ne obesmišljava tuđe preuzimanje.
+- `latest_version` u BriefControl-u diže **klijent sam**.
+
+### ⚠️ NEPROVERENO
+
+- Veliki paket nije pokrenut, ovde ni bilo gde — provereno je da je universal,
+  potpisan i da su modeli na mestu i kompletni.
+- Intel: v11.0 je potvrđen na pravoj mašini (KORAK 106), 11.7 nije.

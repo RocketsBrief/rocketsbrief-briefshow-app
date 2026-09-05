@@ -11855,6 +11855,25 @@ struct DevelopView: View {
             Divider()
 
             exportActionsSection
+
+            // The release tag, at the bottom of the panel the client actually
+            // works in. One already sits under the wordmark on the first
+            // screen — but Create fills the window, and he asked for it here
+            // while looking at Create. ⚠️ KORAK 108 answered a version of this
+            // question with "it already exists, on hover", and that was the
+            // wrong answer twice over; a label somewhere else is not a label
+            // where the person is looking.
+            //
+            // Read from the bundle, never typed: MARKETING_VERSION is what the
+            // release tag is cut from, so the two cannot drift (KORAK 74).
+            if let short = Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+                Text("C4S Suite v\(short)")
+                    .font(.custom("Figtree", size: 10.5))
+                    .foregroundColor(AppColors.muted)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .textSelection(.enabled)
+            }
         }
     }
 

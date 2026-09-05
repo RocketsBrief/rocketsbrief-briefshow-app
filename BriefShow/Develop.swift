@@ -185,6 +185,23 @@ struct PhotoEditSettings: Codable, Equatable {
     /// Lightroom's sign. Written on every encode, so a migrated record is
     /// migrated exactly once; without it the flip would apply again on every
     /// decode and the photo would oscillate.
+    /// An ABSOLUTE white balance, in Kelvin, when the edit asks for one.
+    ///
+    /// ⚠️ `temperature` above is an OFFSET from the photograph's own as-shot
+    /// value, and that is the right thing to store for a look you want to carry
+    /// onto other photographs. It is the wrong thing when a Lightroom preset
+    /// names a Kelvin: the preset carries ADOBE'S reading of the source
+    /// photo's as-shot, and Core Image does not read the same number off the
+    /// same file. On the client's NEF, Adobe says 5,350 K and Core Image says
+    /// 4,999 K, so carrying Adobe's offset of +989 K landed on 5,988 K where
+    /// Lightroom sits at 6,339 K — 351 K adrift, and the panel showed it.
+    ///
+    /// So an absolute request is stored as an absolute. nil means "use the
+    /// offset", which is what everything written before this decodes to and
+    /// what dragging the Temperature slider goes back to.
+    var temperatureKelvin: Double?
+    var tintAbsolute: Double?
+
     var schemaVersion: Int = PhotoEditSettings.currentSchemaVersion
     static let currentSchemaVersion = 2
 
@@ -241,6 +258,8 @@ struct PhotoEditSettings: Codable, Equatable {
         // that has already been migrated is left alone; without it the flip
         // would apply on every decode and the photo would oscillate between
         // two looks with nobody touching a slider.
+        temperatureKelvin = try c.decodeIfPresent(Double.self, forKey: .temperatureKelvin)
+        tintAbsolute = try c.decodeIfPresent(Double.self, forKey: .tintAbsolute)
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         if schemaVersion < 2 {
             highlights = -highlights
@@ -264,6 +283,7 @@ struct PhotoEditSettings: Codable, Equatable {
         case rotationQuarterTurns, straightenDegrees, crop, cropAspect
         case localAdjustments, layers
         case schemaVersion
+        case temperatureKelvin, tintAbsolute
     }
 
     var isNeutral: Bool {
@@ -1901,6 +1921,14 @@ enum PhotoEditRenderer {
     /// preset at all (24.11).
     static let toneControlStrength = 0.10
 
+    /// How far Contrast bends the quarter and three-quarter tones at ±1.
+    ///
+    /// The endpoints stay pinned whatever this is, which is the point: contrast
+    /// is a statement about the middle of the range, not about where white
+    /// lives. 0.10 keeps a full-travel Contrast close to what CIColorControls
+    /// used to do in the midtones, where it was never the problem.
+    static let contrastMidtoneBend = 0.10
+
     /// Highlights alone is gentler, and it is the ONLY control that is.
     ///
     /// ⚠️ This asymmetry is the whole finding of 05.09, and it is not a fudge.
@@ -2258,8 +2286,13 @@ enum PhotoEditRenderer {
             // now uses too (see its own comment for the sign-bug fix this
             // matches).
             filter.exposure = Float(settings.exposure)
-            filter.neutralTemperature = min(max(asShotTemperature + Float(settings.temperature) * 3000, 2000), 50000)
-            filter.neutralTint = min(max(asShotTint + Float(settings.tint) * 100, -150), 150)
+            // An absolute request wins over the offset — see PhotoEditSettings.temperatureKelvin.
+            let wantedKelvin = settings.temperatureKelvin.map { Float($0) }
+                ?? (asShotTemperature + Float(settings.temperature) * 3000)
+            let wantedTint = settings.tintAbsolute.map { Float($0) }
+                ?? (asShotTint + Float(settings.tint) * 100)
+            filter.neutralTemperature = min(max(wantedKelvin, 2000), 50000)
+            filter.neutralTint = min(max(wantedTint, -150), 150)
             output = filter.outputImage ?? CIImage.empty()
             isRAWSource = true
         }
@@ -2357,10 +2390,40 @@ enum PhotoEditRenderer {
             output = filter.outputImage ?? output
         }
 
-        if settings.contrast != 0 || settings.saturation != 0 {
+        // ⚠️ CONTRAST DOES NOT MOVE THE WHITE POINT, and that is the whole reason
+        // it no longer goes through CIColorControls.
+        //
+        // CIColorControls scales linearly about mid grey: out = (in - 0.5) * c + 0.5.
+        // At c = 0.95 — the client's preset asks for Contrast -5 — pure white
+        // 1.0 comes out at 0.975, which is 249. Every blown highlight in the
+        // frame drops just below white and the picture greys over. Measured on
+        // his own photograph, as the fraction of it sitting above 250:
+        //
+        //     our neutral render      32.6%
+        //     Lightroom's export      23.3%   <- the target
+        //     ours, whole preset       2.8%
+        //     ours, contrast alone
+        //     put back to zero        23.5%   <- one slider, the entire gap
+        //
+        // Lightroom's Contrast pivots the midtones and leaves both endpoints
+        // pinned, so -5 there costs the whites nothing. This is that: an
+        // S-curve through (0,0) and (1,1), bending only what lies between.
+        if settings.contrast != 0 {
+            let bend = settings.contrast * contrastMidtoneBend
+            let filter = CIFilter.toneCurve()
+            filter.inputImage = output
+            filter.point0 = CGPoint(x: 0, y: 0)
+            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 - bend, 0), 1))
+            filter.point2 = CGPoint(x: 0.5, y: 0.5)
+            filter.point3 = CGPoint(x: 0.75, y: min(max(0.75 + bend, 0), 1))
+            filter.point4 = CGPoint(x: 1, y: 1)
+            output = filter.outputImage ?? output
+        }
+
+        if settings.saturation != 0 {
             let filter = CIFilter.colorControls()
             filter.inputImage = output
-            filter.contrast = Float(1 + settings.contrast)
+            filter.contrast = 1
             filter.saturation = Float(1 + settings.saturation)
             filter.brightness = 0
             output = filter.outputImage ?? output
@@ -11912,11 +11975,19 @@ struct DevelopView: View {
     private var colorSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Color")
-            editSlider("Temperature", value: $settings.temperature, range: -1...1,
-                       trackGradient: DevelopView.temperatureTrack)
+            // ⚠️ Dragging goes back to the OFFSET. An absolute Kelvin that
+            // survived a drag would pin the render while the thumb moved, which
+            // reads as a dead slider — the failure this app has already shipped
+            // once, on Blacks.
+            editSlider("Temperature", value: Binding(
+                get: { settings.temperature },
+                set: { settings.temperature = $0; settings.temperatureKelvin = nil }
+            ), range: -1...1, trackGradient: DevelopView.temperatureTrack)
             whiteBalanceReadout
-            editSlider("Tint", value: $settings.tint, range: -1...1,
-                       trackGradient: DevelopView.tintTrack)
+            editSlider("Tint", value: Binding(
+                get: { settings.tint },
+                set: { settings.tint = $0; settings.tintAbsolute = nil }
+            ), range: -1...1, trackGradient: DevelopView.tintTrack)
             editSlider("Saturation", value: $settings.saturation, range: -1...1,
                        trackGradient: DevelopView.saturationTrack)
             editSlider("Vibrance", value: $settings.vibrance, range: -1...1,
@@ -11995,7 +12066,10 @@ struct DevelopView: View {
     /// The same arithmetic `render` performs, so the number on screen is the
     /// number the picture was made with rather than a second opinion.
     private func currentKelvin(asShot: (temperature: Double, tint: Double)) -> Double {
-        min(max(asShot.temperature + settings.temperature * 3000, 2000), 50000)
+        if let absolute = settings.temperatureKelvin {
+            return min(max(absolute, 2000), 50000)
+        }
+        return min(max(asShot.temperature + settings.temperature * 3000, 2000), 50000)
     }
 
     private func cancelKelvinEdit() {
@@ -12010,10 +12084,12 @@ struct DevelopView: View {
                                     .trimmingCharacters(in: .whitespaces)) else {
             return
         }
-        // Back through the same relation, and clamped to the slider's own range
-        // rather than silently accepting a Kelvin the slider cannot hold.
-        let offset = (min(max(kelvin, 2000), 50000) - asShot.temperature) / 3000
-        settings.temperature = min(max(offset, -1), 1)
+        // Typed in as an absolute, kept as an absolute — the field says "K", so
+        // the number it holds is the number the render uses. The offset is kept
+        // in step so the slider's thumb still sits where the reading says.
+        let wanted = min(max(kelvin, 2000), 50000)
+        settings.temperatureKelvin = wanted
+        settings.temperature = min(max((wanted - asShot.temperature) / 3000, -1), 1)
     }
 
     /// Lightroom's Colour Mixer / HSL panel: pick a colour, move three sliders.

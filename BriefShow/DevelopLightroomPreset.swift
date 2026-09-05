@@ -208,10 +208,31 @@ enum LightroomPresetImport {
             s.sharpenRadius = clamp(v, 0.5, 3)
         }
 
-        // Sharpening: Lightroom's own RAW default is 40, and that is the value
-        // a preset carries when the photographer never touched the slider.
+        // Sharpening. This USED to subtract Lightroom's RAW default of 40 first,
+        // on the reasoning that a preset carrying 40 is a preset that never
+        // touched the slider and should therefore sharpen nothing.
+        //
+        // ⚠️ That reasoning was about the PRESET; the client is looking at the
+        // PICTURE. Lightroom applies that default when it renders a RAW and it
+        // is in the exported JPEG, so importing it as zero is what made our
+        // render read softer than his. He said it plainly: the export is
+        // *„više svetlija više čistija"*.
+        //
+        // The scale is measured, not converted. Mean absolute Laplacian of luma
+        // against his Lightroom export, whose own figure is 7.96:
+        //
+        //     ours, no sharpening    4.65
+        //     Sharpness 40 as 0.10   7.41
+        //     Sharpness 40 as 0.15   7.92   <- taken
+        //     Sharpness 40 as 0.20   8.43
+        //     Sharpness 40 as 0.36   10.02  (what a plain /110 would give)
+        //
+        // ⚠️ This RAISES the RMS against the export, 13.36 to 14.79, while making
+        // the picture right. Sharpening moves every edge and a difference metric
+        // charges for that whichever way it moves. Here the eye and the
+        // Laplacian agree and the RMS is the one that is wrong.
         if let v = number("Sharpness") {
-            s.sharpness = clamp((v - lightroomDefaultSharpness) / 110, 0, 1)
+            s.sharpness = clamp(v / lightroomSharpnessDivisor, 0, 1)
         }
 
         // White balance, only when the preset actually sets one. "As Shot"
@@ -219,15 +240,27 @@ enum LightroomPresetImport {
         // what a temperature of 0 does here.
         let whiteBalance = values["WhiteBalance"] ?? ""
         if whiteBalance.caseInsensitiveCompare("As Shot") != .orderedSame {
+            // ⚠️ Kept as an ABSOLUTE, not as an offset, and that is the fix for
+            // a 351 K miss the client could read off the panel. The preset
+            // carries ADOBE'S as-shot for the photo it was made from (5,350 K
+            // on his NEF); Core Image reads 4,999 K off the same file. Carrying
+            // Adobe's offset therefore landed on 5,988 K where Lightroom sits
+            // at 6,339 K. A preset that names a Kelvin means that Kelvin.
+            //
+            // The offset is still filled in beside it, so the slider's thumb
+            // has somewhere to sit and so an older build — which knows nothing
+            // of the absolute — still renders approximately the same look.
             if let kelvin = number("Temperature") {
-                // Without an as-shot reference there is nothing to be relative
-                // TO, so a daylight baseline is assumed and the import says so.
+                let absolute = clamp(kelvin, 2000, 50000)
+                s.temperatureKelvin = absolute
                 let baseline = number("AsShotTemperature") ?? assumedAsShotKelvin
-                s.temperature = clamp((kelvin - baseline) / 3000, -1, 1)
+                s.temperature = clamp((absolute - baseline) / 3000, -1, 1)
             }
             if let tint = number("Tint") {
+                let absolute = clamp(tint, -150, 150)
+                s.tintAbsolute = absolute
                 let baseline = number("AsShotTint") ?? 0
-                s.tint = clamp((tint - baseline) / 100, -1, 1)
+                s.tint = clamp((absolute - baseline) / 100, -1, 1)
             }
         }
 
@@ -235,6 +268,11 @@ enum LightroomPresetImport {
     }
 
     static let lightroomDefaultSharpness: Double = 40
+
+    /// Lightroom's Sharpness 40 renders like 0.15 here. Measured against the
+    /// client's own export, not converted from the slider ranges — see the
+    /// table where it is used.
+    static let lightroomSharpnessDivisor: Double = 265
     static let assumedAsShotKelvin: Double = 5500
 
     // MARK: What could not come across

@@ -13827,3 +13827,113 @@ prostoru**, a to se ne može razrešiti presetom koji pomera sve odjednom.
 Traženo, i dalje: **neutralan izvoz** (sve na nuli, isti NEF), pa `Shadows +70`
 sam, `Highlights -77` sam, i jedan potez u mikseru.
 
+## KORAK 124 — Contrast je sivio belu, i to je bio ceo jaz (5. septembar 2026)
+
+Klijent, uz dve slike: *„ova je više svetlija više čistija"*. Druga slika je bila
+**`CAS-5.jpg` otvoren u C4S sa svim slajderima na nuli** — dakle Lightroom-ov
+izvoz prikazan bez ijedne naše izmene. To je cilj, i to je bilo korisno: mera
+više nije bila „liči/ne liči" nego dva broja koja se mogu izbrojati.
+
+### Nova mera: koliko je slike u belom
+
+*„Svetlija i čistija"* se meri, i to na dva načina koja su se pokazala tačna:
+
+1. **udeo piksela iznad 250** — koliko je slike zaista u belom;
+2. **srednji apsolutni Laplasijan luminanse** — koliko je slika oštra.
+
+### Odlučujuće merenje
+
+    NAS NEUTRALAN render, iznad 250:   32,6%
+    Lightroom-ov izvoz:                23,3%
+    NASE sa celim presetom:             2,8%
+
+**RAW dekod nije bio kriv** — naš neutralan render ima i VIŠE belog nego
+Lightroom. Naš lanac preseta je taj koji obori 32,6% na 2,8%. Ablacija po tom
+broju našla je krivca odmah:
+
+    bez tonske krive          1,5%
+    bez miksera               6,9%
+    bez vinjete               6,1%
+    bez clarity/dehaze        0,1%
+    bez ekspozicije/kontrasta 24,9%   <- ovde
+    samo contrast na nuli     23,5%   <- CEO jaz, jedan slajder
+
+### Uzrok, i on je aritmetika
+
+`CIColorControls` skalira linearno oko srednje sive: `out = (in - 0.5) * c + 0.5`.
+Preset traži `Contrast -5`, dakle `c = 0,95`. Čisto belo `1,0` izađe kao
+**`0,975` = 249**.
+
+Ogromna bela površina ove fotografije — fasada i nebo — padne **tik ispod 250**
+i cela slika posivi. Lightroom-ov Contrast ne pomera belu tačku.
+
+### Popravka
+
+Contrast više ne ide kroz `CIColorControls` nego kroz **S-krivu sa prikovanim
+krajevima**: `(0,0)` i `(1,1)` stoje, savija se samo ono između. Saturation
+ostaje na `CIColorControls`, sa `contrast = 1`.
+
+    posle popravke, iznad 250:  23,4%   (cilj 23,3%)
+    iznad 240:                  36,4%   (cilj 36,6%)
+
+⚠️ Ovo menja kako se renderuje svaka već sačuvana izmena sa `contrast != 0`.
+Prihvaćeno: staro ponašanje je sivilo bele, i to je bio kvar, ne izbor.
+
+### Druga polovina: „čistija" znači OŠTRIJA, ne mekša
+
+Mereno Laplasijanom: **Lightroom 7,96, mi 4,65.** Dakle njegova slika je
+oštrija od naše, ne mekša.
+
+Uzrok: preset nosi `Sharpness 40`, što je Lightroom-ov podrazumevani RAW, a naš
+importer ga je **oduzimao na nulu**. Rezon je bio da preset sa 40 nije tražio
+izoštravanje — tačno za PRESET, netačno za SLIKU: Lightroom to izoštravanje
+primeni pri renderu i ono je u izvezenom JPEG-u.
+
+Odnos je izmeren, ne preračunat iz opsega slajdera: **Lightroom-ovih 40
+odgovara našem 0,15** (Laplasijan 7,92 naspram 7,96). Podrazumevani `/110` bi
+dao 0,36 i Laplasijan 10,02, dakle preoštro.
+
+⚠️ **Ovo DIŽE RMS** (13,36 → 14,79) dok sliku čini tačnijom. Izoštravanje pomera
+svaku ivicu, a mera razlike to naplati u kom god smeru bilo. Ovde se oko i
+Laplasijan slažu, a RMS je taj koji greši.
+
+### Kelvin — traženo izričito
+
+Klijent: *„ako treba promeni kod, da bude kelvin"*.
+
+Dodato je `temperatureKelvin` (i `tintAbsolute`) — **apsolutna** vrednost kad je
+izmena zada. `nil` znači „koristi pomeraj", što je ono u šta se dekodira sve
+ranije napisano, pa **nema migracije**.
+
+Zašto: `temperature` je pomeraj od as-shot vrednosti, i to je tačno za look koji
+se prenosi na druge fotografije. Ali kad Lightroom preset **imenuje Kelvin**, on
+nosi ADOBE-ovo čitanje as-shota (5.350 K), a Core Image sa istog fajla čita
+**4.999 K** — pa je pomeraj od +989 K sletao na 5.988 umesto 6.339. Preset koji
+kaže Kelvin sada znači taj Kelvin.
+
+⚠️ **Vučenje Temperature slajdera vraća na pomeraj** (`temperatureKelvin = nil`).
+Bez toga bi apsolutna vrednost prikovala render dok se palac pomera — to je
+mrtav slajder, kvar koji je ova app već jednom isporučila na `Blacks`.
+
+### Stanje
+
+| | pre ove sesije | sada |
+|---|---|---|
+| RMS naspram Lightroom-a | 36,01 | **13,01** |
+| greška po oblastima | 136,3 | **81,2** |
+| udeo iznad 250 | 2,8% | **22,3%** (cilj 23,3%) |
+| oštrina (Laplasijan) | 4,65 | **7,92** (cilj 7,96) |
+
+`BUILD SUCCEEDED`, svih 8 alata iz `Tools/` **OK**, 129 zapisa, 9 migrirano.
+**Viđeno u živoj app-i.**
+
+### Šta se i dalje razlikuje
+
+- **nebo +21 crvenog** — Lightroom-ovo je tirkiznije. Sužavanje praga za
+  neutralne (`fullyColoured`, probano 0,04 → 0,002) ovo NE menja, dakle uzrok
+  nije prikivanje neutrala.
+- **pod +17 zelenog / +9 plavog** — Lightroom-ov je topliji.
+
+Oba su u mikseru boja, i oba čekaju isto: **neutralan izvoz** iz Lightroom-a
+(sve nule, isti NEF), pa po jedan sa jednim pomerenim slajderom.
+

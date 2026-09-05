@@ -12046,20 +12046,26 @@ struct DevelopView: View {
                 // built here opens in Lightroom and comes back unchanged.
                 // Disabled with nothing to write rather than hidden: a button
                 // that disappears reads as a feature that broke.
+                // ⚠️ "Export All" once there is more than one, because "Export"
+                // beside a LIST reads as "export the one I am looking at" — the
+                // client asked exactly that: *„on ce obe da mi exportuje? kako
+                // da izaberem koju export?"*. One preset at a time is the arrow
+                // in its own row; this button is the whole library.
                 Button {
-                    exportPresets()
+                    exportPresets(presets)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "square.and.arrow.up")
-                        Text("Export")
+                        Text(presets.count > 1 ? "Export All" : "Export")
                     }
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
                 .opacity(presets.isEmpty ? 0.4 : 1)
                 .disabled(presets.isEmpty)
-                .help(presets.count == 1
-                      ? "Export this preset as a Lightroom / Camera Raw .xmp file."
-                      : "Export all \(presets.count) presets as Lightroom / Camera Raw .xmp files into a folder.")
+                .help(presets.count > 1
+                      ? "Export all \(presets.count) presets as .xmp files into one folder. "
+                        + "To export just one, use the arrow in its own row."
+                      : "Export this preset as a Lightroom / Camera Raw .xmp file.")
             }
 
             if let presetImportNotice {
@@ -12161,6 +12167,18 @@ struct DevelopView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Rename this preset")
+
+                // Export sits BEFORE the trash on purpose: the two are next
+                // to each other, and a slip should land on the harmless one.
+                Button {
+                    exportPresets([preset])
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 11))
+                        .foregroundColor(AppColors.muted)
+                }
+                .buttonStyle(.plain)
+                .help("Export \"\(preset.name)\" as a Lightroom / Camera Raw .xmp file")
 
                 Button {
                     deletePreset(preset)
@@ -15508,8 +15526,8 @@ struct DevelopView: View {
     /// import says what it could not read: a preset that quietly loses the crop
     /// leaves the client comparing two pictures with nothing to explain the
     /// difference. See LightroomPresetExport.unsupportedParts.
-    private func exportPresets() {
-        guard !presets.isEmpty else { return }
+    private func exportPresets(_ chosen: [PhotoEditPreset]) {
+        guard !chosen.isEmpty else { return }
 
         var written = 0
         var failed = 0
@@ -15525,7 +15543,7 @@ struct DevelopView: View {
             }
         }
 
-        if presets.count == 1, let only = presets.first {
+        if chosen.count == 1, let only = chosen.first {
             let panel = NSSavePanel()
             panel.nameFieldStringValue = LightroomPresetExport.fileName(for: only)
             panel.message = "Export as a Lightroom / Camera Raw preset."
@@ -15547,7 +15565,7 @@ struct DevelopView: View {
             // Two presets can carry the same name — nothing stops that — and
             // the second must not overwrite the first in silence.
             var used: Set<String> = []
-            for preset in presets {
+            for preset in chosen {
                 var name = LightroomPresetExport.fileName(for: preset)
                 var attempt = 2
                 while used.contains(name.lowercased()) {

@@ -14358,3 +14358,33 @@ isti pikseli. Lightroom-ove sličice rade istu stvar.
 Nije viđeno u prozoru — ova mašina nema dozvolu za snimanje ekrana. Klijentu je
 otvorena app; sličice se ponovo dekodiraju pri prvom prikazu, pa je dovoljno
 otvoriti folder.
+
+## KORAK 129 — Export je izvozio SVE, bez izbora (5. septembar 2026)
+
+Klijent, sa dva preseta u listi: *„kada budem ovde isao export on ce obe da mi
+exportuje? kako da izaberem koju export?"*
+
+Odgovor je bio da — i to je bila greška u dizajnu, ne u kodu. Jedno dugme ispod
+liste, sa natpisom „Export", pored liste od dva imena čita se kao „izvezi ono
+što gledam". Radilo je nešto drugo.
+
+### Urađeno
+
+- **Strelica u svakom redu**, uz olovku i kantu: izvozi taj i samo taj preset,
+  kroz Save panel sa već upisanim imenom. ⚠️ Stoji **ispred** kante, jer su
+  jedna do druge, pa promašaj treba da padne na bezopasnu.
+- **Dugme ispod liste piše „Export All"** kad ih ima više od jednog, i u
+  tooltip-u kaže da se pojedinačni izvozi strelicom u redu. Sa jednim presetom
+  ostaje „Export", jer tu nema šta da se bira.
+- `exportPresets(_:)` sada prima šta da izveze umesto da uzima celu listu; pravilo
+  „jedan → Save panel, više → folder" ostaje isto, samo se sad primenjuje na
+  izabrano.
+
+### Provereno
+
+- `BUILD SUCCEEDED`; `run-preset-export-test` i ostali alati prolaze
+  nepromenjeni — sam izvoz se nije menjao, samo šta mu se prosleđuje.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Nema dozvole za snimanje ekrana na ovoj mašini; app je otvorena klijentu.

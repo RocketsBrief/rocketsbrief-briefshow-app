@@ -1719,9 +1719,10 @@ enum ColorMixerCube {
     /// Lightroom export it was the single largest colour error left after the
     /// tone curve: the preset's four negative Luminance bands (Red -21,
     /// Yellow -22, Green -21) darkened the frame far past Lightroom's, and
-    /// dropping the swing to 0.2 brought all three channel means back within a
-    /// few counts of the target. Measured with Tools/run-lightroom-calibration.py.
-    private static let luminanceSwing: Double = 0.2
+    /// dropping the swing brought all three channel means back within a few
+    /// counts of the target. Measured with Tools/run-lightroom-calibration.py:
+    /// 0.6 left the midtones 20 counts dark, 0.2 left 10, 0.1 left 4.
+    private static let luminanceSwing: Double = 0.1
 
     private static func build(_ mixer: ColorMixer) -> Data {
         let n = dimension
@@ -1890,14 +1891,31 @@ enum PhotoEditRenderer {
     /// renders the client's NEF through this very pipeline and scores it against
     /// the same photograph exported from Lightroom with the same preset.
     /// 0.30 was never measured — it scored **36.01**, WORSE than applying no
-    /// preset at all (24.11). At 0.10, with the zone weights below, the same
-    /// comparison scores **15.28**.
+    /// preset at all (24.11).
+    static let toneControlStrength = 0.20
+
+    /// Highlights alone is gentler, and it is the ONLY control that is.
     ///
-    /// ⚠️ 0.06 scores slightly better still (13.69) and was NOT taken: it buys
-    /// 1.6 RMS on one photograph at the cost of every tone slider's authority,
-    /// and one photograph cannot tell those apart. What settles it is a
-    /// Lightroom export per slider — see the tool's own warning.
-    static let toneControlStrength = 0.10
+    /// ⚠️ This asymmetry is the whole finding of 05.09, and it is not a fudge.
+    /// Lightroom's Highlights RECOVERS — it acts on the bright tones that still
+    /// hold detail and leaves the ones that are already clipped alone. A global
+    /// tone curve cannot say that. Pulled at the same weight as the others, a
+    /// Highlights of -77 drags the entire upper half of the picture down with
+    /// it, and on a high-key photograph that is most of the frame.
+    ///
+    /// Measured on the client's own preset against his Lightroom export, by
+    /// tone zone (input 128-192 is the midtones, 240+ the near-white):
+    ///
+    ///     full strength      midtones -55.8   near-white -0.6   the buildings crush
+    ///     x0.50              midtones -19.8   near-white +2.5
+    ///     x0.35              midtones  -4.2   near-white +3.4   <- taken
+    ///     x0.25              midtones  +1.5   near-white +4.2   too bright
+    ///
+    /// Moving the weight to the TOP knot instead was tried and is worse, not
+    /// better: it drops the white point, so the blown façade that Lightroom
+    /// keeps blown came back at -69. Recovery is not the same move as lowering
+    /// the white point, and this is where that shows.
+    static let highlightControlScale = 0.35
 
     /// The gentlest the curve is allowed to rise between two knots. Above zero
     /// on purpose: a flat segment is what let the old spline dip.
@@ -2182,7 +2200,7 @@ enum PhotoEditRenderer {
             [0.00, 0.00, 0.10, 1.00, 0.30],
             [0.00, 0.00, 0.06, 0.45, 1.00],
         ]
-        let amounts = [blacks, shadows, highlights, whites]
+        let amounts = [blacks, shadows, highlights * highlightControlScale, whites]
 
         var ys = xs
         for knot in 0..<5 {

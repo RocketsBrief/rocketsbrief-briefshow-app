@@ -13657,3 +13657,86 @@ slajderom na istom NEF-u — neutralan (sve nule), samo Shadows +70, samo
 Highlights -77, i jedan potez u mikseru. Neutralan izvoz sam za sebe rešava i
 351 K i ekspoziciju.
 
+## KORAK 122 — Highlights nije kao ostala tri, i to je merenje pokazalo (5. septembar 2026)
+
+Klijent je pogledao KORAK 121 i opet rekao *„nije dobro"*, uz dve slike: kod nas
+je hotel zadržao detalj i slika je tamnija i kontrastnija, kod Lightroom-a je
+fasada **prebeljena**, sve svetlije i mekše.
+
+### Gde je greška, po tonskim zonama
+
+Merenje po zoni ulaza (neutralni render) je odmah pokazalo da problem NIJE u
+svetlim tonovima nego u **srednjim**:
+
+    ulaz 128-144   Lightroom 125,5   C4S 105,4   -20
+    ulaz 144-160   Lightroom 142,3   C4S 119,6   -23
+    ulaz 224-240   Lightroom 209,9   C4S 210,8   +1     <- vrh je već bio tačan
+
+Dakle Lightroom u srednjim tonovima stoji skoro na identitetu, a mi smo ih
+rušili za 20.
+
+### Šta je probano i ODBAČENO, sa brojkama
+
+- **Prikovati srednji čvor** (težina 0 na `x=0,5` za sva četiri kontrolera):
+  −18,6 → −18,7. **Ništa.** Sredinu savija splajn IZMEĐU čvorova, ne težina na
+  sredini.
+- **Prebaciti Highlights na gornji čvor** (`H4=1`): vrh padne na **−69**, jer to
+  spušta belu tačku i ugasi prebeljenu fasadu koju Lightroom ostavlja
+  prebeljenom. **Oporavak svetlih tonova nije isto što i spuštanje bele tačke**,
+  i tu se to vidi.
+- **Snižavati `toneControlStrength` za sve** (0,06): sredina se popravi, ali
+  `Shadows` i `Blacks` postanu preslabi — na stepeništu `32 → 38` i `32 → 29`.
+
+### Popravka: Highlights ima SVOJU, blažu jačinu
+
+`highlightControlScale = 0.35`, i to je **jedini** kontroler koji je izuzet.
+
+⚠️ Nije fudge, nego opis onoga što Lightroom radi: njegov Highlights
+**oporavlja** — dela na svetle tonove koji još drže detalj, a već odsečene
+ostavlja na miru. Globalna kriva to ne ume da kaže. Povučen istom težinom kao
+ostali, `Highlights -77` povuče celu gornju polovinu slike sa sobom, a na
+fotografiji visokog ključa je to najveći deo kadra.
+
+Izmereno na klijentovom presetu, po zonama:
+
+| jačina | srednji tonovi | skoro bela |
+|---|---|---|
+| puna | −55,8 | −0,6 (fasada se sruši) |
+| ×0,50 | −19,8 | +2,5 |
+| **×0,35** | **−4,2** | **+3,4** ← uzeto |
+| ×0,25 | +1,5 | +4,2 (presvetlo) |
+
+Uz to `toneControlStrength` 0,10 → **0,20** (ostala tri kontrolera vraćaju
+autoritet) i `luminanceSwing` 0,2 → **0,1** (0,6 je ostavljalo sredinu 20
+tamnijom, 0,2 → 10, 0,1 → 4).
+
+### Provereno
+
+- `Tools/run-lightroom-calibration.py` → **RESULT: OK**, 15,41 naspram 24,11.
+- Vizuelno, jedno uz drugo: fasada je sada prebeljena kao kod Lightroom-a, slika
+  prozračna. **Slika je bila presudna, ne RMS** — `tone=0,06` daje bolji RMS
+  (13,49) i vidno lošiju sliku. Isti obrazac koji
+  `Tools/measure-texture-density.py` već nosi u zaglavlju.
+- `BUILD SUCCEEDED`, svih 8 alata iz `Tools/` **OK**, 129 zapisa, 9 migrirano.
+
+### ⚠️ NEPROVERENO NA EKRANU
+
+Prva kalibracija (KORAK 121) **jeste** viđena u živoj app-i. Ova druga **nije** —
+mašina se zaključala pre snimka, a šifra je klijentova. Poređenje gore je iz
+harnessa, koji vozi isti kod, ali to nije isto što i videti u app-i.
+
+### ⚠️ ZAŠTO OVO I DALJE NIJE ZAVRŠENO
+
+Sve je fitovano na **jednoj** fotografiji sa presetom koji pomera **sve**
+slajdere. To određuje zbir, ne pojedinačne slajdere — i to se sada vidi kao
+tvrda činjenica, ne kao oprez: dve konfiguracije koje se **slažu** na jednoj meri
+**oštro se razilaze** na drugoj (`tone=0,06` je najbolji po RMS i lošiji po
+srednjim tonovima i po oku).
+
+Traženo od klijenta, i sada je to prepreka a ne poboljšanje:
+
+1. **Neutralan izvoz** (sve na nuli, isti NEF) — jedini način da se razdvoji
+   „naš RAW dekod se razlikuje od Adobe-ovog" od „naš slajder je pogrešno
+   skaliran". Rešava usput i 351 K iz KORAKA 120 i pitanje ekspozicije.
+2. Samo `Shadows +70`. 3. Samo `Highlights -77`. 4. Jedan potez u mikseru.
+

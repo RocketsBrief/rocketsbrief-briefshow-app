@@ -288,16 +288,29 @@ lično je — pitaj klijenta pre nego što uđe u build.
 | 149–151 | LaMa+SD hibrid je već bio tu; jačina 0,3 → **0,4**; jačina je broj koraka |
 | **152–153** | **RELEASE v11.10** |
 
+#### ✅ `latest_version` je DIGNUT na 11.10
+
+Klijent je to uradio sam, 7.09, odmah po objavi — potvrdio je rečima („jesam").
+Dakle **lanac je zatvoren**: postojeće instalacije od sada dobijaju karticu
+„mora update" i vodi ih na `C4S-Suite-11.10.zip`.
+
+⚠️ Ovo je prvi put da je taj korak zatvoren istog dana kad i release. U
+KORACIMA 131 i 139 je ostao otvoren, pa v11.7 i v11.9 nikad nisu bili ponuđeni
+nikome kroz karticu.
+
 #### ⚠️ PRVO ZA SLEDEĆU SESIJU
 
-1. **`latest_version` u BriefControl-u → `11.10`.** Dok klijent to ne digne,
-   niko ne dobija karticu za update. Release notes na engleskom su u KORAKU 153.
-2. **`v11.0` se NE SME brisati** — ovaj release namerno ne nosi SD, pa ugrađeno
-   dugme za preuzimanje i dalje gađa njegov asset (provereno, HTTP 200).
-3. **Čeka se neutralan izvoz `C4S_9331.NEF`-a iz Lightroom-a** sa svim
-   slajderima na nuli. Traženo 5.09, i dalje nije stiglo.
-4. **Ako lag i dalje raste tokom rada** — meriti po postupku sa kraja KORAKA
-   143, ne nagađati.
+1. **`v11.0` se NE SME brisati** — 11.10 namerno ne nosi SD, pa ugrađeno dugme
+   za preuzimanje i dalje gađa njegov asset (provereno, HTTP 200).
+2. **Čeka se neutralan izvoz `C4S_9331.NEF`-a iz Lightroom-a** sa svim
+   slajderima na nuli. Traženo 5.09, i dalje nije stiglo — i to je jedina
+   prepreka za nastavak kalibracije.
+3. **Ako lag i dalje raste tokom rada** — meriti po postupku sa kraja KORAKA
+   143 (`sample`, `footprint`), ne nagađati. Danas su četiri hipoteze izmerene
+   i pale; peta se ne pogađa napamet.
+4. **Nije viđeno na ekranu, čeka klijentovu probu:** kartica za update na
+   pravoj mašini, i **Intel** — nije potvrđen na pravoj mašini od v11.0
+   (KORAK 106), a klijent je rekao da će testirati na kompanijskom Mac-u.
 
 #### Otvoreno
 

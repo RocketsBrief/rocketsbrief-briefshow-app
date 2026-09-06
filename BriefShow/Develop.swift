@@ -1117,23 +1117,37 @@ enum LayerPixelStore {
     /// Kept in memory once read: the same blob is asked for on every render of
     /// the photo it belongs to, and going back to the disk each time would
     /// trade one cost for another.
-    private static var cache: [String: Data] = [:]
-    private static let cacheLock = NSLock()
+    ///
+    /// ⚠️ BOUNDED. This was a plain dictionary with nothing that ever removed
+    /// anything from it, and the blobs are not small — measured on the
+    /// client's own store, a Select People cut-out is 10–13 MB and there are
+    /// two per photo. Every layer of every photo visited in a session stayed
+    /// in memory for the life of the app, so the editor got heavier the longer
+    /// it was used and never got lighter again. NSCache also hands memory back
+    /// when the system asks for it, which a dictionary never does.
+    ///
+    /// 256 MB is about twenty layers — comfortably more than one editing pass
+    /// over a photo needs, and a miss costs one read of a file that is
+    /// certainly still in the page cache.
+    private static let cache: NSCache<NSString, NSData> = {
+        let cache = NSCache<NSString, NSData>()
+        cache.totalCostLimit = 256 * 1_000_000
+        return cache
+    }()
 
     static func data(for name: String) -> Data? {
-        cacheLock.lock()
-        if let hit = cache[name] {
-            cacheLock.unlock()
-            return hit
+        let key = name as NSString
+        if let hit = cache.object(forKey: key) {
+            return hit as Data
         }
-        cacheLock.unlock()
 
         guard let url = fileURL(name), let data = try? Data(contentsOf: url) else {
             return nil
         }
-        cacheLock.lock()
-        cache[name] = data
-        cacheLock.unlock()
+        // Cost is the byte count, which is what the limit is expressed in —
+        // without it NSCache counts OBJECTS and a 13 MB blob weighs the same
+        // as a 200 KB one.
+        cache.setObject(data as NSData, forKey: key, cost: data.count)
         return data
     }
 }
@@ -1729,9 +1743,75 @@ extension Notification.Name {
     /// `PhotoEditStore.flushNow`. userInfo carries a `Set<URL>` under
     /// `photoEditsChangedURLsKey`.
     static let photoEditsChanged = Notification.Name("com.rocketsbrief.briefshow.photoEditsChanged")
+
+    /// Photos the app itself just WROTE INTO the folder — a duplicate made in
+    /// Create, or one made in the grid. userInfo carries an `[URL]` under
+    /// `photoFilesChangedURLsKey`, in the order they should appear.
+    ///
+    /// ⚠️ This exists because the two windows keep SEPARATE lists and neither
+    /// re-reads the folder. ShowGrid only scans a folder when the folder
+    /// SELECTION changes (`loadImages(inFolder:)`), and Create is seeded once
+    /// from whatever ShowGrid handed over. So a duplicate made in Create went
+    /// into Create's strip and nowhere else — and the moment the editor was
+    /// closed and reopened it was rebuilt from ShowGrid's untouched list, and
+    /// the copy was gone from the screen. The file was always on disk; it
+    /// simply had no way back into the list. Reported as photos disappearing.
+    static let photoFilesAdded = Notification.Name("com.rocketsbrief.briefshow.photoFilesAdded")
+
+    /// Photos that were just moved to the Trash, by whichever window did it.
+    /// The other one has to drop them or it draws tiles for files that are
+    /// gone. Same userInfo key.
+    static let photoFilesRemoved = Notification.Name("com.rocketsbrief.briefshow.photoFilesRemoved")
 }
 
 let photoEditsChangedURLsKey = "urls"
+let photoFilesChangedURLsKey = "urls"
+
+/// Announces files this app just added to (or removed from) a folder, so the
+/// window that did NOT do it can put its own list back in step.
+///
+/// `object` is the poster, and every listener ignores its own posts — the
+/// window that made the change has already updated itself, and re-applying it
+/// would fight its own scroll position and selection.
+enum PhotoFileChangeBroadcast {
+    static func added(_ urls: [URL], from sender: AnyObject) {
+        guard !urls.isEmpty else { return }
+        NotificationCenter.default.post(name: .photoFilesAdded, object: sender,
+                                        userInfo: [photoFilesChangedURLsKey: urls])
+    }
+
+    static func removed(_ urls: [URL], from sender: AnyObject) {
+        guard !urls.isEmpty else { return }
+        NotificationCenter.default.post(name: .photoFilesRemoved, object: sender,
+                                        userInfo: [photoFilesChangedURLsKey: urls])
+    }
+
+    static func urls(in note: Notification) -> [URL] {
+        note.userInfo?[photoFilesChangedURLsKey] as? [URL] ?? []
+    }
+}
+
+/// A token a SwiftUI view can own so its notification posts are identifiable
+/// as its own — a struct has no identity to post as `object`.
+final class PhotoFileChangeSender {}
+
+/// Puts newly created files into a list that is already in name order — the
+/// order `importShowPhotos` sorts into and the strip inherits — so a duplicate
+/// arrives BESIDE the photo it came from rather than at the end of two hundred.
+///
+/// Anything already in the list is skipped, so a post that arrives twice, or
+/// one that crosses a folder reload, cannot double an entry.
+func insertingAddedPhotos(_ added: [URL], into list: [URL]) -> [URL] {
+    var result = list
+    for url in added {
+        guard !result.contains(url) else { continue }
+        let index = result.firstIndex {
+            $0.lastPathComponent.localizedStandardCompare(url.lastPathComponent) == .orderedDescending
+        } ?? result.endIndex
+        result.insert(url, at: index)
+    }
+    return result
+}
 
 /// A ShowGrid thumbnail with the client's Create edits applied.
 ///
@@ -4914,6 +4994,74 @@ enum PhotoBakeService {
 // so naming that type costs nothing and sidesteps the bug. If a second
 // content type ever needs it, re-check whether the toolchain still crashes
 // before making it generic again.
+/// The rendered picture on the canvas, and the histogram beside it.
+///
+/// ⚠️ SAME REASON AS CropDragState, and the bigger of the two.
+///
+/// `renderNow` commits a new frame about every 20 ms for as long as any slider
+/// is moving, and a refine commits another one after every edit. As plain
+/// `@State` on `DevelopView`, each of those frames invalidated the WHOLE
+/// editor's body — the panel with every section and slider in it, and the
+/// filmstrip — fifty times a second, to change one image view. The panel
+/// genuinely does have to redraw while its own slider is being dragged; it has
+/// no business redrawing because a picture arrived.
+///
+/// The file already does this twice, for the same reason: the brush ring and
+/// the patch stroke are read off observed objects *„so that setting it does
+/// not touch the parent's body"* (KORAK 25 was that lag, with a brush). This is
+/// the same move applied to the frame itself.
+final class PreviewImageState: ObservableObject {
+    @Published var image: NSImage?
+    @Published var histogram: [CGFloat] = []
+}
+
+/// Draws its content from the current frame, and re-draws only when a new one
+/// lands. See `CropStateReader`, which does the same job for the crop frame.
+private struct PreviewImageReader<Content: View>: View {
+    @ObservedObject var state: PreviewImageState
+    @ViewBuilder let content: (NSImage?) -> Content
+
+    var body: some View {
+        content(state.image)
+    }
+}
+
+/// The histogram's own reader — the bins land a beat after the picture and
+/// are read by one small view, so they get their own subscription rather than
+/// riding along with the frame.
+private struct HistogramReader<Content: View>: View {
+    @ObservedObject var state: PreviewImageState
+    @ViewBuilder let content: ([CGFloat]) -> Content
+
+    var body: some View {
+        content(state.histogram)
+    }
+}
+
+/// The crop frame, while the crop tool is open.
+///
+/// A class so the one view that draws it can observe it on its own, without
+/// every write going through `DevelopView`'s `@State` and taking the whole
+/// editor's body with it. See `DevelopView.cropState`.
+final class CropDragState: ObservableObject {
+    @Published var crop: EditCropRect = .full
+}
+
+/// Draws its content from the live crop, and re-draws when — and only when —
+/// the crop changes.
+///
+/// The content closure is still built inside `DevelopView`, so it keeps
+/// reaching that view's own helpers and gestures exactly as before; the only
+/// thing that changed is WHO gets invalidated when a handle moves.
+private struct CropStateReader<Content: View>: View {
+    @ObservedObject var state: CropDragState
+    @ViewBuilder let content: (EditCropRect) -> Content
+
+    var body: some View {
+        content(state.crop)
+    }
+}
+
 private final class ClickThroughHostingView: NSHostingView<DevelopView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
@@ -5976,9 +6124,25 @@ struct DevelopView: View {
     // The refine once it is ON the render queue, so it can still be cancelled
     // between being queued and being started — see scheduleRefinedRender.
     @State private var refineQueueWorkItem: DispatchWorkItem?
-    @State private var displayedImage: NSImage?
-    @State private var histogramBins: [CGFloat] = []
+    /// Held in an object this view does NOT observe — see PreviewImageState.
+    @State private var previewState = PreviewImageState()
+
+    /// The old names, so every reader and writer in this file is unchanged and
+    /// none of them can drift back onto the path that redrew the whole editor.
+    private var displayedImage: NSImage? {
+        get { previewState.image }
+        nonmutating set { previewState.image = newValue }
+    }
+
+    private var histogramBins: [CGFloat] {
+        get { previewState.histogram }
+        nonmutating set { previewState.histogram = newValue }
+    }
     @State private var filmstripThumbnails: [URL: NSImage] = [:]
+
+    /// Identity for this window's own file-change posts, so it can ignore
+    /// them coming back — see PhotoFileChangeBroadcast.
+    @State private var fileChangeSender = PhotoFileChangeSender()
     // Decodes already dispatched. The `filmstripThumbnails[url] == nil` check
     // alone is not enough: it runs on the main thread before the dispatch, so
     // two .onAppear for the same url arriving before the first decode finishes
@@ -5989,8 +6153,41 @@ struct DevelopView: View {
     @State private var isLoadingPreview = false
     @State private var showOriginal = false
     @State private var isCropping = false
-    @State private var pendingCrop: EditCropRect = .full
+
+    /// The crop frame being dragged, held in an object rather than in `@State`.
+    ///
+    /// ⚠️ THIS IS WHY THE CROP TOOL STOPPED LAGGING, and it is the whole of it.
+    ///
+    /// `pendingCrop` is written on EVERY frame of a handle drag — a hundred and
+    /// twenty times a second while the client narrows a crop. As plain `@State`
+    /// on this view, each of those writes invalidated `DevelopView.body`, which
+    /// is the picture, the ENTIRE adjustment panel (every section, every slider,
+    /// every button) and the whole filmstrip. None of them can look different
+    /// because a crop handle moved — the render deliberately ignores the crop
+    /// while the tool is open (see the note on the missing `onChange` below) —
+    /// so all of that work was thrown away as soon as it was done, once per
+    /// frame, for the duration of every drag.
+    ///
+    /// Holding it in an `ObservableObject` that this view does NOT observe
+    /// (`@State` on a reference type stores it; it does not subscribe) means a
+    /// write reaches exactly one view: the overlay, which reads it through
+    /// `CropStateReader`. The parent body does not run at all during a drag.
+    ///
+    /// `pendingCrop` below keeps the old name and the old spelling, so all
+    /// thirty call sites are untouched and none of them can accidentally go
+    /// back to the slow path.
+    @State private var cropState = CropDragState()
+
+    private var pendingCrop: EditCropRect {
+        get { cropState.crop }
+        nonmutating set { cropState.crop = newValue }
+    }
+
     @State private var dragStartCrop: EditCropRect?
+    /// Which side or corner a resize drag has hold of, nil between drags.
+    /// Read by the cursor so a resize keeps its own arrows all the way through
+    /// — see cropCursor.
+    @State private var activeCropHandle: CropHandle?
     // Where the rotation drag began: the pointer's angle around the crop's
     // centre, and the whole crop at that moment. Both nil between drags, which
     // is also how the cursor knows a turn is in progress (see cropCursor).
@@ -6610,6 +6807,35 @@ struct DevelopView: View {
         // that is now a different photo.
         .onChange(of: photoURLs) { _ in
             reloadRejectedFlags()
+        }
+        // A duplicate made in the GRID while this window is open. Same
+        // problem in the other direction: neither list is re-read from the
+        // folder, so without this the copy is invisible here until the editor
+        // is closed and opened again.
+        .onReceive(NotificationCenter.default.publisher(for: .photoFilesAdded)) { note in
+            guard (note.object as AnyObject?) !== fileChangeSender else { return }
+            photoURLs = insertingAddedPhotos(PhotoFileChangeBroadcast.urls(in: note),
+                                             into: photoURLs)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .photoFilesRemoved)) { note in
+            guard (note.object as AnyObject?) !== fileChangeSender else { return }
+            let gone = Set(PhotoFileChangeBroadcast.urls(in: note))
+            guard !gone.isEmpty else { return }
+            photoURLs.removeAll { gone.contains($0) }
+            multiSelectedURLs.subtract(gone)
+            for url in gone {
+                filmstripThumbnails.removeValue(forKey: url)
+            }
+            // The open photo itself can be the one that was trashed from the
+            // grid. Move to whatever is still there rather than going on
+            // showing a file that no longer exists.
+            if let current = selectedURL, gone.contains(current) {
+                if let next = photoURLs.first {
+                    selectPhoto(next)
+                } else {
+                    onClose()
+                }
+            }
         }
         .onChange(of: settings) { _ in
             scheduleRender()
@@ -9283,6 +9509,10 @@ struct DevelopView: View {
 
     private var centerPreview: some View {
         GeometryReader { proxy in
+            // The frame is read HERE, through the reader, and not from the
+            // parent's own state — that is what keeps a new frame from
+            // redrawing the panel and the filmstrip. See PreviewImageState.
+            PreviewImageReader(state: previewState) { displayedImage in
             ZStack {
                 AppColors.panelAlt.opacity(0.4)
 
@@ -9518,6 +9748,7 @@ struct DevelopView: View {
             case .ended: isHoveringPreview = false
             }
         }
+            }
     }
 
     private func fittedImageFrame(imageSize: CGSize, in containerSize: CGSize) -> CGRect {
@@ -9627,6 +9858,24 @@ struct DevelopView: View {
         var movesTopEdge: Bool { self == .topLeft || self == .topRight || self == .top }
         var movesBottomEdge: Bool { self == .bottomLeft || self == .bottomRight || self == .bottom }
         var isEdge: Bool { self == .top || self == .bottom || self == .left || self == .right }
+
+        // Drawn — and therefore hit-tested — in this order: edges first,
+        // corners on top. A ZStack gives an overlap to whatever is declared
+        // LAST, and the two zones DO overlap: an edge band now runs the whole
+        // length of its edge (see cropHandleView), which takes it right into
+        // both corners. Corners have to win there, because that is also the
+        // order `cropCursor` tests in, and the cursor and the press must agree
+        // — the warning on cropCursor is what happens when they do not.
+        static let edgeCases: [CropHandle] = [.top, .bottom, .left, .right]
+        static let cornerCases: [CropHandle] = [.topLeft, .topRight, .bottomLeft, .bottomRight]
+
+        /// Half of the hit box at a corner, in points. Also the half-extent
+        /// `cropCursor` measures against, so the drawn zone and the cursor
+        /// zone are the same number rather than two that nearly agree.
+        static let cornerReach: CGFloat = 15
+
+        /// Half the WIDTH of an edge band. Its length is the edge itself.
+        static let edgeReach: CGFloat = 12
     }
 
     /// The rotate cursor.
@@ -9742,6 +9991,178 @@ struct DevelopView: View {
         let image = makeRotateCursorImage(rotatedBy: degrees)
         return NSCursor(image: image, hotSpot: NSPoint(x: image.size.width / 2,
                                                       y: image.size.height / 2))
+    }
+
+    /// A short straight line with an arrowhead at each end, lying along one
+    /// axis — the crop tool's resize cursor.
+    ///
+    /// Asked for in exactly these terms: *„pravo linijska kratka ikonica sa
+    /// strelicama na dole i gore a sa strane horizontalna linijica … a u ćošku
+    /// da bude dijagonalna linijcia"*. One drawing serves all three, and every
+    /// angle in between: the axis is a parameter, so a frame that has been
+    /// TURNED gets a cursor turned with it rather than an upright glyph on a
+    /// tilted edge.
+    ///
+    /// Same 14pt, 2× bitmap, pure white and no outline as the rotate cursor
+    /// beside it — that look was chosen by the client for this exact tool, and
+    /// two cursors in one overlay drawn to different rules would read as two
+    /// different tools.
+    private static func makeResizeCursorImage(rotatedBy screenDegrees: CGFloat) -> NSImage {
+        let side: CGFloat = 14
+        let pixelScale: CGFloat = 2
+        let centre = NSPoint(x: side / 2, y: side / 2)
+        // Half the shaft. 5 keeps both heads inside a 14pt canvas with a
+        // pixel to spare once the head is added on top.
+        let reach: CGFloat = 5
+
+        // ⚠️ AppKit draws with y UP while the crop's angles are measured on
+        // screen, where y grows DOWN — so a clockwise turn on screen is a
+        // NEGATIVE turn here. Same correction, and the same reason, as
+        // makeRotateCursorImage. It matters: without it the two diagonals
+        // swap, and the corner cursor would lean the wrong way.
+        let radians = -screenDegrees * .pi / 180
+        let axis = NSPoint(x: cos(radians), y: sin(radians))
+        let normal = NSPoint(x: -axis.y, y: axis.x)
+
+        func head(sign: CGFloat) -> NSBezierPath {
+            let tip = NSPoint(x: centre.x + axis.x * reach * sign,
+                              y: centre.y + axis.y * reach * sign)
+            let base = NSPoint(x: tip.x - axis.x * 3 * sign, y: tip.y - axis.y * 3 * sign)
+            let path = NSBezierPath()
+            path.move(to: tip)
+            path.line(to: NSPoint(x: base.x + normal.x * 1.9, y: base.y + normal.y * 1.9))
+            path.line(to: NSPoint(x: base.x - normal.x * 1.9, y: base.y - normal.y * 1.9))
+            path.close()
+            return path
+        }
+
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(side * pixelScale), pixelsHigh: Int(side * pixelScale),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        )!
+        rep.size = NSSize(width: side, height: side)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+
+        NSColor.white.setStroke()
+        NSColor.white.setFill()
+
+        let shaft = NSBezierPath()
+        shaft.move(to: NSPoint(x: centre.x - axis.x * reach, y: centre.y - axis.y * reach))
+        shaft.line(to: NSPoint(x: centre.x + axis.x * reach, y: centre.y + axis.y * reach))
+        shaft.lineWidth = 1.2
+        shaft.lineCapStyle = .round
+        shaft.stroke()
+
+        head(sign: 1).fill()
+        head(sign: -1).fill()
+
+        NSGraphicsContext.restoreGraphicsState()
+
+        let image = NSImage(size: NSSize(width: side, height: side))
+        image.addRepresentation(rep)
+        return image
+    }
+
+    /// One resize cursor per 15°, built once and held — see `rotateCursors`
+    /// for why this is a table and not a drawing per mouse-move.
+    private static let resizeCursors: [NSCursor] = (0..<rotateCursorSteps).map { step in
+        let degrees = CGFloat(step) * (360 / CGFloat(rotateCursorSteps))
+        let image = makeResizeCursorImage(rotatedBy: degrees)
+        return NSCursor(image: image, hotSpot: NSPoint(x: image.size.width / 2,
+                                                      y: image.size.height / 2))
+    }
+
+    /// The resize cursor pointing along `screenDegrees`.
+    ///
+    /// The glyph is symmetric, so a direction and its opposite are the same
+    /// picture — folded to 0..<360 first anyway, since the table is.
+    private static func resizeCursor(alongDegrees screenDegrees: Double) -> NSCursor {
+        let stepSize = 360 / Double(rotateCursorSteps)
+        var step = Int((screenDegrees / stepSize).rounded()) % rotateCursorSteps
+        if step < 0 { step += rotateCursorSteps }
+        return resizeCursors[step]
+    }
+
+    /// A point put back into the crop frame's OWN space: x along the frame's
+    /// width, y along its height, both measured from its centre.
+    ///
+    /// The inverse of the turn `cropFramePath` applies. Everything the cursor
+    /// has to decide — on an edge, on a corner, inside — is an upright
+    /// rectangle question in THIS space, at any angle, which is what makes the
+    /// cursor zones and the (rotated) hit boxes the same shapes rather than
+    /// two approximations of each other.
+    private static func cropFrameLocalPoint(_ point: CGPoint, centre: CGPoint,
+                                            degrees: Double) -> CGPoint {
+        let radians = degrees * .pi / 180
+        let c = cos(radians)
+        let sn = sin(radians)
+        let dx = point.x - centre.x
+        let dy = point.y - centre.y
+        return CGPoint(x: dx * c + dy * sn, y: -dx * sn + dy * c)
+    }
+
+    /// Which way a drag on `handle` moves, in screen degrees, for a frame
+    /// turned by `angle` and shaped `halfWidth` × `halfHeight`.
+    ///
+    /// Edges are perpendicular to themselves; a corner runs along its own
+    /// diagonal, so the cursor leans the way the corner actually travels
+    /// rather than at a fixed 45° that is only right on a square crop.
+    private static func cropResizeDegrees(_ handle: CropHandle, angle: Double,
+                                          halfWidth: CGFloat, halfHeight: CGFloat) -> Double {
+        switch handle {
+        case .left, .right:
+            return angle
+        case .top, .bottom:
+            return angle + 90
+        default:
+            let x: CGFloat = handle.movesLeftEdge ? -halfWidth : halfWidth
+            let y: CGFloat = handle.movesTopEdge ? -halfHeight : halfHeight
+            return angle + atan2(Double(y), Double(x)) * 180 / .pi
+        }
+    }
+
+    /// The handle whose zone `point` falls in, or nil.
+    ///
+    /// ⚠️ The ONE answer to that question. Both the cursor and — through the
+    /// same two constants and the same order — the hit boxes come from here,
+    /// so "what will happen if I press" and "what does the pointer look like"
+    /// cannot drift apart again.
+    private static func cropHandle(at point: CGPoint, rect: CGRect,
+                                   angle: Double) -> CropHandle? {
+        let centre = CGPoint(x: rect.midX, y: rect.midY)
+        let local = cropFrameLocalPoint(point, centre: centre, degrees: angle)
+        let halfWidth = rect.width / 2
+        let halfHeight = rect.height / 2
+
+        // Corners first, exactly as they are drawn last — see CropHandle.
+        let corner = CropHandle.cornerReach
+        let nearLeft = abs(local.x + halfWidth) <= corner
+        let nearRight = abs(local.x - halfWidth) <= corner
+        let nearTop = abs(local.y + halfHeight) <= corner
+        let nearBottom = abs(local.y - halfHeight) <= corner
+        if nearTop && nearLeft { return .topLeft }
+        if nearTop && nearRight { return .topRight }
+        if nearBottom && nearLeft { return .bottomLeft }
+        if nearBottom && nearRight { return .bottomRight }
+
+        // Then the edges, along their WHOLE length — *„da se aktivira uvek
+        // kada je cursor na linijama"*. The band is centred on the line, so it
+        // catches from just outside the frame as well as from just inside.
+        let edge = CropHandle.edgeReach
+        if abs(local.x) <= halfWidth {
+            if abs(local.y + halfHeight) <= edge { return .top }
+            if abs(local.y - halfHeight) <= edge { return .bottom }
+        }
+        if abs(local.y) <= halfHeight {
+            if abs(local.x + halfWidth) <= edge { return .left }
+            if abs(local.x - halfWidth) <= edge { return .right }
+        }
+
+        return nil
     }
 
     /// The rotate cursor turned to match where `point` sits around `centre`.
@@ -9882,16 +10303,26 @@ struct DevelopView: View {
     }
 
     private func cropOverlay(frame: CGRect, containerSize: CGSize) -> some View {
+        // Everything below reads `crop` — the value handed over by the reader
+        // — rather than `pendingCrop`, so that a drag re-draws THIS and
+        // nothing else. See CropDragState.
+        CropStateReader(state: cropState) { crop in
+            cropOverlayBody(crop: crop, frame: frame, containerSize: containerSize)
+        }
+    }
+
+    private func cropOverlayBody(crop: EditCropRect, frame: CGRect,
+                                 containerSize: CGSize) -> some View {
         // The UNROTATED box, in container coordinates. The angle is applied on
         // top of it by cropFramePath — the stored rectangle stays the upright
         // box everywhere, and only the drawing and the hit areas are turned.
         let rect = CGRect(
-            x: frame.minX + pendingCrop.x * frame.width,
-            y: frame.minY + pendingCrop.y * frame.height,
-            width: pendingCrop.width * frame.width,
-            height: pendingCrop.height * frame.height
+            x: frame.minX + crop.x * frame.width,
+            y: frame.minY + crop.y * frame.height,
+            width: crop.width * frame.width,
+            height: crop.height * frame.height
         )
-        let angle = pendingCrop.angle
+        let angle = crop.angle
         let centre = CGPoint(x: rect.midX, y: rect.midY)
         let framePath = Self.cropFramePath(rect, degrees: angle)
 
@@ -9947,11 +10378,32 @@ struct DevelopView: View {
                         }
                 )
 
+            // Rule of thirds, inside the frame and turning with it.
+            //
+            // Asked for directly — *„crop mora da ima grid"* — and it is what
+            // the tool is FOR: the lines are where the subject goes, and
+            // without them the frame is just a box. Drawn from the same two
+            // helpers the border and the handles use, so it cannot sit at a
+            // different angle from the frame it belongs to.
+            //
+            // Thin and half-transparent on purpose: this is a guide over the
+            // photograph, and a bright grid competes with the picture the
+            // client is trying to judge. Not hit-testable, so it never takes
+            // a drag away from the frame underneath it.
+            Self.cropThirdsPath(rect, degrees: angle)
+                .stroke(Color.white.opacity(0.45), lineWidth: 0.5)
+                .allowsHitTesting(false)
+
             framePath
                 .stroke(Color.white, lineWidth: 1.0)
                 .allowsHitTesting(false)
 
-            ForEach(CropHandle.allCases, id: \.self) { handle in
+            // Edges first, corners on top — a ZStack gives an overlap to
+            // whatever comes last, and the bands now reach into the corners.
+            ForEach(CropHandle.edgeCases, id: \.self) { handle in
+                cropHandleView(handle, rect: rect, angle: angle, centre: centre, frame: frame)
+            }
+            ForEach(CropHandle.cornerCases, id: \.self) { handle in
                 cropHandleView(handle, rect: rect, angle: angle, centre: centre, frame: frame)
             }
         }
@@ -9999,20 +10451,36 @@ struct DevelopView: View {
         if rotateDragStartAngle != nil {
             return Self.rotateCursor(at: point, around: CGPoint(x: rect.midX, y: rect.midY))
         }
+        if let handle = activeCropHandle, let start = dragStartCrop {
+            // A resize in progress. The pointer runs well past the side it
+            // grabbed — that is what a resize IS — and a cursor that turned
+            // back into a hand halfway would read as the frame having been
+            // let go. Taken from the frame as it was when the drag started,
+            // for the same reason.
+            return Self.resizeCursor(alongDegrees:
+                Self.cropResizeDegrees(handle, angle: start.angle,
+                                       halfWidth: rect.width / 2,
+                                       halfHeight: rect.height / 2))
+        }
         if dragStartCrop != nil {
             return .closedHand
         }
 
-        // Handles first, and with the SAME reach their hit areas have — 30pt
-        // for a corner, 24 for an edge bar, so the picture and the press agree
-        // to the point.
         let centre = CGPoint(x: rect.midX, y: rect.midY)
-        for handle in CropHandle.allCases {
-            let position = Self.cropHandlePosition(handle, rect: rect, centre: centre, degrees: angle)
-            let reach: CGFloat = handle.isCorner ? 15 : 12
-            if abs(point.x - position.x) <= reach + 4, abs(point.y - position.y) <= reach + 4 {
-                return .openHand
-            }
+
+        // Handles first, through the SAME function that decides where the hit
+        // boxes are — see cropHandle(at:rect:angle:).
+        //
+        // ⚠️ These used to all return `.openHand`, and that was the report:
+        // *„kada hoću da suzim krop tu je ruka i to me je bunilo jer ruka
+        // treba da bude kada pomeraš krop a ne kada ga sužavaš ili širiš"*.
+        // The hand is the MOVE cursor and it belongs to the inside of the
+        // frame only; a side says which way that side goes.
+        if let handle = Self.cropHandle(at: point, rect: rect, angle: angle) {
+            return Self.resizeCursor(alongDegrees:
+                Self.cropResizeDegrees(handle, angle: angle,
+                                       halfWidth: rect.width / 2,
+                                       halfHeight: rect.height / 2))
         }
 
         if Self.cropFramePath(rect, degrees: angle).contains(point) {
@@ -10020,6 +10488,36 @@ struct DevelopView: View {
         }
 
         return Self.rotateCursor(at: point, around: centre)
+    }
+
+    /// The two-by-two rule-of-thirds lines inside a crop frame, turned with it.
+    ///
+    /// Built in the frame's OWN space and mapped through the same
+    /// `cropFramePoint` the border and the handles use, so at any angle the
+    /// grid, the outline and the handles are one drawing rather than three
+    /// that agree at zero degrees.
+    private static func cropThirdsPath(_ rect: CGRect, degrees: Double) -> Path {
+        let centre = CGPoint(x: rect.midX, y: rect.midY)
+        let halfWidth = rect.width / 2
+        let halfHeight = rect.height / 2
+
+        var path = Path()
+        for step in 1...2 {
+            let fraction = Double(step) / 3
+
+            let x = -halfWidth + rect.width * fraction
+            path.move(to: cropFramePoint(CGPoint(x: x, y: -halfHeight),
+                                         centre: centre, degrees: degrees))
+            path.addLine(to: cropFramePoint(CGPoint(x: x, y: halfHeight),
+                                            centre: centre, degrees: degrees))
+
+            let y = -halfHeight + rect.height * fraction
+            path.move(to: cropFramePoint(CGPoint(x: -halfWidth, y: y),
+                                         centre: centre, degrees: degrees))
+            path.addLine(to: cropFramePoint(CGPoint(x: halfWidth, y: y),
+                                            centre: centre, degrees: degrees))
+        }
+        return path
     }
 
     /// Where a handle sits, in the overlay's coordinates. Shared by the handle
@@ -10182,8 +10680,30 @@ struct DevelopView: View {
         // ONLY narrowing and widening, never rotation. Being declared last in
         // the ZStack is what makes that hold — the rotation zone underneath
         // covers these same points and loses them.
-        let hitWidth = max(size.width, handle.isCorner ? 30 : 24)
-        let hitHeight = max(size.height, handle.isCorner ? 30 : 24)
+        // ⚠️ AN EDGE BAND IS AS LONG AS ITS EDGE, not a box around the bar.
+        //
+        // *„da se aktivira uvek kada je cursor na linijama"* — and the cursor
+        // could not honour that while only the middle of a side could actually
+        // be pressed: showing resize arrows over a line that moves the whole
+        // frame when pressed is exactly the disagreement this file warns
+        // about twice. So the reach grew to match the drawing, and
+        // `cropHandle(at:rect:angle:)` measures the same two constants.
+        //
+        // The bands run INTO the corners; the corner boxes are declared after
+        // them in the ZStack and take that overlap back. See CropHandle.
+        let hitWidth: CGFloat
+        let hitHeight: CGFloat
+        switch handle {
+        case .top, .bottom:
+            hitWidth = max(size.width, rect.width)
+            hitHeight = CropHandle.edgeReach * 2
+        case .left, .right:
+            hitWidth = CropHandle.edgeReach * 2
+            hitHeight = max(size.height, rect.height)
+        default:
+            hitWidth = max(size.width, CropHandle.cornerReach * 2)
+            hitHeight = max(size.height, CropHandle.cornerReach * 2)
+        }
 
         return Capsule()
             .fill(Color.white)
@@ -10201,8 +10721,16 @@ struct DevelopView: View {
             .position(position)
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.cropOverlaySpace))
-                    .onChanged { value in resizeCrop(handle, by: value.translation, frame: frame) }
-                    .onEnded { _ in dragStartCrop = nil }
+                    .onChanged { value in
+                        if activeCropHandle != handle {
+                            activeCropHandle = handle
+                        }
+                        resizeCrop(handle, by: value.translation, frame: frame)
+                    }
+                    .onEnded { _ in
+                        dragStartCrop = nil
+                        activeCropHandle = nil
+                    }
             )
     }
 
@@ -12321,15 +12849,20 @@ struct DevelopView: View {
         VStack(alignment: .leading, spacing: 6) {
             sectionTitle("Histogram")
 
-            HStack(alignment: .bottom, spacing: 1.5) {
-                if histogramBins.isEmpty {
-                    Spacer(minLength: 0)
-                } else {
-                    ForEach(histogramBins.indices, id: \.self) { index in
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(AppColors.muted.opacity(0.85))
-                            .frame(maxWidth: .infinity)
-                            .frame(height: max(1.5, histogramBins[index] * histogramHeight))
+            // Read through the reader, like the picture — the bins arrive on
+            // the same cadence the frames do, and the panel around this must
+            // not be rebuilt by them. See PreviewImageState.
+            HistogramReader(state: previewState) { bins in
+                HStack(alignment: .bottom, spacing: 1.5) {
+                    if bins.isEmpty {
+                        Spacer(minLength: 0)
+                    } else {
+                        ForEach(bins.indices, id: \.self) { index in
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(AppColors.muted.opacity(0.85))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: max(1.5, bins[index] * histogramHeight))
+                        }
                     }
                 }
             }
@@ -15510,6 +16043,11 @@ struct DevelopView: View {
         }
 
         if !created.isEmpty {
+            // ShowGrid keeps its own list and never re-reads the folder, so
+            // without this the copies exist on disk, show in this strip, and
+            // are gone the next time the editor is opened from the grid —
+            // which is exactly how it was reported.
+            PhotoFileChangeBroadcast.added(created, from: fileChangeSender)
             // Select what was just made, but do NOT open it. The client is
             // looking at a photo they were working on; moving the preview
             // off it would take that away as a side effect of making a
@@ -15623,6 +16161,9 @@ struct DevelopView: View {
         for url in removed {
             filmstripThumbnails.removeValue(forKey: url)
         }
+        // The grid is looking at the same folder and does not re-read it —
+        // without this it keeps drawing tiles for files that are in the Trash.
+        PhotoFileChangeBroadcast.removed(Array(removed), from: fileChangeSender)
         if let anchor = selectionAnchor, removed.contains(anchor) {
             selectionAnchor = nil
         }
@@ -16001,6 +16542,12 @@ struct DevelopView: View {
         activeSelection = nil
         activeSelectionDrawPoints.points = []
         selectedLayerID = nil
+        // Outlines are pictures of the PREVIOUS photo's mattes, keyed by layer
+        // id, and nothing ever took them out again — so a session spent moving
+        // through a folder left one full-size image per layer of every photo
+        // visited sitting in memory. They are rebuilt in a few milliseconds
+        // from the matte when they are next needed.
+        layerOutlineCache = [:]
         // A Remove mask describes PIXELS of the previous photo — the one
         // piece of ephemeral state here that would be actively dangerous
         // to keep (erasing "the people" at coordinates taken from a

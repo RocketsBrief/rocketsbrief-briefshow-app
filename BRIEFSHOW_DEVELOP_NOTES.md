@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 5. septembar 2026 (v11.7, objavljen).
+Beleška za nastavak rada. Poslednja izmena: 6. septembar 2026 (v11.9, objavljen).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -275,6 +275,45 @@ lično je — pitaj klijenta pre nego što uđe u build.
 
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 6. septembar 2026, verzija 11.9 (OBJAVLJENA)
+
+**Isporučeno i gore na GitHub-u**: `v11.9`, oba paketa, `Latest`, tag na
+`ac33c82`. Detalji: **KORAK 139**.
+
+#### Šta je urađeno 6. septembra
+
+| | |
+|---|---|
+| 132–135 | kartica „mora update", Sync po kontroli, tri portretna dugmeta, četkica uvek u ruci |
+| 136–138 | Texture Clean Up dodat, izmeren, pa **povučen** na klijentov zahtev; Clean Up dugmad 30% veća |
+| 139 | **RELEASE v11.9** |
+| **140** | **slike su NESTAJALE** — grid i Create drže dve liste i nijedna ne čita folder ponovo |
+| **141** | **crop je lagovao** jer je `pendingCrop` obarao ceo editor; isto popravljeno i za sliku u kanvasu |
+| 142 | crop: rešetka trećina, kursori sa strelicama, cela ivica hvata |
+| 143 | performanse: tri hipoteze izmerene i odbačene, dva keša bez granice zatvorena |
+
+#### ⚠️ PRVO ZA SLEDEĆU SESIJU
+
+1. **Klijent treba da PROBA 140–142 na ekranu.** Ništa od toga nije viđeno
+   ovde — nema dozvole za snimanje ekrana. Konkretno: da li duplikati sad
+   preživljavaju odlazak u grid i nazad, da li se ivica crop-a hvata celom
+   dužinom, i da li su kursori oni koje je tražio.
+2. **Ako lag POSTOJI i dalje — meriti, ne nagađati.** Tačan postupak je
+   zapisan na kraju KORAKA 143 (`sample`, `footprint`, veličina foldera).
+3. **I dalje se čeka neutralan izvoz `C4S_9331.NEF`-a iz Lightroom-a** sa svim
+   slajderima na nuli. Traženo 5.09, provereno 6.09 — nije stiglo. Bez toga
+   kalibracija stoji; v. odeljak od 5. septembra ispod.
+
+#### Otvoreno, nepromenjeno
+
+- **`latest_version` u BriefControl-u diže klijent sam** — dok ne digne na
+  11.9, niko ne dobija karticu „mora update".
+- **`v11.0` se NE SME brisati** — ugrađeno preuzimanje SD-a gađa njegov asset.
+- Veliki paket (2,09 GB) nije nigde **pokrenut**, Intel nije potvrđen na pravoj
+  mašini od v11.0 (KORAK 106).
+
+---
 
 ### GDE SMO STALI — 5. septembar 2026, verzija 11.7 (OBJAVLJENA)
 
@@ -15263,3 +15302,309 @@ njegov asset.
 
 ⚠️ Veliki paket nije **pokrenut** nigde, i Intel nije potvrđen na pravoj mašini
 od v11.0 (KORAK 106). To se ovim release-om nije promenilo.
+
+---
+
+## KORAK 140 — slike koje NESTANU: dve liste koje se nikad ne pitaju (6. septembar 2026, druga sesija)
+
+Klijent: *„kada pravi duplikate ili odradim mono background ili mono subject ili
+youthify, i posle kliknem na grid i vratim se — tih slika više nema!!"*
+
+Ovo je bio **gubitak rada na ekranu**, ne gubitak fajla, i zato je uzeto prvo.
+
+### Uzrok — nađen u kodu, ne pretpostavljen
+
+Dve liste fotografija, potpuno odvojene, i **nijedna ne čita folder ponovo**:
+
+- `PhotoShowSheet.photoURLs` (grid) puni se **samo** iz
+  `loadImages(inFolder:)`, a to se poziva iz `.onChange(of: selectedFolderURL)`
+  — dakle isključivo kad se promeni IZBOR foldera. Fajl koji se pojavi u
+  folderu koji je već otvoren ne vidi niko.
+- `DevelopView.photoURLs` je `@State` zasejan **jednom**, iz onoga što mu je
+  grid dodao.
+
+Duplikat napravljen u Create-u upisivao se u Create-ovu listu i nigde više.
+Komentar iznad tog `@State`-a je tvrdio suprotno — *„A window that is reopened
+later is built fresh from the folder"* — i to je bila **netačna
+pretpostavka**: prozor se pravi iz GRID-ove liste, a ona je stara. Zato je
+duplikat nestajao tačno pri sledećem otvaranju Create-a.
+
+⚠️ **Fajl je sve vreme bio na disku.** Nije imao kako da se vrati u listu.
+
+### Popravka
+
+`PhotoFileChangeBroadcast` u `Develop.swift` — dve notifikacije
+(`photoFilesAdded`, `photoFilesRemoved`) i jedan `insertingAddedPhotos`, koji
+ubacuje novi fajl **po imenu**, dakle odmah pored fotografije od koje je
+nastao, a ne na kraj od dvesta.
+
+Oba prozora i šalju i slušaju, i svaki **ignoriše svoje sopstvene poruke**
+(`object` je token po prozoru) — onaj ko je izmenu napravio već se ažurirao, a
+ponovna primena bi mu pomerila selekciju i skrol.
+
+Pokriveno u oba smera i za oba pravca izmene:
+
+| odakle | šta | ko sazna |
+|---|---|---|
+| Create → `duplicatePhotos` | duplikat, „Duplicate & BW" | grid |
+| grid → `duplicateGridPhotos` | isto | Create |
+| Create → `trashPhotos` | u korpu | grid |
+| grid → `trashPhotos` | u korpu | Create |
+
+Brisanje je dodato u istom zahvatu, iako nije prijavljeno: to je isti mehanizam
+i suprotna greška — grid je crtao pločice za fajlove kojih više nema.
+
+### Šta OVDE nije bilo pokvareno
+
+Recepti (Youthify / Subject Mono / Mono Background) i flatten **jesu** trajni:
+`FlattenedImageStore` piše TIFF na disk i upisuje snapshot u UserDefaults, a
+`sourceURL` ga nalazi pri svakom sledećem otvaranju. Provereno čitanjem koda i
+stanja na disku — 15 spljoštenih fajlova, svi na mestu. Ono što je klijent
+video kao „nema ih" na tim slikama je najverovatnije isti duplikat-problem
+(recepti se rade i na kopijama), ali **to nije potvrđeno** i vredi ga pitati.
+
+---
+
+## KORAK 141 — zašto je crop lagovao: jedan `@State` je obarao ceo editor (6. septembar 2026)
+
+Klijent: *„Crop laguje non stop, znači kad uđem da kropiram slike laguje samo
+tako!"*
+
+### Uzrok
+
+`pendingCrop` je bio običan `@State` na `DevelopView`. Upisuje se na **svaki
+frame** vučenja ručke — sto dvadeset puta u sekundi. Svaki taj upis poništava
+`DevelopView.body`, a to je: slika, **ceo panel** (svaka sekcija, svaki slajder,
+svako dugme) i **ceo filmstrip**.
+
+Ni jedno od toga ne može da izgleda drugačije zato što se ručka pomerila —
+render namerno ignoriše crop dok je alat otvoren (to je već zapisano na mestu
+gde je uklonjen `onChange(of: pendingCrop)`). Dakle sav taj posao se radio i
+bacao, jednom po frame-u, celo vreme vučenja.
+
+### Popravka
+
+`CropDragState` — `ObservableObject` koji ovaj view **ne posmatra** (`@State`
+nad referencom ga drži, ne pretplaćuje se). Jedini koji ga posmatra je
+`CropStateReader`, oko samog overlay-a. Ime `pendingCrop` je zadržano kao
+računata osobina nad tim objektom, pa je **svih trideset mesta koja ga koriste
+netaknuto** i nijedno ne može slučajno da se vrati na spori put.
+
+### Isto to, ali veće: slika u kanvasu
+
+Kad je uzrok bio jasan, isti obrazac se video na mestu koje radi UVEK, ne samo u
+crop-u: `displayedImage` i `histogramBins` su takođe `@State` na istom view-u, a
+`renderNow` ih upisuje **na svakih ~20 ms dok se bilo koji slajder pomera**.
+Dakle ceo panel i filmstrip su se preračunavali pedeset puta u sekundi da bi se
+promenila jedna slika.
+
+Sad idu kroz `PreviewImageState` + `PreviewImageReader` / `HistogramReader`.
+
+⚠️ **Ovo nije nov trik u ovom fajlu — fajl ga već koristi dvaput**, i to
+doslovno iz istog razloga: prsten četkice i potez patch-a se čitaju sa
+posmatranog objekta *„so that setting it does not touch the parent's body"*.
+KORAK 25 je bio tačno taj lag, sa četkicom.
+
+⚠️ **Nije izmereno u milisekundama.** Mehanizam je siguran (upis u `@State`
+poništava body view-a koji ga drži) i popravka je ista koja je ovde već dvaput
+radila, ali koliko to vredi u brojkama na klijentovoj mašini — ne znam, jer
+nema dozvole za snimanje ekrana ovde i editor se ne može voziti. To je prvo što
+treba izmeriti kad bude prilike.
+
+---
+
+## KORAK 142 — crop: rešetka, i ruka koja je stajala na pogrešnom mestu (6. septembar 2026)
+
+Tri stvari iz jednog zahteva.
+
+### 1. Rešetka
+
+*„crop mora da ima grid"* — pravilo trećina, unutar okvira, i **rotira se sa
+njim**. `cropThirdsPath` gradi linije u sopstvenom prostoru okvira i provlači
+ih kroz isti `cropFramePoint` koji koriste ivica i ručke, pa rešetka ne može da
+stoji pod drugim uglom od okvira kome pripada. Bela na 45%, debljina 0,5 —
+vodilja preko fotografije, ne takmac slici.
+
+### 2. Kursori — ruka je bila na ručkama
+
+*„kada hoću da suzim krop tu je ruka i to me je bunilo jer ruka treba da bude
+kada pomeraš krop a ne kada ga sužavaš ili širiš"*.
+
+Tačno tako je i bilo: `cropCursor` je vraćao `.openHand` i za ručke i za
+unutrašnjost okvira. Sad:
+
+| gde | kursor |
+|---|---|
+| leva/desna ivica | vodoravna linija sa strelicama levo-desno |
+| gornja/donja ivica | uspravna linija sa strelicama gore-dole |
+| ćošak | dijagonalna linija sa strelicama |
+| unutar okvira | ruka (pomeranje) — jedino mesto gde ostaje |
+| van okvira | rotacija — **nije dirano** |
+
+Crtano, ne uzeto iz sistema: macOS nema dijagonalni kursor u javnom API-ju.
+Jedan crtež (`makeResizeCursorImage`) služi za sva tri slučaja i za svaki ugao
+između — osa je parametar, pa **zarotiran okvir dobija zarotiran kursor**, a ne
+uspravnu ikonicu na nagnutoj ivici. Tabela od 24 slike na po 15°, napravljena
+jednom, isto kao `rotateCursors` — `NSCursor(image:)` rasterizuje, a ovaj
+kursor se postavlja na svaki pomeraj miša.
+
+Isti izgled kao rotacioni pored njega: 14 pt, 2× bitmapa, čisto belo bez
+crne ivice. To je izbor koji je klijent već napravio za ovaj alat, i dva
+kursora u istom overlay-u po različitim pravilima čitaju se kao dva alata.
+
+⚠️ **Ćošak ide po SVOJOJ dijagonali**, ne po fiksnih 45° — na 2:1 kropu
+fiksnih 45° pokazuje pravac u kom se ćošak ne kreće.
+
+### 3. Cela ivica hvata, ne samo sredina
+
+*„da se aktivira uvek kada je cursor na linijama"*. To se nije moglo ispuniti
+samo kursorom: pokazivati strelice nad linijom koja pri pritisku POMERA ceo
+okvir je tačno ono neslaganje na koje ovaj fajl upozorava dvaput.
+
+Zato je i **pogodna površina** narasla: traka ivice je sad duga koliko i ivica
+(ranije kutija 24 pt oko sredine). Trake ulaze u ćoškove, pa su ćoškovi
+premešteni da se crtaju POSLE njih — u `ZStack`-u preklapanje dobija ono što je
+deklarisano poslednje, a ćošak mora da pobedi, jer je to i redosled kojim
+kursor pita.
+
+**Jedna funkcija odgovara na oba pitanja** — `cropHandle(at:rect:angle:)`.
+Kursor i pritisak više ne mogu da se raziđu jer čitaju iste dve konstante
+(`cornerReach` 15, `edgeReach` 12) iz istog mesta.
+
+### Smer vučenja
+
+*„kada vučem desno da ide u levi i gore da ide na dole"* — matematika u
+`resizeCrop` je za ovo **već bila tačna** (desna ivica: `rawWidth =
+start.width + dx`, sidro na levoj; gornja: `rawHeight = start.height - dy`,
+sidro na donjoj). Ono što nije radilo je da se ivica uopšte uhvati osim na
+sredini, a pokazivač je govorio „ruka" — pa je potez pomerao ceo okvir umesto
+da ga suzi. To je popravljeno gore. ⚠️ **Ovo je zaključak iz koda, nije
+potvrđen na ekranu** — vredi da klijent proveri baš to.
+
+### Mereno
+
+`Tools/run-crop-zone-test.py` (nov) izvlači `CropHandle`,
+`cropFrameLocalPoint`, `cropResizeDegrees` i `cropHandle(at:)` **iz Develop.swift
+u trenutku prevođenja** — isto pravilo kao `Tools/skymask.swift`, da harness ne
+može da prođe dok se app pomerila. 19 provera, sve prolaze: cela ivica hvata,
+ćošak pobeđuje ivicu, sredina okvira nije ručka, zarotiran okvir se nalazi na
+zarotiranom mestu, i dve dijagonale nisu ista linija.
+
+Sami crteži kursora su renderovani u PNG i pogledani (ne mogu drugačije — nema
+dozvole za snimanje ekrana): dvoglava strelica, vodoravna / uspravna /
+dijagonalna / nagnuta na 30°.
+
+---
+
+## KORAK 143 — performanse: šta je izmereno i ODBAČENO (6. septembar 2026)
+
+Klijent: *„Kada duže radiš u Create i edituješ slike, on počne da laguje posle 5
+ili 6 slike sve teže i teže… performanse C4S su katastrofalne u odnosu na
+Lightroom."*
+
+⚠️ **Ovaj korak je pola posla.** Uzrok koji je NAĐEN i popravljen je u KORAKU
+141. Ali tri hipoteze koje su izgledale ubedljivo su **izmerene i pale**, i
+zapisane su ovde da ih sledeća sesija ne bi jurila ponovo.
+
+### Zatečeno stanje na klijentovoj mašini, izmereno
+
+| | |
+|---|---|
+| `Flattened/` | **2,0 GB**, 15 fajlova, **svaki 142,8 MB** (nekompresovan 16-bitni TIFF) |
+| `LayerPixels/` | 193 MB; jedan Select People cut-out je **10–13 MB** |
+| `photoEditSettings` | 208 KB, **129 fotografija** |
+
+Svaki recept i svaki duplikat završava flatten-om, dakle svaki od njih dodaje
+143 MB na disk. Zato je prvo osumnjičen taj lanac.
+
+### Hipoteza 1 — sličice se prave iz 143 MB fajla. **PALA.**
+
+    420 px sličica iz spljoštenog TIFF-a     60 ms
+    420 px sličica iz originalnog .NEF-a     69 ms
+
+Nekompresovan TIFF je **brži** izvor od RAW-a. Zaključak iz ranije sesije
+(nekompresovano, da ImageIO može da čita smanjeno pravo iz fajla) stoji i
+potvrđen je nezavisno.
+
+### Hipoteza 2 — mali „sidecar" preview pored spljoštenog fajla. **GORA.**
+
+    420 px iz 2600 px HEIC sidecar-a        200 ms   (naspram 60 ms)
+
+HEIC se ne može jeftino čitati smanjeno. **Ne praviti ovo.**
+
+### Hipoteza 3 — spljoštene slike gomilaju memoriju. **PALA.**
+
+Šest RAW-ova i šest spljoštenih TIFF-ova, puni render jedan za drugim:
+
+    RAW-ovi:            footprint  1006 → 1197 MB   (0,24 s po slici)
+    spljošteni TIFF-ovi: footprint  390 →  391 MB   (1,5 s po slici)
+
+Memorija se **stabilizuje**, ne raste. Ono što se JESTE videlo je da spljoštena
+slika košta 1,5 s naspram 0,24 s — ali to je **jednokratno po fajlu**:
+
+    refine #1 iz CIImage(contentsOf:)   1,09 s
+    refine #2                           0,04 s
+    refine #3                           0,04 s
+
+Dakle: spljoštena fotografija se **sporo otvara jednom**, pa je posle brza. To
+nije oblik koji klijent opisuje.
+
+### Šta je popravljeno pored KORAKA 141
+
+Dva keša koja su rasla bez ikakve granice — sigurna curenja, nađena čitanjem:
+
+- `LayerPixelStore.cache` je bio običan `[String: Data]` iz koga **ništa nikad
+  nije izlazilo**. Blobovi su 10–13 MB, dva po fotografiji. Sad `NSCache` sa
+  `totalCostLimit` 256 MB i troškom po bajtu (bez toga NSCache broji objekte,
+  pa 13 MB teži isto koliko 200 KB). NSCache i vraća memoriju kad je sistem
+  traži, što rečnik ne radi nikad.
+- `layerOutlineCache` se **nije praznio pri promeni fotografije**, a to su slike
+  matte-ova prethodne fotografije. Sad se prazni u `selectPhoto`; ponovo se
+  gradi za nekoliko milisekundi.
+
+### ⚠️ ŠTA JE SLEDEĆE, i kako to izmeriti
+
+Ako lag i dalje postoji posle ovoga, **ne nagađati dalje** — sledeće što se radi
+je merenje na klijentovoj mašini, jer ovde nema kako:
+
+1. Pustiti Release build, raditi normalno 15 minuta, pa `sample "C4S Suite" 10`
+   i pogledati gde stoji glavna nit. Ako je u SwiftUI-jevom `body`, ostatak
+   priče je isti kao KORAK 141 i rešava se na isti način.
+2. `footprint -p <pid>` pre i posle šest fotografija. Ako raste linearno,
+   traži se još jedan keš bez granice; ako ne raste, memorija nije uzrok.
+3. Pogledati koliko je fotografija u folderu. Filmstrip crta kroz `LazyHStack`,
+   ali `PhotoEditStore.hasEdits` se zove po ćeliji po prolazu, a rečnik ima 129
+   ulaza i raste sa istorijom klijenta.
+
+**Neizmereno ostaje i ovo:** Lightroom ne radi puni demozaik po potezu slajdera
+— radi na malom proxy-ju i tek na kraju na punoj rezoluciji. Ovaj app radi isto
+(`loadPreviewBaseImage` 2600 px, pa refine), ali granice nisu poređene sa
+Lightroom-ovim. To je posao za sebe i traži merenje, ne mišljenje.
+
+### ⚠️ KVALITET SLIKE — provereno diff-om, ne tvrdnjom
+
+Klijent, usred ovog posla: *„nemoj samo da izgubimo kvalitet slika! kvalitet
+slika zaključan na original MAX quality i resolution!"*
+
+Ništa u lancu slike nije dirnuto, i to je provereno mehanički, ne rečima:
+
+- `DevelopSDInpaint.swift`, `DevelopLaMaInpaint.swift`, `DevelopInpaint.swift` —
+  **nisu ni otvoreni**. Zaključani odeljak „AI MODELI" stoji netaknut.
+- Ni jedan red koji pominje `previewMax`, `maxPixelSize`, `imageSide`,
+  `scaleFactor`, `isDraftModeEnabled`, `RGBA16`, broj koraka ili bilo koju
+  rezoluciju **nije izmenjen** — provereno `git diff`-om nad tim izrazima.
+  Jedini pogoci su tekst ovih beleški i tabela KURSORA (24 slike po 15°, to su
+  pokazivači miša, ne fotografija).
+- Svi obrisani redovi u `Develop.swift` su: keš rečnik, tri deklaracije
+  `@State`, stari kod za kursor i pogodne zone crop-a, i histogram view.
+  Nijedan iz dekodiranja, rendera, refine-a, flatten-a ili exporta.
+- `PreviewImageState` **ne pravi novu sliku** — prenosi tačno onaj `NSImage`
+  koji je `renderNow`/`refinedRenderNow` već napravio. Promenjeno je samo KO
+  se osvežava kad slika stigne, ne šta je u njoj.
+- `LayerPixelStore` keš vraća bajtove fajla; kad se iz keša izbaci, čita isti
+  fajl ponovo. **Bajt u bajt isto.**
+
+⚠️ I obrnuto — jedina ideja u ovoj sesiji koja BI koštala kvaliteta (mali
+„sidecar" preview umesto punog fajla) je izmerena, ispala je i sporija, i
+**nije napravljena**. Vidi hipotezu 2 iznad. Ako je neko ikad ponovo predloži,
+odgovor je već tu.

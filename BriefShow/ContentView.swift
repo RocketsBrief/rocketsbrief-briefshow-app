@@ -21113,6 +21113,10 @@ struct PhotoShowSheet: View {
 
     @State private var photoURLs: [URL] = []
     @State private var gridThumbnails: [URL: NSImage] = [:]
+
+    /// Identity for this window's own file-change posts, so it can ignore
+    /// them coming back — see PhotoFileChangeBroadcast.
+    @State private var fileChangeSender = PhotoFileChangeSender()
     // How wide the folder tree on the left is. @AppStorage, so a client who
     // works with deeply nested job folders sets it once and it is still that
     // wide next launch — the whole point of the request was that names like
@@ -21620,6 +21624,34 @@ struct PhotoShowSheet: View {
                 return
             }
             refreshEditedThumbnails(changed)
+        }
+        // A duplicate made in Create. This grid scans a folder ONLY when the
+        // folder selection changes, so a file written into the folder it is
+        // already showing never appeared — and since Create is rebuilt from
+        // THIS list every time it opens, the copy vanished from the screen on
+        // the next open. See PhotoFileChangeBroadcast.
+        .onReceive(NotificationCenter.default.publisher(for: .photoFilesAdded)) { note in
+            guard (note.object as AnyObject?) !== fileChangeSender else { return }
+            let added = PhotoFileChangeBroadcast.urls(in: note)
+                .filter { !photoURLs.contains($0) }
+            guard !added.isEmpty else { return }
+            photoURLs = insertingAddedPhotos(added, into: photoURLs)
+            applyPersistedLabels(for: photoURLs)
+            loadGridThumbnails(for: added)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .photoFilesRemoved)) { note in
+            guard (note.object as AnyObject?) !== fileChangeSender else { return }
+            let gone = Set(PhotoFileChangeBroadcast.urls(in: note))
+            guard !gone.isEmpty else { return }
+            photoURLs.removeAll { gone.contains($0) }
+            removeFromSelection(gone)
+            for url in gone {
+                gridThumbnails.removeValue(forKey: url)
+                loupeImages.removeValue(forKey: url)
+                loupeImagePixelSizes.removeValue(forKey: url)
+                likedURLs.remove(url)
+                ratings.removeValue(forKey: url)
+            }
         }
         // A camera that is switched on opens the import window by itself —
         // that is the behaviour being matched, and it is the whole point: plug
@@ -23038,6 +23070,7 @@ struct PhotoShowSheet: View {
         }
 
         var jobs: [PhotoBakeService.BakeJob] = []
+        var created: [URL] = []
         var failures = 0
 
         for target in targets {
@@ -23056,7 +23089,12 @@ struct PhotoShowSheet: View {
             } else {
                 photoURLs.append(copyURL)
             }
+            created.append(copyURL)
         }
+
+        // An open Create window is showing the same folder from its own list
+        // and never re-reads it — see PhotoFileChangeBroadcast.
+        PhotoFileChangeBroadcast.added(created, from: fileChangeSender)
 
         gridActionStatus = "Duplicating…"
 
@@ -23100,6 +23138,9 @@ struct PhotoShowSheet: View {
             likedURLs.remove(url)
             ratings.removeValue(forKey: url)
         }
+
+        // An open Create window holds its own copy of this list.
+        PhotoFileChangeBroadcast.removed(urls, from: fileChangeSender)
     }
 
     // Called from FolderTreeSidebar's "Delete" — routed back through a

@@ -15187,3 +15187,79 @@ odeljak „AI MODELI I NJIHOVA PODEŠAVANJA" stoji netaknut.
 
 ⚠️ Neprovereno na ekranu: veličina dugmadi (nema dozvole za snimanje ekrana
 ovde). Brojevi su 12 → 15,6 px ikonica i 11 → 14,3 px tekst.
+
+---
+
+## KORAK 139 — RELEASE v11.9: oba paketa, univerzalno, objavljeno (6. septembar 2026)
+
+Isporučeno istim postupkom kao 11.7 — `Tools/make-release.py`, koja odbija da
+isporuči ako ijedna od osam provera **po paketu** padne.
+
+    python3 Tools/make-release.py 11.9
+
+Verzija podignuta 11.7 → **11.9**, build 25 → 26. Label u panelu čita
+`CFBundleShortVersionString`, dakle sam od sebe piše **„C4S Suite v11.9"** —
+isti broj iz kog je isečen tag (KORAK 74).
+
+### Provere na PAKETIMA — sve prošle
+
+| provera | mali | veliki |
+|---|---|---|
+| `lipo -archs` | **arm64 x86_64** | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** | 13.0 |
+| verzija / build | **11.9 / 26** | 11.9 / 26 |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` | isto |
+| `LaMa.mlmodelc` | da | da |
+| `SD15-Inpainting` (`isComplete`) | ne, namerno | **YES** |
+| lične fotografije | **0** | **0** |
+| `codesign -v` | ok | **ok posle ponovnog potpisa** |
+| zip | 114.839.118 B | 2.087.167.298 B |
+
+Rezerva do GitHub-ovog limita od 2 GiB: **60 MB**.
+
+### Dva paketa — i to je odgovor na klijentovu napomenu, ne izbor
+
+Klijent: *„već instalirani C4S apps na drugim kompjuterima će dobiti ovaj update
+novi i oni su downloadovali već SD AI model ali neki nisu."* Ta dva zahteva se
+ne mogu ispuniti jednim fajlom, pa isto kao u KORACIMA 116/119/131:
+
+- **`C4S-Suite-11.9.zip` (115 MB)** — postojeće instalacije. Nosi LaMu, ne nosi
+  SD; ko je SD već preuzeo, zadržava ga (živi u Application Support, ne u
+  paketu).
+- **`C4S-Suite-11.9-AI-Models.zip` (2,09 GB)** — nov Mac, sve u jednom.
+
+### Intel — provereno u kodu, ne pretpostavljeno
+
+`aiRemoval` na `#else` grani (`x86_64`) postavlja UNet-u `computeUnits = .all` —
+Core ML deli posao između diskretne kartice i jezgara, jer Neural Engine-a nema;
+VAE prolazi idu `.cpuAndGPU`. Komentar na tom mestu nosi klijentov raniji zahtev
+doslovno. ⚠️ I dalje važi ono što deljenje NE znači: sistemska memorija se ne
+sabira sa memorijom na kartici.
+
+### ✅ Objavljeno
+
+| asset | bajtova | HTTP |
+|---|---|---|
+| `C4S-Suite-11.9.zip` | 114.839.118 | **200** |
+| `C4S-Suite-11.9-AI-Models.zip` | 2.087.167.298 | **200** |
+
+`content-length` sa GitHub-a je **bajt u bajt** isti kao lokalni fajl — upload
+nije skraćen. Release je `Latest` (provereno preko `releases/latest` → `v11.9`),
+nije draft ni prerelease. Tag `v11.9` je anotiran i pokazuje na **`ac33c82`**
+(grana `briefshow-develop`, pushovano).
+
+- stranica: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.9`
+- direktno (update): `…/releases/download/v11.9/C4S-Suite-11.9.zip`
+- direktno (sve u jednom): `…/releases/download/v11.9/C4S-Suite-11.9-AI-Models.zip`
+
+Upload velikog paketa je trajao **5 min 55 s** — nije zaglavljivanje, i vredi
+znati unapred.
+
+⚠️ **`latest_version` u BriefControl-u diže klijent sam.** Dok ne digne na 11.9,
+niko ne dobija karticu „mora update".
+
+⚠️ **`v11.0` se i dalje NE SME brisati** — ugrađeno preuzimanje SD-a pokazuje na
+njegov asset.
+
+⚠️ Veliki paket nije **pokrenut** nigde, i Intel nije potvrđen na pravoj mašini
+od v11.0 (KORAK 106). To se ovim release-om nije promenilo.

@@ -15608,3 +15608,144 @@ Ništa u lancu slike nije dirnuto, i to je provereno mehanički, ne rečima:
 „sidecar" preview umesto punog fajla) je izmerena, ispala je i sporija, i
 **nije napravljena**. Vidi hipotezu 2 iznad. Ako je neko ikad ponovo predloži,
 odgovor je već tu.
+
+---
+
+## KORAK 144 — 83% svakog frame-a je bilo ponovno dekodiranje ISTOG RAW-a (6. septembar 2026)
+
+Klijent: *„ima li još nešto da se popravi da performanse idu još bolje, da radi
+brže i smoothier"* — i, ranije istog dana, *„performanse C4S su katastrofalne u
+odnosu na Lightroom… Lightroom uopšte ne laguje"*.
+
+⚠️ **Ovo je najveći pojedinačni broj u editoru i nigde nije bio izmeren.**
+
+### Izmereno, na klijentovom `C4S_9331.NEF`-u
+
+Jedan frame preview-a na 2600 px, kroz realan grade:
+
+    1600 px   28,6 ms   35 fps
+    2000 px   34,8 ms   29 fps
+    2600 px   46,7 ms   21 fps      ← ovo je ono što app radi
+    3000 px   56,1 ms   18 fps
+
+Throttle traži frame na svakih **20 ms**. Jedan frame je trajao **46**. Ruka je
+brža od slike, i to je ceo osećaj „ne prati".
+
+Pa razdvojeno, gde odlazi vreme:
+
+    samo demozaik, bez ijednog filtera        37,4 ms
+    grade preko VEĆ dekodirane osnove         13,3 ms
+    oboje zajedno — kako je radilo            45,2 ms   22 fps
+    sa zadržanim demozaikom                   11,4 ms   88 fps
+
+Dakle **83% svakog frame-a je bilo ponovno demozaikovanje istog RAW-a u iste
+piksele**, pedeset puta u sekundi, dok klijent vuče Contrast.
+
+### Popravka
+
+`PhotoEditRenderer.cachedRAWDecode` — demozaik se zadržava
+(`insertingIntermediate(cache: true)`, dakle u Core Image-ovom sopstvenom
+float međurezultatu) i ponovo koristi dok se ne promeni nešto što ga zaista
+menja.
+
+`render` gura u `CIRAWFilter` **tačno tri stvari**: `exposure`,
+`neutralTemperature`, `neutralTint`. Ključ keša je instanca filtera plus te tri
+vrednosti. Znači: Temperature, Tint i Exposure demozaikuju iznova kao i pre —
+moraju, oni menjaju sam dekod — a **sve ostalo u panelu** (Contrast, Highlights,
+Shadows, Blacks, Whites, Saturation, Vibrance, kriva, mikser, Texture, Clarity,
+Sharpness, vinjeta, maske, slojevi) sad ide preko zadržanog dekoda.
+
+⚠️ **Samo preview.** `reusingRAWDecode` je `false` svuda drugde — pun refine,
+export, brisanja, flatten i sve sličice renderuju **tačno kao pre**. Pravilo sa
+vrha ovog dokumenta nije ni dotaknuto.
+
+⚠️ **Identitet filtera je `weak` i poredi se sa `===`, ne preko adrese.**
+Oslobođena adresa se dodeljuje sledećem objektu, pa bi ključ napravljen od
+adrese mogao da posluži **dekod jedne fotografije za drugu**. Slaba referenca
+prosto postane nil.
+
+Pušta se u `loadImages(for:)`, ne u `selectPhoto` — kroz `loadImages` prolazi
+svaki put kad se osnovna slika menja: promena fotografije, flatten, unflatten,
+ponovno učitavanje posle bake-a.
+
+### Kvalitet — mereno bajt po bajt
+
+Ista osnova, ista rezolucija, isti lanac. Poređeno sa starim putem:
+**nijedan piksel se ne pomera za više od 1/255**, a razlikuje se 2,7% bajtova —
+to je zaokruživanje u pokretnom zarezu, ispod onoga što 8-bitni ekran može da
+prikaže. `insertingIntermediate` ne zaokružuje na 8 bita; drži CI-jev float.
+
+### Mereno harness-om
+
+`Tools/run-preview-decode-test.py` (nov) izvlači `cachedRAWDecode` i
+`releaseCachedRAWDecode` **iz Develop.swift u trenutku prevođenja**. Osam
+provera, sve prolaze, i to redom po važnosti: slika se ne menja; ista tri broja
+ponovo koriste dekod; **druga** Exposure/Temperature/Tint ga NE koriste; filter
+druge fotografije ne dobija ovaj dekod; puštanje ga zaista pušta; frame je bar
+dvaput jeftiniji.
+
+---
+
+## KORAK 145 — sličice: jedna po jedna, na jednom jezgru (6. septembar 2026)
+
+Klijent: *„ovaj dole thumbnails treba mu dosta vremena da pokaže slike u
+filmstripu??"*
+
+### Izmereno
+
+Jedna sličica od 384 px kroz tačno taj put, na klijentovim `.NEF`-ovima:
+
+    serijski (kako je bilo)   185 ms po sličici
+    4 odjednom                 67 ms po sličici    2,8x
+    6 odjednom                 63 ms                — nema više šta da se dobije
+
+Na folderu od dvesta slika to je **37 s naspram 13 s**.
+
+### Popravka
+
+`filmstripThumbnailQueue` je sad `OperationQueue` sa
+`maxConcurrentOperationCount = 4`. Isto i `loadGridThumbnails` u
+`ContentView.swift`, koji je bio jedna `for` petlja na jednoj pozadinskoj niti.
+
+⚠️ **Prioritet nije diran, i to je namerno.** Ostaje `.utility`, da sličice
+nikad ne takmiče sa preview render-om. I to je izmereno: `.userInitiated` i
+`.default` završe za isto vreme (66 i 64 ms), pa nema šta da se dobije
+podizanjem, a ima šta da se izgubi.
+
+⚠️ **`OperationQueue`, ne konkurentni `DispatchQueue` sa semaforom.** Dvesta
+`async` blokova koji čekaju na semaforu je dvesta niti koje GCD mora da nađe, a
+odustaje na 64. OperationQueue drži zaostatak kao operacije, ne kao blokirane
+niti.
+
+Grid dobija i otkazivanje: otvaranje drugog foldera otkazuje onaj koji se još
+puni. Ranije je klijent koji prođe kroz pet foldera ostavljao pet dekodiranja da
+se takmiče, a folder koji je zaista na ekranu bio je peti u redu.
+
+---
+
+## KORAK 146 — još dve merene hipoteze koje su PALE (6. septembar 2026)
+
+Da se ne jure ponovo.
+
+### `PhotoEditStore.setSettings` kopira ceo rečnik na svaki render
+
+Poziva se iz `renderNow`, dakle ~50 puta u sekundi, i radi
+`var all = allSettings` … `allSettings = all`. Izgleda kao klasična greška koja
+raste sa istorijom klijenta (sad 129 fotografija). Izmereno:
+
+    129 fotografija    9,3 µs po pozivu   → 0,5 ms/s pri 50 Hz
+    400                18,4 µs            → 0,9 ms/s
+    1000               30,9 µs            → 1,5 ms/s
+
+**Nije uzrok.** Ostavljeno kako jeste — izmena u mestu bi uštedela pola
+milisekunde po sekundi i unela zaključavanje tamo gde ga sada nema.
+
+### `key(for:)` radi `stat()` na svaki poziv
+
+`resourceValues(forKeys: [.fileSizeKey])`, a `hasEdits` se zove po ćeliji
+filmstrip-a po prolazu. Izmereno: **1,5 µs** po pozivu. **Nije uzrok.**
+
+### Šta OSTAJE neizmereno
+
+Ako lag posle svega ovoga i dalje raste tokom rada, sledeći korak je i dalje
+merenje na klijentovoj mašini — postupak je na kraju KORAKA 143.

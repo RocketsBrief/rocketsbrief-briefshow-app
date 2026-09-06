@@ -27,7 +27,7 @@ WANTED = [
 
 def extract(text: str, kind: str, name: str) -> str:
     """Everything from a declaration's line to its matching closing brace."""
-    pattern = rf"^(\s*)(?:private |fileprivate |internal )?(?:static )?{kind} {name}\b"
+    pattern = rf"^[ \t]*(?:private |fileprivate |internal )?(?:static )?{kind} {name}\b"
     match = re.search(pattern, text, re.MULTILINE)
     if not match:
         sys.exit(f"could not find {kind} {name} in {SOURCE.name}")

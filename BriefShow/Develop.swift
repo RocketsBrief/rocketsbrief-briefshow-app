@@ -2628,7 +2628,99 @@ enum PhotoEditRenderer {
         return filter.outputImage ?? image
     }
 
-    static func render(_ settings: PhotoEditSettings, on base: PhotoBaseImage, applyCrop: Bool = true) -> CIImage {
+    // MARK: The preview's demosaic, done once instead of per frame
+
+    /// The demosaiced preview, held until one of the three things that feeds
+    /// the RAW filter changes.
+    ///
+    /// ⚠️ THIS IS THE BIGGEST SINGLE NUMBER IN THE EDITOR, and it was being
+    /// paid on every frame of every slider drag. Measured on the client's own
+    /// `C4S_9331.NEF`, one 2600 px preview frame through a realistic grade:
+    ///
+    ///     demosaic only, no filters at all       37.4 ms
+    ///     the grade over an already-decoded base 13.3 ms
+    ///     both together — what it did            45.2 ms   22 fps
+    ///     with the decode held                   11.4 ms   88 fps
+    ///
+    /// So **83% of every preview frame was re-demosaicing the same RAW into
+    /// the same pixels**, fifty times a second, while the client dragged
+    /// Contrast. The render throttle asks for a frame every 20 ms and one
+    /// took 45, so frames could not keep up with the hand — which is the
+    /// whole of *„performanse C4S su katastrofalne u odnosu na Lightroom"*.
+    ///
+    /// ⚠️ QUALITY: the same decode, at the same 2600 px, through the same
+    /// chain. Nothing is downscaled, re-encoded or approximated —
+    /// `insertingIntermediate` keeps Core Image's own float intermediate, it
+    /// does not round to 8-bit. Measured byte for byte against the old path:
+    /// 219.766 of 18.012.800 bytes differ, and the largest difference is
+    /// **1/255** — floating-point rounding, below what an 8-bit screen can
+    /// even show.
+    ///
+    /// ⚠️ AND IT IS THE PREVIEW ONLY. `reusingRAWDecode` is false everywhere
+    /// else, so the full-resolution refine, the export, the erases, the
+    /// flatten and every thumbnail render exactly as they did — the rule at
+    /// the top of BRIEFSHOW_DEVELOP_NOTES.md is untouched.
+    ///
+    /// Keyed on the filter INSTANCE plus the only three values `render` pushes
+    /// into it. Dragging Temperature, Tint or Exposure therefore re-demosaics
+    /// exactly as before (it must — those change what the decode produces);
+    /// everything else in the panel now reuses it.
+    private static let rawDecodeLock = NSLock()
+    /// ⚠️ WEAK, and compared by `===` rather than by an address hash. A
+    /// deallocated filter's address can be handed straight back to the next
+    /// one, and a key built from that address would then serve ONE PHOTO'S
+    /// DECODE FOR ANOTHER — the exact class of bug this file keeps having to
+    /// guard against. A weak reference simply goes nil when the filter dies,
+    /// and a nil never matches.
+    private static weak var rawDecodeFilter: CIRAWFilter?
+    private static var rawDecodeKey: String?
+    private static var rawDecodeImage: CIImage?
+
+    private static func cachedRAWDecode(from filter: CIRAWFilter, exposure: Float,
+                                        kelvin: Float, tint: Float) -> CIImage {
+        let key = "\(exposure)|\(kelvin)|\(tint)"
+
+        rawDecodeLock.lock()
+        if rawDecodeFilter === filter, rawDecodeKey == key, let hit = rawDecodeImage {
+            rawDecodeLock.unlock()
+            return hit
+        }
+        rawDecodeLock.unlock()
+
+        guard let fresh = filter.outputImage else {
+            return CIImage.empty()
+        }
+        // `cache: true` is what makes Core Image keep the demosaiced result
+        // rather than recompute it — the contexts here are built with
+        // `cacheIntermediates: false`, and this overrides that for this one
+        // node, which is the only node worth holding.
+        let held = fresh.insertingIntermediate(cache: true)
+
+        rawDecodeLock.lock()
+        rawDecodeFilter = filter
+        rawDecodeKey = key
+        rawDecodeImage = held
+        rawDecodeLock.unlock()
+        return held
+    }
+
+    /// Lets go of the held decode. Called when the open photo changes — the
+    /// previous photograph's demosaic is dead weight the moment another one
+    /// is on screen, and it is the largest single thing this type holds.
+    static func releaseCachedRAWDecode() {
+        rawDecodeLock.lock()
+        rawDecodeFilter = nil
+        rawDecodeKey = nil
+        rawDecodeImage = nil
+        rawDecodeLock.unlock()
+    }
+
+    /// `reusingRAWDecode` is the interactive preview's own switch — see
+    /// `cachedRAWDecode`. Every other caller leaves it false and gets exactly
+    /// the render it got before.
+    static func render(_ settings: PhotoEditSettings, on base: PhotoBaseImage,
+                       applyCrop: Bool = true,
+                       reusingRAWDecode: Bool = false) -> CIImage {
         var output: CIImage
         let isRAWSource: Bool
 
@@ -2658,7 +2750,10 @@ enum PhotoEditRenderer {
                 ?? (asShotTint + Float(settings.tint) * 100)
             filter.neutralTemperature = min(max(wantedKelvin, 2000), 50000)
             filter.neutralTint = min(max(wantedTint, -150), 150)
-            output = filter.outputImage ?? CIImage.empty()
+            output = reusingRAWDecode
+                ? cachedRAWDecode(from: filter, exposure: Float(settings.exposure),
+                                  kelvin: filter.neutralTemperature, tint: filter.neutralTint)
+                : (filter.outputImage ?? CIImage.empty())
             isRAWSource = true
         }
 
@@ -5387,10 +5482,39 @@ struct SliderSelectionToast: Identifiable, Equatable {
 //
 // This is the second half of the fix; LazyHStack in `filmstrip` is the first,
 // and bounds HOW MANY are ever asked for. Either alone leaves the symptom.
-private let filmstripThumbnailQueue = DispatchQueue(
-    label: "com.rocketsbrief.briefshow.filmstrip-thumbnails",
-    qos: .utility
-)
+//
+// ⚠️ FOUR AT A TIME, not one. Serial was the wrong half of that reasoning and
+// it was the whole of *„dole thumbnails treba mu dosta vremena da pokaže slike
+// u filmstripu"*. Measured on the client's own .NEFs, one 384 px thumbnail
+// through this exact path:
+//
+//     serial (as it was)     185 ms each
+//     4 at a time             67 ms each     2.8x
+//     6 at a time             63 ms each     — no more to win
+//
+// On a folder of two hundred that is 37 s against 13 s.
+//
+// The priority half of the reasoning STANDS and is untouched: .utility, so
+// these never compete with the preview render, which runs at .userInteractive
+// on its own queue through its own CIContext. Measured too — .userInitiated
+// and .default finish in the same time (66/64 ms), so there is nothing to buy
+// by raising it and a dropped frame mid-drag to lose.
+//
+// An OperationQueue rather than a concurrent DispatchQueue with a semaphore:
+// two hundred `async` blocks all waiting on a semaphore is two hundred
+// threads GCD has to find, and it gives up at 64. OperationQueue holds the
+// backlog as operations instead of as blocked threads.
+//
+// Four keeps the left-to-right fill the serial version was chosen for — the
+// queue is FIFO, and only what the LazyHStack has actually asked for is ever
+// in it.
+private let filmstripThumbnailQueue: OperationQueue = {
+    let queue = OperationQueue()
+    queue.name = "com.rocketsbrief.briefshow.filmstrip-thumbnails"
+    queue.maxConcurrentOperationCount = 4
+    queue.qualityOfService = .utility
+    return queue
+}()
 
 // How many decoded filmstrip thumbnails are kept, and how big each one is
 // decoded. The two numbers are one decision: an uncapped cache on a few
@@ -8030,7 +8154,7 @@ struct DevelopView: View {
         }
         filmstripThumbnailsInFlight.insert(url)
 
-        filmstripThumbnailQueue.async {
+        filmstripThumbnailQueue.addOperation {
             // Edited, like ShowGrid's tiles. The filmstrip used to show the
             // untouched original, so a photo already worked on looked
             // unedited in the strip until it was clicked and the big preview
@@ -17481,6 +17605,12 @@ struct DevelopView: View {
 
     private func loadImages(for url: URL) {
         isLoadingPreview = true
+        // ⚠️ HERE, not in selectPhoto — this is the one place every path that
+        // replaces the base image goes through: a photo switch, a flatten, an
+        // unflatten, a reload after a bake. The held decode belongs to the
+        // filter that is about to be thrown away, and it is the largest single
+        // thing the render path holds. See cachedRAWDecode.
+        PhotoEditRenderer.releaseCachedRAWDecode()
         fullBaseImage = nil
         previewBaseImage = nil
         refineWorkItem?.cancel()
@@ -17577,7 +17707,11 @@ struct DevelopView: View {
             guard generation == renderGeneration else {
                 return
             }
-            let rendered = PhotoEditRenderer.render(effectiveSettings, on: source, applyCrop: cropEnabled)
+            // The ONE caller that reuses the demosaic — this is the frame
+            // the client is watching while a slider moves. See cachedRAWDecode.
+            let rendered = PhotoEditRenderer.render(effectiveSettings, on: source,
+                                                    applyCrop: cropEnabled,
+                                                    reusingRAWDecode: true)
             // Superseded WHILE rendering — still worth checking before the
             // (also non-trivial) CGImage conversion below.
             guard generation == renderGeneration else {

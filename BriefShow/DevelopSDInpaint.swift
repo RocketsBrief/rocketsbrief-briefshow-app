@@ -630,20 +630,40 @@ final class SDInpaintPipeline: ObservableObject {
     /// BRIEFSHOW_DEVELOP_NOTES.md and Tools/run-inpaint-sweep.py, which is how
     /// it was looked at.
     ///
-    /// ⚠️ 0.4 IS JUST UNDER A MEASURED EDGE, and the edge is 0.45. Raised from
-    /// 0.3 on 6.09 at the client's decision, after both values were run on two
-    /// different places in his own C4S_9331.NEF and the pictures were looked
-    /// at:
+    /// ⚠️ THIS IS NOT A CONTINUOUS DIAL. It picks a NUMBER OF STEPS out of
+    /// `defaultSteps`, which is 12:
     ///
-    ///     0.3   the fill is visibly washed and soft in the middle
-    ///     0.4   noticeably more texture, still LaMa's content    ← here
-    ///     0.45  the edge, measured twice now (KORAK 40, KORAK 150)
-    ///     0.55  A WHOLE PALM appears on the promenade, and on the terrace a
-    ///           soft slab becomes a hard white structure — neither is in the
-    ///           frame
-    ///     0.6   invention, plainly
+    ///     startIndex = 12 - Int((12 * strength).rounded())
     ///
-    /// The trap at 0.55 is that on a scene already full of palms an invented
+    /// so every value that rounds to the same count is the SAME COMPUTATION —
+    /// bit for bit, not "about the same". The rungs that actually exist:
+    ///
+    ///     0.30            → 4 steps
+    ///     0.375 … 0.458   → 5 steps    ← 0.4, and so are 0.41, 0.42 and 0.45
+    ///     0.459 … 0.541   → 6 steps
+    ///     0.55  … 0.625   → 7 steps    ← and so is 0.6
+    ///
+    /// Verified, not just derived: the sweep's own PNGs for 0.4 and 0.45 are
+    /// byte-identical, and so are 0.55 and 0.6.
+    ///
+    /// ⚠️ SO 0.4 IS 0.45. KORAK 150 shipped 0.4 describing it as "just under
+    /// the edge at 0.45"; that reading was wrong, and this is the correction.
+    /// What KORAK 40 measured at 0.45 on `C4S_7891.NEF` — clean, with a faint
+    /// blotch low in the patch — is exactly what this setting is. The client
+    /// ran it and said it works ("super radi"), which is the rule from KORAK
+    /// 111: his screen decides. But nobody should later "raise it to 0.45"
+    /// and think they changed anything.
+    ///
+    /// Looked at on his own C4S_9331.NEF, two places, KORAK 150 and 151:
+    ///
+    ///     4 steps (0.3)   the fill is visibly washed and soft
+    ///     5 steps (0.4)   noticeably more texture, content still LaMa's ← here
+    ///     6 steps (0.5)   more texture again, but bushes start appearing
+    ///                     that are not in the frame
+    ///     7 steps (0.55)  A WHOLE PALM on the promenade; on the terrace a
+    ///                     soft slab becomes a hard white structure
+    ///
+    /// The trap higher up is that on a scene already full of palms an invented
     /// palm looks right, so it reads as better until the same setting meets a
     /// clean background and puts an object in it. That is the whole reason
     /// this number is low.

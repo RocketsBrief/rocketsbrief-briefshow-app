@@ -15930,3 +15930,75 @@ Provereno kroz istoriju, ne po sećanju:
 - Sam `LaMa.mlpackage` je od **25. avgusta** i nije prekonvertovan.
 - 6. septembra `DevelopLaMaInpaint.swift`, `DevelopSDInpaint.swift` i
   `DevelopInpaint.swift` nisu dirani ni jednom — do ove jedne linije.
+
+---
+
+## KORAK 151 — jačina NIJE klizač: 0,4 i 0,45 su ista slika, bajt u bajt (6. septembar 2026)
+
+Klijent: *„super radi!!! a kako bi radilo recimo 0.41 ili 0.42, je l' bi bilo još
+bolje ili ne?"*
+
+Odgovor je **ne, i to ne „skoro isto" nego doslovno isto**.
+
+### Zašto — pročitano u kodu
+
+`refineStrength` bira **broj koraka** iz rasporeda, a koraka ima `defaultSteps`
+= 12:
+
+    startIndex = 12 - Int((12 * strength).rounded())
+
+Dakle svaka vrednost koja se zaokruži na isti broj je **isti račun**. Stvarni
+stepenici:
+
+| jačina | 12 × j | koraka se vrti |
+|---|---|---|
+| 0,30 | 3,60 | **4** |
+| 0,375 … 0,458 | 4,50 … 5,50 | **5** ← 0,4, a tu su i 0,41, 0,42 i 0,45 |
+| 0,459 … 0,541 | 5,51 … 6,49 | **6** ← 0,5 |
+| 0,55 … 0,625 | 6,60 … 7,50 | **7** ← tu je i 0,6 |
+
+### Provereno, ne samo izvedeno
+
+PNG-ovi iz ranijeg merenja, upoređeni `cmp`-om:
+
+    0.4  i 0.45   →  BAJT U BAJT ISTA SLIKA
+    0.55 i 0.6    →  BAJT U BAJT ISTA SLIKA
+    0.3  i 0.4    →  razlikuju se
+    0.45 i 0.55   →  razlikuju se
+
+### ⚠️ ISPRAVKA KORAKA 150
+
+KORAK 150 je isporučio 0,4 uz obrazloženje *„tik ispod izmerene ivice na 0,45"*.
+**To je bilo pogrešno čitanje — 0,4 JESTE 0,45.** Ono što je KORAK 40 izmerio na
+0,45 (`C4S_7891.NEF`: čisto, sa bledom mrljom pri dnu zakrpe) je tačno ono što
+je sada isporučeno.
+
+Vrednost se **ne vraća nazad**: klijent je pustio build i rekao „super radi", a
+po pravilu iz KORAKA 111 ekran pobeđuje. Ali niko kasnije ne sme da „digne na
+0,45" misleći da je nešto promenio.
+
+Time pada i jedan deo tabele iz KORAKA 40: ona je merila 0,2 / 0,3 / 0,45 / 0,6,
+što jesu četiri različita stepenika (2, 4, 5, 7 koraka), pa su ta merenja i
+dalje važeća — ali razmaci između njih nisu ono što brojevi sugerišu.
+
+### Izmeren stepenik koji nikad nije bio probam: 6 koraka (0,5)
+
+Isto šetalište, iste maske:
+
+| | šta se vidi |
+|---|---|
+| **0,4** (5 koraka, sada) | mek nastavak, umerena vegetacija |
+| 0,5 (6 koraka) | osetno više teksture, **ali se pojavljuju žbunovi kojih u kadru nema** |
+| 0,55 (7 koraka) | cela palma sa listovima |
+
+Dakle 0,5 nije bezbedan srednji put — izmišljanje počinje već tu, samo tiše.
+Slika: `~/Desktop/C4S-generative-provera/5-koraci-5-vs-6-vs-7.png`.
+
+**Ostaje 0,4.**
+
+### Ako se ikad zaista bude htela finija podela
+
+Onda se ne dira `refineStrength` nego `defaultSteps` — sa 12 koraka postoji samo
+šest upotrebljivih stepenika u celom opsegu. Podizanje na, recimo, 20 koraka bi
+dalo finiju podelu, ali menja i vreme i sam rezultat na svakom stepeniku, pa je
+to zaseban posao sa svojim merenjem. **Ne raditi usput.**

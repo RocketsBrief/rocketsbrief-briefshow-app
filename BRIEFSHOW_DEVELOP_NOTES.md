@@ -15823,3 +15823,54 @@ sličicu fotografije koje više nema. Sad ide preko
 Uhvaćeno u `Tools/run-thumbnail-cache-test.py` (nov, izvlači `ThumbnailDiskCache`
 i `filmstripThumbnailPixelSize` iz izvora). Jedanaest provera; poslednje tri su
 baš pravilo o rezoluciji, zapisano kao broj.
+
+---
+
+## KORAK 149 — „vrati onaj LaMa + SD za Generative": već je tu, i provereno je (6. septembar 2026)
+
+Klijent: *„onaj prvi put kad si rekao da kombinujemo LaMu i SD kada se radi AI
+Generative… vidi u dokumentu šta je rađeno… e to vrati tako da bude za AI
+Generative samo."*
+
+⚠️ **Nema šta da se vrati — nikad nije ni bilo sklonjeno.** To je KORAK 40 (31.
+avgust), i radi u svakom buildu od tada, uključujući v11.7 i v11.9.
+
+### Provereno u kodu, ne po sećanju
+
+- `InpaintPipeline.aiRemoval` ima podrazumevano
+  `refineStrength: Float? = SDInpaintPipeline.defaultRefineStrength` = **0,3**.
+- Unutra: `if refineStrength != nil, LaMaInpaintPipeline.isAvailable` →
+  `LaMaInpaintPipeline.shared.fill(&buffers)` **pre** SD-a.
+- Pozivalac je dugme Generative Clean Up u `Develop.swift`, i **ne prosleđuje**
+  `refineStrength`, dakle uzima podrazumevanih 0,3.
+- `LaMa.mlmodelc` **jeste** u paketu (provereno u samom `.app`-u), pa
+  `isAvailable` nije false.
+
+### Provereno merenjem, na klijentovoj fotografiji
+
+`Tools/run-inpaint-sweep.py` na `C4S_9331.NEF`, maska 724×482 preko šetališta,
+`--refine '@default,off'`:
+
+| | vreme | rezultat |
+|---|---|---|
+| **LaMa + SD 0,3** (ono što app radi) | 10,0 s | nastavak prave scene |
+| samo SD, bez LaMe (`off`) | 12,7 s | **ubačen palmin žbun kog nema u kadru** |
+
+Slike su gledane, ne samo izmerene — ostavljene su u
+`~/Desktop/C4S-generative-provera/`. Razlika je vidljiva, i hibrid je uz to
+brži, tačno kao što je zapisano u KORAKU 40 (vrti samo 30% koraka).
+
+### ⚠️ Ako klijent i dalje nije zadovoljan Generative rezultatom
+
+Onda se ne vraća hibrid — on je tu — nego se pomera **jedina poluga**:
+`SDInpaintPipeline.defaultRefineStrength`. Izmereno u KORAKU 40, na istoj
+fotografiji i istoj masci:
+
+    0,2   čisto            ← manje SD-a, više LaMe
+    0,3   čisto            ← isporučeno
+    0,45  bleda mrlja pri dnu
+    0,6   izmišljanje se vraća
+
+Dakle spuštanje ka 0,2 daje JOŠ manje izmišljanja i još je brže; podizanje daje
+više teksture i, iznad 0,45, vraća kvar. **Ne dirati bez klijentove odluke** —
+ovo je u zaključanom odeljku.

@@ -15749,3 +15749,77 @@ filmstrip-a po prolazu. Izmereno: **1,5 µs** po pozivu. **Nije uzrok.**
 
 Ako lag posle svega ovoga i dalje raste tokom rada, sledeći korak je i dalje
 merenje na klijentovoj mašini — postupak je na kraju KORAKA 143.
+
+---
+
+## KORAK 147 — donja ivica krop-a se nije mogla uhvatiti (6. septembar 2026)
+
+Klijent, sa snimkom ekrana: *„ne mogu da uhvatim donji krop, slike ispod
+thumbnails je"*.
+
+Tačno tako. Fotografija uklopljena u preview dodiruje njegovo dno, filmstrip
+počinje na sledećem pikselu, pa donja ivica krop-a padne **tačno na granicu** —
+pola njene trake od 24 pt je van prikaza, druga pola ispod trake sa sličicama.
+Isto važi za onaj par ivica koji uklapanje zakuca: široka slika u visokom
+prozoru gubi gore i dole, visoka gubi levo i desno.
+
+**`cropInset` = 28 pt, samo dok je krop alat otvoren.** Ostatak vremena slika
+dobija svaki piksel preview-a koji može. Lightroom radi isto — slika se malo
+povuče kad se otvori krop.
+
+Uvučeno je **pre** uklapanja, pa se sve — fit, granice pomeranja i svaki
+overlay koji preslikava jedinične koordinate kroz taj okvir — slaže oko toga
+kolika je radna površina.
+
+---
+
+## KORAK 148 — sličice kao mali JPEG-ovi na disku: 165× (6. septembar 2026)
+
+Klijentova ideja, doslovno: *„ovi thumbnails ne mora da bude NEF, može običan
+low res image of the NEF u filmstripu… bitno je da rezolucija bude original
+kakva je sa kamere za slike koje su otvorene i u Create i u gridu… onda će da se
+otvore brže"*.
+
+### Izmereno
+
+    sličica od 384 px iz .NEF-a, kako je bilo   116,1 ms
+    ista sličica iz keširanog JPEG-a              0,7 ms      165x
+
+Pravljenje keša košta 138 ms po slici **jednom**, i dešava se kao nusprodukt
+rendera koji bi se ionako desio. Folder od dvesta slika se posle toga puni iz
+desetinke sekunde čitanja umesto iz dvadeset tri sekunde demozaikovanja —
+**svaki put kad se otvori**, ne samo prvi.
+
+Na disku: **47 MB na hiljadu fotografija**, ograničeno na 500 MB, čisti se
+najstarije prvo, jednom po pokretanju.
+
+### ⚠️ Granica je BROJ, ne navika
+
+`ThumbnailDiskCache.side = 512`. `makeEditedShowGridThumbnail` čita i piše u keš
+**samo** kad je traženo `maxPixelSize <= side`. Filmstrip traži 384, grid-ove
+pločice 420 — oboje prolazi. Lupa u gridu traži koliko ekran ima, dakle je
+**iznad granice i keš ne dodiruje ni u jednom smeru**; renderuje se kao i uvek.
+Isto važi za platno u Create-u, koje ovaj put uopšte ne koristi.
+
+To je ceo mehanizam koji drži klijentovo pravilo istinitim: ono što se OTVARA
+je puna rezolucija, ono što je sličica sme da bude mali JPEG.
+
+### Poništavanje
+
+U `PhotoEditStore.flushNow`, na jedinom mestu koje objavljuje da se nešto
+promenilo — ne kod svakog upisivača. Sličica pokazuje izmenu, pa je stari JPEG
+prosto pogrešna slika, a ponovni render koji ta notifikacija pokreće bi ga
+inače našao i vratio nazad.
+
+### ⚠️ Greška koju je uhvatio harness, i ne bi je uhvatilo ništa drugo
+
+Ključ je `ime|veličina|datum izmene`, i prvo je bio čitan preko
+`photo.resourceValues(forKeys:)`. **URL kešira resource values na samoj URL
+vrednosti**, a ti URL-ovi žive u `photoURLs` dok je prozor otvoren — pa bi fajl
+zamenjen na disku i dalje prijavljivao staru veličinu i datum, i keš bi vraćao
+sličicu fotografije koje više nema. Sad ide preko
+`FileManager.attributesOfItem(atPath:)`, koji ne kešira.
+
+Uhvaćeno u `Tools/run-thumbnail-cache-test.py` (nov, izvlači `ThumbnailDiskCache`
+i `filmstripThumbnailPixelSize` iz izvora). Jedanaest provera; poslednje tri su
+baš pravilo o rezoluciji, zapisano kao broj.

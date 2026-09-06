@@ -122,6 +122,13 @@ struct BriefShowApp: App {
         // is deliberate — it is idempotent, and it is the backstop for a
         // process where this ran before an install finished.
         SDInpaintPipeline.shared.warmUp()
+
+        // Keeps the thumbnail cache under its budget. Once per launch, off
+        // the main thread, and it reads the directory listing rather than the
+        // files — see ThumbnailDiskCache.
+        DispatchQueue.global(qos: .utility).async {
+            ThumbnailDiskCache.pruneIfNeeded()
+        }
     }
 
     /// Makes a NEW APP ICON actually appear after the client replaces the app

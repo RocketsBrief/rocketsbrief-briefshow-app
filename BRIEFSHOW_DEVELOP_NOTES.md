@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 6. septembar 2026 (v11.9, objavljen).
+Beleška za nastavak rada. Poslednja izmena: 7. septembar 2026 (v11.10, objavljen).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -275,6 +275,37 @@ lično je — pitaj klijenta pre nego što uđe u build.
 
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 7. septembar 2026, verzija 11.10 (OBJAVLJENA)
+
+**Isporučeno**: `v11.10`, **jedan** paket (115 MB), `Latest`, tag na `a1c6871`.
+
+| | |
+|---|---|
+| 140–143 | slike koje nestaju; crop lag; rešetka i kursori; performanse |
+| 144–146 | preview je re-dekodirao RAW na svaki frame (83%); sličice 4 odjednom |
+| 147–148 | donja ivica krop-a; sličice kao mali JPEG-ovi na disku (165×) |
+| 149–151 | LaMa+SD hibrid je već bio tu; jačina 0,3 → **0,4**; jačina je broj koraka |
+| **152–153** | **RELEASE v11.10** |
+
+#### ⚠️ PRVO ZA SLEDEĆU SESIJU
+
+1. **`latest_version` u BriefControl-u → `11.10`.** Dok klijent to ne digne,
+   niko ne dobija karticu za update. Release notes na engleskom su u KORAKU 153.
+2. **`v11.0` se NE SME brisati** — ovaj release namerno ne nosi SD, pa ugrađeno
+   dugme za preuzimanje i dalje gađa njegov asset (provereno, HTTP 200).
+3. **Čeka se neutralan izvoz `C4S_9331.NEF`-a iz Lightroom-a** sa svim
+   slajderima na nuli. Traženo 5.09, i dalje nije stiglo.
+4. **Ako lag i dalje raste tokom rada** — meriti po postupku sa kraja KORAKA
+   143, ne nagađati.
+
+#### Otvoreno
+
+- Veliki paket sa težinama nije napravljen za 11.10 (namerno, klijentov PS).
+  Nov klijent instalira 11.10 pa pritisne dugme za SD.
+- Intel nije potvrđen na pravoj mašini od v11.0 (KORAK 106).
+
+---
 
 ### GDE SMO STALI — 6. septembar 2026, verzija 11.9 (OBJAVLJENA)
 
@@ -16067,3 +16098,77 @@ nema šta da se doda ni da se raziđe sa tagom.
 Ugrađeno preuzimanje SD-a gađa `…/releases/download/v11.0/SD15-Inpainting.aar`.
 Pošto ovaj release namerno NE nosi težine, nov klijent instalira 11.10 pa
 pritisne to dugme — i ono i dalje pokazuje na v11.0.
+
+---
+
+## KORAK 153 — v11.10 objavljen, i release notes za BriefControl (7. septembar 2026)
+
+### ✅ Objavljeno
+
+| | |
+|---|---|
+| asset | `C4S-Suite-11.10.zip` |
+| bajtova, lokalno | 114.937.067 |
+| `content-length` sa GitHub-a | **114.937.067** — bajt u bajt isto |
+| direktan link | HTTP **200** |
+| `releases/latest` | **v11.10** |
+| draft / prerelease | ne / ne |
+| tag `v11.10` → | **`a1c6871`** (grana `briefshow-develop`, pushovano) |
+
+Raspakovan zip proveren još jednom, iz samog paketa: `x86_64 arm64`,
+11.10 / 27, min macOS 13.0, potpis ok.
+
+- stranica: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.10`
+- direktno: `…/releases/download/v11.10/C4S-Suite-11.10.zip`
+
+⚠️ **`v11.0` provereno živ** — `SD15-Inpainting.aar` vraća HTTP 200. Ne brisati.
+
+### Release notes (engleski, za BriefControl)
+
+    C4S Suite v11.10 — universal (Apple Silicon + Intel), macOS 13 and later.
+
+    Fixed — photos that disappeared
+    Duplicates and the AI Portrait recipes (Youthify, Subject Mono, Mono
+    Background) could vanish from the strip after switching to the grid and
+    back. The files were always safe on disk; the grid and Create each kept
+    their own list and never told the other. Both windows now stay in step,
+    for photos added and for photos moved to the Trash.
+
+    Much faster editing
+    The preview was re-decoding the whole RAW on every frame of every slider
+    drag — 83% of the work, for the same pixels each time. It is now decoded
+    once and reused, so dragging Contrast, Highlights, Shadows, the curve, the
+    mixer or any other control is about four times cheaper. Temperature, Tint
+    and Exposure decode as before, because those change the decode itself.
+
+    Much faster thumbnails
+    Filmstrip and grid thumbnails were decoded one at a time from the RAW.
+    They now decode four at a time and are cached as small JPEGs, so a folder
+    that took around 37 seconds to fill in opens in a fraction of a second on
+    every later visit. Full resolution is untouched everywhere a photo is
+    actually opened.
+
+    Crop
+    - The bottom edge could not be grabbed when the photo met the filmstrip.
+      The picture now steps back while the crop tool is open.
+    - A rule-of-thirds grid, which turns with the frame.
+    - Proper resize cursors: horizontal arrows on the side edges, vertical on
+      top and bottom, diagonal at the corners, and they follow a rotated
+      frame. The hand now appears only inside the frame, where it moves the
+      crop.
+    - The whole length of an edge can be grabbed, not only its middle.
+    - Rotation is unchanged.
+
+    AI Generative Clean Up
+    Refinement over LaMa's fill raised from 0.3 to 0.4 — more texture in the
+    repair, with the content still coming from the real surroundings.
+
+    Intel
+    Stable Diffusion shares the work between the discrete GPU and the CPU
+    cores, since there is no Neural Engine. Everything else runs as on Apple
+    Silicon.
+
+    Note on the AI models
+    This package carries LaMa (Quick AI Clean Up) inside it. Stable Diffusion
+    is not included: existing installs already have it, and a new install
+    downloads it once from the button inside the app.

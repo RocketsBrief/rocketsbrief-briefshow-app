@@ -303,38 +303,163 @@ struct PhotoEditSettings: Codable, Equatable {
     }
 }
 
-// Which groups of PhotoEditSettings a "Synchronize Settings" sync should
-// touch on each target photo — mirrors Lightroom's own Sync Settings dialog
-// (a checklist of categories, all checked by default, "Synchronize" applies
-// only the checked ones and leaves everything else on the target untouched).
-// Grouped the same way Develop's own right-hand panel sections are (Crop &
-// Rotate / Light / Color / Detail & Effects / Masks) so the dialog reads as
-// "the same panel, but as checkboxes" rather than inventing a new taxonomy.
-// `layers` (pasted cut/copy pieces) is deliberately NOT offered here — a
-// layer is pixel content extracted from one specific photo, copying it onto
-// an unrelated photo isn't a "setting" the way exposure or crop is, and
-// Lightroom has no equivalent concept to model it after.
-struct SyncCategory: OptionSet {
+// WHICH SINGLE SETTINGS a "Synchronize Settings" sync writes onto each target
+// photo — one bit per control, not per group.
+//
+// It started as five group checkboxes (Crop & Rotate / Light / Color / Detail
+// & Effects / Masks), which is what Lightroom's own dialog offers. The client
+// asked for the level below that: every control that CAN travel, listed one by
+// one, in sections. The reason is the working case — "give all of these the
+// same white balance, and nothing else" — which five checkboxes cannot say,
+// because Colour dragged saturation and vibrance along with it.
+//
+// The sections and the row titles are taken from Develop's own right-hand
+// panel, in the same top-to-bottom order, so the dialog reads as "the panel,
+// as checkboxes" rather than a second vocabulary for the same sliders.
+//
+// ⚠️ Three settings deliberately have NO checkbox of their own and ride along
+// with the control they shape, because on their own they change no pixel:
+// `cropAspect` with Crop (a target that got the 4:3 box but not the lock was a
+// real 1.09. report), `sharpenRadius` with Sharpness, and the vignette's
+// midpoint/feather/roundness with Vignette. Same reason those three are not
+// counted by `isNeutral`, and the same reason the panel hides them at zero.
+//
+// `layers` (pasted cut/copy pieces) is still not offered: a layer is pixel
+// content cut out of one specific photograph, and pasting it onto an unrelated
+// one is not a "setting" the way exposure or crop is.
+struct SyncItem: OptionSet {
     let rawValue: Int
 
-    static let cropRotate = SyncCategory(rawValue: 1 << 0)
-    static let light = SyncCategory(rawValue: 1 << 1)
-    static let color = SyncCategory(rawValue: 1 << 2)
-    static let detail = SyncCategory(rawValue: 1 << 3)
-    static let masks = SyncCategory(rawValue: 1 << 4)
+    // Crop & Rotate
+    static let crop = SyncItem(rawValue: 1 << 0)          // + cropAspect
+    static let rotation = SyncItem(rawValue: 1 << 1)
+    static let straighten = SyncItem(rawValue: 1 << 2)
+    // Light
+    static let exposure = SyncItem(rawValue: 1 << 3)
+    static let contrast = SyncItem(rawValue: 1 << 4)
+    static let highlights = SyncItem(rawValue: 1 << 5)
+    static let shadows = SyncItem(rawValue: 1 << 6)
+    static let whites = SyncItem(rawValue: 1 << 7)
+    static let blacks = SyncItem(rawValue: 1 << 8)
+    // Color
+    static let temperature = SyncItem(rawValue: 1 << 9)   // + temperatureKelvin
+    static let tint = SyncItem(rawValue: 1 << 10)         // + tintAbsolute
+    static let saturation = SyncItem(rawValue: 1 << 11)
+    static let vibrance = SyncItem(rawValue: 1 << 12)
+    static let colorMixer = SyncItem(rawValue: 1 << 13)
+    // Detail & Effects
+    static let sharpness = SyncItem(rawValue: 1 << 14)    // + sharpenRadius
+    static let texture = SyncItem(rawValue: 1 << 15)
+    static let clarity = SyncItem(rawValue: 1 << 16)
+    static let dehaze = SyncItem(rawValue: 1 << 17)
+    static let softGlow = SyncItem(rawValue: 1 << 18)
+    static let vignette = SyncItem(rawValue: 1 << 19)     // + midpoint/feather/roundness
+    // Masks
+    static let masks = SyncItem(rawValue: 1 << 20)
 
-    static let all: SyncCategory = [.cropRotate, .light, .color, .detail, .masks]
+    /// One row of the dialog: one control, one checkbox.
+    struct Row: Identifiable {
+        let item: SyncItem
+        let title: String
+        /// What rides along with this row, shown in the dialog so nobody has to
+        /// guess why the target's crop came back locked to 4:3.
+        let carries: String?
 
-    // (title, SF Symbol) for each category's checkbox row, in the order the
-    // sync dialog lists them — same top-to-bottom order as the adjustment
-    // panel itself (Crop & Rotate first, Masks last).
-    static let displayOrder: [(category: SyncCategory, title: String, icon: String)] = [
-        (.cropRotate, "Crop & Rotate", "crop"),
-        (.light, "Light", "sun.max"),
-        (.color, "Color", "paintpalette"),
-        (.detail, "Detail & Effects", "wand.and.stars"),
-        (.masks, "Masks", "circle.lefthalf.filled"),
+        var id: Int { item.rawValue }
+    }
+
+    /// One section of the dialog — the same five the panel has, each with its
+    /// own header checkbox that flips every row under it at once.
+    struct Section: Identifiable {
+        let title: String
+        let icon: String
+        let rows: [Row]
+
+        var id: String { title }
+
+        /// Every row in this section as one mask, for the header checkbox.
+        var mask: SyncItem {
+            rows.reduce(into: SyncItem()) { $0.insert($1.item) }
+        }
+    }
+
+    static let sections: [Section] = [
+        Section(title: "Crop & Rotate", icon: "crop", rows: [
+            Row(item: .crop, title: "Crop", carries: "with its locked ratio"),
+            Row(item: .rotation, title: "Rotation", carries: nil),
+            Row(item: .straighten, title: "Straighten", carries: nil),
+        ]),
+        Section(title: "Light", icon: "sun.max", rows: [
+            Row(item: .exposure, title: "Exposure", carries: nil),
+            Row(item: .contrast, title: "Contrast", carries: nil),
+            Row(item: .highlights, title: "Highlights", carries: nil),
+            Row(item: .shadows, title: "Shadows", carries: nil),
+            Row(item: .whites, title: "Whites", carries: nil),
+            Row(item: .blacks, title: "Blacks", carries: nil),
+        ]),
+        Section(title: "Color", icon: "paintpalette", rows: [
+            Row(item: .temperature, title: "Temperature", carries: "with its Kelvin"),
+            Row(item: .tint, title: "Tint", carries: nil),
+            Row(item: .saturation, title: "Saturation", carries: nil),
+            Row(item: .vibrance, title: "Vibrance", carries: nil),
+            Row(item: .colorMixer, title: "Color Mixer", carries: "all eight colours"),
+        ]),
+        Section(title: "Detail & Effects", icon: "wand.and.stars", rows: [
+            Row(item: .sharpness, title: "Sharpness", carries: "with its radius"),
+            Row(item: .texture, title: "Texture", carries: nil),
+            Row(item: .clarity, title: "Clarity", carries: nil),
+            Row(item: .dehaze, title: "Dehaze", carries: nil),
+            Row(item: .softGlow, title: "Soft Glow", carries: nil),
+            Row(item: .vignette, title: "Vignette", carries: "with its shape"),
+        ]),
+        Section(title: "Masks", icon: "circle.lefthalf.filled", rows: [
+            Row(item: .masks, title: "Masks", carries: "every mask on this photo"),
+        ]),
     ]
+
+    static let all: SyncItem = sections.reduce(into: SyncItem()) { $0.formUnion($1.mask) }
+
+    /// Whether the SOURCE photo actually has anything in this control, so the
+    /// dialog can mark the rows that carry something. Compared against a fresh
+    /// `PhotoEditSettings` rather than against a hand-written zero, so a
+    /// default that changes (the vignette's 0.5 midpoint, the 1.0 sharpening
+    /// radius) cannot make this lie.
+    func isModified(in settings: PhotoEditSettings) -> Bool {
+        let zero = PhotoEditSettings()
+        switch self {
+        case .crop: return settings.crop != nil || settings.cropAspect != zero.cropAspect
+        case .rotation: return settings.rotationQuarterTurns != 0
+        case .straighten: return settings.straightenDegrees != 0
+        case .exposure: return settings.exposure != 0
+        case .contrast: return settings.contrast != 0
+        case .highlights: return settings.highlights != 0
+        case .shadows: return settings.shadows != 0
+        case .whites: return settings.whites != 0
+        case .blacks: return settings.blacks != 0
+        case .temperature: return settings.temperature != 0 || settings.temperatureKelvin != nil
+        case .tint: return settings.tint != 0 || settings.tintAbsolute != nil
+        case .saturation: return settings.saturation != 0
+        case .vibrance: return settings.vibrance != 0
+        case .colorMixer: return !settings.colorMixer.isNeutral
+        case .sharpness: return settings.sharpness != 0
+        case .texture: return settings.texture != 0
+        case .clarity: return settings.clarity != 0
+        case .dehaze: return settings.dehaze != 0
+        case .softGlow: return settings.softGlow != 0
+        case .vignette: return settings.vignette != 0
+        case .masks: return !settings.localAdjustments.isEmpty
+        default: return false
+        }
+    }
+
+    /// Everything the source photo actually carries — what "Only What's Set"
+    /// checks. Empty when the open photo has no edits at all.
+    static func modified(in settings: PhotoEditSettings) -> SyncItem {
+        sections
+            .flatMap(\.rows)
+            .filter { $0.item.isModified(in: settings) }
+            .reduce(into: SyncItem()) { $0.insert($1.item) }
+    }
 }
 
 // What "Export" writes. Until now every export path hardcoded JPEG, and not
@@ -4453,6 +4578,183 @@ private let developRenderQueue = DispatchQueue(label: "com.rocketsbrief.briefsho
 /// Create's filmstrip and ShowGrid's grid — and because the CIContext and
 /// the render queue it uses are private to this file. Two copies of this
 /// would be two places for "Duplicate" to come to mean different things.
+/// Builds the two layers "Select People" makes — the people as a cut-out, the
+/// background as a matte — from an already-rendered frame.
+///
+/// Pulled out of `selectPeopleAsLayer` when the Portrait recipes arrived,
+/// because they need exactly the same two layers on photos that are NOT open
+/// in the editor (Sync runs them across a selection). Two copies of this would
+/// be two answers to "what does Select People produce", and the batch one
+/// would be the one nobody looks at.
+///
+/// Pure and off-view on purpose: it takes a rendered image and gives back
+/// layers, touching no @State — so it runs on `developRenderQueue` for the open
+/// photo and inside a batch loop for forty others without knowing the
+/// difference.
+enum PeopleLayerFactory {
+    struct Layers {
+        let background: ImageLayer
+        let people: ImageLayer
+    }
+
+    /// nil when Vision found nobody — which is a normal answer, not a failure.
+    static func make(from full: CIImage,
+                     confinedTo selection: SelectionGeometry?,
+                     backgroundName: String,
+                     peopleName: String) -> Layers? {
+        var mask = SubjectMasker.personMask(for: full)
+
+        // An active Selection still confines the search, the way it always
+        // did: rope off the background, and only the people inside the rope
+        // are lifted.
+        if let found = mask, let selection,
+           !(selection.shape == .free && selection.points.count < 3) {
+            let shape = PhotoEditRenderer.selectionMask(selection, extent: full.extent)
+            mask = found.applyingFilter("CIMultiplyBlendMode", parameters: [
+                kCIInputBackgroundImageKey: shape
+            ]).cropped(to: full.extent)
+        }
+
+        // ⚠️ The two layers are deliberately DIFFERENT KINDS, and the
+        // difference is what each one is for.
+        //
+        // People is a PIXEL layer — a real cut-out — because the client
+        // asked to move, scale and rotate them, and a matte cannot be
+        // moved: sliding a mask does not slide the people, it slides a
+        // hole and shows the photo through it somewhere else.
+        //
+        // Background is DERIVED — a matte over the photo, no pixels —
+        // because it covers the whole frame, and a full-frame PNG in
+        // UserDefaults is tens of megabytes rewritten on every flush
+        // (see ImageLayer.maskData). Nobody wants to drag the
+        // background anywhere either.
+        guard let mask,
+              let box = InpaintPipeline.maskBoundingBox(mask, extent: full.extent,
+                                                        context: briefEditsCIContext),
+              let peoplePNG = PhotoEditRenderer.extractMaskedPNG(mask: mask, from: full,
+                                                                 pixelRect: box)
+        else {
+            return nil
+        }
+
+        let inverted = mask.applyingFilter("CIColorInvert").cropped(to: full.extent)
+        guard let backgroundMask = PhotoEditRenderer.maskPNG(inverted, extent: full.extent) else {
+            return nil
+        }
+
+        // A layer's y is its TOP edge measured downward; Core Image's is the
+        // bottom edge measured upward. maxY is the top, so the distance down
+        // to it is 1 minus that fraction.
+        let extent = full.extent
+        let x = (box.minX - extent.minX) / extent.width
+        let y = 1 - (box.maxY - extent.minY) / extent.height
+        let width = box.width / extent.width
+        let height = box.height / extent.height
+
+        guard width > 0, height > 0 else {
+            return nil
+        }
+
+        return Layers(
+            background: ImageLayer(name: backgroundName, imageData: Data(),
+                                   x: 0, y: 0, width: 1, height: 1,
+                                   maskData: backgroundMask),
+            people: ImageLayer(name: peopleName, imageData: peoplePNG,
+                               x: x, y: y, width: width, height: height)
+        )
+    }
+}
+
+/// The one-press portrait jobs: Select People, then a fixed set of moves on
+/// the layers it made, then Flatten.
+///
+/// Each of these is a sequence the client was already doing by hand several
+/// times a shoot — lift the people, put one number on one layer, bake — and
+/// the numbers below are HIS, given by name and value. They are not tuning
+/// knobs someone should "improve" without being asked: changing one silently
+/// changes photographs he has already approved.
+///
+/// ⚠️ Every recipe ENDS IN A FLATTEN, which writes pixels. That is what makes
+/// them different from everything else in the Sync dialog, and why the dialog
+/// says so out loud. Unflatten takes it back.
+enum PortraitRecipe: String, CaseIterable, Identifiable {
+    case youthify
+    case subjectMono
+    case monoBackground
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .youthify: return "Youthify"
+        case .subjectMono: return "Subject Mono"
+        case .monoBackground: return "Mono Background"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .youthify: return "sparkles"
+        case .subjectMono: return "person.crop.circle"
+        case .monoBackground: return "person.crop.circle.badge.moon"
+        }
+    }
+
+    /// Spelled out to the number, because the whole point of a one-press
+    /// button is that nobody sees what it did until it is done.
+    var help: String {
+        switch self {
+        case .youthify:
+            return "Select People, then Texture −60 on the people, then Flatten."
+        case .subjectMono:
+            return "Select People, then Black & White and Contrast +30 on the people, then Flatten."
+        case .monoBackground:
+            return "Select People, then Black & White and Contrast +40 on the background, then Flatten."
+        }
+    }
+
+    /// Which of the two layers this recipe writes on — shown in the UI, and
+    /// the reason Subject Mono and Mono Background can be run together.
+    var targetLayerName: String {
+        self == .monoBackground ? "Background" : "People"
+    }
+
+    /// Applies this recipe to a settings record that ALREADY carries the two
+    /// layers Select People made.
+    ///
+    /// Takes and returns the whole record rather than mutating a layer in
+    /// place so several recipes can be folded over one photo in a row — which
+    /// is what a Sync with two of them ticked does.
+    func applied(to settings: PhotoEditSettings,
+                 backgroundID: UUID, peopleID: UUID) -> PhotoEditSettings {
+        var result = settings
+        let wantedID = (self == .monoBackground) ? backgroundID : peopleID
+        guard let index = result.layers.firstIndex(where: { $0.id == wantedID }) else {
+            return result
+        }
+
+        switch self {
+        case .youthify:
+            // −60 on the panel's own scale, which is −0.6 stored: every slider
+            // in this app reads out as value × 100. Negative Texture is the
+            // smoothing direction — see PhotoEditSettings.texture.
+            result.layers[index].adjustments.texture = -0.60
+
+        case .subjectMono:
+            // Black & White is saturation at its bottom stop, exactly what the
+            // layer's own B&W switch writes — one state, one representation.
+            result.layers[index].adjustments.saturation = -1
+            result.layers[index].adjustments.contrast = 0.30
+
+        case .monoBackground:
+            result.layers[index].adjustments.saturation = -1
+            result.layers[index].adjustments.contrast = 0.40
+        }
+
+        return result
+    }
+}
+
 enum PhotoBakeService {
 
     /// One photo's worth of work.
@@ -5764,9 +6066,9 @@ struct DevelopView: View {
     @State private var presetImportNotice: String?
     @State private var settingsClipboard: PhotoEditSettings?
     // Lightroom-style "Synchronize Settings" — showSyncDialog presents a
-    // sheet (syncDialogView) where the user picks WHICH categories to sync
-    // (syncCategories, all checked by default like Lightroom's own dialog)
-    // before syncSettingsToSelection actually writes anything. See
+    // sheet (syncDialogView) where the user ticks WHICH INDIVIDUAL CONTROLS to
+    // sync (syncItems, everything checked by default) before
+    // syncSettingsToSelection actually writes anything. See
     // handleFilmstripClick/selectAllPhotos for how multiSelectedURLs (the
     // sync targets) gets populated.
     // App-wide, like every other preference here: what to write and how hard
@@ -5856,6 +6158,11 @@ struct DevelopView: View {
     private var effectiveFilmstripHeight: Double { filmstripHeightLive ?? filmstripHeight }
 
     @State private var isFlattening = false
+    /// Which Portrait recipe is running, and which of its three steps it is on.
+    /// One at a time by design — each ends in a bake, and two bakes racing on
+    /// one photograph is not a state worth having.
+    @State private var runningRecipe: PortraitRecipe?
+    @State private var recipeStepText: String = ""
 
     /// Watched so the install row and the Generative button agree about what
     /// is happening. See SDModelInstall.swift.
@@ -5885,7 +6192,15 @@ struct DevelopView: View {
     // file they want out, and the panel's own picker is far from the button
     // that starts the job.
     @State private var showExportAllOptions = false
-    @State private var syncCategories: SyncCategory = .all
+    // Kept across openings of the dialog on purpose: syncing one control onto
+    // a run of photos is done in batches, and re-ticking the same single box
+    // for every batch is the kind of work a checklist is supposed to remove.
+    @State private var syncItems: SyncItem = .all
+    /// ⚠️ Empty by default, where the controls above are all ticked. A recipe
+    /// is an ACTION on the target photograph — its own Select People, its own
+    /// bake — not a number copied onto it, and an action must never be the
+    /// thing that happens because somebody did not read a checklist.
+    @State private var syncRecipes: Set<PortraitRecipe> = []
 
     // Local adjustments (masks). `selectedLocalAdjustmentID` nil = editing
     // the global sliders as usual; non-nil = the on-canvas overlay shows
@@ -7778,7 +8093,15 @@ struct DevelopView: View {
     /// ⚠️ Also known: one layer for everybody found, not one per person.
     /// The mask is a single image and splitting it into connected
     /// components is a separate piece of work.
-    private func selectPeopleAsLayer() {
+    /// `onFinish` is what a Portrait recipe hangs its next step on; `onStopped`
+    /// is the other end of the same wire — nobody found, or the client opened a
+    /// different photo mid-search. One of the two ALWAYS runs, because a recipe
+    /// that is never told the search ended sits on screen saying "looking for
+    /// people…" forever.
+    private func selectPeopleAsLayer(
+        onFinish: ((_ backgroundID: UUID, _ peopleID: UUID) -> Void)? = nil,
+        onStopped: (() -> Void)? = nil
+    ) {
         guard let fullBaseImage, let selectedURL else {
             return
         }
@@ -7790,7 +8113,8 @@ struct DevelopView: View {
         let settingsSnapshot = settings
         let photoAtActionTime = selectedURL
         let confineTo = activeSelection
-
+        let backgroundName = nextLayerName("Background")
+        let peopleName = nextLayerName("People")
         // Read confineTo FIRST, then fold AI Clean Up away. Turning the brush
         // off does not clear an active Selection today — only turning it ON
         // does — but this ordering means a later change to that cannot quietly
@@ -7800,70 +8124,38 @@ struct DevelopView: View {
         // answered immediately, and the search runs for seconds. Waiting until
         // the layers exist would leave the client looking at the clean-up
         // brush wondering whether the button registered.
-        closeAICleanUp()
+        //
+        // ⚠️ Except when a recipe is driving. The recipe's own buttons live
+        // INSIDE the AI block, and closeAICleanUp folds that block away — so
+        // the button just pressed, and the progress bar that is supposed to
+        // answer the press, would both vanish on the press itself. The brush
+        // still goes off (it must not paint while this runs); only the folding
+        // is skipped.
+        if onFinish != nil {
+            deactivateRemoveBrush()
+        } else {
+            closeAICleanUp()
+        }
 
         developRenderQueue.async(qos: .userInitiated) {
             // applyCrop: false, because a layer's x/y/width/height live in
             // the pre-crop unit space — the same reason compositeLayers runs
             // before the crop.
             let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
-            var mask = SubjectMasker.personMask(for: full)
-
-            if let found = mask, let confineTo,
-               !(confineTo.shape == .free && confineTo.points.count < 3) {
-                let shape = PhotoEditRenderer.selectionMask(confineTo, extent: full.extent)
-                mask = found.applyingFilter("CIMultiplyBlendMode", parameters: [
-                    kCIInputBackgroundImageKey: shape
-                ]).cropped(to: full.extent)
-            }
-
-            // ⚠️ The two layers are deliberately DIFFERENT KINDS, and the
-            // difference is what each one is for.
-            //
-            // People is a PIXEL layer — a real cut-out — because the client
-            // asked to move, scale and rotate them, and a matte cannot be
-            // moved: sliding a mask does not slide the people, it slides a
-            // hole and shows the photo through it somewhere else.
-            //
-            // Background is DERIVED — a matte over the photo, no pixels —
-            // because it covers the whole frame, and a full-frame PNG in
-            // UserDefaults is tens of megabytes rewritten on every flush
-            // (see ImageLayer.maskData). Nobody wants to drag the
-            // background anywhere either.
-            let box = mask.flatMap {
-                InpaintPipeline.maskBoundingBox($0, extent: full.extent, context: briefEditsCIContext)
-            }
-            let peoplePNG = (mask != nil && box != nil)
-                ? PhotoEditRenderer.extractMaskedPNG(mask: mask!, from: full, pixelRect: box!)
-                : nil
-
-            var placement: (x: Double, y: Double, width: Double, height: Double)?
-            if let box {
-                // A layer's y is its TOP edge measured downward; Core
-                // Image's is the bottom edge measured upward. maxY is the
-                // top, so the distance down to it is 1 minus that fraction.
-                let extent = full.extent
-                placement = (
-                    x: (box.minX - extent.minX) / extent.width,
-                    y: 1 - (box.maxY - extent.minY) / extent.height,
-                    width: box.width / extent.width,
-                    height: box.height / extent.height
-                )
-            }
-
-            let backgroundMask = mask
-                .flatMap { $0.applyingFilter("CIColorInvert").cropped(to: full.extent) }
-                .flatMap { PhotoEditRenderer.maskPNG($0, extent: full.extent) }
+            let made = PeopleLayerFactory.make(from: full, confinedTo: confineTo,
+                                               backgroundName: backgroundName,
+                                               peopleName: peopleName)
 
             DispatchQueue.main.async {
                 isFindingPeople = false
 
                 guard selectedURL == photoAtActionTime else {
+                    onStopped?()
                     return
                 }
 
-                guard let peoplePNG, let placement, let backgroundMask,
-                      placement.width > 0, placement.height > 0 else {
+                guard let made else {
+                    onStopped?()
                     removeNotice = "No people found in this photo. Anyone small enough in the frame is usually below what the detector can see — cut them out by hand with the Selection tool instead."
                     return
                 }
@@ -7871,20 +8163,20 @@ struct DevelopView: View {
                 // Background first, people second: layers composite in array
                 // order, so the people end up on top of the background the
                 // way the picture itself is arranged.
-                let background = ImageLayer(
-                    name: nextLayerName("Background"), imageData: Data(),
-                    x: 0, y: 0, width: 1, height: 1, maskData: backgroundMask
-                )
-                let people = ImageLayer(
-                    name: nextLayerName("People"), imageData: peoplePNG,
-                    x: placement.x, y: placement.y,
-                    width: placement.width, height: placement.height
-                )
+                settings.layers.append(made.background)
+                settings.layers.append(made.people)
+                newLayerIDs = [made.background.id, made.people.id]
+                selectedLayerID = made.people.id
 
-                settings.layers.append(background)
-                settings.layers.append(people)
-                newLayerIDs = [background.id, people.id]
-                selectedLayerID = people.id
+                // A recipe runs this as its first step and then keeps going,
+                // so the two things that make sense as an ENDING — jumping to
+                // the Layers tab and printing "here are your two layers" — are
+                // wrong for it: it flattens a moment later, and the tab it
+                // jumped to would be showing layers that no longer exist.
+                if let onFinish {
+                    onFinish(made.background.id, made.people.id)
+                    return
+                }
 
                 // Straight to Layers, every time, asked for as *„uvek kad se
                 // klikne select people i to zavrsi automatski baci na layers"*.
@@ -7898,6 +8190,128 @@ struct DevelopView: View {
             }
         }
     }
+    // MARK: AI Portrait recipes
+
+    /// The three one-press portrait jobs, on the photo that is open.
+    ///
+    /// Lives at the foot of the AI block, under the clean-up brush's own
+    /// commentary — where the client asked for it, and where the rest of what
+    /// calls a model already is. It began beside Tools (Select People, which
+    /// every one of these starts with, is there) and that was the wrong read:
+    /// what these have in common with Quick and Generative Clean Up is that
+    /// they are AI, not that they are tools.
+    ///
+    /// ⚠️ Because it lives in that block, a recipe must NOT fold the block
+    /// away while it runs — see selectPeopleAsLayer, which closes AI Clean Up
+    /// on every other path and only deactivates the brush on this one.
+    private var aiPortraitSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("AI Portrait")
+
+            Text("One press: find the people, put one look on them, and bake it in. Unflatten takes it back.")
+                .font(.custom("Figtree", size: 11))
+                .foregroundColor(AppColors.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // One per row rather than three across: the panel is narrow and
+            // resizable, and "Mono Background" on a third of 260 pt is a button
+            // with no room for its own name.
+            ForEach(PortraitRecipe.allCases) { recipe in
+                HStack(spacing: 6) {
+                    toolButton(recipe.title, systemImage: recipe.systemImage,
+                               isActive: runningRecipe == recipe,
+                               isEnabled: canRunPortraitRecipe,
+                               help: recipe.help) {
+                        runPortraitRecipe(recipe)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+            }
+
+            // Same indeterminate bar Select People uses, and for the same
+            // reason: Vision reports no progress, and the two steps after it
+            // (the layer, the bake) are seconds more. A still panel here reads
+            // as a button that did nothing.
+            if let runningRecipe {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(runningRecipe.title): \(recipeStepText)")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(accentColor)
+                }
+            }
+        }
+    }
+
+    /// Off while anything that would fight it is running, and off with no
+    /// photo — the same gate Select People's own button uses, plus the bake.
+    private var canRunPortraitRecipe: Bool {
+        selectedURL != nil && !isFindingPeople && !isRemoving
+            && !isFlattening && runningRecipe == nil
+    }
+
+    /// Select People → the recipe's numbers on the layer it made → Flatten.
+    ///
+    /// Written as one chain rather than three buttons the client presses in
+    /// order, because that is what was asked for and because the middle step
+    /// is the one that is easy to get wrong by hand: the numbers go on the
+    /// LAYER, not on the photograph, and the panel has both.
+    private func runPortraitRecipe(_ recipe: PortraitRecipe) {
+        guard canRunPortraitRecipe else {
+            return
+        }
+
+        runningRecipe = recipe
+        recipeStepText = "looking for people…"
+
+        selectPeopleAsLayer { backgroundID, peopleID in
+            // Already back on the main thread — selectPeopleAsLayer calls this
+            // from its own main-queue completion, with the two layers written.
+            recipeStepText = "applying \(recipe.title.lowercased())…"
+
+            let next = recipe.applied(to: settings,
+                                      backgroundID: backgroundID, peopleID: peopleID)
+            settings = next
+            // Selected so the panel is showing the layer the numbers went on
+            // if the bake fails and the layers stay: "Mono Background" writing
+            // on Background while the People layer sat selected was the one
+            // way this could look like it had done nothing.
+            selectedLayerID = (recipe == .monoBackground) ? backgroundID : peopleID
+            // No jump to the Layers tab. Select People on its own does that,
+            // and it is right there — it ENDS on those two layers. A recipe
+            // bakes them a second later, so the jump would be to a tab that is
+            // about to be empty, away from the block the button was pressed in.
+            // If the bake fails, flattenErrorMessage shows in the panel footer,
+            // which every tab carries.
+
+            recipeStepText = "flattening…"
+            // ⚠️ The record is handed over EXPLICITLY rather than left for
+            // flattenPhoto to read back out of `settings`. The write above and
+            // this call are in the same turn of the run loop, and a recipe that
+            // baked the pre-recipe settings would look exactly like a recipe
+            // that did nothing.
+            flattenPhoto(using: next) {
+                runningRecipe = nil
+                recipeStepText = ""
+                // The brush was put down at the start so it could not paint
+                // while this ran. The block is still open, so it comes back —
+                // the recipe borrowed it, it did not take it.
+                armAICleanUpBrush()
+                showTransientStatus("\(recipe.title) done")
+            }
+        } onStopped: {
+            // The notice Select People already wrote says what happened and
+            // what to do instead; this only has to stop pretending to work.
+            runningRecipe = nil
+            recipeStepText = ""
+            armAICleanUpBrush()
+        }
+    }
+
     /// Takes back exactly the layers the last Select People made.
     ///
     /// By id, not by popping the undo stack — see the card's Undo button for
@@ -7964,7 +8378,8 @@ struct DevelopView: View {
                     toolButton("Quick Clean Up", systemImage: "wand.and.rays",
                                isActive: false,
                                isEnabled: cleanUpUnavailableReason(.quick) == nil,
-                               help: cleanUpUnavailableReason(.quick)) {
+                               help: cleanUpUnavailableReason(.quick),
+                               scale: Self.cleanUpButtonScale) {
                         eraseMaskedArea(using: .quick)
                     }
 
@@ -7976,12 +8391,14 @@ struct DevelopView: View {
                     toolButton("Generative Clean Up", systemImage: "wand.and.stars",
                                isActive: false,
                                isEnabled: cleanUpUnavailableReason(.generative) == nil,
-                               help: cleanUpUnavailableReason(.generative)) {
+                               help: cleanUpUnavailableReason(.generative),
+                               scale: Self.cleanUpButtonScale) {
                         eraseMaskedArea(using: .generative)
                     }
 
                     Spacer(minLength: 0)
                 }
+
 
                 // ⚠️ The way in for the 1.8 GB weights, and the first time this
                 // app has ever offered one. Until now the Generative button sat
@@ -8115,6 +8532,15 @@ struct DevelopView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+
+                Divider()
+
+                // Asked for HERE, at the foot of the AI block, and taken back
+                // out of Retouch — one home, not two. It is the last thing in
+                // this block on purpose: everything above it is the clean-up
+                // brush and its commentary, and these three neither need nor
+                // touch a painted selection.
+                aiPortraitSection
             }
         }
     }
@@ -8336,6 +8762,14 @@ struct DevelopView: View {
     // `textIcon` draws letters where the SF Symbol would go — used for "AI",
     // which has no glyph that says what it is. Sized and framed to occupy the
     // same box a symbol does, so a strip mixing the two stays on one baseline.
+    /// `scale` is 1 for every tool in the row and 1.3 for the two Clean Up
+    /// buttons, asked for by the number: *„dugme Quick Clean up i generative
+    /// clean up neka budu veca dugmad ta dva nekih 30% veca da bude lakse za
+    /// klijenta"*.
+    ///
+    /// It multiplies the glyph, the label and both paddings, so the button
+    /// grows as one thing rather than becoming a big box around small text —
+    /// which is what setting the frame alone would have produced.
     private func toolButton(
         _ title: String,
         systemImage: String,
@@ -8343,26 +8777,27 @@ struct DevelopView: View {
         isActive: Bool,
         isEnabled: Bool = true,
         help: String? = nil,
+        scale: CGFloat = 1,
         action: @escaping () -> Void
     ) -> some View {
         let live = isEnabled && selectedURL != nil
         return Button(action: action) {
-            HStack(spacing: 5) {
+            HStack(spacing: 5 * scale) {
                 if let textIcon {
                     Text(textIcon)
-                        .font(.system(size: 10, weight: .heavy, design: .rounded))
-                        .frame(width: 14, height: 12)
+                        .font(.system(size: 10 * scale, weight: .heavy, design: .rounded))
+                        .frame(width: 14 * scale, height: 12 * scale)
                 } else {
                     Image(systemName: systemImage)
-                        .font(.system(size: 12))
+                        .font(.system(size: 12 * scale))
                 }
                 Text(title)
-                    .font(.custom("Figtree", size: 11).weight(isActive ? .semibold : .regular))
+                    .font(.custom("Figtree", size: 11 * scale).weight(isActive ? .semibold : .regular))
                     .lineLimit(1)
             }
             .foregroundColor(isActive ? AppColors.ink : AppColors.muted)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10 * scale)
+            .padding(.vertical, 6 * scale)
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isActive ? accentColor.opacity(0.18) : Color.clear)
@@ -13256,19 +13691,52 @@ struct DevelopView: View {
     }
 
     private func toggleRemoveBrush() {
-        isRemoveBrushActive.toggle()
-        if !isRemoveBrushActive {
+        if isRemoveBrushActive {
+            isRemoveBrushActive = false
             isRemoveBrushErasing = false
-        }
-        guard isRemoveBrushActive else {
             activeRemovalStroke.points = []
             return
         }
+        activateRemoveBrush()
+    }
+
+    /// Puts the brush in the client's hand and takes the canvas off whatever
+    /// else was holding it.
+    ///
+    /// Split out of `toggleRemoveBrush` so the rule below has one place to
+    /// call. It was the "on" half of that toggle and is unchanged.
+    private func activateRemoveBrush() {
+        isRemoveBrushActive = true
         selectedLocalAdjustmentID = nil
         activeSelection = nil
         activeSelectionDrawPoints.points = []
         selectedLayerID = nil
         isCropping = false
+    }
+
+    /// THE RULE: while the AI block is open, the brush is in hand. Always.
+    ///
+    /// Asked for in as many words — *„uvek ali uvek kad je ukljuceno ai gore …
+    /// da se prikaze circle za paint selection"* — and it is the same complaint
+    /// that produced `closeAICleanUp`: an open AI Clean Up with no brush in
+    /// hand reads as broken, and the only way out was closing the block and
+    /// opening it again. Two paths were leaving exactly that state behind:
+    /// switching photos (which puts every tool down, correctly, and used to
+    /// leave the block open and empty-handed) and a Portrait recipe finishing.
+    ///
+    /// It ends where the client said it ends: on another button in the row at
+    /// the top of the panel. Every one of those goes through `closeAICleanUp`,
+    /// which folds the block — and with the block shut, this does nothing.
+    ///
+    /// ⚠️ The painted AREA is NOT restored by this, and must not be. On a photo
+    /// switch the mask was cleared because it described the previous
+    /// photograph's pixels; after a recipe it was baked in. Only the brush
+    /// comes back.
+    private func armAICleanUpBrush() {
+        guard aiManipulationExpanded, !isRemoveBrushActive, selectedURL != nil else {
+            return
+        }
+        activateRemoveBrush()
     }
 
     // `frame` is the full pre-crop image (the space stroke points are stored
@@ -13432,6 +13900,15 @@ struct DevelopView: View {
     private enum RemovalEngine {
         case quick        // LaMa, bundled, ~1s, every Mac
         case generative   // Stable Diffusion, downloaded, ~13s, Apple Silicon
+        //
+        // ⚠️ THERE WAS A THIRD, for one afternoon: `texture`, the exemplar
+        // (patch-match) fill, added on 06.09.2026 because both models leave a
+        // smooth blob on a lawn and that one copies real blades of grass in
+        // (measured: 0.875 of the real texture against 0.50 through SD). The
+        // client tried it and took it back out — *„izbrisi Texture clean up jer
+        // ne pomaze"*. The measurement stands and the harness can still run it
+        // (`Tools/run-inpaint-sweep.py --exemplar`); the button is gone, and
+        // `InpaintPipeline.removal` is uncalled code again.
 
         var title: String {
             switch self {
@@ -13506,6 +13983,12 @@ struct DevelopView: View {
     // of the work and must keep most of the bar, but the lead-in is the part
     // that used to be invisible, and it needs enough room that each stage is a
     // visible move rather than a rounding difference.
+    /// The two Clean Up buttons are drawn 30% larger than the tools around
+    /// them. Not decoration: they are the two the client presses all day, and
+    /// they sit in a row of buttons that are all the same size, so the two that
+    /// matter were the hardest to hit. One number, so they cannot drift apart.
+    private static let cleanUpButtonScale: CGFloat = 1.3
+
     private static let eraseLeadInStart: Double = 0.02
     private static let eraseLeadInEnd: Double = 0.12
 
@@ -14686,84 +15169,193 @@ struct DevelopView: View {
         }
     }
 
-    // Lightroom's own "Synchronize Settings" dialog, adapted: a checklist of
-    // categories (all checked by default, same as Lightroom opens with),
-    // "Check All"/"Uncheck All" for quickly flipping every row at once, and
-    // a "Synchronize"/Cancel pair. Reads live off `syncCategories` — nothing
-    // is written until the user presses "Synchronize" (syncSettingsToSelection).
+    // The "Synchronize Settings" dialog: ONE CHECKBOX PER CONTROL, grouped
+    // into the same five sections the adjustment panel has. A section header
+    // is itself a checkbox that flips everything under it, so the old
+    // group-level behaviour is still one click away — it just isn't the only
+    // thing on offer any more.
+    //
+    // A row whose control the open photo actually carries a value for is
+    // marked with a dot. Unmarked rows are NOT disabled on purpose: syncing a
+    // zero is how a target gets that control cleared, and taking that away
+    // would remove the only way to undo an earlier sync across a run.
+    //
+    // Reads live off `syncItems` — nothing is written until "Synchronize"
+    // (syncSettingsToSelection).
     private var syncDialogView: some View {
         let targetCount = selectedURL.map { multiSelectedURLs.subtracting([$0]).count } ?? 0
+        let modified = SyncItem.modified(in: settings)
 
-        return VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: 14) {
             Text("Synchronize Settings")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(AppColors.ink)
 
-            Text("Copy the open photo's settings to \(targetCount) other selected photo\(targetCount == 1 ? "" : "s").")
+            Text("Copy the open photo's settings to \(targetCount) other selected photo\(targetCount == 1 ? "" : "s"). Only the ticked controls are written; everything else on those photos is left alone.")
                 .font(.system(size: 12))
                 .foregroundColor(AppColors.ink.opacity(0.7))
-
-            // Every Text/Image below explicitly takes AppColors.ink — same
-            // as the rest of this file — rather than relying on the
-            // platform's default label color. Left unset, that default
-            // color follows the SYSTEM light/dark appearance, not this
-            // app's own always-dark panel background, so it rendered as
-            // near-black text/icons on a near-black background (invisible)
-            // whenever the system happened to be in Light Mode.
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(SyncCategory.displayOrder, id: \.title) { entry in
-                    let isChecked = syncCategories.contains(entry.category)
-
-                    Button {
-                        if isChecked {
-                            syncCategories.remove(entry.category)
-                        } else {
-                            syncCategories.insert(entry.category)
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: isChecked ? "checkmark.square.fill" : "square")
-                                .foregroundColor(isChecked ? accentColor : AppColors.ink.opacity(0.5))
-                            Image(systemName: entry.icon)
-                                .foregroundColor(AppColors.ink)
-                                .frame(width: 16)
-                            Text(entry.title)
-                                .foregroundColor(AppColors.ink)
-                            Spacer()
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 10) {
-                Button("Check All") { syncCategories = .all }
+                Button("All") { syncItems = .all }
                     .buttonStyle(ShowHeaderButtonStyle())
-                Button("Uncheck All") { syncCategories = [] }
+                // Clears the recipes too: "None" has to mean nothing happens,
+                // and a Synchronize that still ran a bake after None would be
+                // the worst surprise in this dialog.
+                Button("None") { syncItems = []; syncRecipes = [] }
                     .buttonStyle(ShowHeaderButtonStyle())
+                // The one that gets used most: this photo has a white balance
+                // and nothing else, so tick exactly that and sync.
+                Button("Only What's Set") { syncItems = modified }
+                    .buttonStyle(ShowHeaderButtonStyle())
+                    .opacity(modified.isEmpty ? 0.4 : 1)
+                    .disabled(modified.isEmpty)
+                Spacer()
             }
+
+            // Twenty-one rows and five headers do not fit a sheet on a 13"
+            // screen, so the list scrolls and the buttons below it stay put.
+            // Same rule as the update card: the thing you press must not be
+            // the thing that gets pushed off the bottom.
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(SyncItem.sections) { section in
+                        syncSection(section, modified: modified)
+                    }
+
+                    syncRecipeSection(targetCount: targetCount)
+                }
+                .padding(.trailing, 12)
+            }
+            .scrollIndicators(.visible)
+            .frame(maxHeight: 360)
 
             Divider()
 
             HStack {
+                Text(syncSelectionSummary)
+                    .font(.system(size: 11))
+                    .foregroundColor(AppColors.ink.opacity(0.6))
+
                 Spacer()
+
                 Button("Cancel") {
                     showSyncDialog = false
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
 
                 Button("Synchronize") {
-                    syncSettingsToSelection(categories: syncCategories)
+                    syncSettingsToSelection(items: syncItems, recipes: syncRecipes)
                     showSyncDialog = false
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
-                .opacity(syncCategories.isEmpty ? 0.4 : 1)
-                .disabled(syncCategories.isEmpty)
+                // Either half is enough to press it: ticking only a recipe and
+                // no control at all is a perfectly good request.
+                .opacity(syncItems.isEmpty && syncRecipes.isEmpty ? 0.4 : 1)
+                .disabled(syncItems.isEmpty && syncRecipes.isEmpty)
             }
         }
         .padding(24)
-        .frame(width: 340)
+        .frame(width: 460)
         .background(AppColors.panel)
+    }
+
+    /// "6 of 21 controls" — so the count is visible without counting ticks,
+    /// which matters now that the list scrolls and half of it is off screen.
+    private var syncSelectionSummary: String {
+        let total = SyncItem.sections.reduce(0) { $0 + $1.rows.count }
+        let picked = SyncItem.sections
+            .flatMap(\.rows)
+            .filter { syncItems.contains($0.item) }
+            .count
+        return "\(picked) of \(total) control\(total == 1 ? "" : "s")"
+    }
+
+    // Every Text/Image here explicitly takes AppColors.ink — same as the rest
+    // of this file — rather than relying on the platform's default label
+    // color. Left unset, that default follows the SYSTEM light/dark
+    // appearance, not this app's own always-dark panel background, so it
+    // rendered as near-black text on near-black (invisible) whenever the
+    // system happened to be in Light Mode.
+    private func syncSection(_ section: SyncItem.Section, modified: SyncItem) -> some View {
+        let mask = section.mask
+        let all = syncItems.isSuperset(of: mask)
+        let some = !syncItems.intersection(mask).isEmpty
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                if all {
+                    syncItems.subtract(mask)
+                } else {
+                    syncItems.formUnion(mask)
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    // Three states, not two: a half-ticked section says at a
+                    // glance that something below it is off, which is the
+                    // whole point of collapsing 21 rows into 5 headers.
+                    Image(systemName: all ? "checkmark.square.fill"
+                          : (some ? "minus.square.fill" : "square"))
+                        .foregroundColor(some ? accentColor : AppColors.ink.opacity(0.5))
+                    Image(systemName: section.icon)
+                        .foregroundColor(AppColors.ink)
+                        .frame(width: 16)
+                    Text(section.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(AppColors.ink)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(section.rows) { row in
+                    syncRow(row, isSet: modified.contains(row.item))
+                }
+            }
+            .padding(.leading, 24)
+        }
+    }
+
+    private func syncRow(_ row: SyncItem.Row, isSet: Bool) -> some View {
+        let isChecked = syncItems.contains(row.item)
+
+        return Button {
+            if isChecked {
+                syncItems.remove(row.item)
+            } else {
+                syncItems.insert(row.item)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isChecked ? "checkmark.square.fill" : "square")
+                    .foregroundColor(isChecked ? accentColor : AppColors.ink.opacity(0.5))
+
+                Text(row.title)
+                    .font(.system(size: 12))
+                    .foregroundColor(AppColors.ink)
+
+                if let carries = row.carries {
+                    Text(carries)
+                        .font(.system(size: 10))
+                        .foregroundColor(AppColors.ink.opacity(0.45))
+                }
+
+                Spacer()
+
+                // "This photo has something here." Not a value — the value is
+                // in the panel two inches away, and printing it twice invites
+                // the two to disagree.
+                if isSet {
+                    Circle()
+                        .fill(accentColor)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // Shared by the header's "Reset" and the footer's "Reset All" so the two
@@ -15075,15 +15667,25 @@ struct DevelopView: View {
     /// own: it is the one action here that changes what the photo IS rather
     /// than how it is described, and that should never happen as a side effect
     /// of pressing something else.
-    private func flattenPhoto() {
+    ///
+    /// `using` exists for the Portrait recipes: they write the layer's numbers
+    /// and bake in the same turn of the run loop, and a bake that read
+    /// `settings` back out could bake the record from before the write — a
+    /// recipe that silently did nothing. Every other caller passes nothing and
+    /// gets exactly the old behaviour. `completion` runs on the main thread on
+    /// every path, success or not, so a caller waiting on it cannot be left
+    /// waiting.
+    private func flattenPhoto(using snapshot: PhotoEditSettings? = nil,
+                              completion: (() -> Void)? = nil) {
         guard let selectedURL, let fullBaseImage else {
+            completion?()
             return
         }
         // The uncropped render, for the same reason layers are stored uncropped:
         // the crop is a description of the photo and survives as a setting, so
         // baking it in would make it impossible to open the crop back up.
-        let settingsSnapshot = settings
-        let cropToKeep = settings.crop
+        let settingsSnapshot = snapshot ?? settings
+        let cropToKeep = settingsSnapshot.crop
         let photoAtActionTime = selectedURL
 
         isFlattening = true
@@ -15104,10 +15706,12 @@ struct DevelopView: View {
             DispatchQueue.main.async {
                 isFlattening = false
                 guard selectedURL == photoAtActionTime else {
+                    completion?()
                     return
                 }
                 if let failure {
                     flattenErrorMessage = failure
+                    completion?()
                     return
                 }
                 // Everything is in the pixels now. The crop is the one thing
@@ -15128,6 +15732,7 @@ struct DevelopView: View {
                 // The base has changed on disk, so the decode has to happen
                 // again — nothing in memory describes the flattened file yet.
                 loadImages(for: photoAtActionTime)
+                completion?()
             }
         }
     }
@@ -15402,6 +16007,11 @@ struct DevelopView: View {
         // different image).
         clearRemovalMask()
         isRemoveBrushActive = false
+        // …and straight back into the client's hand if the AI block is open.
+        // Putting every tool down on a photo switch is right; arriving at the
+        // next photograph with AI Clean Up open and nothing to paint with is
+        // not. See armAICleanUpBrush.
+        armAICleanUpBrush()
         // Undo/redo history is per-photo, like Lightroom's own — a
         // previous photo's undo stack describing edits to a DIFFERENT
         // image has no meaning here.
@@ -15635,8 +16245,8 @@ struct DevelopView: View {
     // and histogram will simply reflect the synced settings next time each
     // is actually opened, same as any other out-of-editor PhotoEditStore
     // write (Presets, Export All Edited's own settings lookups, etc).
-    private func syncSettingsToSelection(categories: SyncCategory) {
-        guard let selectedURL, !categories.isEmpty else {
+    private func syncSettingsToSelection(items: SyncItem, recipes: Set<PortraitRecipe> = []) {
+        guard let selectedURL, !items.isEmpty || !recipes.isEmpty else {
             return
         }
         let targets = multiSelectedURLs.subtracting([selectedURL])
@@ -15644,74 +16254,277 @@ struct DevelopView: View {
             return
         }
 
-        for target in targets {
-            let merged = Self.mergedSyncSettings(
-                source: settings,
-                target: PhotoEditStore.settings(for: target),
-                categories: categories
-            )
-            PhotoEditStore.setSettings(merged, for: target)
+        if !items.isEmpty {
+            for target in targets {
+                let merged = Self.mergedSyncSettings(
+                    source: settings,
+                    target: PhotoEditStore.settings(for: target),
+                    items: items
+                )
+                PhotoEditStore.setSettings(merged, for: target)
+            }
         }
 
-        exportStatusText = "Synced to \(targets.count)"
-        let dismissWorkItem = DispatchWorkItem { exportStatusText = nil }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: dismissWorkItem)
+        // The recipes run AFTER the settings are written, and they read those
+        // settings back per photo — so a target gets the synced grade first and
+        // its people lifted out of the graded picture, not out of the old one.
+        // In filmstrip order rather than the set's own, so "3 of 12" counts
+        // along the strip the client is looking at.
+        if !recipes.isEmpty {
+            runPortraitRecipes(Array(recipes), on: photoURLs.filter { targets.contains($0) })
+            return
+        }
+
+        showTransientStatus("Synced to \(targets.count)")
     }
 
-    // Starts from the TARGET's own settings (so anything not in `categories`
-    // is left exactly as that photo already had it) and overwrites only the
-    // fields belonging to checked categories with the SOURCE's values — the
-    // same "only touch what's checked" behavior as Lightroom's Sync Settings.
+    // Starts from the TARGET's own settings (so anything not in `items` is
+    // left exactly as that photo already had it) and overwrites only the
+    // fields belonging to ticked controls with the SOURCE's values — the same
+    // "only touch what's checked" behavior as Lightroom's Sync Settings, one
+    // control at a time now instead of one group.
     // `static` + explicit params (no implicit access to `settings`/instance
     // state) so this is a pure, independently testable function — same
     // reasoning as PhotoEditRenderer's math helpers throughout this file.
     private static func mergedSyncSettings(
         source: PhotoEditSettings,
         target: PhotoEditSettings,
-        categories: SyncCategory
+        items: SyncItem
     ) -> PhotoEditSettings {
         var result = target
 
-        if categories.contains(.cropRotate) {
-            result.rotationQuarterTurns = source.rotationQuarterTurns
-            result.straightenDegrees = source.straightenDegrees
+        // Crop & Rotate
+        if items.contains(.crop) {
             result.crop = source.crop
             // The lock travels with the rectangle. Syncing one without the
             // other is what the client hit: every target got the 4:3 box and
             // none of them knew to hold 4:3 when a handle was dragged.
             result.cropAspect = source.cropAspect
         }
-        if categories.contains(.light) {
-            result.exposure = source.exposure
-            result.contrast = source.contrast
-            result.highlights = source.highlights
-            result.shadows = source.shadows
-            result.whites = source.whites
-            result.blacks = source.blacks
+        if items.contains(.rotation) {
+            result.rotationQuarterTurns = source.rotationQuarterTurns
         }
-        if categories.contains(.color) {
+        if items.contains(.straighten) {
+            result.straightenDegrees = source.straightenDegrees
+        }
+
+        // Light
+        if items.contains(.exposure) { result.exposure = source.exposure }
+        if items.contains(.contrast) { result.contrast = source.contrast }
+        if items.contains(.highlights) { result.highlights = source.highlights }
+        if items.contains(.shadows) { result.shadows = source.shadows }
+        if items.contains(.whites) { result.whites = source.whites }
+        if items.contains(.blacks) { result.blacks = source.blacks }
+
+        // Color
+        if items.contains(.temperature) {
             result.temperature = source.temperature
+            // ⚠️ The absolute MUST travel with the offset, and the old
+            // group-level sync did not carry it: a target that had been given
+            // a Kelvin by a preset kept that Kelvin, and the offset synced
+            // onto it did nothing at all — the temperature simply refused to
+            // move. Copying both means the target ends up asking for exactly
+            // what the source asks for, in whichever of the two units it asks.
+            result.temperatureKelvin = source.temperatureKelvin
+        }
+        if items.contains(.tint) {
             result.tint = source.tint
-            result.saturation = source.saturation
-            result.vibrance = source.vibrance
-            // The mixer is colour work, so it travels with Color rather than
-            // getting a checkbox of its own — the dialog is meant to read as
-            // the panel with checkboxes, and the mixer sits under Color there.
-            result.colorMixer = source.colorMixer
+            result.tintAbsolute = source.tintAbsolute
         }
-        if categories.contains(.detail) {
+        if items.contains(.saturation) { result.saturation = source.saturation }
+        if items.contains(.vibrance) { result.vibrance = source.vibrance }
+        if items.contains(.colorMixer) { result.colorMixer = source.colorMixer }
+
+        // Detail & Effects
+        if items.contains(.sharpness) {
             result.sharpness = source.sharpness
-            result.texture = source.texture
-            result.clarity = source.clarity
-            result.dehaze = source.dehaze
-            result.softGlow = source.softGlow
-            result.vignette = source.vignette
+            // Same "shape travels with the effect" rule as the crop's lock —
+            // and the same gap: before this the radius stayed behind, so a
+            // target sharpened at radius 1 while the source sat at 2.5.
+            result.sharpenRadius = source.sharpenRadius
         }
-        if categories.contains(.masks) {
+        if items.contains(.texture) { result.texture = source.texture }
+        if items.contains(.clarity) { result.clarity = source.clarity }
+        if items.contains(.dehaze) { result.dehaze = source.dehaze }
+        if items.contains(.softGlow) { result.softGlow = source.softGlow }
+        if items.contains(.vignette) {
+            result.vignette = source.vignette
+            result.vignetteMidpoint = source.vignetteMidpoint
+            result.vignetteFeather = source.vignetteFeather
+            result.vignetteRoundness = source.vignetteRoundness
+        }
+
+        // Masks
+        if items.contains(.masks) {
             result.localAdjustments = source.localAdjustments
         }
 
         return result
+    }
+
+    /// The Portrait recipes, as part of the same dialog.
+    ///
+    /// ⚠️ These are NOT settings being copied, and the box says so. Everything
+    /// above hands the target a number; a recipe RUNS on the target — its own
+    /// Select People, on its own people, then a bake. So it is off by default
+    /// (everything above is on), it is boxed away from the checklist, and the
+    /// line under it names the two things that are irreversible-looking: it
+    /// writes pixels, and it takes real time per photo.
+    ///
+    /// Several can be ticked at once and they fold onto ONE Select People and
+    /// ONE bake per photo — Subject Mono on the people and Mono Background on
+    /// the background is a look, not a conflict.
+    private func syncRecipeSection(targetCount: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .foregroundColor(AppColors.ink)
+                    .frame(width: 16)
+                Text("AI Portrait")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(AppColors.ink)
+                Spacer()
+            }
+
+            Text("Runs on each of the \(targetCount) photo\(targetCount == 1 ? "" : "s") — finds its own people, applies the look, and bakes it in. Minutes, not seconds, on a big selection. Unflatten takes it back.")
+                .font(.system(size: 10.5))
+                .foregroundColor(AppColors.ink.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(PortraitRecipe.allCases) { recipe in
+                    let isChecked = syncRecipes.contains(recipe)
+
+                    Button {
+                        if isChecked {
+                            syncRecipes.remove(recipe)
+                        } else {
+                            syncRecipes.insert(recipe)
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: isChecked ? "checkmark.square.fill" : "square")
+                                .foregroundColor(isChecked ? accentColor : AppColors.ink.opacity(0.5))
+
+                            Text(recipe.title)
+                                .font(.system(size: 12))
+                                .foregroundColor(AppColors.ink)
+
+                            Text("on \(recipe.targetLayerName)")
+                                .font(.system(size: 10))
+                                .foregroundColor(AppColors.ink.opacity(0.45))
+
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(recipe.help)
+                }
+            }
+            .padding(.leading, 24)
+        }
+        .padding(10)
+        .background(AppColors.panelAlt)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(AppColors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Select People → the ticked recipes → Flatten, once per target photo.
+    ///
+    /// Sequential on `developRenderQueue` on purpose. Each photo here is a
+    /// full-resolution decode, a Vision pass and a full-resolution bake; four
+    /// of those in parallel on a 9 GB machine is how the SD path used to run
+    /// out of memory (KORAK 19). Slower and finishing beats faster and dying.
+    ///
+    /// ⚠️ There is no Stop. Each photo is committed as it completes, so
+    /// quitting mid-run leaves the ones already done done and the rest
+    /// untouched — but a selection of forty is a coffee, and the dialog says so
+    /// before it starts.
+    private func runPortraitRecipes(_ recipes: [PortraitRecipe], on targets: [URL]) {
+        guard !recipes.isEmpty, !targets.isEmpty else {
+            return
+        }
+
+        let ordered = PortraitRecipe.allCases.filter { recipes.contains($0) }
+        let label = ordered.map(\.title).joined(separator: " + ")
+
+        isFlattening = true
+        exportStatusText = "\(label) 1 of \(targets.count)…"
+
+        developRenderQueue.async(qos: .userInitiated) {
+            var results: [URL: PhotoEditSettings] = [:]
+            var noPeople = 0
+            var failed = 0
+
+            for (offset, url) in targets.enumerated() {
+                DispatchQueue.main.async {
+                    exportStatusText = "\(label) \(offset + 1) of \(targets.count)…"
+                }
+
+                // loadBaseImage opens the photo's flattened copy when it has
+                // one, so a photo baked earlier is worked on from the picture
+                // it actually shows rather than the file underneath it.
+                guard let base = PhotoEditRenderer.loadBaseImage(from: url) else {
+                    failed += 1
+                    continue
+                }
+
+                var photoSettings = PhotoEditStore.settings(for: url)
+                // applyCrop: false — a layer's geometry lives in the pre-crop
+                // unit space, same as everywhere else layers are made.
+                let full = PhotoEditRenderer.render(photoSettings, on: base, applyCrop: false)
+
+                // No selection to confine to: there is no editor open on this
+                // photo, and a rope drawn on a different photograph means
+                // nothing here.
+                guard let made = PeopleLayerFactory.make(from: full, confinedTo: nil,
+                                                         backgroundName: "Background",
+                                                         peopleName: "People") else {
+                    noPeople += 1
+                    continue
+                }
+
+                photoSettings.layers.append(made.background)
+                photoSettings.layers.append(made.people)
+                for recipe in ordered {
+                    photoSettings = recipe.applied(to: photoSettings,
+                                                   backgroundID: made.background.id,
+                                                   peopleID: made.people.id)
+                }
+
+                let rendered = PhotoEditRenderer.render(photoSettings, on: base, applyCrop: false)
+                do {
+                    try FlattenedImageStore.flatten(rendered, settings: photoSettings,
+                                                    for: url, context: briefEditsCIContext)
+                } catch {
+                    failed += 1
+                    continue
+                }
+
+                // Everything is in the pixels now. The crop is the one thing
+                // kept, because it was not baked — same rule as flattenPhoto.
+                var cleared = PhotoEditSettings()
+                cleared.crop = photoSettings.crop
+                results[url] = cleared
+            }
+
+            DispatchQueue.main.async {
+                for (url, cleared) in results {
+                    PhotoEditStore.setSettings(cleared, for: url)
+                }
+                PhotoEditStore.flushNow()
+                isFlattening = false
+
+                var message = "\(label) on \(results.count)"
+                if noPeople > 0 { message += ", \(noPeople) with no people" }
+                if failed > 0 { message += ", \(failed) failed" }
+                showTransientStatus(message)
+            }
+        }
     }
 
     // MARK: Masks (local adjustments) actions

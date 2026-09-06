@@ -86,6 +86,19 @@ func write(_ removal: InpaintPipeline.Removal, _ name: String) {
 
 try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
+// The exemplar (patch-match) path — InpaintPipeline.removal. It has no caller
+// in the app today, and it is the one engine here that COPIES real pixels
+// instead of synthesizing them, so on pure texture it is the interesting
+// comparison. Added while looking at what SD does to grass.
+if engine == "exemplar" {
+    let start = Date()
+    if let r = InpaintPipeline.removal(mask: mask, from: image, context: context) {
+        print(String(format: "exemplar  %.1fs", Date().timeIntervalSince(start)))
+        write(r, "exemplar")
+    } else { print("exemplar returned nil") }
+    exit(0)
+}
+
 if engine == "lama" {
     let start = Date()
     if let r = try? InpaintPipeline.quickAIRemoval(mask: mask, from: image, context: context) {

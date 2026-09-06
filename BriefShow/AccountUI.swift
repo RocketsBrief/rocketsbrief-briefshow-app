@@ -399,6 +399,25 @@ struct ProfileSettingsModal: View {
     }
 }
 
+/// Content heights for the two scrolling boxes in `UpdateRequiredOverlay`.
+/// SwiftUI's `ScrollView` never reports its content's height, so each box
+/// measures its own content and takes `min(content, cap)` — short notes get a
+/// short box, long notes get a scroller instead of a card that runs off the
+/// bottom of the screen.
+private struct UpdateNotesHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct UpdateStepsHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct UpdateRequiredOverlay: View {
     // Same reason as ProfileBadge: AppColors alone does not subscribe to
     // anything, so without this the view keeps the theme it was first drawn in.
@@ -419,112 +438,172 @@ struct UpdateRequiredOverlay: View {
     /// it in Applications.
     private static let quitDelay: TimeInterval = 4
 
+    /// Measured heights of the two long parts of the card. A `ScrollView`
+    /// does not report how tall its content is, so without measuring them the
+    /// box would either always stand at full height (a gap under two lines of
+    /// notes) or grow with the text — which is exactly the bug this replaced.
+    @State private var notesContentHeight: CGFloat = 0
+    @State private var stepsContentHeight: CGFloat = 0
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.55)
                 .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 10) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(AppColors.hoverInk)
+            // ⚠️ The card is sized to the WINDOW, not to its content. Before
+            // this it was a plain `VStack` in a fixed 440 pt column that grew
+            // with the release notes: with long notes — or with the install
+            // steps open — it ran off the bottom of the screen and took
+            // „Download Update" with it. Now the two long parts scroll inside
+            // their own boxes, with caps taken from the window height, so the
+            // button cannot leave the screen no matter how long the notes are.
+            GeometryReader { geo in
+                let room = max(geo.size.height - 80, 300)
+                let notesCap = min(max(room * 0.32, 120), 320)
+                let stepsCap = min(max(room * 0.34, 150), 360)
+                // Wider than the old 440 — the release notes come with their
+                // own line breaks, so a narrow column wrapped every line
+                // twice. Still never wider than the window, or the card would
+                // run off the sides on a small one.
+                let width = min(620, max(geo.size.width - 48, 320))
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("A new version of C4S Suite is required")
-                            .font(.custom("Figtree", size: 15).weight(.bold))
-                            .foregroundColor(AppColors.ink)
+                card(width: width, notesCap: notesCap, stepsCap: stepsCap)
+                    .frame(width: geo.size.width, height: geo.size.height)
+            }
+        }
+    }
 
-                        Text("Update to version \(latestVersion) to keep using C4S Suite.")
-                            .font(.custom("Figtree", size: 12).weight(.regular))
-                            .foregroundColor(AppColors.muted)
-                    }
+    private func card(width: CGFloat, notesCap: CGFloat, stepsCap: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(AppColors.hoverInk)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("A new version of C4S Suite is required")
+                        .font(.custom("Figtree", size: 15).weight(.bold))
+                        .foregroundColor(AppColors.ink)
+
+                    Text("Update to version \(latestVersion) to keep using C4S Suite.")
+                        .font(.custom("Figtree", size: 12).weight(.regular))
+                        .foregroundColor(AppColors.muted)
                 }
+            }
 
-                if let releaseNotes, !releaseNotes.isEmpty {
+            if let releaseNotes, !releaseNotes.isEmpty {
+                ScrollView(.vertical) {
                     Text(releaseNotes)
                         .font(.custom("Figtree", size: 12).weight(.regular))
                         .foregroundColor(AppColors.muted)
                         .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        // Room for the scroller, so it never sits on the text.
+                        .padding(.trailing, 12)
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: UpdateNotesHeightKey.self,
+                                    value: proxy.size.height
+                                )
+                            }
+                        )
                 }
-
-                Button {
-                    // Hand the download to the browser, then QUIT — the client
-                    // asked for it in as many words, and the reason is the next
-                    // step of the install: the new C4S Suite cannot be dragged
-                    // over the old one in Applications while the old one is
-                    // running. Leaving it open only to tell the client to close
-                    // it (which is what install step 3 used to say) was making
-                    // them do the app's job.
-                    //
-                    // ⚠️ The quit is on a CLOCK, not on the hand-off's
-                    // completion. Earlier it waited for `open` to call back,
-                    // which meant that on a slow or silent callback the app
-                    // could sit there open — exactly what the client reported.
-                    // Four seconds is his number, and it is comfortably more
-                    // than a browser needs to be handed a URL: the hand-off is
-                    // the browser's job from the first instant, and nothing of
-                    // ours is still transferring when we go.
-                    guard let downloadURL, let url = URL(string: downloadURL) else { return }
-                    guard !quittingForUpdate else { return }
-                    quittingForUpdate = true
-
-                    // Kept so the ONE case that must not quit can cancel it:
-                    // if the browser never took the URL, quitting would leave
-                    // the client with neither a download nor an app. That
-                    // callback lands in milliseconds when it lands at all, so
-                    // it is always well inside the four seconds.
-                    let quit = DispatchWorkItem { NSApplication.shared.terminate(nil) }
-                    DispatchQueue.main.asyncAfter(
-                        deadline: .now() + Self.quitDelay, execute: quit
-                    )
-
-                    NSWorkspace.shared.open(
-                        url, configuration: NSWorkspace.OpenConfiguration()
-                    ) { _, error in
-                        guard error != nil else { return }
-                        DispatchQueue.main.async {
-                            quit.cancel()
-                            quittingForUpdate = false
-                        }
-                    }
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text(quittingForUpdate ? "Opening your browser…" : "Download Update")
-                            .font(.custom("Figtree", size: 13).weight(.semibold))
-                        Spacer()
-                    }
-                    .padding(.vertical, 10)
+                .scrollIndicators(.visible)
+                .onPreferenceChange(UpdateNotesHeightKey.self) { height in
+                    notesContentHeight = height
                 }
-                .buttonStyle(PrimaryBrutalButtonStyle())
-                .disabled(quittingForUpdate)
+                .frame(height: min(max(notesContentHeight, 1), notesCap))
+                .padding(12)
+                .background(AppColors.panel)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(AppColors.border, lineWidth: 1.2)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
 
-                // Without this the quit looks like a crash: the browser opens
-                // behind the app and a few seconds later the app is simply
-                // gone. Said out loud, it reads as the install doing its job.
-                if quittingForUpdate {
-                    Text("C4S Suite will close in a few seconds so you can replace it in your Applications folder. Your download continues in the browser.")
-                        .font(.custom("Figtree", size: 11.5).weight(.regular))
-                        .foregroundColor(AppColors.muted)
-                        .fixedSize(horizontal: false, vertical: true)
+            Button {
+                // Hand the download to the browser, then QUIT — the client
+                // asked for it in as many words, and the reason is the next
+                // step of the install: the new C4S Suite cannot be dragged
+                // over the old one in Applications while the old one is
+                // running. Leaving it open only to tell the client to close
+                // it (which is what install step 3 used to say) was making
+                // them do the app's job.
+                //
+                // ⚠️ The quit is on a CLOCK, not on the hand-off's
+                // completion. Earlier it waited for `open` to call back,
+                // which meant that on a slow or silent callback the app
+                // could sit there open — exactly what the client reported.
+                // Four seconds is his number, and it is comfortably more
+                // than a browser needs to be handed a URL: the hand-off is
+                // the browser's job from the first instant, and nothing of
+                // ours is still transferring when we go.
+                guard let downloadURL, let url = URL(string: downloadURL) else { return }
+                guard !quittingForUpdate else { return }
+                quittingForUpdate = true
+
+                // Kept so the ONE case that must not quit can cancel it:
+                // if the browser never took the URL, quitting would leave
+                // the client with neither a download nor an app. That
+                // callback lands in milliseconds when it lands at all, so
+                // it is always well inside the four seconds.
+                let quit = DispatchWorkItem { NSApplication.shared.terminate(nil) }
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + Self.quitDelay, execute: quit
+                )
+
+                NSWorkspace.shared.open(
+                    url, configuration: NSWorkspace.OpenConfiguration()
+                ) { _, error in
+                    guard error != nil else { return }
+                    DispatchQueue.main.async {
+                        quit.cancel()
+                        quittingForUpdate = false
+                    }
                 }
+            } label: {
+                HStack {
+                    Spacer()
+                    Text(quittingForUpdate ? "Opening your browser…" : "Download Update")
+                        .font(.custom("Figtree", size: 13).weight(.semibold))
+                    Spacer()
+                }
+                .padding(.vertical, 10)
+            }
+            .buttonStyle(PrimaryBrutalButtonStyle())
+            .disabled(quittingForUpdate)
 
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        showInstallGuide.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(showInstallGuide ? "Hide install steps" : "How do I install this update?")
-                        Image(systemName: showInstallGuide ? "chevron.up" : "chevron.down")
-                    }
-                    .font(.custom("Figtree", size: 11.5).weight(.medium))
+            // Without this the quit looks like a crash: the browser opens
+            // behind the app and a few seconds later the app is simply
+            // gone. Said out loud, it reads as the install doing its job.
+            if quittingForUpdate {
+                Text("C4S Suite will close in a few seconds so you can replace it in your Applications folder. Your download continues in the browser.")
+                    .font(.custom("Figtree", size: 11.5).weight(.regular))
                     .foregroundColor(AppColors.muted)
-                }
-                .buttonStyle(.plain)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
-                if showInstallGuide {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    showInstallGuide.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(showInstallGuide ? "Hide install steps" : "How do I install this update?")
+                    Image(systemName: showInstallGuide ? "chevron.up" : "chevron.down")
+                }
+                .font(.custom("Figtree", size: 11.5).weight(.medium))
+                .foregroundColor(AppColors.muted)
+            }
+            .buttonStyle(.plain)
+
+            if showInstallGuide {
+                // Six steps plus the closing note are taller than most
+                // screens leave room for once the notes are in — so this
+                // scrolls too, under the same cap logic.
+                ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: 10) {
                         installStep(1, "Click \"Download Update\" above. It opens the C4S Suite release page on GitHub in your browser, and a few seconds later C4S Suite closes itself so you can replace it. The download keeps going in the browser.")
                         installStep(2, "On that page, under \"Assets\", click the file named \"BriefShow-macOS-Universal.zip\" to start the download.")
@@ -532,32 +611,47 @@ struct UpdateRequiredOverlay: View {
                         installStep(4, "C4S Suite is still in active development, so it isn't distributed through the Mac App Store yet. When you first open it, macOS will say it \"was blocked to protect your Mac.\" Open System Settings → Privacy & Security, scroll down to the Security section, and click \"Open Anyway\" next to C4S Suite.")
                         installStep(5, "Open C4S Suite again. Click \"Open Anyway\" once more in the dialog, then enter your Mac's login password when asked. Choose \"Always Allow\" so you won't be asked again.")
                         installStep(6, "That's it. C4S Suite will open normally from then on.")
-                    }
-                    .padding(14)
-                    .background(AppColors.panel)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14)
-                            .stroke(AppColors.border, lineWidth: 1.2)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
 
-                    Text("Why this extra step? C4S Suite is still being finished and we haven't decided yet whether it will launch on the Mac App Store or stay a direct download. Once it's complete, it will be fully verified by Apple. Thanks for being an early user.")
-                        .font(.custom("Figtree", size: 10.5).weight(.regular))
-                        .italic()
-                        .foregroundColor(AppColors.muted)
-                        .fixedSize(horizontal: false, vertical: true)
+                        Text("Why this extra step? C4S Suite is still being finished and we haven't decided yet whether it will launch on the Mac App Store or stay a direct download. Once it's complete, it will be fully verified by Apple. Thanks for being an early user.")
+                            .font(.custom("Figtree", size: 10.5).weight(.regular))
+                            .italic()
+                            .foregroundColor(AppColors.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 2)
+                    }
+                    .padding(.trailing, 12)
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: UpdateStepsHeightKey.self,
+                                value: proxy.size.height
+                            )
+                        }
+                    )
                 }
+                .scrollIndicators(.visible)
+                .onPreferenceChange(UpdateStepsHeightKey.self) { height in
+                    stepsContentHeight = height
+                }
+                .frame(height: min(max(stepsContentHeight, 1), stepsCap))
+                .padding(14)
+                .background(AppColors.panel)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(AppColors.border, lineWidth: 1.2)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14))
             }
-            .padding(24)
-            .frame(width: 440)
-            .background(AppColors.background)
-            .overlay(
-                RoundedRectangle(cornerRadius: 24)
-                    .stroke(AppColors.border, lineWidth: 2)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 24))
-            .shadow(color: Color.black.opacity(0.3), radius: 30, y: 12)
         }
+        .padding(24)
+        .frame(width: width)
+        .background(AppColors.background)
+        .overlay(
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(AppColors.border, lineWidth: 2)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .shadow(color: Color.black.opacity(0.3), radius: 30, y: 12)
     }
 
     private func installStep(_ number: Int, _ text: String) -> some View {

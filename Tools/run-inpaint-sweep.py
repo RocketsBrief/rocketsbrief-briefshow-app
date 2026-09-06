@@ -32,6 +32,11 @@ parser.add_argument("ux", type=float); parser.add_argument("uy", type=float)
 parser.add_argument("uw", type=float); parser.add_argument("uh", type=float)
 parser.add_argument("--out", default=None, help="where to write the PNGs")
 parser.add_argument("--lama", action="store_true", help="Quick Clean Up instead of SD")
+parser.add_argument("--exemplar", action="store_true",
+                    help="the patch-match path (InpaintPipeline.removal) instead of SD")
+parser.add_argument("--onone", action="store_true",
+                    help="compile -Onone, the way a Debug build of the app is — "
+                         "the honest way to answer 'why does this take minutes in Xcode?'")
 parser.add_argument("--sweep", default="7.5", help="guidance values, comma separated")
 parser.add_argument("--prompts", default="@default", help="prompts, | separated")
 parser.add_argument("--refine", default="@default",
@@ -59,7 +64,7 @@ shutil.copy(root / "Tools" / "inpaint-sweep.swift", work / "main.swift")
 sdk = subprocess.run(["xcrun", "--show-sdk-path", "--sdk", "macosx"],
                      capture_output=True, text=True, check=True).stdout.strip()
 build = subprocess.run(
-    ["swiftc", "-O", "-sdk", sdk, "-target", "arm64-apple-macos13.0",
+    ["swiftc", "-Onone" if args.onone else "-O", "-sdk", sdk, "-target", "arm64-apple-macos13.0",
      *[str(work / n) for n in sources], str(work / "main.swift"),
      "-o", str(work / "sweep")],
     capture_output=True, text=True)
@@ -74,6 +79,8 @@ cmd = [str(work / "sweep"), str(photo), str(out),
        str(args.ux), str(args.uy), str(args.uw), str(args.uh)]
 if args.lama:
     cmd.append("lama")
+elif args.exemplar:
+    cmd.append("exemplar")
 r = subprocess.run(cmd, env=env)
 print(f"\nPNGs in {out}")
 sys.exit(r.returncode)

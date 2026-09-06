@@ -14588,3 +14588,602 @@ prerelease, tag `v11.7` pokazuje na `05e39cb` na grani `briefshow-develop`
 
 ⚠️ `latest_version` u BriefControl-u i dalje diže klijent sam — dok ne digne na
 11.7, niko ne dobija karticu „mora update".
+
+---
+
+## KORAK 132 — kartica „mora update": širi prozor i klizač za notes (6. septembar 2026)
+
+Klijent je poslao snimak kartice za update: tekst release notes-a je izgurao
+karticu preko cele visine ekrana, a **„Download Update" se jedva video** —
+stajao je ispod notes-a, dakle van ekrana ili na samoj ivici.
+
+### Zašto je izlazila van ekrana
+
+`UpdateRequiredOverlay` u `BriefShow/AccountUI.swift` je bio običan `VStack` u
+koloni od **440 pt**, bez ijednog klizača. Ta kolona raste zajedno sa sadržajem:
+
+- `Text(releaseNotes)` sa `.fixedSize(vertical: true)` — koliko teksta, toliko
+  visine, bez gornje granice;
+- šest koraka instalacije plus objašnjenje ispod, kad se panel otvori.
+
+Kartica se dakle merila po **sadržaju**, a ne po prozoru. Dugme je bilo ispod
+notes-a u istom stubu, pa je s njim i izlazilo dole.
+
+### Šta je promenjeno
+
+| | pre | sada |
+|---|---|---|
+| širina kartice | 440, fiksno | **do 620, nikad šire od prozora** |
+| visina | koliko sadržaj traži | koliko **prozor** dozvoljava |
+| release notes | pun tekst, bez granice | svoj okvir sa klizačem |
+| koraci instalacije | pun spisak, bez granice | svoj okvir sa klizačem |
+| „Download Update" | ispod notes-a, gurano dole | **uvek na ekranu** |
+
+Kartica je sada unutar `GeometryReader`-a i granice se računaju iz visine
+prozora, ne fiksno:
+
+    let room      = max(geo.size.height - 80, 300)
+    let notesCap  = min(max(room * 0.32, 120), 320)
+    let stepsCap  = min(max(room * 0.34, 150), 360)
+
+Oba okvira su `ScrollView` sa `.scrollIndicators(.visible)` — klizač se vidi i
+kad se ne vuče, jer je poenta da se **vidi da ima još teksta**.
+
+### ⚠️ Zašto se meri visina sadržaja
+
+`ScrollView` na macOS-u **ne prijavljuje koliko mu je sadržaj visok**. Da je
+stajalo samo `.frame(maxHeight:)`, kratke notes od dva reda bi dobile prazan
+okvir pune visine. Zato svaki okvir meri svoj sadržaj kroz `GeometryReader` u
+`.background`-u i `PreferenceKey` (`UpdateNotesHeightKey`, `UpdateStepsHeightKey`),
+pa uzima `min(sadržaj, granica)`:
+
+- kratke notes → nizak okvir, bez klizača;
+- duge notes → okvir do granice, klizač se pojavi.
+
+Tekst u okviru ima `padding(.trailing, 12)` da klizač ne staje na slova.
+
+### Zašto baš šira kartica, a ne samo klizač
+
+Na klijentovom snimku se vidi i drugi problem: release notes **već nose svoje
+prelome reda** (pisane su na ~80 znakova). U koloni od 440 pt svaki takav red se
+prelamao **još jednom**, pa je pola teksta viselo u drugom redu po dve reči.
+Šire platno to gasi. Granica je `min(620, širina prozora − 48)`, dakle na uskom
+prozoru kartica se sužava umesto da izađe sa strane.
+
+Objašnjenje ispod koraka instalacije je uvučeno **unutar** istog klizača, da ne
+bi ono guralo karticu naniže kad se panel otvori.
+
+### Stanje
+
+`xcodebuild ... build` → **BUILD SUCCEEDED**, bez upozorenja u `AccountUI.swift`.
+
+⚠️ **Nije viđeno na ekranu.** Kartica se pojavljuje tek kad `latest_version` u
+BriefControl-u bude veći od verzije u paketu, a na ovoj mašini nema dozvole za
+snimanje ekrana (`screencapture` vraća samo pozadinu). Provera ostaje klijentu
+ili na sledećem release-u — gleda se jedno: da li „Download Update" stoji u
+prozoru i kad su notes duge.
+
+Pogođena mesta: `BriefShow/AccountUI.swift` (jedan pogled, dva pozivna mesta —
+`ContentView.swift:769` u editoru i `ContentView.swift:21451` u ShowGrid-u,
+oba nedirana).
+
+---
+
+## KORAK 133 — Sync: kućica po KONTROLI, ne po grupi (6. septembar 2026)
+
+Zahtev klijenta: „sync option da daje opciju pojedinačno da se sinkuje šta —
+sve pojedinačno što može i što postoji u app-i, i da se odvoji po sekcijama."
+
+### Šta je bilo
+
+`SyncCategory` sa **pet** kućica — Crop & Rotate / Light / Color / Detail &
+Effects / Masks — kopirano iz Lightroom-ovog dijaloga. Radni slučaj koji to ne
+može da izgovori: *„daj svima isti balans belog, i ništa drugo."* „Color" je
+vukao i Saturation, i Vibrance, i ceo mikser.
+
+### Šta je sada
+
+`SyncItem`, **jedan bit po kontroli**, 21 kućica u istih pet sekcija, redom
+kojim ih ima i panel:
+
+| sekcija | kontrole |
+|---|---|
+| Crop & Rotate | Crop, Rotation, Straighten |
+| Light | Exposure, Contrast, Highlights, Shadows, Whites, Blacks |
+| Color | Temperature, Tint, Saturation, Vibrance, Color Mixer |
+| Detail & Effects | Sharpness, Texture, Clarity, Dehaze, Soft Glow, Vignette |
+| Masks | Masks |
+
+- **Zaglavlje sekcije je i samo kućica**, i ima **tri stanja** — puna, prazna i
+  crtica kad je deo ispod isključen. Staro ponašanje „cela grupa odjednom" je
+  time i dalje jedan klik, samo više nije jedino što postoji.
+- **`Only What's Set`** — čekira tačno ono što otvorena fotografija stvarno nosi.
+  To je dugme koje pokriva radni slučaj iz zahteva.
+- Red koji fotografija nosi ima **tačkicu** sa desne strane. ⚠️ Redovi bez
+  tačkice se **ne gase** — sinkovanje nule je jedini način da se na ciljanim
+  fotografijama neka kontrola **obriše** posle ranijeg sync-a.
+- Dole levo piše **„6 of 21 controls"**, jer se lista skroluje pa se pola ne vidi.
+- Spisak je u `ScrollView`-u sa granicom od 360 pt, dijalog 340 → **460** pt
+  širine. Isto pravilo kao kod kartice za update: dugme koje se pritiska ne sme
+  da bude ono što ispadne sa dna.
+
+### ⚠️ Tri stvari su usput ISPRAVLJENE, a nisu bile prijavljene
+
+Stari `mergedSyncSettings` je kopirao slajder ali ne i ono što ga oblikuje:
+
+| polje | posledica pre |
+|---|---|
+| `temperatureKelvin` | **Temperature se nije micala.** Ako je meta ranije dobila apsolutni Kelvin (iz preseta), zadržala bi ga, pa je sinkovani ofset bio bez efekta |
+| `tintAbsolute` | isto, za Tint |
+| `sharpenRadius` | meta izoštrena na radijusu 1 dok izvor stoji na 2,5 |
+| `vignetteMidpoint/Feather/Roundness` | meta dobija jačinu vinjete, ali ne i njen oblik |
+
+Sada svaka od tih vrednosti putuje **sa svojom kontrolom**, po istom pravilu po
+kom `cropAspect` putuje sa `crop`-om (to je već bila prijava od 1.09.). Zato te
+četiri nemaju **svoju** kućicu: same za sebe ne menjaju nijedan piksel, isti
+razlog iz kog ih ne broji ni `isNeutral` i iz kog ih panel krije na nuli.
+
+### Šta i dalje NIJE u sync-u
+
+`layers` — sloj je isečen komad piksela iz jedne određene fotografije, a ne
+„podešavanje" kao ekspozicija ili crop. Ostaje kako je bilo (v. komentar iznad
+`SyncItem`).
+
+### Stanje
+
+`xcodebuild ... build` → **BUILD SUCCEEDED**, bez upozorenja.
+
+⚠️ **Nije viđeno na ekranu** — nema dozvole za snimanje ekrana na ovoj mašini.
+Prvo što treba pogledati kad se pokrene: da li se lista skroluje i da li
+„Synchronize" stoji na svom mestu dok se skroluje.
+
+Pogođeno: `BriefShow/Develop.swift` — `SyncItem` (bivši `SyncCategory`),
+`syncDialogView` + dva nova pomoćna pogleda (`syncSection`, `syncRow`),
+`syncSettingsToSelection(items:)`, `mergedSyncSettings(source:target:items:)`.
+
+---
+
+## KORAK 134 — tri portretna dugmeta: Youthify, Subject Mono, Mono Background (6. septembar 2026)
+
+Zahtev klijenta, sa tačnim redosledom koraka i tačnim brojevima:
+
+| dugme | šta radi |
+|---|---|
+| **Youthify** | Select People → sačekaj da završi → **Texture −60** na sloju People → Flatten |
+| **Subject Mono** | Select People → sačekaj → **B&W + Contrast +30** na sloju People → Flatten |
+| **Mono Background** | Select People → sačekaj → selektuj sloj **Background** → **B&W + Contrast +40** → Flatten |
+
+I: *„i ta tri da postoje u sinhronizaciji isto."*
+
+### Gde stoje — ispravljeno istog dana
+
+Sekcija **„AI Portrait"** je **na dnu AI bloka** (`aiManipulationSection`), ispod
+teksta koji piše clean-up brush, a iznad histograma. Klijent je to pokazao
+snimkom: *„ovo si trebao da stavis ovde ispod ovoga izmedju histogram i texta za
+ai i izbrisi iz retouch sekcije!"*
+
+Prvo je bila u kartici **Retouch**, ispod „Tools" — uz obrazloženje da svaki
+recept počinje sa Select People, koji je tamo. To je bio pogrešan pogled: ovo
+troje sa Quick i Generative Clean Up-om deli to što su **AI**, a ne to što su
+alat. Iz Retouch-a je obrisana — jedan dom, ne dva.
+
+### ⚠️ Zamka koju je to preseljenje otvorilo, i kako je zatvorena
+
+`selectPeopleAsLayer` na svom početku zove `closeAICleanUp()`, a to **sklapa ceo
+AI blok**. Sad kad dugmad žive u tom bloku, to bi značilo: pritisneš „Youthify",
+i u istom trenutku nestanu i dugme koje si pritisnuo i traka napretka koja treba
+da odgovori na taj pritisak.
+
+Zato, kad recept vozi (`onFinish != nil`), ide **samo** `deactivateRemoveBrush()`
+— četkica se mora ugasiti, da ne šara dok traje — a sklapanje se preskače. Na
+svim ostalim putevima ponašanje je nepromenjeno.
+
+Uz to, recept više **ne skače na karticu Layers**. Select People sam skače i to
+je ispravno — on se tu i **završava**; recept ih peče sekundu kasnije, pa bi skok
+bio na karticu koja samo što nije prazna, i to iz bloka u kom je dugme
+pritisnuto. Ako pečenje padne, `flattenErrorMessage` se vidi u podnožju panela,
+koje nose sve kartice.
+
+### Brojevi — i zašto su baš takvi u kodu
+
+Svi slajderi u app-i se ispisuju kao `vrednost × 100`, pa je **−60 na ekranu =
+−0,60 u zapisu**. B&W je `saturation = -1`, isto što piše i prekidač „Black &
+White" na sloju — jedno stanje, jedan zapis, bez drugog opisa iste stvari.
+
+```
+youthify        → layers[people].adjustments.texture  = -0.60
+subjectMono     → layers[people].adjustments.saturation = -1, contrast = 0.30
+monoBackground  → layers[background].adjustments.saturation = -1, contrast = 0.40
+```
+
+Background sloj je **matte**, ne pikseli — i to radi, jer `compositeLayers` za
+takav sloj ide kroz `compositeDerivedLayer`, koji primenjuje `adjustments` na
+oblast fotografije ispod matte-a.
+
+### Tri stvari koje su morale da se prerade
+
+**1. `PeopleLayerFactory` — izvučen iz `selectPeopleAsLayer`.** Pravljenje dva
+sloja (People kao isečak, Background kao matte) sada je čista statička funkcija
+nad već renderovanim kadrom. Razlog: sinhronizacija mora isto to da uradi nad
+fotografijama koje **nisu otvorene** u editoru. Dve kopije te logike bi značile
+dva odgovora na pitanje „šta Select People pravi", a batch bi bio onaj u koji
+niko ne gleda.
+
+**2. `selectPeopleAsLayer` je dobio `onFinish` i `onStopped`.** ⚠️ Uvek se
+pozove **tačno jedan** od njih — i kad Vision ne nađe nikoga, i kad klijent u
+međuvremenu otvori drugu fotografiju. Bez toga bi recept zauvek stajao na
+„looking for people…". Kad recept vozi, preskaču se dve stvari koje imaju smisla
+samo kao **kraj** posla: skok na karticu Layers i poruka „evo ti dva sloja" —
+jer sekundu kasnije sledi flatten, pa bi kartica pokazivala slojeve kojih više
+nema.
+
+**3. `flattenPhoto(using:completion:)`.** ⚠️ Recept upiše brojeve na sloj i
+odmah peče, u istom prolazu run loop-a. Da flatten čita `settings` nazad,
+ispekao bi zapis od **pre** izmene — što izgleda kao dugme koje ništa ne radi.
+Zato se zapis predaje eksplicitno. Svi ostali pozivi ne prosleđuju ništa i rade
+tačno kao pre. `completion` se poziva na **svakom** izlazu, i kad pukne.
+
+### U sinhronizaciji
+
+Ista tri, kao zaseban uokviren blok na dnu Sync dijaloga.
+
+⚠️ **Prazno po difoltu**, dok je sve iznad čekirano. Kontrole iznad **prepisuju
+broj** na metu; recept **radi** nad metom — svoj Select People, svoje pečenje.
+Akcija ne sme da se desi zato što neko nije pročitao spisak. „None" gasi i njih,
+jer „None" mora da znači da se ništa neće dogoditi.
+
+- Više njih odjednom se sklapa u **jedan** Select People i **jedno** pečenje po
+  fotografiji (Subject Mono na ljudima + Mono Background na pozadini je izgled,
+  ne sukob).
+- Recepti idu **posle** upisa sinhronizovanih podešavanja i čitaju ih nazad po
+  fotografiji — meta prvo dobije grade, pa se ljudi vade iz **već gradirane**
+  slike.
+- Sekvencijalno na `developRenderQueue`: po fotografiji je to pun dekod, Vision
+  prolaz i pečenje u punoj rezoluciji. Četiri takva paralelno na 9 GB mašini su
+  tačno ono na čemu je SD put ostajao bez memorije (KORAK 19).
+- Status broji po traci: „Youthify 3 of 12…".
+
+⚠️ **Nema Stop dugmeta.** Svaka fotografija se upisuje čim završi, pa izlazak iz
+app-e usred posla ostavlja urađene urađenim a ostale netaknutim — ali selekcija
+od četrdeset je nekoliko minuta, i dijalog to kaže pre nego što se krene. Ako
+zatreba, Stop je jedan `@State` flag i provera u petlji.
+
+### Stanje
+
+`xcodebuild ... build` → **BUILD SUCCEEDED**, bez upozorenja u `Develop.swift`.
+App je pokrenuta iz Debug build-a da klijent pogleda.
+
+⚠️ **Nije provereno na pravoj fotografiji** — nema dozvole za snimanje ekrana na
+ovoj mašini, pa ni jedan od tri recepta nije **viđen** kako radi. Prvo što treba
+pogledati: da li posle „Youthify" koža stvarno omekša (ako Vision ne nađe nikoga,
+javlja se stara poruka „No people found") i da li Unflatten vraća original.
+
+Pogođeno: `BriefShow/Develop.swift` — novi `PeopleLayerFactory` i
+`PortraitRecipe`, `aiPortraitSection` (unutar `aiManipulationSection`),
+`runPortraitRecipe`, `runPortraitRecipes`, `syncRecipeSection`, izmenjeni
+`selectPeopleAsLayer`, `flattenPhoto`, `syncSettingsToSelection`.
+
+---
+
+## KORAK 135 — dok je AI blok otvoren, četkica je UVEK u ruci (6. septembar 2026)
+
+Klijent, doslovno: *„uvek ali uvek kad je ukljuceno ai gore … da uvek kada odem
+na sliku da se prikaze circle za paint selection za ai.. i ako sam kliknuo na
+youthify ili subject mono ili mono backround on mora da kada ja odem na sliku
+prikaze circle"* — i dopuna: *„sve dok ne klikne na neko drugo dugme u quick
+selection dugmad na vrhu."*
+
+Na snimku se to i vidi: AI blok je otvoren, a „Exit Clean Up", „Quick" i
+„Generative" stoje **ugašeni** — dakle četkice nema.
+
+### Uzrok
+
+Krug se crta samo dok je `isRemoveBrushActive`. Dva puta su ostavljala blok
+otvoren, a četkicu spuštenu:
+
+1. **Prelazak na drugu fotografiju** (`selectPhoto`) spušta SVE alate — što je
+   tačno — i to je oduvek radilo, samo se ranije nije primećivalo jer se blok
+   uglavnom zatvarao zajedno sa alatom.
+2. **Portretni recept** — spušta četkicu na startu da ne šara dok radi (KORAK
+   134), a nije je vraćao.
+
+⚠️ Ovo je ISTA prijava koja je nekada napravila `closeAICleanUp`: *„neki put ai
+cleaner je otvoren jer sam kliknuo na crop pa ja trebam da ga zatvorim pa otvorim
+opet da bi dobio paint brush."* Otvoren AI Clean Up bez četkice čita se kao
+pokvaren.
+
+### Pravilo, i gde je zapisano
+
+`armAICleanUpBrush()` — **dok je AI blok otvoren, četkica je u ruci.** Zove se
+posle reseta alata u `selectPhoto` i na oba izlaza recepta (i kad uspe, i kad
+Vision ne nađe nikoga).
+
+Prestaje tačno tamo gde je klijent rekao — na drugom dugmetu iz gornjeg reda.
+Svako od njih ide kroz `closeAICleanUp()`, koje **sklapa blok**, a sa sklopljenim
+blokom `armAICleanUpBrush()` ne radi ništa. Nema dodatnog uslova za to; postojeći
+put ga već daje.
+
+⚠️ **Naslikana POVRŠINA se ne vraća, i ne sme.** Pri promeni fotografije je
+obrisana jer je opisivala piksele prethodne slike; posle recepta je zapečena.
+Vraća se samo četkica.
+
+Usput: „on" grana `toggleRemoveBrush`-a je izvučena u `activateRemoveBrush()`,
+nepromenjena, da pravilo iznad ima šta da zove.
+
+### Stanje
+
+`xcodebuild ... build` → **BUILD SUCCEEDED**, bez upozorenja. App pokrenuta.
+
+⚠️ Nije viđeno na ekranu (nema dozvole za snimanje). Provera je jednostavna:
+otvori AI, pređi na drugu fotografiju — krug mora da bude tu odmah; pritisni
+Youthify i sačekaj — krug mora da se vrati čim se završi.
+
+---
+
+## KORAK 136 — trava: treći motor, „Texture Clean Up" (6. septembar 2026)
+
+Klijent je poslao snimak trave posle Generative-a: *„ai generative SD tool nije
+dobar.. ajde da ga sredimo vidi sta je uradio travi"*. Na snimku meka mrlja sa
+utisnutim, delom preslikanim šarama.
+
+⚠️ **Ništa nije pretpostavljeno.** Mereno je na klijentovom pravom kadru
+`C4S_8932.NEF` (isti travnjak, ista sesija kao `C4S_8934` sa snimka), kroz
+`Tools/run-inpaint-sweep.py`, koji prevodi **pravi** pipeline iz izvora.
+
+### Šta je izmereno
+
+Ista rupa (1190×620 px na travi), tri motora, pa gledano na PNG-u pri 1:1:
+
+| motor | sitna tekstura u odnosu na PRAVU travu | ponavljanje | vreme |
+|---|---|---|---|
+| Generative (SD) | **0,50** | 0,045 | 9,6 s |
+| Quick (LaMa) | **0,49** | 0,112 | 1,1 s |
+| **exemplar (kopira prave piksele)** | **0,875** | **0,019** | 7,0–7,7 s |
+
+Na slici je razlika još jasnija nego u broju: kroz oba modela rupa je glatka
+mrlja koja se vidi iz aviona, kroz exemplar **ne može da se nađe** — prave
+vlati, prave suve stabljike, pravo zrno.
+
+Provereno i na velikoj rupi, 2173×1310 px (veličine osobe): i dalje uverljiva
+trava, blago mekša jer tu i exemplar smanjuje svoju radnu kopiju
+(`maxHolePixels`).
+
+### Zašto modeli i ne mogu bolje — to je već bilo zapisano
+
+Mekoća je **aritmetika, ne loš model**: oba modela pune rupu u baferu od 512
+(SD) odnosno do 1100 (LaMa), pa se to razvlači 2,6–4,1× nazad na fotografiju
+(KORAK 39, 107, 109). Jačina SD-a nije poluga (KORAK 109: iznad 0,40 model
+počne da izmišlja). Vraćanje zrna iz same fotografije (KORAK 109/112) i dalje
+stoji, ali je merenjem danas potvrđeno da na travi daje **0,50**, i da na
+1024 ume da ostavi vidljivu pravilnu šaru — što je verovatno baš ono što se
+vidi na klijentovom snimku.
+
+### Šta je urađeno
+
+**`InpaintPipeline.removal` — exemplar putanja — prestala je da bude mrtav
+kod.** Bila je prvi erase u app-i, sklonjena kad je došla LaMa (KORAK 6), i od
+tada je stajala prevedena a nepozvana (~400 linija; KORAK 6 je čak predlagao da
+se obriše). Sada je **treće dugme: „Texture Clean Up"**, pored Quick i
+Generative — i u AI bloku i u „Remove" sekciji, tamo gde su i druga dva.
+
+- **Ne traži nikakav model.** Nema preuzimanja od 1,8 GB, radi i na Intelu.
+- Radi do **2200 px** i **kopira prave piksele** umesto da ih izmišlja.
+- Dobila je i `feather:`, kao druga dva — do sada je ignorisala „Edge Feather"
+  slajder, pa je taj slajder menjao dva motora od tri.
+- Bez tvrde granice po veličini; iznad ~1700 px ide upozorenje da radi iz
+  smanjene kopije.
+
+### ⚠️ Zašto NIJE automatski, nego dugme
+
+Exemplar ima svoj kvar, suprotan modelima: **pločanje kad kroz rupu mora da se
+provuče STRUKTURA** — horizont, staza, ivica haljine. Reprodukovano danas: rupa
+čija desna ivica dodiruje plavu haljinu dobila je stepenasto plavo unutra.
+
+Detektor „ima li strukture oko ove rupe" je **pravljen, meren i odbačen — dvaput**.
+Jednom ranije (zapisano u `RemovalEngine`: gruba varijacija prstena čita 42–54
+nad čistim peskom i 44–79 nad linijom mora, dakle **preklapa se tačno tamo gde
+se rezultati razilaze**), i još jednom danas, u tri varijante (gruba ivična
+energija, odnos grubo/sitno, prsten oko rupe sa uklonjenim osvetljenjem). Isti
+ishod: čist pesak i granica mora se ne razdvajaju. Izbor je po **sadržaju**, a
+sadržaj zna fotograf, ne app.
+
+Zato tri dugmeta, a ne jedan pametan gumb koji ume da pogreši ćutke.
+
+### Kad koje — jednom rečenicom, i to piše u app-i
+
+- **Quick** — brzo, produžava okolinu, sekunda.
+- **Generative** — kad kroz rupu ide struktura koju treba nastaviti.
+- **Texture** — trava, pesak, zid, voda: kopira pravu teksturu odmah pored.
+  ⚠️ Ne za rupu koja preseca ivicu (horizont, staza, ivica osobe).
+
+### Alat
+
+`Tools/inpaint-sweep.swift` i `run-inpaint-sweep.py` su dobili `--exemplar`, pa
+se sada sva tri motora porede istom komandom na istoj rupi.
+
+### Stanje
+
+`BUILD SUCCEEDED`, bez upozorenja. App pokrenuta iz Debug build-a.
+
+⚠️ **Nije viđeno u app-i** — merenja i slike su iz harness-a (nema dozvole za
+snimanje ekrana ovde). Ono što je viđeno je PNG iz **pravog** pipeline-a na
+**pravom** klijentovom kadru. Prvo što treba probati u app-i: ista rupa na
+travi kroz „Texture", pa kroz „Generative", i uporediti na ekranu.
+
+⚠️ **Ostaje otvoreno, i nije dirano:** vraćanje zrna (`restoreFineDetail`,
+KORAK 109/112) i dalje radi u oba modela i na travi meri 0,50. Ono što se na
+klijentovom snimku vidi kao pravilna šara najverovatnije dolazi odatle. Ne dira
+se bez klijentove reči — KORAK 111 je pokazao šta znači menjati taj deo po
+merenju koje se ne poklapa sa ekranom.
+
+Pogođeno: `BriefShow/DevelopInpaint.swift` (`removal` dobija `feather`, nova
+`featherRadius` za pravougaoni bafer), `BriefShow/Develop.swift`
+(`RemovalEngine.texture`, dugme u AI bloku i u Remove sekciji, grana u
+`eraseMaskedArea`), `Tools/inpaint-sweep.swift`, `Tools/run-inpaint-sweep.py`.
+
+---
+
+## KORAK 137 — „Texture clean up ne radi… već 5 minuta": Debug build, ne kod (6. septembar 2026)
+
+Klijent, na build koji sam mu ja pokrenuo: *„texture clean up ne radi.. ali sada
+je SD odradio bolji posao nego prosli put. ali Texture clean up i dalje erasing..
+vec 5 minuta!"*
+
+### Uzrok — i zašto baš taj motor
+
+**Pokrenuo sam mu DEBUG build.** Debug je `-Onone`, i to je zapisano u ovom
+dokumentu još od 24. avgusta: *„Debug build je `-Onone`, pa je erase tamo i do
+~30× sporiji nego u Release-u. Testirati brzinu isključivo na Release buildu."*
+Nisam to pročitao pre nego što sam mu dao build.
+
+⚠️ **Zašto to pogađa samo Texture, a Quick i Generative rade normalno u istom
+build-u:** LaMa i SD su **Core ML** — težine su prevedene unapred i `-Onone`
+ih se ne tiče. Exemplar je **čist Swift na CPU-u**, unutrašnja petlja po
+pikselu, i optimizacija je razlika između sekunde i minuta.
+
+Izmereno, ista rupa (1190×620 na travi, `C4S_8932.NEF`), isti kod, ista mašina
+— dodat je `--onone` u `Tools/run-inpaint-sweep.py` baš da se ovo više ne
+pogađa:
+
+| prevođenje | vreme |
+|---|---|
+| `-O` (Release) | **7,7 s** |
+| `-Onone` (Debug) | **prekinuto posle 10 minuta, još je radilo** |
+
+Dakle „5 minuta" nije bio bag nego tačno ono što taj build radi. Klijent je
+gledao ispravan program kako radi trideset puta sporije nego što treba.
+
+⚠️ I još jedna moja greška: merenje na `-Onone` sam pustio **dok je klijent
+radio u app-i**, pa mu je jedno jezgro uzimalo moje merenje. Ubijeno čim sam
+video šta radim.
+
+### Urađeno
+
+- **Release build napravljen i pokrenut** — to je jedini pravi popravak.
+  ⚠️ Od sada: ono što se daje klijentu na probu je **Release**, i posebno kad
+  se dira exemplar, koji je jedini CPU-bound put u app-i.
+- **Traka sada nosi pravi procenat i za Texture.** Exemplar zna koliko je rupe
+  ostalo, pa `ExemplarInpainter.fill` ima `progress:`, `InpaintPipeline.removal`
+  ga prosleđuje, a `eraseMaskedArea` ga preslikava u `aiEraseProgress` sa
+  natpisom „Copying real texture in…". Poziva se najviše sto puta po popuni, ne
+  po pikselu — to je najuža petlja u app-i.
+
+  Bez toga je Texture imao samo putujuću traku, a ona ne ume da razlikuje
+  „radim" od „zaglavio sam se" — što je tačno kako je i pročitana.
+- `Tools/run-inpaint-sweep.py --onone` — da se „zašto je u Xcode-u sporo" ubuduće
+  meri, a ne pretpostavlja.
+
+### Klijentovo pitanje iz iste poruke
+
+*„dal moze on da vidi otprilike kakva je trava sto je selektovana i u delovima
+da je kopiram na tom mestu gde nema trave? i tako svuda kada se uklanja nesto
+taj backround da iskopira ali da napravi da se to ne vidi"*
+
+**To je tačno ono što Texture Clean Up jeste** — Criminisi exemplar popuna: za
+svaki komadić ivice rupe nađe **pravi** komad fotografije oko nje koji se
+najbolje slaže i **kopira ga unutra**, pa dalje po ivici koja se pomera ka
+sredini, dok se rupa ne zatvori; ivica se onda stopi (`Edge Feather`) da se šav
+ne vidi. Ne izmišlja nijedan piksel i ne uzima ništa iz onoga što je samo
+napravilo (KORAK 136, i komentar na `ExemplarInpainter.fill`).
+
+Dakle odgovor je: postoji, i to je dugme koje mu nije završavalo posao zbog
+Debug build-a.
+
+### Stanje
+
+`BUILD SUCCEEDED` (Release). App pokrenuta iz **Release** build-a.
+
+⚠️ Neprovereno na ekranu: sam procenat na traci. Merenje vremena je iz harness-a,
+ne iz app-e.
+
+---
+
+## KORAK 138 — Texture izbačen, Clean Up dugmad 30% veća, i šta je danas zaista promenjeno (6. septembar 2026)
+
+Klijent: *„sad je SD super. samo izbrisi Texture clean up jer ne pomaze i dugme
+Quick Clean up, i generative clean up neka budu veca dugmad ta dva nekih 30%
+veca da bude lakse za klijenta"*, pa dopuna: *„i dugmad i text i ikonica 30%
+veca za ta dva dugmad"*.
+
+### 1. Texture Clean Up — izbačen
+
+Dugme je sklonjeno sa oba mesta (AI blok i „Remove" sekcija),
+`RemovalEngine.texture` obrisan, a `DevelopInpaint.swift` **vraćen tačno na
+stanje pre KORAKA 136** (`git checkout`) — dakle `InpaintPipeline.removal` je
+opet kod koji niko ne poziva, kao što je bio i pre.
+
+⚠️ **Merenje iz KORAKA 136 se ne poništava i ne briše.** Ostaje zapisano da na
+klijentovoj travi exemplar vraća **0,875** prave teksture prema **0,50** kroz
+SD, i da se rupa kroz njega ne vidi. Ostaje i alat kojim se to ponovo dobija za
+minut: `Tools/run-inpaint-sweep.py --exemplar` (i `--onone`, v. KORAK 137).
+Klijent je probao i odlučio da mu ne pomaže; to je njegov ekran i njegova
+odluka, a merenje je i dalje tačno. Ako se ikad vrati na ovo, ne kreće se od
+nule.
+
+### 2. Dugmad — 30% veća
+
+`toolButton` je dobio `scale:` (podrazumevano 1), koji množi **ikonicu (12 →
+15,6), tekst (11 → 14,3) i oba padding-a** — dakle dugme raste kao celina, a ne
+kao velika kutija oko sitnog teksta, što bi dalo postavljanje samog frame-a.
+Samo dva poziva ga koriste, kroz jednu konstantu `cleanUpButtonScale = 1.3`, pa
+ne mogu da se raziđu. Svi ostali alati u traci su netaknuti.
+
+### 3. ⚠️ „SD je sada u fullu" — šta je tu istina
+
+Klijentov ekran kaže da je rezultat sada dobar, i po pravilu iz KORAKA 111
+**ekran pobeđuje**. Ali da bi ovaj dokument ostao upotrebljiv, mora da stoji i
+ovo:
+
+**U SD putanji danas nije promenjen nijedan red.** Provereno, ne pretpostavljeno:
+
+    git diff --name-only DevelopSDInpaint.swift DevelopLaMaInpaint.swift DevelopInpaint.swift
+    → prazno
+
+Nijedan parametar iz zaključanog odeljka nije dirnut: `imageSide` 512,
+`defaultSteps` 12, `defaultRefineStrength` 0,3, kontekst 1,6, `maxDetailEdge`
+1024. Piksele koje SD danas vraća računa **isti kod kao juče**, i Release build
+tu ništa ne menja — Core ML je unapred preveden, `-Onone` pogađa samo Swift
+petlje (zbog čega je i stradao exemplar, KORAK 137, a modeli nisu).
+
+Dakle **nisam uradio ništa da SD bude bolji.** Dva kandidata zašto je rezultat
+ipak bolji nego prvi put, i ne zna se koji:
+
+1. **Manja ili drugačije naslikana površina.** To je već izmereno i zapisano:
+   Generative je čist do ~1242 px, mek od ~1656 px (KORAK 109), i sam panel to
+   piše kad površina pređe 1400 px. Prvi snimak je bio velika rupa na travi.
+2. **Druga fotografija / drugo mesto u kadru**, sa manje teksture koja mora da
+   se pogodi.
+
+⚠️ Ovo vredi raščistiti jednom rečenicom od klijenta kad bude prilike, jer ako
+je uzrok (1), onda to nije „SD je sad dobar" nego **pravilo za rad**: velika
+uklanjanja raditi u dva-tri manja prolaza. To bi bilo korisnije od bilo koje
+izmene koda, i već stoji kao preporuka u KORACIMA 107 i 109.
+
+### 4. Šta je sve danas zamenjeno — ceo dan na jednom mestu
+
+| KORAK | šta | stanje |
+|---|---|---|
+| **132** | Kartica „mora update": širi prozor (do 620, nikad širi od prozora), klizači za release notes i za korake instalacije, „Download Update" više ne ispada sa dna | ostaje |
+| **133** | Sync: **21 kućica po kontroli** umesto 5 po grupi, zaglavlje sekcije sa tri stanja, „Only What's Set", brojač. Usput ispravljeno: `temperatureKelvin`/`tintAbsolute`/`sharpenRadius`/vinjetin oblik nisu putovali sa svojim slajderom | ostaje |
+| **134** | Tri portretna dugmeta — **Youthify** (Texture −60 na ljudima), **Subject Mono** (B&W + Contrast +30 na ljudima), **Mono Background** (B&W + Contrast +40 na pozadini), svako: Select People → izmena → Flatten. Ista tri i u sinhronizaciji, prazna po difoltu | ostaje |
+| **134b** | Preseljena sa Retouch kartice na **dno AI bloka**, po klijentovom snimku | ostaje |
+| **135** | Dok je AI blok otvoren, **četkica je uvek u ruci** — i posle promene fotografije i posle recepta; prestaje na drugom dugmetu iz gornjeg reda | ostaje |
+| **136** | **Texture Clean Up** (exemplar motor) dodat, izmeren: 0,875 prema 0,50 na travi | **POVUČEN** (ovaj korak) |
+| **137** | „Ne radi, već 5 minuta" = **Debug build**, `-Onone`; 7,7 s naspram preko 10 minuta na istoj rupi. Release napravljen i predat. Traka dobila procenat za exemplar | traka otišla sa dugmetom; nauk ostaje |
+| **138** | Texture izbačen, Clean Up dugmad 30% veća | ovo |
+
+**Fajlovi koji su danas dirnuti i posle svega ostaju izmenjeni:**
+`BriefShow/AccountUI.swift`, `BriefShow/Develop.swift`,
+`BRIEFSHOW_DEVELOP_NOTES.md`, i u alatima `Tools/inpaint-sweep.swift` +
+`Tools/run-inpaint-sweep.py` (`--exemplar`, `--onone`).
+
+**Fajlovi koji NISU dirnuti ni jednom danas:** `DevelopSDInpaint.swift`,
+`DevelopLaMaInpaint.swift`, `DevelopInpaint.swift` — dakle ceo zaključani
+odeljak „AI MODELI I NJIHOVA PODEŠAVANJA" stoji netaknut.
+
+### Stanje
+
+`BUILD SUCCEEDED` (Release). App pokrenuta iz Release build-a.
+
+⚠️ Neprovereno na ekranu: veličina dugmadi (nema dozvole za snimanje ekrana
+ovde). Brojevi su 12 → 15,6 px ikonica i 11 → 14,3 px tekst.

@@ -176,6 +176,11 @@ def main() -> int:
     parser.add_argument("version")
     parser.add_argument("--skip-build", action="store_true",
                         help="reuse build_universal/ instead of building again")
+    parser.add_argument("--small-only", action="store_true",
+                        help="build ONLY the ~115 MB update package, not the "
+                             "2 GB all-in-one. Use when the weights already on "
+                             "GitHub are still current and the in-app SD "
+                             "download can serve new clients from there.")
     parser.add_argument("--out", default="dist-universal")
     args = parser.parse_args()
 
@@ -194,6 +199,23 @@ def main() -> int:
     small_rows, small_problems = checks(app, args.version, expect_sd=False)
     small_zip = out / f"C4S-Suite-{args.version}.zip"
     small_size = zip_app(app, small_zip)
+
+    if args.small_only:
+        # ⚠️ Every check still runs — this skips the second PACKAGE, never the
+        # checking of the first one.
+        table(f"{small_zip.name}  — every install", small_rows, small_size)
+        if small_problems:
+            print()
+            for p in small_problems:
+                print(f"  ✗ update package: {p}")
+            fail(f"{len(small_problems)} problem(s) — nothing here is ready to publish")
+        print("\nRESULT: OK — the update package is built and checked")
+        print(f"  {small_zip}")
+        print("\n  ⚠️ No all-in-one package was made, so a NEW client installs "
+              "this and\n     then presses the app's own SD download button, "
+              "which points at the\n     v11.0 asset. That release must not be "
+              "deleted.")
+        return 0
 
     work = ROOT / "build_universal" / "with-models"
     work.mkdir(parents=True, exist_ok=True)

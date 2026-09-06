@@ -16002,3 +16002,68 @@ Onda se ne dira `refineStrength` nego `defaultSteps` — sa 12 koraka postoji sa
 šest upotrebljivih stepenika u celom opsegu. Podizanje na, recimo, 20 koraka bi
 dalo finiju podelu, ali menja i vreme i sam rezultat na svakom stepeniku, pa je
 to zaseban posao sa svojim merenjem. **Ne raditi usput.**
+
+---
+
+## KORAK 152 — RELEASE v11.10: jedan paket, univerzalan, bez 2 GB (7. septembar 2026)
+
+Klijentov zahtev, i njegov PS koji ga menja: *„zapakuj oba AI modela i LaMa i
+SD"*, pa odmah zatim *„ne moraš da uploaduješ 2gb jer već imaju u appu dugme za
+AI SD download, a oni koji već koriste app oni imaju downloadovan već SD"*.
+
+Dakle **jedan paket**, 115 MB, sa LaMom unutra; SD se skida dugmetom iz app-a.
+`Tools/make-release.py` je za to dobio `--small-only` — **preskače drugi PAKET,
+nikad provere prvog**.
+
+### ⚠️ VERZIJA JE MORALA DA SE DIGNE, i to je oborilo traženi tag
+
+Traženo je *„tag je v11.9"*. To se ne može spojiti sa glavnim ciljem —
+*„već instalirani C4S apps na drugim kompjuterima će dobiti ovaj update novi"* —
+jer:
+
+    isUpdateAvailable = latest.compare(current, options: .numeric) == .orderedDescending
+
+Ako build nosi 11.9, a klijent već ima 11.9, poređenje nije „veće" i **kartica
+za update se nikad ne pojavljuje**. Pitano, i klijent je izabrao **11.10**.
+
+`.numeric` to poredi po komponentama (11 = 11, pa 10 > 9), pa 11.10 ispravno
+ispada novije od 11.9 — što običnim poređenjem stringova **ne bi bilo tačno**.
+
+`MARKETING_VERSION` 11.9 → **11.10**, `CURRENT_PROJECT_VERSION` 26 → **27**.
+
+### Provere na paketu
+
+| provera | rezultat |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.10 / 27** |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` |
+| `LaMa.mlmodelc` | da |
+| `SD15-Inpainting` | ne, namerno |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| zip | 114.937.067 B |
+
+### Intel — nije menjano, provereno da je već tako
+
+Zahtev *„da SD radi na Intel procesorima ali da deli rad"* je već isporučen u
+KORAKU 105: na `#else` grani `aneConfiguration.computeUnits = .all`, pa Core ML
+deli posao između diskretne kartice i jezgara; VAE prolazi idu `.cpuAndGPU`.
+Komentar na tom mestu nosi klijentov zahtev doslovno.
+
+⚠️ I dalje važi ono što deljenje NE znači: sistemska memorija se ne sabira sa
+memorijom na kartici.
+
+### Label sa verzijom
+
+Već postoji, i čita se **iz bundle-a, nikad se ne kuca** — pod wordmark-om na
+prvom ekranu i na dnu Create panela (KORAK 108/74). Pošto je čitan iz
+`CFBundleShortVersionString`, dizanjem verzije je sam postao `C4S Suite v11.10`;
+nema šta da se doda ni da se raziđe sa tagom.
+
+### ⚠️ `v11.0` se NE SME brisati
+
+Ugrađeno preuzimanje SD-a gađa `…/releases/download/v11.0/SD15-Inpainting.aar`.
+Pošto ovaj release namerno NE nosi težine, nov klijent instalira 11.10 pa
+pritisne to dugme — i ono i dalje pokazuje na v11.0.

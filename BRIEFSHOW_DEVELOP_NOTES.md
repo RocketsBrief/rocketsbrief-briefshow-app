@@ -15874,3 +15874,59 @@ fotografiji i istoj masci:
 Dakle spuštanje ka 0,2 daje JOŠ manje izmišljanja i još je brže; podizanje daje
 više teksture i, iznad 0,45, vraća kvar. **Ne dirati bez klijentove odluke** —
 ovo je u zaključanom odeljku.
+
+---
+
+## KORAK 150 — jačina doterivanja podignuta na 0,4, po klijentovoj odluci (6. septembar 2026)
+
+Klijent, posle KORAKA 149: *„a 0.4 ili 0.55?"* — pa, kad je video slike:
+*„dobro onda može 0.4"*.
+
+`SDInpaintPipeline.defaultRefineStrength`: **0,3 → 0,4**.
+
+⚠️ Ovo je jedini broj promenjen u zaključanom odeljku, i promenjen je zato što
+je klijent tražio, video merenje i odlučio. Ništa drugo tu nije dirano.
+
+### Mereno pre odluke, na klijentovoj `C4S_9331.NEF`, na DVA mesta
+
+`Tools/run-inpaint-sweep.py --refine '0.3,0.4,0.45,0.55,0.6'`, pa gledane slike.
+
+**Šetalište** (maska 1138×689 preko palmi, puta i zgrada):
+
+| | šta se vidi |
+|---|---|
+| 0,3 | zakrpa je **oprana i meka** u sredini |
+| **0,4** | osetno više teksture, sadržaj i dalje LaMin |
+| 0,45 | još malo teksture — ivica |
+| 0,55 | **iskoči cela palma sa listovima** koje u kadru nema |
+| 0,6 | izmišljanje, očigledno |
+
+**Plaža i terasa** (maska 828×482, isti fajl, drugo mesto):
+
+| | šta se vidi |
+|---|---|
+| 0,3 | mek beli plato |
+| **0,4** | skoro isto, malo oštrije |
+| 0,55 | plato se pretvorio u **jasnu uglastu belu konstrukciju**, plus sitni oblici uz ogradu |
+
+### ⚠️ Zamka na 0,55, i zašto je ovaj broj nizak
+
+Na sceni koja je već puna palmi **izmišljena palma izgleda tačno** — pa 0,55
+deluje bolje dok se ne naiđe na čistu pozadinu, gde isti broj ubaci objekat.
+Zato se ovo ne bira po jednoj slici. 0,45 je izmerena ivica **dvaput** (KORAK 40
+na `C4S_7891.NEF`, sada ovo na `C4S_9331.NEF`), i 0,4 je tik ispod nje.
+
+Slike ostavljene klijentu u `~/Desktop/C4S-generative-provera/`.
+
+### Odgovor na „jesmo li čačkali LaMu?" — ne
+
+Provereno kroz istoriju, ne po sećanju:
+
+- `DevelopLaMaInpaint.swift` je poslednji put menjan **3. septembra**, KORAK
+  112, i ta izmena je bila **jedan red**: prosleđivanje `detailSource` za
+  prolaz sa zrnom. Sam model, njegova podešavanja i put kroz njega nisu dirani.
+- `LaMaInpaintPipeline.imageSide` je **512** od početka i nikad nije menjan.
+- `computeUnits = .cpuAndGPU` — kako je i postavljeno pri konverziji.
+- Sam `LaMa.mlpackage` je od **25. avgusta** i nije prekonvertovan.
+- 6. septembra `DevelopLaMaInpaint.swift`, `DevelopSDInpaint.swift` i
+  `DevelopInpaint.swift` nisu dirani ni jednom — do ove jedne linije.

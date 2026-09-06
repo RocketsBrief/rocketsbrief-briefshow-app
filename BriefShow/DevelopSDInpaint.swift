@@ -626,9 +626,28 @@ final class SDInpaintPipeline: ObservableObject {
     /// hole LaMa has already filled. nil would mean the old behaviour: start
     /// from noise and let the model decide what belongs in the gap.
     ///
-    /// Set from measurement — see KORAK 40 in BRIEFSHOW_DEVELOP_NOTES.md and
-    /// Tools/run-inpaint-sweep.py, which is how it was looked at.
-    static let defaultRefineStrength: Float? = 0.3
+    /// Set from measurement — see KORAK 40 and KORAK 150 in
+    /// BRIEFSHOW_DEVELOP_NOTES.md and Tools/run-inpaint-sweep.py, which is how
+    /// it was looked at.
+    ///
+    /// ⚠️ 0.4 IS JUST UNDER A MEASURED EDGE, and the edge is 0.45. Raised from
+    /// 0.3 on 6.09 at the client's decision, after both values were run on two
+    /// different places in his own C4S_9331.NEF and the pictures were looked
+    /// at:
+    ///
+    ///     0.3   the fill is visibly washed and soft in the middle
+    ///     0.4   noticeably more texture, still LaMa's content    ← here
+    ///     0.45  the edge, measured twice now (KORAK 40, KORAK 150)
+    ///     0.55  A WHOLE PALM appears on the promenade, and on the terrace a
+    ///           soft slab becomes a hard white structure — neither is in the
+    ///           frame
+    ///     0.6   invention, plainly
+    ///
+    /// The trap at 0.55 is that on a scene already full of palms an invented
+    /// palm looks right, so it reads as better until the same setting meets a
+    /// clean background and puts an object in it. That is the whole reason
+    /// this number is low.
+    static let defaultRefineStrength: Float? = 0.4
 
     // Loading the 1.6 GB UNet is ~18 seconds of Neural Engine compilation, so
     // the models are loaded once and kept. `warmUp()` moves that cost to the

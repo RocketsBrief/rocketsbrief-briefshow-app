@@ -1899,14 +1899,52 @@ enum ThumbnailDiskCache {
         return directory.appendingPathComponent(name + ".jpg")
     }
 
+    /// Whether there is an entry, without paying to decode it.
+    ///
+    /// The two-pass fill asks this before it bothers with a placeholder: a hit
+    /// costs 0.72 ms and IS the picture, so putting a stand-in in front of it
+    /// would be a flicker in exchange for nothing. See makePlaceholderThumbnail.
+    static func hasEntry(for photo: URL) -> Bool {
+        guard let url = fileURL(for: photo) else {
+            return false
+        }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
     static func image(for photo: URL) -> CGImage? {
         guard let url = fileURL(for: photo),
-              let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [
+                  kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary) else {
             return nil
         }
-        return CGImageSourceCreateImageAtIndex(source, 0, [
-            kCGImageSourceShouldCacheImmediately: true
-        ] as CFDictionary)
+        touch(url)
+        return image
+    }
+
+    /// Marks an entry as USED, so `pruneIfNeeded` throws away the least
+    /// recently opened folder rather than the oldest-written one.
+    ///
+    /// ⚠️ Without this the cache evicted by write date, which is not the same
+    /// thing and is wrong in the direction that hurts: a folder the client
+    /// comes back to every week was cached once, months ago, so it went first
+    /// — while a folder he opened one time yesterday stayed. He would then
+    /// pay the full first-fill again on the folder he uses MOST, which is
+    /// exactly the complaint this cache exists to answer.
+    ///
+    /// ⚠️ Only once a day per entry, and that is not fussiness. A read costs
+    /// 0.72 ms and this is a write; doing it on every hit would put a couple
+    /// of hundred file writes on his disk every time a folder is opened, for a
+    /// budget decision that is only ever made at launch.
+    private static func touch(_ entry: URL) {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: entry.path)
+        let modified = attributes?[.modificationDate] as? Date ?? .distantPast
+        guard Date().timeIntervalSince(modified) > 24 * 60 * 60 else {
+            return
+        }
+        try? FileManager.default.setAttributes([.modificationDate: Date()],
+                                               ofItemAtPath: entry.path)
     }
 
     static func store(_ image: CGImage, for photo: URL) {
@@ -1936,7 +1974,12 @@ enum ThumbnailDiskCache {
         }
     }
 
-    /// Keeps the folder under its budget, oldest first.
+    /// Keeps the folder under its budget, LEAST RECENTLY USED first.
+    ///
+    /// It sorts on the modification date, which `touch` now keeps up to date
+    /// on every hit — read that note for why the plain write date was the
+    /// wrong ruler. Measured: 57.6 KB an entry, so the 500 MB budget is about
+    /// eight and a half thousand photographs.
     ///
     /// Run once per launch, off the main thread. Cheap: it reads the directory
     /// listing, not the files.
@@ -1983,6 +2026,68 @@ enum ThumbnailDiskCache {
 ///
 /// A photo with no edits takes the plain path and costs exactly what it did
 /// before.
+/// The camera's OWN preview, out of the RAW file, for the strip and the grid to
+/// show while the real thumbnail is still being made.
+///
+/// Asked for after the two were put side by side: *„stavi ugradjen preview kao
+/// privremenu slicicu dok tacna original RAW-NEF ne stigne!"*
+///
+/// Measured on the client's .NEF, four wide: **8.9 ms** against 65 ms for the
+/// real render. A two-hundred photo folder fills with photographs in under two
+/// seconds instead of showing spinners for ten.
+///
+/// ⚠️ THIS PICTURE IS NOT THE RIGHT ONE, and that is the whole reason it is
+/// only ever a stand-in. It is Nikon's Picture Control — measured RMS 10.6 to
+/// 19.2 against the real decode, up to 11 levels of mean difference, and not in
+/// a consistent direction: visibly more contrast and more saturation. Shown as
+/// a FINAL thumbnail it is the defect of KORAK 128 all over again, which is why
+/// two rules hold above it and neither is negotiable:
+///
+///   1. it is NEVER written to ThumbnailDiskCache — only a real render is,
+///   2. the real render always follows and replaces it.
+///
+/// The guards below are what keep it honest. It returns nil — and the caller
+/// keeps its spinner — whenever the fast picture would be not merely different
+/// in tone but WRONG:
+///
+///   * not a RAW: a JPEG has no separate embedded preview to be cheap about,
+///     and ImageIO would quietly decode the whole frame instead,
+///   * flattened: the photograph opens from a baked TIFF, and the camera's
+///     preview is of the file BEFORE everything that was baked into it,
+///   * edited: the preview knows nothing of the client's grade, so a photo
+///     turned black and white would flash back to colour before settling. A
+///     wrong tone for a moment is a stand-in; a wrong PHOTOGRAPH is a bug.
+///
+/// Nothing here touches what is opened. The rule at the top of
+/// BRIEFSHOW_DEVELOP_NOTES.md stands untouched: this is a thumbnail, and only
+/// ever a thumbnail.
+func makePlaceholderThumbnail(from url: URL, maxPixelSize: CGFloat) -> NSImage? {
+    guard PhotoEditRenderer.isRAW(url),
+          FlattenedImageStore.sourceURL(for: url) == url,
+          !PhotoEditStore.hasEdits(url),
+          let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+        return nil
+    }
+
+    // ⚠️ `...IfAbsent`, and `...Always` explicitly OFF. Always is what the
+    // real path uses and it means "decode the frame if you have to" — which on
+    // a RAW is the entire demosaic, i.e. exactly the cost this exists to skip.
+    // IfAbsent takes what the camera already wrote and settles for nothing
+    // else. Measured 8.9 ms against 98 ms for the same call with Always.
+    guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+        kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+        kCGImageSourceCreateThumbnailFromImageAlways: false,
+        kCGImageSourceThumbnailMaxPixelSize: Int(maxPixelSize.rounded()),
+        // Same orientation the real path applies, or a portrait frame would
+        // lie on its side for a second and then stand up.
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceShouldCacheImmediately: true
+    ] as CFDictionary) else {
+        return nil
+    }
+    return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+}
+
 func makeEditedShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> NSImage? {
     // ⚠️ THE GATE, and it is the client's own rule in one line: this cache
     // serves the strip and the grid's tiles, and NOTHING that is opened. A
@@ -2012,7 +2117,7 @@ func makeEditedShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> 
     let rendered = PhotoEditRenderer.render(settings, on: base)
     guard rendered.extent.width >= 1, rendered.extent.height >= 1,
           let out = briefEditsDisplayCGImage(rendered, from: rendered.extent,
-                                             context: briefEditsThumbnailCIContext) else {
+                                             context: BriefEditsThumbnailContexts.take()) else {
         // Falls back to the unedited thumbnail rather than to nothing: a photo
         // that renders as a blank tile in the grid is worse than one that
         // renders as its original.
@@ -4841,7 +4946,53 @@ private let briefEditsPreviewCIContext = makeBriefEditsCIContext()
 
 // ShowGrid's tiles and Create's filmstrip — many small renders, none of
 // them urgent, and the ones that were blocking the preview.
-private let briefEditsThumbnailCIContext = makeBriefEditsCIContext()
+//
+// ⚠️ FOUR contexts, not one, and that follows straight from the note at the
+// top of makeBriefEditsCIContext: a CIContext serializes internally. Both
+// thumbnail fills run four wide — `filmstripThumbnailQueue` here and
+// `loadGridThumbnails` in ContentView — and while they shared a single context
+// every one of those workers queued on the same `-[CIContext lock]`, so the
+// width was mostly decoration. It also explains a result KORAK 145 recorded
+// without an explanation: raising the queue from four to six bought almost
+// nothing, because the queue was never what they were waiting on.
+//
+// Measured on the client's own .NEF, four wide, with 25 s of cooling before
+// EVERY trial — without that the machine's own heat decided it, and an earlier
+// reading of this same question came out backwards. Four pairs, and the pool
+// won all four:
+//
+//     one shared context   66.9  62.7  59.4  60.8 ms per thumbnail
+//     four contexts        45.4  51.1  50.1  51.2 ms
+//
+// ~17%, about two seconds off the first fill of a two-hundred photo folder.
+//
+// ⚠️ The picture is BYTE FOR BYTE the same through either — checked, worst RMS
+// 0.000000 over the client's seven .NEFs. A context is only the renderer; the
+// filter graph that decides what the pixels ARE is not touched here, and this
+// change must never become a reason to revisit the thumbnail's own chain (see
+// KORAK 128).
+//
+// Four, matching the queue width. Not more: each context keeps its own caches,
+// and the machine this runs on has 8 GB.
+private let briefEditsThumbnailCIContexts = (0..<4).map { _ in makeBriefEditsCIContext() }
+
+/// Hands out the thumbnail contexts round-robin.
+///
+/// A lock for a counter increment next to a 50 ms render is free, and it is the
+/// only shared state here — the contexts themselves are safe to use from any
+/// thread, which is the whole reason there can be four of them.
+private enum BriefEditsThumbnailContexts {
+    private static let lock = NSLock()
+    private static var next = 0
+
+    static func take() -> CIContext {
+        lock.lock()
+        defer { lock.unlock() }
+        let context = briefEditsThumbnailCIContexts[next % briefEditsThumbnailCIContexts.count]
+        next &+= 1
+        return context
+    }
+}
 
 // The heavy end: the full-resolution refine, the exports, the erases. They all
 // run on developRenderQueue, one at a time, so sharing one context between
@@ -5682,6 +5833,26 @@ struct SliderSelectionToast: Identifiable, Equatable {
 private let filmstripThumbnailQueue: OperationQueue = {
     let queue = OperationQueue()
     queue.name = "com.rocketsbrief.briefshow.filmstrip-thumbnails"
+    queue.maxConcurrentOperationCount = 4
+    queue.qualityOfService = .utility
+    return queue
+}()
+
+// The first pass: the camera's own preview out of the RAW, 8.9 ms against 65,
+// so the strip fills with photographs while the real renders are still running.
+// See makePlaceholderThumbnail — including why this picture is never kept.
+//
+// ⚠️ A SEPARATE queue, and that is the whole reason it works. Behind the real
+// renders these would arrive after the thing they stand in for, which is not a
+// placeholder, it is a second decode for nothing.
+//
+// Also four wide, not more: it shares the four cores with everything else, and
+// the point is to be out of the way — the real thumbnails are what the client
+// ends up looking at, and they must not be slowed down to make the stand-ins
+// arrive faster.
+private let filmstripPlaceholderQueue: OperationQueue = {
+    let queue = OperationQueue()
+    queue.name = "com.rocketsbrief.briefshow.filmstrip-placeholders"
     queue.maxConcurrentOperationCount = 4
     queue.qualityOfService = .utility
     return queue
@@ -6650,6 +6821,19 @@ struct DevelopView: View {
     private var effectiveFilmstripHeight: Double { filmstripHeightLive ?? filmstripHeight }
 
     @State private var isFlattening = false
+
+    /// The same bake as `isFlattening`, but ONLY when it is the open photo's
+    /// own — `flattenPhoto`.
+    ///
+    /// ⚠️ It exists because `isFlattening` cannot tell the two cases apart and
+    /// they want opposite things. `runBake` and `runPortraitRecipes` bake a
+    /// SELECTION, and switching photos while forty of them bake is deliberately
+    /// allowed — see runBake's own note, which re-checks the open photo when it
+    /// lands precisely so that it can be a different one. `flattenPhoto` works
+    /// on the photograph in front of the client, and leaving it mid-bake is the
+    /// thing this flag is here to stop.
+    @State private var isFlatteningOpenPhoto = false
+
     /// Which Portrait recipe is running, and which of its three steps it is on.
     /// One at a time by design — each ends in a bake, and two bakes racing on
     /// one photograph is not a state worth having.
@@ -8124,6 +8308,12 @@ struct DevelopView: View {
                     .padding(4)
             }
         }
+        // Every OTHER photo goes dim while a model works on this one, so the
+        // strip says it is unavailable instead of just failing to answer. The
+        // open photograph stays at full strength — it is the one being worked
+        // on, and dimming it too would read as the whole strip having died.
+        // See isAIWorkingOnOpenPhoto.
+        .opacity(isAIWorkingOnOpenPhoto && !isOpen ? 0.35 : 1)
         .contentShape(Rectangle())
         .onTapGesture {
             handleFilmstripClick(url)
@@ -8194,6 +8384,7 @@ struct DevelopView: View {
                     PhotoEditStore.flushNow()
                 }
             }
+            .disabled(isAIWorkingOnOpenPhoto)
 
             Divider()
 
@@ -8208,17 +8399,64 @@ struct DevelopView: View {
             // photos it is about to change in that second.
             let bwTargets = contextMenuTargets(for: url)
 
+            // ⚠️ Everything that WRITES is off while a model works on the open
+            // photograph, by the same rule that greys the strip — see
+            // isAIWorkingOnOpenPhoto. Delete is the one that matters most: it
+            // can trash the very photo being worked on, and the editor's own
+            // recovery from that is to open another one, which is exactly the
+            // switch the lock exists to prevent. Export and the Select commands
+            // stay live throughout; they only read.
             Button(bwTargets.count > 1 ? "Black & White (\(bwTargets.count))" : "Black & White") {
                 applyBlackAndWhite(to: bwTargets)
             }
+            .disabled(isAIWorkingOnOpenPhoto)
 
             Button(bwTargets.count > 1 ? "Duplicate (\(bwTargets.count))" : "Duplicate") {
                 duplicatePhotos(bwTargets, blackAndWhite: false)
             }
+            .disabled(isAIWorkingOnOpenPhoto)
 
             Button(bwTargets.count > 1 ? "Duplicate & BW (\(bwTargets.count))" : "Duplicate & BW") {
                 duplicatePhotos(bwTargets, blackAndWhite: true)
             }
+            .disabled(isAIWorkingOnOpenPhoto)
+
+            Divider()
+
+            // The three AI Portrait recipes, straight from the strip, on the
+            // same target rule as everything above: the whole selection when
+            // the right-clicked photo is part of one, otherwise just that
+            // photo. Asked for in exactly these three shapes — *„da kada je
+            // vise selektovanih slika moze duplicate Subject Mono, Duplicate
+            // Mono Backround, and just «Youtify»"*.
+            //
+            // ⚠️ Two of them DUPLICATE and one does not, and that asymmetry is
+            // the request, not an oversight. Every recipe ends in a flatten —
+            // it writes pixels — so Subject Mono and Mono Background make a
+            // copy first and leave the client's photograph alone. Youthify was
+            // asked for plain, on the photo itself; Cmd+Z still takes it back,
+            // and Unflatten is in the panel.
+            //
+            // Each is one recipe, never two at once. The Sync dialog is where
+            // two are ticked together; a right-click is a single action.
+            Button(bwTargets.count > 1
+                   ? "Duplicate Subject Mono (\(bwTargets.count))"
+                   : "Duplicate Subject Mono") {
+                duplicatePhotos(bwTargets, blackAndWhite: false, thenRecipe: .subjectMono)
+            }
+            .disabled(isAIWorkingOnOpenPhoto)
+
+            Button(bwTargets.count > 1
+                   ? "Duplicate Mono Background (\(bwTargets.count))"
+                   : "Duplicate Mono Background") {
+                duplicatePhotos(bwTargets, blackAndWhite: false, thenRecipe: .monoBackground)
+            }
+            .disabled(isAIWorkingOnOpenPhoto)
+
+            Button(bwTargets.count > 1 ? "Youthify (\(bwTargets.count))" : "Youthify") {
+                runPortraitRecipes([.youthify], on: bwTargets)
+            }
+            .disabled(isAIWorkingOnOpenPhoto)
 
             Divider()
 
@@ -8226,6 +8464,7 @@ struct DevelopView: View {
                 pendingTrashPhotoURLs = bwTargets
                 isTrashPhotoConfirmationPresented = true
             }
+            .disabled(isAIWorkingOnOpenPhoto)
 
             Divider()
 
@@ -8239,6 +8478,35 @@ struct DevelopView: View {
             }
             .disabled(editedCount == 0)
         }
+    }
+
+    /// True while a model is working on THE OPEN PHOTOGRAPH, and therefore
+    /// while the client must not be able to leave it.
+    ///
+    /// Asked for in exactly those terms: *„Dok radi na jednoj slici ai ili
+    /// Youthify ili Subject mono ili Backround mono, da ne moze klijent da
+    /// klikne ni na jednu drugu fotku."*
+    ///
+    /// Every one of these runs against `selectedURL` and writes back into
+    /// `settings`, which is the open photo's record. Switching mid-run does not
+    /// abort them — the work goes on against a `fullBaseImage` that has already
+    /// been replaced underneath it — so the outcomes were a result landing on
+    /// the wrong photograph, or landing nowhere and looking like a button that
+    /// did nothing.
+    ///
+    /// ⚠️ `isFlatteningOpenPhoto`, NOT `isFlattening`. The bulk bakes behind
+    /// `isFlattening` are the one case where switching photos is deliberately
+    /// allowed; see that flag's own note.
+    private var isAIWorkingOnOpenPhoto: Bool {
+        isRemoving || isFindingPeople || isFlatteningOpenPhoto || runningRecipe != nil
+    }
+
+    /// What to say when a click or a key is turned away by the lock above.
+    /// The panel already shows a progress bar naming the step; this only has
+    /// to explain why the strip did not move.
+    private func refusePhotoSwitchWhileAIWorks() {
+        showTransientStatus(runningRecipe.map { "\($0.title) is working — finishing this photo first" }
+                            ?? "AI is working — finishing this photo first")
     }
 
     // Cmd toggles `url` in/out of the multi-select set without touching
@@ -8259,6 +8527,15 @@ struct DevelopView: View {
     // one in the range — would silently swap the sync source out from
     // under the user mid-selection.
     private func handleFilmstripClick(_ url: URL) {
+        // The lock, and it is deliberately BEFORE the modifier flags are read:
+        // Cmd- and plain clicks both call selectPhoto, and Shift extends a
+        // multi-select whose only purpose is to be handed to Sync, which is
+        // itself unavailable while this is running.
+        guard !isAIWorkingOnOpenPhoto else {
+            refusePhotoSwitchWhileAIWorks()
+            return
+        }
+
         let flags = NSEvent.modifierFlags
 
         if flags.contains(.command) {
@@ -8325,12 +8602,46 @@ struct DevelopView: View {
         }
         filmstripThumbnailsInFlight.insert(url)
 
+        // PASS ONE — the camera's own preview, so the strip shows photographs
+        // in under two seconds instead of a row of spinners for ten. Skipped
+        // entirely on a cache hit, where the real picture is 0.72 ms away and a
+        // stand-in would be a flicker for nothing. See makePlaceholderThumbnail
+        // for why this is never the final answer.
+        //
+        // ⚠️ Its OWN queue, not filmstripThumbnailQueue. Queued behind the real
+        // renders it would arrive after the thing it is standing in for, which
+        // is not a placeholder, it is a second decode for nothing.
+        if !ThumbnailDiskCache.hasEntry(for: url) {
+            filmstripPlaceholderQueue.addOperation {
+                guard let placeholder = makePlaceholderThumbnail(
+                    from: url, maxPixelSize: filmstripThumbnailPixelSize) else {
+                    return
+                }
+                DispatchQueue.main.async {
+                    // ⚠️ Only into an EMPTY slot. The real render can already
+                    // have landed — it is on another queue and nothing orders
+                    // the two — and a placeholder written over a finished
+                    // thumbnail is the wrong picture made permanent.
+                    guard filmstripThumbnails[url] == nil else {
+                        return
+                    }
+                    filmstripThumbnails[url] = placeholder
+                    // Into the eviction order too. A placeholder left out of it
+                    // is a thumbnail nothing can ever throw away — and if the
+                    // real render then fails, it is there for good.
+                    filmstripThumbnailOrder.removeAll { $0 == url }
+                    filmstripThumbnailOrder.append(url)
+                    evictOldestFilmstripThumbnailsIfNeeded()
+                }
+            }
+        }
+
         filmstripThumbnailQueue.addOperation {
-            // Edited, like ShowGrid's tiles. The filmstrip used to show the
-            // untouched original, so a photo already worked on looked
-            // unedited in the strip until it was clicked and the big preview
-            // rendered — the strip and the picture above it disagreeing about
-            // the same photograph.
+            // PASS TWO — the real one. Edited, like ShowGrid's tiles. The
+            // filmstrip used to show the untouched original, so a photo already
+            // worked on looked unedited in the strip until it was clicked and
+            // the big preview rendered — the strip and the picture above it
+            // disagreeing about the same photograph.
             let image = makeEditedShowGridThumbnail(from: url, maxPixelSize: filmstripThumbnailPixelSize)
 
             DispatchQueue.main.async {
@@ -8338,6 +8649,8 @@ struct DevelopView: View {
                 guard let image else {
                     return
                 }
+                // This one always wins, placeholder or not — it is the picture
+                // the canvas will show.
                 filmstripThumbnails[url] = image
                 // Re-decoded after an eviction: drop the stale position first,
                 // or the old entry would evict this fresh one on the next pass.
@@ -15938,6 +16251,15 @@ struct DevelopView: View {
     /// than being swallowed for nothing.
     @discardableResult
     private func stepPhoto(by offset: Int) -> Bool {
+        // The same lock the filmstrip click has — the arrow keys are the OTHER
+        // way to leave a photograph, and a lock on only one of the two is not a
+        // lock. Returns true so the key is swallowed rather than falling
+        // through to whatever else might answer an arrow.
+        guard !isAIWorkingOnOpenPhoto else {
+            refusePhotoSwitchWhileAIWorks()
+            return true
+        }
+
         guard let selectedURL,
               let index = photoURLs.firstIndex(of: selectedURL) else {
             return false
@@ -16333,18 +16655,36 @@ struct DevelopView: View {
     /// like the photo it was copied from.
     ///
     /// The original is never touched either way; the bake lands on the copy.
-    private func duplicatePhotos(_ targets: [URL], blackAndWhite: Bool) {
+    /// Makes a copy of each photo, bakes what it currently shows into it, and —
+    /// when `thenRecipe` is set — runs that recipe over the COPIES.
+    ///
+    /// The recipe on the copies rather than in place is the whole reason the
+    /// menu carries "Duplicate Subject Mono" and "Duplicate Mono Background":
+    /// both of those end in a flatten, so run on the original they would write
+    /// over the photograph the client selected. Youthify is offered plain, on
+    /// the photo itself, because that is how it was asked for.
+    ///
+    /// ⚠️ The recipe waits for the bake, and it has to. It reads each copy
+    /// through `loadBaseImage`, which opens the copy's own baked file — a file
+    /// that does not exist until `runBake` has finished writing it. Started
+    /// alongside instead of after, it would find the copies unbaked and put
+    /// People layers on the wrong picture.
+    private func duplicatePhotos(_ targets: [URL], blackAndWhite: Bool,
+                                 thenRecipe: PortraitRecipe? = nil) {
         guard !targets.isEmpty else {
             return
         }
+
+        // The copy is named for what it IS, so the client can find it in
+        // Finder: "C4S_9331 Subject Mono.NEF", not "C4S_9331 copy 3.NEF".
+        let suffix = thenRecipe?.title ?? (blackAndWhite ? "BW" : "copy")
 
         var jobs: [PhotoBakeService.BakeJob] = []
         var created: [URL] = []
         var failures = 0
 
         for target in targets {
-            guard let copyURL = PhotoBakeService.duplicate(target,
-                                                           suffix: blackAndWhite ? "BW" : "copy") else {
+            guard let copyURL = PhotoBakeService.duplicate(target, suffix: suffix) else {
                 failures += 1
                 continue
             }
@@ -16380,8 +16720,21 @@ struct DevelopView: View {
         }
 
         let copyFailures = failures
-        runBake(jobs, desaturate: blackAndWhite, busyMessage: "Duplicating…") { done, bakeFailures in
+        let copies = created
+        let busy = thenRecipe.map { "Duplicating for \($0.title)…" } ?? "Duplicating…"
+
+        runBake(jobs, desaturate: blackAndWhite, busyMessage: busy) { done, bakeFailures in
             let total = copyFailures + bakeFailures
+
+            // Hand straight over to the recipe. No "Duplicated N" first: it
+            // would be replaced a frame later by the recipe's own progress,
+            // and a status line that says a job is finished while the next
+            // half of it is still running is worse than no status line.
+            if let thenRecipe, !copies.isEmpty {
+                runPortraitRecipes([thenRecipe], on: copies)
+                return
+            }
+
             let what = blackAndWhite ? "Duplicated \(done) in B&W" : "Duplicated \(done)"
             showTransientStatus(total == 0 ? what : "\(what), \(total) failed")
         }
@@ -16552,6 +16905,7 @@ struct DevelopView: View {
         let photoAtActionTime = selectedURL
 
         isFlattening = true
+        isFlatteningOpenPhoto = true
         flattenErrorMessage = nil
 
         developRenderQueue.async(qos: .userInitiated) {
@@ -16568,6 +16922,7 @@ struct DevelopView: View {
 
             DispatchQueue.main.async {
                 isFlattening = false
+                isFlatteningOpenPhoto = false
                 guard selectedURL == photoAtActionTime else {
                     completion?()
                     return

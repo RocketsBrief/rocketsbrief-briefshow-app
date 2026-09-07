@@ -276,6 +276,43 @@ lično je — pitaj klijenta pre nego što uđe u build.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 7. septembar 2026, druga sesija (NIJE OBJAVLJENO)
+
+Dva klijentova zahteva iz iste poruke. Oba urađena, **ništa nije pakovano ni
+objavljeno** — v11.10 je i dalje ono što je gore.
+
+| | |
+|---|---|
+| **154** | dok AI radi na jednoj slici, druge fotke se ne mogu kliknuti |
+| **155** | sličice: četiri radnika su stajala na jednoj `CIContext` bravi; keš je izbacivao pogrešne ulaze |
+| **156** | ugrađen preview kao PRIVREMENA sličica — fotografije za 2,8 s umesto 8,3 s |
+| **157** | tri AI recepta na desni klik u traci: Duplicate Subject Mono, Duplicate Mono Background, Youthify |
+
+Prvi ulazak u nov folder od 200 fotografija, ukupno posle sve tri izmene:
+**fotografije na ekranu za 2,8 s** umesto praznih pločica do 8,3 s; sve pravo
+za 8,4 s. Drugi ulazak je i dalje 0,14 s.
+
+#### ⚠️ PRVO ZA SLEDEĆU SESIJU
+
+1. **Klijent treba da PROBA 154–157 na ekranu.** Ništa od toga nije viđeno
+   ovde — nema dozvole za snimanje. Konkretno: da li traka posivi dok Youthify
+   radi, da li se poruka vidi, da li folder odmah pokaže fotografije, i **da li
+   mu smeta trenutak dok se ton smiruje** kad prava sličica zameni privremenu.
+   Ako smeta, poluga je u KORAKU 156 — ne u lancu sličice.
+2. **`v11.0` se NE SME brisati** — provereno danas, `SD15-Inpainting.aar`
+   vraća HTTP 200.
+3. **I dalje se čeka neutralan izvoz `C4S_9331.NEF`-a iz Lightroom-a** sa svim
+   slajderima na nuli. Traženo 5.09, provereno 7.09 — nije stiglo. Bez toga
+   kalibracija stoji.
+
+#### ⚠️ Ako neko meri performanse sličica
+
+**Hladi mašinu 25 s pre svake probe.** Bez toga su brojevi besmisleni — v.
+KORAK 155, gde su dva nalaza (poredak veličina, pa i sam pool) prvo ispala
+naopako baš zbog grejanja.
+
+---
+
 ### GDE SMO STALI — 7. septembar 2026, verzija 11.10 (OBJAVLJENA)
 
 **Isporučeno**: `v11.10`, **jedan** paket (115 MB), `Latest`, tag na `a1c6871`.
@@ -16185,3 +16222,340 @@ Raspakovan zip proveren još jednom, iz samog paketa: `x86_64 arm64`,
     This package carries LaMa (Quick AI Clean Up) inside it. Stable Diffusion
     is not included: existing installs already have it, and a new install
     downloads it once from the button inside the app.
+
+---
+
+## KORAK 154 — dok AI radi na jednoj slici, druge se ne mogu kliknuti (7. septembar 2026)
+
+Klijentov zahtev, doslovno: *„Dok radi na jesnoj slici ai ili Youtify ili
+Subject mono ili Backround mono, da ne moze klijent da koikne ni na jesnu drugu
+fotku."*
+
+### Zašto je to bio pravi kvar, a ne samo neuredno
+
+Sve četiri stvari rade nad `selectedURL` i pišu nazad u `settings`, što je
+zapis OTVORENE fotografije. Prelazak na drugu ih ne prekida — posao ide dalje
+nad `fullBaseImage`-om koji je u međuvremenu zamenjen ispod njih. Ishod je bio
+jedno od dva: rezultat sleti na pogrešnu fotografiju, ili ne sleti nigde i
+izgleda kao dugme koje nije uradilo ništa.
+
+### Šta je zaključano
+
+Novo `isAIWorkingOnOpenPhoto` čita četiri zastavice:
+
+| zastavica | šta pokriva |
+|---|---|
+| `isRemoving` | AI Clean Up — i Quick i Generative |
+| `isFindingPeople` | Select People |
+| `isFlatteningOpenPhoto` | Flatten SAME otvorene fotografije |
+| `runningRecipe != nil` | Youthify, Subject Mono, Mono Background |
+
+Zatvorena su **oba** izlaza iz fotografije, jer brava na jednom nije brava:
+
+- `handleFilmstripClick` — klik u traci, pre nego što se uopšte pročitaju
+  modifikatori (Cmd i običan klik oba vode u `selectPhoto`),
+- `stepPhoto` — strelice; vraća `true` da se taster proguta.
+
+Uz to: sličice svih OSTALIH fotografija idu na 35% providnosti, da traka kaže
+da je nedostupna umesto da ćuti; otvorena ostaje na punoj jačini jer je ona ta
+na kojoj se radi. Kad se klik ili taster odbije, u traci se javi
+„Youthify is working — finishing this photo first".
+
+U kontekstnom meniju iste trake ugašeno je sve što PIŠE — Delete, Duplicate,
+Duplicate & BW, Black & White, Reset. **Delete je najvažniji**: on može da baci
+baš fotografiju na kojoj se radi, a oporavak editora od toga je da otvori
+drugu — tačno prelazak koji brava sprečava. Export i Select ostaju živi, oni
+samo čitaju.
+
+### ⚠️ `isFlatteningOpenPhoto`, a NE `isFlattening` — i to je cela poenta
+
+`isFlattening` dižu TRI pozivaoca, i dva od njih hoće suprotno:
+
+- `flattenPhoto` — otvorena fotografija. Zaključati.
+- `runBake` i `runPortraitRecipes` — peku SELEKCIJU, i tamo je prelazak na
+  drugu fotografiju **namerno dozvoljen**; `runBake` čak ponovo proverava koja
+  je otvorena kad rezultat sleti, baš zato što može biti druga.
+
+Zato postoji nova zastavica koju diže samo `flattenPhoto`. Da je brava čitala
+`isFlattening`, klijent koji pusti četrdeset fotografija da se peku izgubio bi
+traku dok traje.
+
+### Provereno
+
+`Tools/run-ai-photo-lock-test.py` — 22 provere, prolaze. Vadi
+`isAIWorkingOnOpenPhoto` iz `Develop.swift` po imenu, pa ne može da prođe ako
+app ode dalje. Pored tablice istinitosti čita i izvor za ono što tablica ne
+vidi: da oba izlaza pitaju bravu PRE nego što pozovu `selectPhoto`, da se
+`isFlatteningOpenPhoto` diže i spušta tačno po jednom, i da je nijedan od dva
+grupna pečenja ne dodiruje.
+
+⚠️ Dve provere su prvo PALE, i obe zbog harness-a, ne zbog koda: jedna je
+merila položaj kroz komentar u kome piše reč `selectPhoto`, druga je brojala i
+samu deklaraciju `var isFlatteningOpenPhoto = false` kao brisanje. Ispravljeno
+je da harness čita kod, ne prozu — test koji čita komentare je test koji pada
+kad se neko objasni.
+
+### ⚠️ Neprovereno
+
+Nije viđeno na ekranu — nema dozvole za snimanje. Klijent treba da proveri da
+li traka zaista posivi i da li se poruka vidi.
+
+---
+
+## KORAK 155 — sličice: četiri radnika stajala na jednoj bravi (7. septembar 2026)
+
+Klijent: *„Mnogo sporo cita slike kad se udje u folder a pre toga app bio
+zatvoren i komp ugasen."* Uz to, isto pismo: *„Ako poboljsavas perfomance nikako
+ne smanjuj rezoluciju ili kvalitet slike koje su otvorene, thumbnails mozes ali
+slike nikako — one moraju uvek da budu original sa maximum rezolucijom!"*
+
+### Prvo mereno, pa tek onda dirano
+
+Korpus: 35 kopija klijentovih `.NEF`-ova, 4-wide `OperationQueue`, kao u app-u.
+
+    1. ulazak (nema keša)      ~60 ms po slici     200 slika ≈ 12 s
+    2. ulazak (keš na disku)    0,72 ms po slici   200 slika ≈ 0,14 s
+    3. ulazak, opet             0,69 ms
+
+Dakle **mehanizam iz KORAKA 148 radi** i preživljava gašenje mašine — keš je u
+Application Support-u, ne u Caches-u. Klijentova žalba je o PRVOM ulasku u
+folder, i o njemu jedino.
+
+### Nalaz: jedan `CIContext` za sve radnike
+
+Sam kod to već zna, na vrhu `makeBriefEditsCIContext`: *„A CIContext serializes
+internally: every render through it takes the same `-[CIContext lock]`."* Ali
+`briefEditsThumbnailCIContext` je bio JEDAN, a kroz njega idu **oba** punjenja
+sličica — `filmstripThumbnailQueue` i `loadGridThumbnails` — svako po četiri
+radnika. Širina je bila uglavnom ukras.
+
+To usput objašnjava i rezultat koji je KORAK 145 zapisao bez objašnjenja:
+dizanje reda sa 4 na 6 nije donelo skoro ništa, jer red nikad nije bio ono na
+šta se čekalo.
+
+### Izmereno, sa hlađenjem — i to nije sitnica
+
+    jedan deljen kontekst   66,9  62,7  59,4  60,8 ms po sličici
+    četiri konteksta        45,4  51,1  50,1  51,2 ms
+
+Pool je pobedio u sve četiri probe, ~17%, oko dve sekunde na folderu od dvesta
+fotografija.
+
+⚠️ **Bez 25 s hlađenja pre svake probe rezultat je bio besmislen.** Prva serija
+bez hlađenja dala je medijanu koja je govorila +10% pa −13% u zavisnosti od
+redosleda; brojevi su rasli kroz ceo niz (65 → 83 ms za istu stvar). Mašina se
+greje. Ko ovo ponovo meri: hladi između proba, ili ne meri ništa.
+
+⚠️ **Slika je BAJT U BAJT ista** kroz bilo koji kontekst iz poola — najgori RMS
+0,000000 preko sedam klijentovih `.NEF`-ova. Kontekst je samo renderer; graf
+filtera koji ODLUČUJE šta su pikseli nije dirnut. Ovo ne sme nikad postati
+razlog da se otvara sam lanac sličice — v. KORAK 128. Provereno i postojećim
+`run-thumbnail-parity-test.py`: RMS 7,06 prema platnu, prolazi.
+
+### Druga popravka: keš je izbacivao pogrešne ulaze
+
+`pruneIfNeeded` sortira po datumu izmene, a to je bio datum UPISA. Za keš je to
+pogrešan lenjir, i greši u smeru koji boli: folder u koji se klijent vraća
+svake nedelje keširan je jednom, pre više meseci, pa ide PRVI — a folder
+otvoren jednom juče ostaje. Onda plaća puno prvo punjenje baš na folderu koji
+najviše koristi, što je tačno žalba zbog koje keš postoji.
+
+Sad `image(for:)` osvežava datum na svakom pogotku, ali **najviše jednom
+dnevno po ulazu**: čitanje košta 0,72 ms a ovo je upis, pa bi na svakom
+pogotku značilo par stotina upisa na disk pri svakom otvaranju foldera — za
+odluku koja se donosi samo pri pokretanju.
+
+Izmereno usput: **57,6 KB po ulazu**, dakle granica od 500 MB je oko osam i po
+hiljada fotografija.
+
+### ⚠️ Šta je isprobano i ODBAČENO, da se ne ponavlja
+
+**1. Ugrađen JPEG preview iz NEF-a umesto demozaika.** Sedam puta brže —
+8,9 ms naspram 65 ms po sličici, 200 slika za 1,8 s umesto 13 s. **Ali slika
+nije ista**: to je Nikonov Picture Control, RMS 10,6–19,2 prema sadašnjem
+dekodu, srednje odstupanje do 11 nivoa, i to u različitim smerovima po fotki.
+Vidljivo kontrastnije i zasićenije. To je tačno kvar iz KORAKA 128. **Ne
+koristiti kao konačnu sličicu.** Kao *privremenu* dok tačna ne stigne — to je
+klijentova odluka, ne naša; pitanje mu je postavljeno sa slikom.
+
+**2. Dizanje broja radnika.** Izmereno: 4-wide 65 ms, **6-wide 117 ms, 8-wide
+132 ms** — dakle GORE, ne bolje. Ostaje 4. (Ovo je jače od nalaza u KORAKU 145,
+gde je 6 davalo 63 ms; posle poola je 4 još jasnije pravo.)
+
+**3. „Traženje 384 px je sporije od 512."** Izgledalo je ubedljivo — 145,6
+naspram 111,7 ms — pa **palo** čim je redosled proba obrnut. Bilo je
+zagrevanje, ne veličina.
+
+**4. Grid dobija sličicu od 384 umesto 420 iz deljenog keša** (ključ je
+`ime|veličina|datum`, bez tražene veličine, pa ko prvi renderuje taj upiše).
+Provereno pa ostavljeno: pločica je 180 pt, na Retini 360 px, a 384 je iznad
+toga. Nema šta da se vidi. Ne dirati.
+
+### Provereno
+
+`Tools/run-thumbnail-context-pool-test.py` — 11 provera. Čita iz izvora da
+veličina poola odgovara širini OBA reda za sličice (nađe `[4, 4]`), da stari
+jedan kontekst više ne postoji po imenu, i da render uzima iz poola; pa
+renderuje pravi `.NEF` kroz sva četiri konteksta i dokazuje da su bajt u bajt
+isti.
+
+⚠️ Test NE tvrdi da je pool brži, namerno: takva tvrdnja bi padala na toploj
+mašini i naučila bi sve da je ignorišu. Brzina je zapisana ovde, sa postupkom.
+
+### ⚠️ Otvoreno — čeka klijenta, ne sledeću sesiju da odluči sama
+
+Prvi ulazak u NOV folder od dvesta fotografija je posle ovoga ~10 s umesto
+~12 s. Jedina poluga koja to obara na ~2 s je ugrađen preview (tačka 1 gore), i
+ona menja sliku. Pitanje je kod klijenta.
+
+---
+
+## KORAK 156 — ugrađen preview kao PRIVREMENA sličica (7. septembar 2026)
+
+Klijentova odluka, posle poređenja slika jedne pored druge: *„stavi ugradjen
+preview kao privremenu slicicu dok tacna original RAW-NEF ne stigne!"*
+
+Dakle dva prolaza. Prvi je ono što je kamera već upisala u NEF, drugi je pravi
+render koji ga zameni. Ovo je isto što Lightroom radi sa „Embedded & Sidecar"
+preview-ima, i iz istog razloga.
+
+### Izmereno — i ovo je broj zbog koga je urađeno
+
+35 klijentovih `.NEF`-ova, oba reda 4-wide, 25 s hlađenja pre svake probe,
+preračunato na 200 fotografija:
+
+    SADA              prazne pločice do 8,3 s, pa sve pravo
+    SA PLACEHOLDEROM  fotografije na ekranu za 2,8 s, sve pravo za 8,4 s
+    cena po pravom renderu: +2%
+
+Dakle klijent vidi fotografije **tri puta pre**, a pravi render zbog toga kasni
+2%. To je moralo da se izmeri, ne pretpostavi: KORAK 155 je izmerio da je
+8-wide GORE od 4-wide (132 naspram 65 ms), pa je bilo realno da drugi red
+pokrade jezgra. Nije — brzi prolaz je kratak i skloni se.
+
+### ⚠️ DVA PRAVILA IZNAD SVEGA, i nijedno se ne pregovara
+
+Ugrađen preview **nije prava slika**. To je Nikonov Picture Control: RMS 10,6–
+19,2 prema pravom dekodu, do 11 nivoa srednje razlike, vidljivo kontrastnije i
+zasićenije. Kao KONAČNA sličica to je kvar iz KORAKA 128 ponovo. Zato:
+
+1. **Nikad se ne upisuje u `ThumbnailDiskCache`.** Samo pravi render se upisuje,
+   na jednom jedinom mestu koje je KORAK 148 tamo i stavio. Placeholder u kešu
+   je pogrešna slika zauvek, i svaki sledeći ulazak bi je vraćao za 0,72 ms sa
+   punim autoritetom.
+2. **Pravi render uvek dolazi i uvek pobeđuje.** Placeholder se upisuje samo u
+   PRAZNU pločicu — dva reda nisu poređana, pa pravi može da sleti prvi, a
+   privremena preko gotove je pogrešna slika učinjena trajnom.
+
+### Kad brzi prolaz ODBIJA da odgovori
+
+Vraća `nil`, i pločica ostaje na spinneru, kad god bi brza slika bila ne samo
+drugačija u tonu nego POGREŠNA:
+
+| slučaj | zašto |
+|---|---|
+| nije RAW | JPEG nema odvojen ugrađen preview; ImageIO bi tiho dekodirao ceo frame |
+| flattened | fotografija se otvara iz pečenog TIFF-a, a preview je od fajla PRE svega što je zapečeno |
+| ima izmene | preview ne zna za klijentov grade, pa bi crno-bela fotka bljesnula u boji pa se smirila |
+
+Pogrešan ton na trenutak je privremena slika. Pogrešna FOTOGRAFIJA je bug.
+
+Takođe se preskače kad keš već ima ulaz: tamo je prava slika 0,72 ms daleko, pa
+bi privremena bila treptaj ni za šta.
+
+### Dve stvari koje su usput morale da se urade kako treba
+
+**Odvojen red, ne niži prioritet na postojećem.** Iza pravih rendera
+placeholder bi stigao POSLE onoga umesto čega stoji, što nije privremena slika
+nego drugi dekod ni za šta. U gridu se otkazuje zajedno sa pravim redom — pet
+foldera za redom ne sme da ostavi pet grupa privremenih slika da preslikavaju
+folder koji je zaista na ekranu; ista greška koju je KORAK 145 rešio za prave.
+
+**Grupisanje po deset i u brzom prolazu.** Na 8,9 ms po slici ovi stižu mnogo
+brže od pravih, pa bi jedan `@State` upis po fotografiji bio dvesta ponovnih
+crtanja celog grida u manje od dve sekunde — tačno ona buka koja je nekad
+izgledala kao da se BriefShow zamrzao. Brzi prolaz koji app učini ukočenim je
+gori od spinnera koje zamenjuje. Rep koji ne napuni grupu ide kroz
+`addBarrierBlock`, jer bi inače poslednjih nekoliko fotografija foldera stajalo
+na spinneru do svog pravog rendera.
+
+### Provereno
+
+`Tools/run-placeholder-thumbnail-test.py` — 19 provera. Čita izvor za dva
+pravila iznad (da brzi prolaz uopšte ne pominje keš, da je pravi render i dalje
+jedini upisivač, i da oba pozivaoca pišu samo u praznu pločicu i preskaču na
+pogotku u kešu), pa vadi `makePlaceholderThumbnail` iz `Develop.swift` i vozi
+tablicu odbijanja kroz PRAVU funkciju sa tri ograde kao prekidačima.
+
+Poslednja provera je namerno naopaka: dokazuje da placeholder **jeste** druga
+slika (RMS 10,81 na `C4S_9331`), jer je to ceo razlog zašto sme da bude samo
+privremen. Da ispadne nula, i to bi vredelo znati.
+
+`run-thumbnail-parity-test.py` i dalje prolazi — RMS 7,06 prema platnu. Pravi
+lanac sličice nije ni taknut.
+
+---
+
+## KORAK 157 — tri AI recepta na desni klik u traci (7. septembar 2026)
+
+Klijentov zahtev, uz sliku menija: *„Dodaj ovde na desni klik da kada je vise
+selektovanih slika moze duplicate Subject Mono, Duplicate Mono Backround, and
+just «Youtify»"*.
+
+### Šta je dodato
+
+| stavka | šta radi |
+|---|---|
+| `Duplicate Subject Mono (N)` | napravi kopije, pa Subject Mono nad KOPIJAMA |
+| `Duplicate Mono Background (N)` | isto, sa Mono Background |
+| `Youthify (N)` | Youthify nad samim fotografijama, bez kopije |
+
+Cilj je isti kao kod svega ostalog u tom meniju: cela selekcija kad je
+desno-kliknuta fotografija deo nje, inače samo ona pod kursorom
+(`contextMenuTargets`). Broj u nazivu iz istog razloga zbog kog ga imaju Sync i
+Delete — stavka menija se gleda sekundu i mora u toj sekundi da kaže na koliko
+fotografija ide.
+
+### ⚠️ Dve DUPLIRAJU, jedna ne — i to je zahtev, ne propust
+
+Svaki recept se ZAVRŠAVA pečenjem, dakle upisuje piksele. Zato Subject Mono i
+Mono Background prvo prave kopiju i ostavljaju klijentovu fotografiju na miru.
+Youthify je tražen go, nad samom fotkom — Cmd+Z ga i dalje vraća, a Unflatten
+je u panelu.
+
+Kopija se zove po tome ŠTA JESTE, da se nađe u Finder-u: `C4S_9331 Subject
+Mono.NEF`, ne `C4S_9331 copy 3.NEF`.
+
+Uvek jedan recept, nikad dva odjednom. Sync dijalog je mesto gde se dva čekiraju
+zajedno; desni klik je jedna radnja.
+
+### ⚠️ Predaja posla — jedino mesto gde bi ovo tiho pogrešilo
+
+`duplicatePhotos` je dobio `thenRecipe:`, i recept kreće **nad `copies`, unutar
+completion-a od `runBake`**. Dva načina da se ovo pokvari, oba nema, i oba su
+zaključana testom:
+
+1. **Nad `targets` umesto nad `copies`** — to bi zapeklo Subject Mono na
+   ORIGINALE, i ništa na ekranu to ne bi reklo dok klijent ne pogleda
+   fotografiju koju nije tražio da se menja.
+2. **Uporedo sa pečenjem umesto posle njega** — recept čita svaku kopiju kroz
+   `loadBaseImage`, koji otvara njen pečeni fajl, a taj fajl ne postoji dok
+   `runBake` ne završi upis. Pokrenut uporedo, našao bi kopije nepečene i
+   stavio People slojeve na pogrešnu sliku.
+
+Poruka „Duplicated N" se namerno NE prikazuje kad se lančano nastavlja — bila bi
+zamenjena progresom recepta frame kasnije, a statusna linija koja kaže da je
+posao gotov dok druga polovina još radi je gora od nikakve.
+
+Sve tri stavke su ugašene dok model radi na otvorenoj fotografiji — brava iz
+KORAKA 154.
+
+### Provereno
+
+`Tools/run-strip-recipe-menu-test.py` — 18 provera. Ceo test je izvor, jer je
+ovo SwiftUI meni zakačen na dva asinhrona posla i nema tablicu koja bi se vozila.
+
+⚠️ Dve provere su prvo PALE, obe zbog lenjira a ne koda: jedna je tražila potpis
+funkcije u njenom TELU (a `func_body` počinje od otvorene vitičaste), druga je
+brojala `isAIWorkingOnOpenPhoto` po isečku menija pa progutala i `Delete`-ovu
+bravu — pročitala 4 za tri dugmeta. Sad se brava proverava po dugmetu.

@@ -21121,6 +21121,16 @@ struct PhotoShowSheet: View {
     /// Where this grid's thumbnails decode — see loadGridThumbnails. Owned by
     /// the view so opening another folder can cancel the one still filling in.
     @State private var gridThumbnailQueue = OperationQueue()
+
+    /// Where the FIRST pass runs: the camera's own preview out of each RAW, so
+    /// a folder opened for the first time shows photographs rather than a
+    /// screen of spinners. See makePlaceholderThumbnail for what it is and,
+    /// more importantly, for what it must never become.
+    ///
+    /// ⚠️ Separate from the queue above, not a lower priority on it. Behind the
+    /// real renders these would arrive after the pictures they stand in for.
+    /// Cancelled together with it when another folder is opened.
+    @State private var gridPlaceholderQueue = OperationQueue()
     // How wide the folder tree on the left is. @AppStorage, so a client who
     // works with deeply nested job folders sets it once and it is still that
     // wide next launch — the whole point of the request was that names like
@@ -24126,6 +24136,90 @@ struct PhotoShowSheet: View {
         gridThumbnailQueue.maxConcurrentOperationCount = 4
         gridThumbnailQueue.qualityOfService = .userInitiated
 
+        // PASS ONE — the camera's own preview out of each RAW, so a folder
+        // opened for the first time shows photographs in under two seconds
+        // instead of two hundred spinners for ten. See makePlaceholderThumbnail
+        // for the guards that keep it honest and for why it is never kept.
+        //
+        // ⚠️ Its OWN queue, cancelled alongside the real one — a client walking
+        // through five folders must not leave five sets of stand-ins racing to
+        // paint over the folder he is actually looking at, which is the same
+        // mistake KORAK 145 fixed for the real renders.
+        gridPlaceholderQueue.cancelAllOperations()
+        gridPlaceholderQueue.maxConcurrentOperationCount = 4
+        gridPlaceholderQueue.qualityOfService = .userInitiated
+
+        // Both passes hand the grid whole batches rather than single tiles;
+        // declared once, up here, because both of them read it.
+        let flushInterval = 10
+
+        // ⚠️ Batched every ten, exactly like the real pass below, and for the
+        // reason written there: at 8.9 ms each these land far FASTER than the
+        // real renders, so one @State write per photo would be two hundred
+        // back-to-back re-renders of the whole grid in under two seconds — the
+        // very churn that used to read as BriefShow freezing while photos
+        // loaded. A fast pass that makes the app feel stuck is worse than the
+        // spinners it replaced.
+        let placeholderLock = NSLock()
+        var pendingPlaceholders: [URL: NSImage] = [:]
+
+        for url in urls where !ThumbnailDiskCache.hasEntry(for: url) {
+            gridPlaceholderQueue.addOperation {
+                guard let placeholder = makePlaceholderThumbnail(from: url,
+                                                                 maxPixelSize: 420) else {
+                    return
+                }
+
+                placeholderLock.lock()
+                pendingPlaceholders[url] = placeholder
+                var flushed: [URL: NSImage] = [:]
+                if pendingPlaceholders.count >= flushInterval {
+                    flushed = pendingPlaceholders
+                    pendingPlaceholders = [:]
+                }
+                placeholderLock.unlock()
+
+                guard !flushed.isEmpty else {
+                    return
+                }
+
+                DispatchQueue.main.async {
+                    for (placeholderURL, image) in flushed {
+                        // ⚠️ Only into an EMPTY tile. The real render is on
+                        // another queue and nothing orders the two, so it can
+                        // already have landed — and a stand-in written over a
+                        // finished thumbnail is the wrong picture made
+                        // permanent.
+                        guard gridThumbnails[placeholderURL] == nil else {
+                            continue
+                        }
+                        gridThumbnails[placeholderURL] = image
+                    }
+                }
+            }
+        }
+
+        // The tail: whatever never reached a full batch. Queued behind every
+        // placeholder operation, so by the time it runs `pendingPlaceholders`
+        // holds only the remainder — without it the last few photos of a
+        // folder would sit on spinners until their real render arrived, which
+        // on a folder of 203 is the three the client can see at the end.
+        gridPlaceholderQueue.addBarrierBlock {
+            placeholderLock.lock()
+            let remainder = pendingPlaceholders
+            pendingPlaceholders = [:]
+            placeholderLock.unlock()
+
+            guard !remainder.isEmpty else {
+                return
+            }
+            DispatchQueue.main.async {
+                for (placeholderURL, image) in remainder where gridThumbnails[placeholderURL] == nil {
+                    gridThumbnails[placeholderURL] = image
+                }
+            }
+        }
+
         // Thumbnails are flushed to the @State dictionary every few images
         // rather than after every single one. With a couple hundred photos,
         // updating @State per image meant hundreds of back-to-back re-renders
@@ -24134,7 +24228,6 @@ struct PhotoShowSheet: View {
         //
         // The batch is now shared by four workers, so it needs its own lock;
         // it is filled off the main thread and handed over whole.
-        let flushInterval = 10
         let batchLock = NSLock()
         var pendingBatch: [URL: NSImage] = [:]
         var processedCount = 0

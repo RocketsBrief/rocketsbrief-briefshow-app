@@ -276,10 +276,9 @@ lično je — pitaj klijenta pre nego što uđe u build.
 
 ## TL;DR — gde smo stali
 
-### GDE SMO STALI — 7. septembar 2026, druga sesija (NIJE OBJAVLJENO)
+### GDE SMO STALI — 7. septembar 2026, druga sesija, verzija 11.11 (OBJAVLJENA)
 
-Dva klijentova zahteva iz iste poruke. Oba urađena, **ništa nije pakovano ni
-objavljeno** — v11.10 je i dalje ono što je gore.
+**Isporučeno**: `v11.11`, **jedan** paket (115 MB), `Latest`, tag na `32a5611`.
 
 | | |
 |---|---|
@@ -16559,3 +16558,78 @@ ovo SwiftUI meni zakačen na dva asinhrona posla i nema tablicu koja bi se vozil
 funkcije u njenom TELU (a `func_body` počinje od otvorene vitičaste), druga je
 brojala `isAIWorkingOnOpenPhoto` po isečku menija pa progutala i `Delete`-ovu
 bravu — pročitala 4 za tri dugmeta. Sad se brava proverava po dugmetu.
+
+---
+
+## KORAK 158 — RELEASE v11.11 (7. septembar 2026)
+
+Klijentov zahtev: *„Zapakuj clean up app da bude univerzalan, za Intel i M
+procesore kao i minimum verziju 13 mac os… tag je v11.2"*, uz PS koji ponavlja
+onaj iz KORAKA 152: *„Ne moras da uploadujes 2gb jer vec imaju u appu dugme za
+Ai SD Download."*
+
+Dakle opet **jedan paket**, `--small-only`.
+
+### ⚠️ TRAŽENI TAG v11.2 JE OPET OBORIO SAM SEBE — i to je drugi put
+
+Isti kvar kao u KORAKU 152, samo gori. Poređenje je numeričko **po
+komponentama**:
+
+    isUpdateAvailable = latest.compare(current, options: .numeric) == .orderedDescending
+
+Izmereno kroz tu istu liniju, ne zaključeno:
+
+    instalirano 11.10  → tag v11.2   NE dobija karticu   (11 = 11, pa 2 < 10)
+    instalirano 11.9   → tag v11.2   NE
+    instalirano 11.10  → tag v11.11  DA
+    instalirano 11.0   → tag v11.11  DA
+
+Pošto je objavljeno 11.10 i `latest_version` je već dignut na 11.10, v11.2 ne
+bi stigao ni do koga — a *„vec instaliran C4S apps na drugim kompujuterima ce
+dobiti ovaj update novi"* je bio glavni cilj zahteva. Pitano, klijent je izabrao
+**11.11**.
+
+`MARKETING_VERSION` 11.10 → **11.11**, `CURRENT_PROJECT_VERSION` 27 → **28**.
+
+⚠️ **Za sledeći put:** ovo je pao dva release-a zaredom. Pre svakog pakovanja
+proveriti traženi tag protiv onoga što je već objavljeno, pa tek onda graditi.
+
+### Tri stvari iz zahteva koje su VEĆ bile isporučene
+
+Provereno u kodu, ne po beleškama:
+
+| traženo | gde je već |
+|---|---|
+| univerzalan, min macOS 13 | build je `generic/platform=macOS`, skripta odbija ako nije `arm64 x86_64` |
+| SD na Intelu deli posao | KORAK 105 — `computeUnits = .all` na `#else` grani, VAE `.cpuAndGPU` |
+| label sa verzijom u app-u | KORAK 108/74 — čita `CFBundleShortVersionString` iz bundle-a, pa se ne može raziću sa tagom; sam je postao `v11.11` |
+
+### Provere na paketu
+
+| provera | rezultat |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.11 / 28** |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` |
+| `LaMa.mlmodelc` | da |
+| `SD15-Inpainting` | ne, namerno |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| zip, lokalno | 114.962.696 B |
+| `content-length` sa GitHub-a | **114.962.696** — bajt u bajt isto |
+
+Raspakovan zip proveren još jednom **iz samog objavljenog fajla**, ne iz
+lokalnog: `x86_64 arm64`, 11.11, min 13.0, potpis ok, LaMa unutra, SD nije.
+
+- stranica: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.11`
+- direktno: `…/releases/download/v11.11/C4S-Suite-11.11.zip`
+- `releases/latest` → **v11.11**, draft ne, prerelease ne, jedan asset
+
+⚠️ **`v11.0` provereno živ** — `SD15-Inpainting.aar` vraća HTTP 200. Ne brisati.
+
+### ⚠️ ŠTA JOŠ NIJE ZATVORENO
+
+**`latest_version` u BriefControl-u je i dalje 11.10.** Dok ga klijent ne digne
+na **11.11**, niko ne dobija karticu „mora update". To je jedini korak koji
+ostaje, i radi ga on sam.

@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 7. septembar 2026 (v11.10, objavljen).
+Beleška za nastavak rada. Poslednja izmena: 7. septembar 2026 (v11.11, objavljen).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -290,6 +290,13 @@ lično je — pitaj klijenta pre nego što uđe u build.
 Prvi ulazak u nov folder od 200 fotografija, ukupno posle sve tri izmene:
 **fotografije na ekranu za 2,8 s** umesto praznih pločica do 8,3 s; sve pravo
 za 8,4 s. Drugi ulazak je i dalje 0,14 s.
+
+#### ✅ `latest_version` je DIGNUT na 11.11
+
+Klijent je to uradio sam, 7.09, odmah po objavi — potvrdio je rečima. **Lanac
+je zatvoren drugi release zaredom**: postojeće instalacije dobijaju karticu
+„mora update" i vodi ih na `C4S-Suite-11.11.zip`. Iz KORAKA 158 ne ostaje
+nijedan otvoren korak.
 
 #### ⚠️ PRVO ZA SLEDEĆU SESIJU
 
@@ -16628,8 +16635,13 @@ lokalnog: `x86_64 arm64`, 11.11, min 13.0, potpis ok, LaMa unutra, SD nije.
 
 ⚠️ **`v11.0` provereno živ** — `SD15-Inpainting.aar` vraća HTTP 200. Ne brisati.
 
-### ⚠️ ŠTA JOŠ NIJE ZATVORENO
+### ✅ `latest_version` je DIGNUT na 11.11
 
-**`latest_version` u BriefControl-u je i dalje 11.10.** Dok ga klijent ne digne
-na **11.11**, niko ne dobija karticu „mora update". To je jedini korak koji
-ostaje, i radi ga on sam.
+Klijent je to uradio sam, 7.09, po objavi — potvrdio je rečima („jesam digao
+latest_version na 11.11"). Dakle **lanac je zatvoren**: postojeće instalacije
+od sada dobijaju karticu „mora update" i vodi ih na `C4S-Suite-11.11.zip`.
+
+⚠️ Potvrda je klijentova reč — sama vrednost u BriefControl-u nije
+proverena odavde. Ako neka buduća sesija ima pristup, vredi je pogledati.
+
+Time iz KORAKA 158 **ne ostaje nijedan otvoren korak**.

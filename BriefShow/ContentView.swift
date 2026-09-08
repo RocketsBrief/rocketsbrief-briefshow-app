@@ -538,98 +538,134 @@ struct ContentView: View {
                     BriefShowWindowController.shared.close()
                 })
 
-                HStack(alignment: .top, spacing: 14) {
-                    LeftImportPanel(
-                        timingMode: $timingMode,
-                        secondsPerPhoto: $secondsPerPhoto,
-                        fadeDuration: $fadeDuration,
-                        magazineImageFadeSeconds: $magazineImageFadeSeconds,
-                        magazineImageDelaySeconds: $magazineImageDelaySeconds,
-                        origamiImagesBeforePageChange: $origamiImagesBeforePageChange,
-                        origamiInternalHoldSeconds: $origamiInternalHoldSeconds,
-                        musicFadeInSeconds: $musicFadeInSeconds,
-                        musicFadeOutSeconds: $musicFadeOutSeconds,
-                        shouldLoopPreview: $shouldLoopPreview,
-                        transitionStyle: $transitionStyle,
-                        visualTheme: $visualTheme,
-                        hasPhotos: !selectedPhotoURLs.isEmpty,
-                        onOpenCropEditor: {
-                            isCropEditorPresented = true
-                        }
-                    )
-                    CenterPreviewPanel(
-                        activePreviewImage: activePreviewImage,
-                        previousPreviewImage: previousPreviewImage,
-                        activePhotoName: activePhotoName,
-                        activePhotoIndex: activePhotoIndex,
-                        photoCount: selectedPhotoURLs.count,
-                        previewImages: previewImages,
-                        origamiSlotReplacementImages: origamiSlotReplacementImages,
-                        origamiActiveSwapImages: origamiActiveSwapImages,
-                        origamiActiveSwapStyles: origamiActiveSwapStyles,
-                        origamiSwapProgress: origamiSwapProgress,
-                        previousOrigamiPageImages: previousOrigamiPageImages,
-                        previousOrigamiPageReplacements: previousOrigamiPageReplacements,
-                        previousOrigamiPageAnimationVariant: previousOrigamiPageAnimationVariant,
-                        origamiWholePageFoldProgress: origamiWholePageFoldProgress,
-                        origamiBlackOverlayOpacity: origamiBlackOverlayOpacity,
-                        magazineBlackOverlayOpacity: magazineBlackOverlayOpacity,
-                        visualTheme: visualTheme,
-                        isPreparingPhotos: isPreparingPhotos,
-                        preparedPhotoCount: preparedPhotoCount,
-                        selectedMusicURL: selectedMusicURL,
-                        selectedMusicURLs: selectedMusicURLs,
-                        selectedMusicCount: selectedMusicTrackCount,
-                        timeCounterText: timeCounterText,
-                        transitionStyle: transitionStyle,
-                        transitionProgress: usesMagazineTheme ? magazineRevealProgress : transitionProgress,
-                        magazineImageFadeSeconds: magazineImageFadeSeconds,
-                        magazineImageDelaySeconds: magazineImageDelaySeconds,
-                        magazineLayoutSeed: magazinePageIndex,
-                        photoCropByImageIdentity: photoCropByImageIdentity,
-                        magazinePageSlotCount: currentPreviewPageSlotCount,
-                        origamiAnimationSeed: origamiPageIndex,
-                        manualMagazineLayoutOverrides: manualMagazineLayoutOverrides,
-                        manualOrigamiLayoutOverrides: manualOrigamiLayoutOverrides,
-                        isPreviewPlaying: isPreviewPlaying,
-                        imaginationPlaybackRestartToken:
-                            imaginationPlaybackRestartToken,
-                        imaginationIntroOutroOpacity:
-                            imaginationIntroOutroOpacity,
-                        onAddPhotos: openPhotoPicker,
-                        onAddMusic: { slotIndex in
-                            openMusicPicker(for: slotIndex)
-                        },
-                        onDropPhotos: importPhotoURLs,
-                        onDropMusic: { urls in
-                            importMusicURLs(urls)
-                        },
-                        onTogglePreview: togglePreview,
-                        onStartFromBeginning: startPreviewFromBeginning,
-                        onOpenFullScreen: {
-                            openCinemaFullScreenPreview()
-                        },
-                        previewRenderMode: previewRenderMode,
-                        previewVideoPlayer: previewVideoPlayer,
-                        isPreparingPreviewVideo: isPreparingPreviewVideo,
-                        previewVideoPrepareProgress: previewVideoPrepareProgress,
-                        previewVideoPrepareError: previewVideoPrepareError,
-                        onSelectPreviewRenderMode: { mode in
-                            selectPreviewRenderMode(mode)
-                        }
-                    )
-                    RightExportPanel(
-                        selectedResolution: $selectedExportResolution,
-                        selectedFormat: $selectedExportFormat,
-                        selectedMusicURL: selectedMusicURL,
-                        selectedMusicCount: selectedMusicTrackCount,
-                        canExport: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
-                        isExporting: isExportingVideo,
-                        exportProgress: exportProgress,
-                        exportStatusText: exportStatusText,
-                        onExportVideo: openExportSavePanel
-                    )
+                // ⚠️ The video first, across the whole window, and every
+                // control under it. Requested 8.09: *„da bude veliki deo samo
+                // za video gore ceo ekran a dole ispod da budu svi dugmici"*.
+                //
+                // These three were ONE ROW - settings column, preview, export
+                // column - and that is why the preview was small in both
+                // directions: it was as wide as whatever was left between the
+                // two 290pt columns, and the row was as tall as the settings
+                // column. Stacked, it gets the full width, and the 260pt
+                // ceiling that actually held its height is lifted where it
+                // lives (see the stage's own frame in CenterPreviewPanel).
+                //
+                // The play, restart and full-screen buttons stay attached under
+                // the picture instead of moving down with the rest. They are
+                // the player's own controls, and a play button that is not
+                // beneath the thing it plays is a worse place to look for it.
+                CenterPreviewPanel(
+                    activePreviewImage: activePreviewImage,
+                    previousPreviewImage: previousPreviewImage,
+                    activePhotoName: activePhotoName,
+                    activePhotoIndex: activePhotoIndex,
+                    photoCount: selectedPhotoURLs.count,
+                    previewImages: previewImages,
+                    origamiSlotReplacementImages: origamiSlotReplacementImages,
+                    origamiActiveSwapImages: origamiActiveSwapImages,
+                    origamiActiveSwapStyles: origamiActiveSwapStyles,
+                    origamiSwapProgress: origamiSwapProgress,
+                    previousOrigamiPageImages: previousOrigamiPageImages,
+                    previousOrigamiPageReplacements: previousOrigamiPageReplacements,
+                    previousOrigamiPageAnimationVariant: previousOrigamiPageAnimationVariant,
+                    origamiWholePageFoldProgress: origamiWholePageFoldProgress,
+                    origamiBlackOverlayOpacity: origamiBlackOverlayOpacity,
+                    magazineBlackOverlayOpacity: magazineBlackOverlayOpacity,
+                    visualTheme: visualTheme,
+                    isPreparingPhotos: isPreparingPhotos,
+                    preparedPhotoCount: preparedPhotoCount,
+                    selectedMusicURL: selectedMusicURL,
+                    selectedMusicURLs: selectedMusicURLs,
+                    selectedMusicCount: selectedMusicTrackCount,
+                    timeCounterText: timeCounterText,
+                    transitionStyle: transitionStyle,
+                    transitionProgress: usesMagazineTheme ? magazineRevealProgress : transitionProgress,
+                    magazineImageFadeSeconds: magazineImageFadeSeconds,
+                    magazineImageDelaySeconds: magazineImageDelaySeconds,
+                    magazineLayoutSeed: magazinePageIndex,
+                    photoCropByImageIdentity: photoCropByImageIdentity,
+                    magazinePageSlotCount: currentPreviewPageSlotCount,
+                    origamiAnimationSeed: origamiPageIndex,
+                    manualMagazineLayoutOverrides: manualMagazineLayoutOverrides,
+                    manualOrigamiLayoutOverrides: manualOrigamiLayoutOverrides,
+                    isPreviewPlaying: isPreviewPlaying,
+                    imaginationPlaybackRestartToken:
+                        imaginationPlaybackRestartToken,
+                    imaginationIntroOutroOpacity:
+                        imaginationIntroOutroOpacity,
+                    onAddPhotos: openPhotoPicker,
+                    onAddMusic: { slotIndex in
+                        openMusicPicker(for: slotIndex)
+                    },
+                    onDropPhotos: importPhotoURLs,
+                    onDropMusic: { urls in
+                        importMusicURLs(urls)
+                    },
+                    onTogglePreview: togglePreview,
+                    onStartFromBeginning: startPreviewFromBeginning,
+                    onOpenFullScreen: {
+                        openCinemaFullScreenPreview()
+                    },
+                    previewRenderMode: previewRenderMode,
+                    previewVideoPlayer: previewVideoPlayer,
+                    isPreparingPreviewVideo: isPreparingPreviewVideo,
+                    previewVideoPrepareProgress: previewVideoPrepareProgress,
+                    previewVideoPrepareError: previewVideoPrepareError,
+                    onSelectPreviewRenderMode: { mode in
+                        selectPreviewRenderMode(mode)
+                    }
+                )
+
+                // ⚠️ A BOUNDED band, and it has to be bounded. The settings
+                // column is a tall column - a dozen sections, and more of them
+                // appear for the Kousei and Kirigami themes - measured at
+                // roughly 500-600pt. Stacked at its natural height under a
+                // large picture it would ask for a window over 1100pt tall,
+                // and on any smaller one SwiftUI would take the difference out
+                // of the picture: the request granted on paper and reversed on
+                // screen.
+                //
+                // So the band keeps its height and scrolls, and the picture
+                // gets everything else. Nothing is dropped or hidden behind a
+                // disclosure - *„svi dugmici koji trenutno postoje"* - and on a
+                // 900pt window this leaves the preview around 440pt against
+                // the 260 it had.
+                ScrollView(.vertical) {
+                    HStack(alignment: .top, spacing: 14) {
+                        LeftImportPanel(
+                            timingMode: $timingMode,
+                            secondsPerPhoto: $secondsPerPhoto,
+                            fadeDuration: $fadeDuration,
+                            magazineImageFadeSeconds: $magazineImageFadeSeconds,
+                            magazineImageDelaySeconds: $magazineImageDelaySeconds,
+                            origamiImagesBeforePageChange: $origamiImagesBeforePageChange,
+                            origamiInternalHoldSeconds: $origamiInternalHoldSeconds,
+                            musicFadeInSeconds: $musicFadeInSeconds,
+                            musicFadeOutSeconds: $musicFadeOutSeconds,
+                            shouldLoopPreview: $shouldLoopPreview,
+                            transitionStyle: $transitionStyle,
+                            visualTheme: $visualTheme,
+                            hasPhotos: !selectedPhotoURLs.isEmpty,
+                            onOpenCropEditor: {
+                                isCropEditorPresented = true
+                            }
+                        )
+                        RightExportPanel(
+                            selectedResolution: $selectedExportResolution,
+                            selectedFormat: $selectedExportFormat,
+                            selectedMusicURL: selectedMusicURL,
+                            selectedMusicCount: selectedMusicTrackCount,
+                            canExport: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
+                            isExporting: isExportingVideo,
+                            exportProgress: exportProgress,
+                            exportStatusText: exportStatusText,
+                            onExportVideo: openExportSavePanel
+                        )
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.bottom, 2)
                 }
+                .frame(height: 300)
 
                 TimelinePanel(
                     photoURLs: $selectedPhotoURLs,
@@ -19735,7 +19771,23 @@ struct CenterPreviewPanel: View {
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 260)
+                // ⚠️ This cap is why the preview was small, and it is a
+                // separate thing from where the panel sat. Requested 8.09:
+                // *„da bude veliki deo samo za video gore ceo ekran"*. Moving
+                // the panel to the full width of the window without touching
+                // this would have produced a wide band still 260pt tall with
+                // empty space under it — the visible half of the request
+                // granted and the half that decides the size left alone.
+                //
+                // 260 was right while this sat in a row NEXT TO the settings
+                // column: the row was as tall as that column, and a preview
+                // that grew past it would have stretched the row. It is above
+                // that column now and has the height the window can spare.
+                //
+                // minHeight stays, raised to the old ceiling: the stage must
+                // never collapse to nothing on a short window, and 260 is a
+                // size that was in front of the client for months.
+                .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 34))
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                     loadDroppedFileURLs(from: providers) { urls in

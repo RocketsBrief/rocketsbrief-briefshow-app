@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 8. septembar 2026 (KORAK 159-161, nije objavljeno; v11.11 je gore).
+Beleška za nastavak rada. Poslednja izmena: 8. septembar 2026 (KORAK 159-162, nije objavljeno; v11.11 je gore).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -16884,3 +16884,98 @@ tekstove koji su tačni, a druge dve su tražile `.magazine : ` dok u kodu stoji
 pa nesidrena pretraga nađe pogrešan i prijavi izgubljenu varijantu kao prisutnu.
 
 ⚠️ **NIJE VIĐENO NA EKRANU.**
+
+---
+
+## KORAK 162 — video gore preko celog prozora, kontrole ispod (8. septembar 2026)
+
+Klijentov zahtev: *„da bude veliki deo samo za video gore ceo ekran a dole ispod
+da budu svi dugmici koji trenutno postoje u briefshow (Slideshow app-u)"*.
+
+Raspored je izabran uz skicu, od dve ponuđene mogućnosti — **video, pa red sa
+kontrolama, pa traka fotografija na dnu.**
+
+### ⚠️ Zašto položaj NIJE bio ono što je držalo video malim
+
+Ovo je najvažnija stavka ovog koraka. Sam video je nosio:
+
+```swift
+.frame(maxWidth: .infinity, minHeight: 220, maxHeight: 260)
+```
+
+**`maxHeight: 260` je ono što ga je držalo malim, a ne to gde panel stoji.** Da
+je panel samo premešten gore, klijent bi dobio traku preko cele širine i **i
+dalje visoku 260 px**, sa prazninom ispod — vidljiva polovina zahteva ispunjena,
+a polovina koja odlučuje o veličini netaknuta.
+
+Kapica je pritom bila **ispravna dok je panel stajao u redu pored kolone sa
+podešavanjima**: red je bio visok koliko ta kolona, pa bi preview koji je prerastao
+razvukao ceo red. Sad je iznad nje i uzima visinu koju prozor može da da.
+`minHeight` ostaje, podignut na staru granicu (260) — video ne sme da se sruči
+na nulu na niskom prozoru, a 260 je veličina koju je klijent gledao mesecima.
+
+### Šta je preuređeno
+
+Tri panela su bila **jedan red** — kolona sa podešavanjima, preview, kolona za
+export. Zato je preview bio mali u **oba** pravca: širok koliko je ostalo između
+dve kolone od po 290 px, i visok koliko red dozvoli.
+
+```
+pre                                  posle
+┌ Header ───────────────────┐        ┌ Header ───────────────────┐
+│ [Set] [ preview ] [Export]│        │      V I D E O            │
+│ [   ] [  260px  ] [      ]│        │  (cela širina i visina)   │
+├───────────────────────────┤        ├───────────────────────────┤
+│ traka fotografija         │        │ [Podešavanja] [Export]    │
+└───────────────────────────┘        ├───────────────────────────┤
+                                     │ traka fotografija         │
+                                     └───────────────────────────┘
+```
+
+Dugmad za pusti / iz početka / ceo ekran **ostaju zakačena ispod slike**, ne
+sele se dole sa ostalim. To su kontrole samog plejera, a dugme za pustiti koje
+nije ispod onoga što pušta je lošije mesto da se traži.
+
+### ⚠️ Zašto traka sa kontrolama MORA biti ograničena po visini
+
+Kolona sa podešavanjima je **visoka kolona** — desetak celina, a za Kousei i
+Kirigami se pojavljuju još neke; izmereno oko **500-600 px**. Naslagana u svojoj
+prirodnoj visini ispod velike slike, tražila bi prozor **preko 1100 px**, a na
+svakom manjem SwiftUI bi razliku uzeo **iz slike**: zahtev ispunjen na papiru i
+poništen na ekranu.
+
+Zato traka drži svoju visinu (300) i **skroluje**, a slika dobija sve ostalo.
+Ništa nije izbačeno ni sakriveno iza dugmeta — *„svi dugmici koji trenutno
+postoje"* — i na prozoru od 900 px ovo ostavlja preview oko **440 px** naspram
+260 koliko je imao.
+
+⚠️ **Skrolovanje u traci je prvi prolaz, ne konačan oblik.** Pravo rešenje, ako
+klijent to potvrdi kad vidi, jeste da se sadržaj kolone sa podešavanjima **razlije
+vodoravno** u dve-tri kolone, pa traka postane niska i bez skrola. To je izmena
+unutrašnjosti `LeftImportPanel`-a i **ne treba je raditi na slepo** — v. sledeći
+odeljak.
+
+### Provereno
+
+`Tools/run-slideshow-layout-test.py` — 12 provera, `xcodebuild` prolazi, svih 29
+`Tools/run-*-test.py` izlazi sa 0.
+
+**Negativna kontrola puštena:** `maxHeight` vraćen na 260, test je pao tačno na
+„the preview stage has no fixed height ceiling", pa je vraćeno.
+
+Test ne čuva „da izgleda urednije" — čuva **dva načina na koja se ovo tiho
+poništava**: vraćena kapica visine, i traka sa kontrolama koja izgubi granicu.
+
+### ⚠️ NIJE VIĐENO NA EKRANU — i ovde to znači više nego obično
+
+Nema dozvole za snimanje ekrana na ovoj mašini (v. beleške), pa je **ovo jedina
+izmena u ovoj sesiji koja je čisto vizuelna a nije je niko video.** Kod se
+prevodi i redosled je zaključan testom; kako to **izgleda** nije provereno.
+
+Šta klijent gleda:
+1. Da li je video stvarno velik i preko cele širine, i da li raste kad se prozor
+   poveća.
+2. Da li traka sa kontrolama ispod deluje pretesno i da li mu smeta skrol u njoj.
+   **Ako smeta — to je znak da se ide na vodoravno razlivanje podešavanja**, ne
+   da se traka povećava dok ne pojede video.
+3. Da li mu prazan prostor desno od dve kolone smeta (kolone su fiksnih 290 px).

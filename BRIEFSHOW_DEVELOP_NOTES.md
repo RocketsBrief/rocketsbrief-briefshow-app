@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 7. septembar 2026 (v11.11, objavljen).
+Beleška za nastavak rada. Poslednja izmena: 8. septembar 2026 (KORAK 159-160, nije objavljeno; v11.11 je gore).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -275,6 +275,62 @@ lično je — pitaj klijenta pre nego što uđe u build.
 
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 8. septembar 2026, dve popravke iz klijentove probe (NIJE OBJAVLJENO)
+
+**Nema release-a.** Radna kopija, `xcodebuild` prolazi, svih **27**
+`Tools/run-*-test.py` izlazi sa 0. v11.11 je i dalje ono što je gore.
+
+| | |
+|---|---|
+| **159** | Duplicate + recept je radio, samo je rezultat ostajao neotvoren — kanvas na originalu |
+| **160** | traka koja kaže kad je učitavanje foldera GOTOVO, umesto kružića bez kraja |
+
+#### Šta je klijent potvrdio usput, a nije bilo traženo
+
+Na njegove dve slike se **vide mono rezultati u traci**, dakle recepti iz
+KORAKA 157 rade na pravoj mašini. Time pada polovina prve stavke sa liste od
+7.09 (154–157 na ekranu). Ostatak te stavke i dalje stoji.
+
+#### ⚠️ NAJVAŽNIJE ŠTO JE OVA SESIJA POTVRDILA
+
+**Klijentova pretpostavka o uzroku bila je tačna** — *„moguce da je to zbog
+seletovane original slike"* — i to je vredelo proveriti pre nego što se išta
+dira. Da se krenulo od „recept ne radi", popravljao bi se recept koji radi.
+Isto pravilo koje je zapisano kod zvonca u drugom projektu: prijava ume da bude
+tačna o doživljaju i netačna o uzroku, a ume i obrnuto.
+
+Uz to, drugi put u ovom fajlu: **kad test padne posle izmene, prvo se pita da li
+je pao lenjir ili pravilo.** U KORAKU 159 su pale dve provere, obe zbog regexa
+koji je merio interpunkciju umesto argumenta.
+
+#### ⚠️ PRVO ZA SLEDEĆU SESIJU
+
+1. **Klijent treba da PROBA 159 i 160 na ekranu.** Ništa od toga nije viđeno
+   ovde — nema dozvole za snimanje. Konkretno:
+   - **159:** desni klik ▸ `Duplicate Subject Mono` na jednoj fotografiji, pa
+     na više njih. Kad recept završi, gore mora da se pojavi **kopija sa mono
+     rezultatom**, a original da ostane netaknut u traci. Na više fotografija
+     otvara se **prva po redu u traci**.
+   - **160:** ući u Create u folderu sa dosta NEF-ova. U panelu, ispod Flatten
+     reda, mora da stoji `Loading photos… N left`, broj da pada i **red da
+     nestane** kad je gotovo. Ne sme da trepne posle običnog poteza slajderom.
+2. **Ako 160 ostane na ekranu a ništa se ne učitava** — to je zaglavljena traka
+   i uzrok je opisan u KORAKU 160; ne nagađati, pogledati redosled te dve linije.
+3. **I dalje se čeka neutralan izvoz `C4S_9331.NEF`-a iz Lightroom-a** sa svim
+   slajderima na nuli. Traženo 5.09, provereno 6.09, 7.09 i **8.09 — nije
+   stiglo.** U folderu su samo original NEF i `CAS-*.jpg` od 4.09, a to su
+   izvozi **sa presetom**, ne neutralni. Bez toga kalibracija stoji.
+4. **`v11.0` se NE SME brisati** — provereno 8.09: `SD15-Inpainting.aar` je gore,
+   1,98 GB, 7 preuzimanja.
+
+#### Otvoreno, nepromenjeno
+
+- Intel nije potvrđen na pravoj mašini od v11.0 (KORAK 106).
+- Istorija commit-ova i dalje nosi 214 MB `build_universal/` keša; čišćenje je
+  prepisivanje istorije i **čeka klijentovu odluku**.
+
+---
 
 ### GDE SMO STALI — 7. septembar 2026, druga sesija, verzija 11.11 (OBJAVLJENA)
 
@@ -16645,3 +16701,122 @@ od sada dobijaju karticu „mora update" i vodi ih na `C4S-Suite-11.11.zip`.
 proverena odavde. Ako neka buduća sesija ima pristup, vredi je pogledati.
 
 Time iz KORAKA 158 **ne ostaje nijedan otvoren korak**.
+
+---
+
+## KORAK 159 — recept je radio, samo ga niko nije pokazao (8. septembar 2026)
+
+Klijentova prijava, uz dve slike: *„kad sam stavio da se subject mono on je
+napravio subject mono ali nije mi prikazao u gornjem delu a moguce da je to
+zbog seletovane original slike jer sam isao na duplicate subject mono?"*
+
+**Njegova pretpostavka je bila tačna do reči, i to je vredelo proveriti pre
+nego što se išta dira** — da je krenulo od „recept ne radi", popravljao bi se
+recept koji radi. U `duplicatePhotos` stoji, doslovno:
+
+```swift
+// Select what was just made, but do NOT open it.
+multiSelectedURLs = Set(created)
+selectionAnchor = created.first
+```
+
+Kopija se **označi** u traci, ali se **ne otvara**. Kanvas ostaje na originalu,
+koji Duplicate recepti namerno nikad ne diraju. Mono je bio tu — na slici koju
+klijent nije gledao.
+
+### Zašto to pravilo nije bilo greška, i gde tačno prestaje da važi
+
+Za **običan** Duplicate je ispravno i ostaje: kopija se pravi usred rada, i
+pomeranje kanvasa sa fotografije na kojoj klijent radi bilo bi oduzimanje te
+fotografije kao **sporedna posledica** kopiranja. Isti razlog zbog kog i Select
+All ostavlja `selectedURL` na miru.
+
+Prestaje da važi u trenutku kad se na duplikat lanči recept. Tada kopija nije
+nešto čemu se klijent vraća kasnije — ona je **jedino što je tražio**, i slika
+zbog koje je pritisnuo dugme. Pravilo je nasleđeno u lanac u kom više ne stoji.
+
+**Popravka:** `runPortraitRecipes` je dobio `openFirstWhenDone:`, podrazumevano
+`false`. Jedini pozivalac koji ga pali je lanac iz `duplicatePhotos`. Youthify,
+koji ide nad samom fotkom i ništa ne kopira, ostaje netaknut.
+
+### ⚠️ Dve zamke, obe zaključane testom
+
+1. **Bira se iz `targets`, nikad iz `results`.** `results` je rečnik i **nema
+   poredak** — „prva" bi bila ona koju je heširanje slučajno stavilo napred:
+   tačno najčešće, netačno nepredvidivo, i to je vrsta greške koju niko ne
+   prijavi jer izgleda kao odluka. Otvara se prva kopija **redom u traci** koja
+   je stvarno završila.
+2. **Otvara se POSLE upisa novih podešavanja, ne pre.** `selectPhoto` čita
+   zapis te fotografije nazad iz `PhotoEditStore`; otvorena ranije, pokazala bi
+   kopiju sa **pred-receptnim** zapisom — ista zamka o jednom okretu run loop-a
+   koju pojedinačni recept već dokumentuje kod predaje `next` u `flattenPhoto`.
+
+### Provereno
+
+`Tools/run-strip-recipe-menu-test.py` — sada **23** provere.
+
+⚠️ Dve postojeće su prvo PALE, i opet zbog **lenjira, ne pravila**: regex je
+glasio `on: (\w+)\)` i pretpostavljao da `copies)` odmah zatvara zagradu, pa je
+drugi argument oborio proveru čije jemstvo niko nije ni pipnuo. Ista greška koju
+taj fajl već beleži dvaput (`func_body`, brojanje brave po isečku menija).
+Ispravljeno u `on: (\w+)\s*[,)]` — meri se argument, ne interpunkcija oko njega.
+
+---
+
+## KORAK 160 — traka koja kaže kad je učitavanje foldera GOTOVO (8. septembar 2026)
+
+Klijentov zahtev: *„Jel moze da bude loading bar u desnom cosku kada se udje u
+Create dok on loaduje NEF slike (u folderu gde su vise NEF slika) jer traje vrti
+se kruzic ali se ne vidi tacno kad je kraj tog loada."*
+
+Kružići u traci kažu da sličica **stiže**. Ništa nije govorilo kad je folder
+**gotov**.
+
+### ⚠️ Zašto NIJE procenat — i ovo je jedino mesto gde bi procenat bio laž
+
+Traka je `LazyHStack` i montira samo ono što je skrolovano u vidno polje (v.
+`filmstrip`, i prijavu o 300 punih dekodiranja odjednom zbog koje je i postala
+lenja). Sličice se traže **na zahtev**, pa poštenog imenioca nema:
+
+- preko broja fotografija u folderu — traka bi stajala kod nule i nikad ne bi
+  stigla;
+- preko „traženo dosad" — traka bi išla **unazad** svaki put kad klijent
+  skroluje i zatraži još.
+
+Oba su onaj izmišljeni procenat koji people traka i flatten traka iznad već
+odbijaju, i to iz **slabijih** razloga nego što je ovaj.
+
+**Ono što jeste istina i što se završava** jeste koliko dekodiranja još radi.
+Broj pada ka nuli, red nestane — i to što red nestane JESTE odgovor na pitanje
+koje je postavljeno.
+
+### Odluke
+
+| odluka | zašto |
+|---|---|
+| u panelu, uz people i flatten red | desni kraj trake je već jednom **namerno ispražnjen** (Select All / Sync / Export otišli na desni klik) i nije mesto da se tamo nešto vrati |
+| neodređena traka + broj „N left" | v. gore — nema poštenog imenioca |
+| prag **3**, ne 1 | jedno ponovno dekodiranje posle poteza slajderom (`refreshFilmstripThumbnails`, ~67 ms) bi blesnulo red na jedan frame, a traka koja trepne na završenoj izmeni čita se kao kvar |
+
+### ⚠️ Način na koji bi ovo tiho zakazalo — ZAGLAVLJENA traka
+
+Broj se čita iz `filmstripThumbnailsInFlight`, pa red nestaje samo kad se taj
+skup isprazni. U completion-u pravog dekodiranja url se skida **pre** `guard let
+image` — dakle i dekodiranje koje vrati `nil` uredno očisti za sobom. Zamene li
+se te dve linije, **jedan nečitljiv RAW ostavlja „Loading photos… 1 left" na
+ekranu do zatvaranja prozora, a ništa se ne učitava.** To je gore od kružića
+koji je zamenjen.
+
+### Provereno
+
+`Tools/run-filmstrip-loading-bar-test.py` — 9 provera, i **negativna kontrola je
+puštena**: te dve linije su namerno zamenjene, test je pao tačno na toj proveri,
+pa su vraćene.
+
+Uz to: `xcodebuild` BUILD SUCCEEDED, i **svih 27 `Tools/run-*-test.py` izlazi sa
+0** (mereno izlaznim kodom, ne poslednjom linijom ispisa — prvi pokušaj je
+gledao ispis i to je bio slab dokaz za testove koji završe porukom o
+kompajliranju).
+
+⚠️ **NIJE VIĐENO NA EKRANU.** Nema dozvole za snimanje ovde. Vidi „gde smo
+stali" za tačan spisak šta klijent gleda.

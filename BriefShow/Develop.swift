@@ -8789,6 +8789,42 @@ struct DevelopView: View {
                         .tint(accentColor)
                 }
             }
+
+            // Requested 8.09: *„Jel moze da bude loading bar u desnom cosku kada
+            // se udje u Create dok on loaduje NEF slike … vrti se kruzic ali se
+            // ne vidi tacno kad je kraj tog loada"*. The strip's own spinners
+            // say a tile is coming; nothing said when the folder was DONE.
+            //
+            // ⚠️ Indeterminate, and a COUNT rather than a percentage — this is
+            // the one place where a percentage would have been a lie, not just
+            // unavailable. The strip is a LazyHStack that mounts only what is
+            // scrolled into view (see `filmstrip`, and the 300-full-decodes
+            // report that made it lazy), so thumbnails are asked for on demand.
+            // A bar over the folder's photo count would sit near zero and never
+            // arrive; a bar over "asked for so far" would run backwards every
+            // time the client scrolled and more were requested. Both are the
+            // invented percentage the people search and the flatten bar above
+            // already refuse.
+            //
+            // What IS true and finishes is how many decodes are still running.
+            // It falls to zero and the row disappears, and the row disappearing
+            // is the answer to the question that was asked.
+            //
+            // Three, not one: a single re-decode after a slider drag
+            // (refreshFilmstripThumbnails, ~67 ms) would flash this row for a
+            // frame, and a bar that blinks on a finished edit reads as a fault.
+            // Below three there is nothing to wait for anyway.
+            if filmstripThumbnailsInFlight.count >= 3 {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Loading photos… \(filmstripThumbnailsInFlight.count) left")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(accentColor)
+                }
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -16731,7 +16767,9 @@ struct DevelopView: View {
             // and a status line that says a job is finished while the next
             // half of it is still running is worse than no status line.
             if let thenRecipe, !copies.isEmpty {
-                runPortraitRecipes([thenRecipe], on: copies)
+                // openFirstWhenDone: the copy IS the result here, and it is the
+                // only thing the client asked for. See runPortraitRecipes.
+                runPortraitRecipes([thenRecipe], on: copies, openFirstWhenDone: true)
                 return
             }
 
@@ -17668,7 +17706,27 @@ struct DevelopView: View {
     /// quitting mid-run leaves the ones already done done and the rest
     /// untouched — but a selection of forty is a coffee, and the dialog says so
     /// before it starts.
-    private func runPortraitRecipes(_ recipes: [PortraitRecipe], on targets: [URL]) {
+    /// `openFirstWhenDone` opens the first target the recipe actually finished,
+    /// and exists for exactly one caller: the Duplicate-then-recipe chain.
+    ///
+    /// ⚠️ Reported 8.09, with two screenshots: *„kad sam stavio da se subject
+    /// mono on je napravio subject mono ali nije mi prikazao u gornjem delu"*,
+    /// and the client's own guess at why was right — the canvas was still on
+    /// the original, because the copy is only multi-selected and never opened.
+    ///
+    /// That rule is correct where it was written. `duplicatePhotos` leaves the
+    /// preview alone on purpose: a plain Duplicate is something a client does
+    /// mid-edit, and moving the canvas off the photo they are working on would
+    /// take that away as a side effect of making a copy.
+    ///
+    /// It stops being correct the moment a recipe is chained onto it. Then the
+    /// copy is not a copy the client will come back to later — it is the ONLY
+    /// thing they asked for, and the picture they pressed the button to see.
+    /// Leaving the canvas on the untouched original makes a recipe that worked
+    /// look exactly like a recipe that did nothing, which is how it was
+    /// reported. So the rule stays where it belongs and is lifted only here.
+    private func runPortraitRecipes(_ recipes: [PortraitRecipe], on targets: [URL],
+                                    openFirstWhenDone: Bool = false) {
         guard !recipes.isEmpty, !targets.isEmpty else {
             return
         }
@@ -17742,6 +17800,24 @@ struct DevelopView: View {
                 }
                 PhotoEditStore.flushNow()
                 isFlattening = false
+
+                // ⚠️ Chosen out of `targets`, never out of `results`, which is a
+                // dictionary and has no order. Picking "the first" from it
+                // would open whichever copy the hashing happened to put first
+                // — right most of the time, wrong unpredictably, and the kind
+                // of wrong nobody reports as a bug because it looks like a
+                // choice. This opens the first copy IN STRIP ORDER that
+                // actually finished.
+                //
+                // After the settings above are written, not before: selectPhoto
+                // reads this photo's record back out of PhotoEditStore, and
+                // opening it first would show the picture with its pre-recipe
+                // record — the same one-turn-of-the-run-loop trap the single
+                // recipe already documents where it hands `next` to
+                // flattenPhoto explicitly.
+                if openFirstWhenDone, let opened = targets.first(where: { results[$0] != nil }) {
+                    selectPhoto(opened)
+                }
 
                 var message = "\(label) on \(results.count)"
                 if noPeople > 0 { message += ", \(noPeople) with no people" }

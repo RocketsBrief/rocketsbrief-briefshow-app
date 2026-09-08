@@ -144,7 +144,14 @@ def main() -> int:
     # `copies` are what was just made; running the recipe over `targets` would
     # flatten Subject Mono onto the originals, and nothing on screen would say
     # so until he looked at a photo he had not asked to change.
-    chained = re.search(r"runPortraitRecipes\(\[thenRecipe\], on: (\w+)\)", code)
+    # ⚠️ The trailing `[,)]` rather than `\)` is deliberate, and it cost two
+    # FAILs on 8.09 to learn it twice. This matched `on: copies)` and nothing
+    # else, so adding a SECOND argument to the call broke the check while the
+    # guarantee it exists for was untouched. The ruler, not the rule — the same
+    # mistake this file already records for `func_body` and for counting the
+    # lock over a slice of the menu. Match the argument, not the punctuation
+    # that happens to follow it.
+    chained = re.search(r"runPortraitRecipes\(\[thenRecipe\], on: (\w+)\s*[,)]", code)
     check("the recipe runs over the COPIES, not the originals",
           chained is not None and chained.group(1) == "copies",
           chained.group(1) if chained else "no chained call found")
@@ -154,6 +161,47 @@ def main() -> int:
     bake = code.find("runBake(")
     check("…and inside runBake's completion, not before it",
           bake != -1 and chained is not None and chained.start() > bake)
+
+    print("\nand that the client is shown what the recipe made")
+
+    # ⚠️ Reported 8.09: "napravio subject mono ali nije mi prikazao u gornjem
+    # delu". The copy was only multi-selected, never opened, so the canvas kept
+    # showing the untouched original and a recipe that worked looked exactly
+    # like one that did nothing. duplicatePhotos leaves the preview alone ON
+    # PURPOSE — see its own comment — and that is right for a plain Duplicate,
+    # which happens mid-edit. It is wrong the moment a recipe is chained, when
+    # the copy is the only thing the client asked for.
+    check("the chained call asks for the result to be opened",
+          chained is not None and "openFirstWhenDone: true" in code[chained.start():chained.start() + 120],
+          code[chained.start():chained.start() + 90].strip() if chained else "")
+
+    recipes_body = strip_comments(func_body(SOURCE.read_text(), "runPortraitRecipes"))
+    recipes_signature = re.search(r"func runPortraitRecipes\([^{]*", strip_comments(SOURCE.read_text()))
+
+    check("…and only the chained caller gets it — it is off by default",
+          recipes_signature is not None and "openFirstWhenDone: Bool = false" in recipes_signature.group(0),
+          recipes_signature.group(0).strip() if recipes_signature else "no signature found")
+
+    opened = re.search(r"if openFirstWhenDone, let (\w+) = (\w+)\.first", recipes_body)
+    check("the photo it opens is picked in strip order",
+          opened is not None and opened.group(2) == "targets",
+          opened.group(0).strip() if opened else "no guarded open found")
+
+    # ⚠️ NOT out of `results`. That is a dictionary and has no order, so "the
+    # first" would be whichever copy hashing put first: right most of the time,
+    # wrong unpredictably, and the kind of wrong nobody reports because it
+    # looks like a choice.
+    check("…never out of the unordered results dictionary",
+          opened is not None and "results.first" not in recipes_body,
+          "results.first appears in the body")
+
+    # ⚠️ selectPhoto reads the photo's record back out of PhotoEditStore, so it
+    # has to run AFTER the loop that writes it. Opened first, the canvas would
+    # show the copy with its pre-recipe record - which is the original bug
+    # wearing a different hat.
+    wrote = recipes_body.find("PhotoEditStore.setSettings")
+    check("…and after the new settings are written, not before",
+          wrote != -1 and opened is not None and opened.start() > wrote)
 
     print("\nall good" if failures == 0 else f"\n{failures} FAILED")
     return 1 if failures else 0

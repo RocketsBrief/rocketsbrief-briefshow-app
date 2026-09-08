@@ -62,6 +62,185 @@ Jedina dva poluga su **manje koraka difuzije** i **manji radni kvadrat**, i oba
 plaćaju kvalitetom. Ne dirati bez izričite reči korisnika.
 
 
+## 🟡 OTVORENO — možda SDXL Inpainting umesto SD 1.5 (8. septembar 2026)
+
+**NIŠTA NIJE ODLUČENO I NIŠTA NIJE DIRANO.** Ovo je otvorena opcija, zapisana da
+se ne bi ponovo istraživala od nule. Odeljak iznad („AI MODELI I NJIHOVA
+PODEŠAVANJA") ostaje **zaključan** dok klijent izričito ne kaže drugačije.
+
+Povod je klijentovo pitanje 8.09: *„Jel mozemo da zamenimo Ai model SD sa
+FLUX.1 Fill (cuo sam da je bolji posto je nama mana i dalje SD koji je los da se
+ne lazemo)"*, pa zatim: *„SDXL Inpainting / BrushNet (Najbolja besplatna
+komercijalna opcija) A ovaj jel mozemo on je isto bolji od SD-a"* — uz uslov
+*„ako ima naravno komercijalnu licencu"*.
+
+### ⚠️ Prvo ono što obara pola pitanja
+
+**SD od KORAKA 40 više NIJE brisač.** Briše LaMa; SD samo doteruje ono što je
+LaMa već uradila, jačinom 0,4 (= broj koraka, v. KORACI 149–151). Zamena SD-a
+menja **doterivanje**, ne brisanje.
+
+Zato pre bilo kakve konverzije ide merenje, a ne kupovina paketa:
+
+> Iste fotke i iste maske kao u KORAKU 39, pa se gleda **koja** od dve mane se
+> zapravo javlja.
+
+| šta se vidi | čije je | poluga |
+|---|---|---|
+| meka, razlivena mrlja na većoj površini | **LaMa** (izmereno: kvari se preko 1242 px) | nov SD to NEĆE popraviti |
+| izmišljen predmet u rupi (auto, kamion) | **SD** | niža jačina, ili drugi model |
+
+Ako je mana mekoća, cela ova opcija ne rešava klijentovu žalbu. To se sazna za
+pola dana, a paket bi porastao tri puta.
+
+### FLUX.1 Fill — proveren i ODBAČEN, da se ne otvara ponovo
+
+Tri odvojene prepreke, svaka sama blokira:
+
+1. **Licenca.** FLUX.1 Fill [dev] ide pod **FLUX.1 [dev] Non-Commercial License
+   v2.0** (`bfl.ai/legal/non-commercial-license-terms`, provereno 8.09): pristup
+   i izvedena dela **samo nekomercijalno**; za komercijalu se licenca traži od
+   BFL-a, uz moguću naknadu ili udeo u prihodu. App se prodaje po mašini.
+   FLUX.1 Fill [pro] postoji samo preko API-ja — klijentove fotografije bi
+   odlazile sa mašine, što ruši „sve lokalno".
+2. **Veličina i RAM.** 12B parametara plus T5-XXL enkoder. Naš SD paket je
+   1,98 GB. Za FLUX na Apple Siliconu traži se minimum 16 GB RAM-a kvantizovano,
+   32 GB za Q8 — a KORAK 19 beleži OOM na 9 GB sa modelom od 512. Na Intel
+   Mac-ovima (podržani od v11.0) nije moguće ni teorijski.
+3. **Runtime.** Nema Core ML puta za FLUX Fill; na Mac-u se vrti kroz MLX
+   (`mflux`), što je **drugi motor pored postojećeg**, samo Apple Silicon.
+
+### Dva kandidata koja JESU komercijalno upotrebljiva
+
+| | licenca | komercijalno | radna rezolucija |
+|---|---|---|---|
+| **SDXL Inpainting** (`diffusers/stable-diffusion-xl-1.0-inpainting-0.1`) | CreativeML **OpenRAIL++-M** | **DA** — ista porodica koju već isporučujemo, i čije dve obaveze već ispunjavamo | **1024** |
+| **BrushNet — kod** | **Apache 2.0**, pročitan doslovno u `LICENSE`, bez teritorijalnih ograničenja | **DA** | — |
+| **BrushNet — težine** | ⚠️ **nigde deklarisana** | **otvoreno** | 512 na SD1.5, 1024 na SDXL |
+
+#### ⚠️ BrushNet: ista zamka kao kod LaMe, samo sa TANJIM dokazom
+
+Licenca koda nije licenca težina — to je greška koja je kod LaMe već jednom
+napravljena i povučena. Kod LaMe je **propisani** link HF stranica koja izričito
+piše `license: apache-2.0`, a OpenCV je iste težine objavio sa punim Apache
+tekstom. Kod BrushNet-a zvanični README šalje na **Google Drive folder**, i
+nigde — ni u README-u ni uz težine — ne stoji nikakva deklaracija.
+
+To nije „ne", nego isto ono nerešeno pitanje, sa slabijim osloncem. **Ako se ide
+na BrushNet, prvo ide pitanje autorima uz SHA-256, odgovor u
+`BriefShow/Licenses/`** — postupak koji je već zapisan u odeljku o licencama.
+
+### Koliko je posla, i tu se ta dva jako razilaze
+
+Naš pipeline **nije** Apple-ov Swift paket nego ručno pisan preko sirovog
+`MLModel` (unet, VAE enkoder/dekoder, tekst enkoder, sopstveni scheduler,
+unapred izračunati prompt embeds). Pipeline je naš — zamena UNet-a je izvodljiva.
+
+- **SDXL Inpainting** je isti *oblik* modela kao sadašnji: jedan UNet, 9 ulaznih
+  kanala. Najbliže zameni dela, ne prepisivanju.
+- **BrushNet** je **dvograni** model koji ubacuje feature u zamrznut UNet na
+  svakom sloju. To je **nov pipeline**, ne zamena modela. I na SD 1.5 radi na
+  **512** — dakle ne rešava rezoluciju, nego halucinaciju (cela poenta druge
+  grane je da očuva ono van maske).
+
+⚠️ **Neprovereno, i mora se proveriti pre obećanja:** da li Apple-ov konverter
+uopšte pokriva SDXL *inpainting* varijantu (9-kanalni UNet), ili konverzija mora
+da se piše. Traženo 8.09, nije dobijen jasan odgovor iz izvora.
+
+### Cena, ako se krene
+
+| | sada | SDXL Inpainting | BrushNet + SDXL |
+|---|---|---|---|
+| paket | 1,98 GB | ~6 GB | ~8–10 GB |
+| radna rezolucija | 512 | 1024 | 1024 |
+
+Uz to ide i lanac isporuke: ugrađeno dugme za preuzimanje SD-a gađa asset na
+**`v11.0`, koji se i dalje ne sme brisati.** Nov model znači nov asset, nov
+release i **novo preuzimanje kod svakog klijenta koji već ima SD**.
+
+### ⚠️ Šta MORA da se odluči pre nego što iko išta radi
+
+1. **Da li je mana uopšte u SD-u** — merenje po KORAKU 39 (gore).
+2. **SDXL Inpainting ili BrushNet** — prvi je čist na licenci i strukturno
+   blizak; drugi je bolji baš protiv naše mane, ali nosi nov pipeline i
+   nedeklarisane težine.
+3. **Da li klijent prihvata paket od ~6 GB** i novo preuzimanje za postojeće
+   instalacije.
+4. **Šta sa Intelom** — SDXL na Intel Mac-u nije izmeren i verovatno nije
+   upotrebljiv; a Intel nije potvrđen ni od v11.0 (KORAK 106).
+5. **Rezultat AI Clean Up-a je 31.08. proglašen dobrim.** Zamena modela ga menja
+   — i na bolje i na gore. Mora se izmeriti na istim fotkama, ne proceniti.
+
+
+## 🟡 OTVORENO — dugme za „cartoonish" slike (9. septembar 2026, ZA SUTRA)
+
+**NIŠTA NIJE ODLUČENO NI POČETO.** Klijentova ideja: dugme koje pravi
+cartoonish verziju fotografije, uz pretpostavku da za to treba nov model —
+konkretno **Pony Diffusion V6 XL**, uz uslov *„jel okay sa licencom pise da je
+free licenca za komerciajal, i kolike je velicine?"*.
+
+### ⚠️ Pony Diffusion V6 XL — PROVEREN I ODBIJEN NA LICENCI
+
+Ono što je pročitano („free za komercijalu") važi za **običnu** Fair AI Public
+License 1.0-SD. Pony koristi **modifikovanu**, i modifikacija je baš zabrana.
+Doslovno iz model card-a, provereno 9.09:
+
+> *„You are not permitted to run inference of this model on websites or
+> **applications allowing any form of monetization** (paid inference, faster
+> tiers, etc.)"*
+>
+> *„If you want to use this model commercially, please reach us at
+> contact@purplesmart.ai"*
+>
+> *„Explicit permission for commercial inference has been granted to **CivitAI
+> and Hugging Face**"*
+
+App se prodaje po mašini — to je tačno „application allowing monetization".
+Blanko dozvola postoji samo za CivitAI i HF, ne za nas. **Nije nemoguće**:
+piše se na `contact@purplesmart.ai`. Ali dok ne stigne pisani odgovor, ovo pada
+na istom mestu gde i FLUX.
+
+**Veličina:** `ponyDiffusionV6XL_v6StartWithThisOne.safetensors` **6,94 GB** plus
+`sdxl_vae.safetensors` 335 MB = **~7,27 GB** sirovo, i Core ML konverzija to ne
+smanjuje. Ceo naš SD paket je sad 1,98 GB.
+
+**Dve tehničke stvari koje se ne vide iz licence:**
+
+1. To **nije zamena modela nego nov pipeline.** Pony je SDXL: 1024 px, **dva**
+   tekst enkodera, UNet 2,6B. A cartoonish dugme nije inpainting nego **img2img
+   preko cele fotografije** — naš pipeline je 9-kanalni inpaint UNet. Druga
+   grana koda, ne druga težina.
+2. Pony je model čiji trening i zajednica idu jako ka anime/furry i NSFW
+   sadržaju. Radi i za drugo, ali nije pravljen za profesionalni fotografski
+   alat, i to je vredno znati pre nego što uđe u paket koji nosi klijentovo ime.
+
+### Opcije, od najjeftinije naviše — ovim redom se i probaju
+
+| # | šta | rast paketa | licenca | zašto |
+|---|---|---|---|---|
+| **1** | **Core Image, bez ikakvog modela** — `CIComicEffect`, posterizacija, detekcija ivica | **0** | nema pitanja | **trenutno**, i prvo odgovara na „da li je to uopšte taj izgled" |
+| **2** | **img2img preko SD 1.5 koji VEĆ isporučujemo** | **0** | već rešena | težine su tu; dodaje se samo grana koda i stil u promptu |
+| 3 | SDXL baza + stilski LoRA pod dozvoljenom licencom | ~6 GB | proveriti LoRA posebno | pravi AI izgled bez Pony-jeve zabrane |
+| 4 | SD 3.5 | ~6 GB | Stability Community License — besplatno ispod $1M prihoda | isto, novija baza |
+| 5 | Pony V6 XL | ~7,3 GB | **traži pisanu dozvolu** | tek ako stigne odgovor sa `contact@purplesmart.ai` |
+
+### ⚠️ Redosled nije proizvoljan
+
+Opcije 1 i 2 koštaju **nula gigabajta i nula pravnih pitanja**, a odgovaraju na
+pitanje koje niko još nije postavio: **da li klijent uopšte hoće AI izgled, ili
+hoće izgled.** „Cartoonish" ume da bude oboje. Kupovati 7 GB pre nego što se to
+zna je isti redosled koji je kod SDXL-a već zapisan kao pogrešan.
+
+### Šta se pita klijenta pre nego što se počne
+
+1. **Kakav tačno „cartoonish"** — strip/comic, crtani film, ilustracija, karikatura?
+   Reč pokriva četiri različita izgleda i tri različita alata.
+2. **Cela fotografija ili samo osoba?** Ako je samo osoba, već postoji
+   `SubjectMasker` i to menja ceo pristup.
+3. **Da li sme da promeni lice?** img2img preko lica menja crte; ako klijent
+   isporučuje portrete klijentima, to je verovatno prepreka.
+
+
 ## 🟢 ZAKLJUČANO — `blur` i `grow` u `DevelopInpaint.swift`
 
 **`InpaintPipeline.blur` mora ostati box blur sa KLIZEĆIM ZBIROM, a `grow`
@@ -275,6 +454,111 @@ lično je — pitaj klijenta pre nego što uđe u build.
 
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 9. septembar 2026 — SD bez LaMe, i dve otvorene opcije za sutra (NIJE OBJAVLJENO)
+
+**Nema release-a, i nema push-a.** Sve je commit-ovano lokalno; **push ide sutra**
+zajedno sa cartoonish delom, klijentova odluka. v11.11 je i dalje ono što je gore.
+
+| | |
+|---|---|
+| **164** | `fixedSize` u korenu `ContentView`-a — Kousei 4:3 je skupljao crni kanvas |
+| **165** | crne strelice u Settings-u — kontejner iz 163 je presekao i put do izgleda prozora |
+| **166** | ⚠️ **TEST:** Generative = čist SD, bez LaMe; prag upozorenja 1400 → 600; sweep dobio `--steps` |
+
+### ⚠️ PRVO SUTRA — i ovo je jedina stvar koja se ne sme preskočiti
+
+**`generativeUsesLaMaBase` je `false` i to je TEST, ne isporuka.** Pre bilo kog
+release-a ide nazad na `true`, ili se donosi svesna odluka da ostane — v. KORAK
+166, gde stoji i zašto to nije prosta zamena.
+
+### ⚠️ NALAZ KOJI MENJA ZAKLJUČANO
+
+**Klijent: *„bio si u pravu lama je pravila lose.. ovako treba da bude SD je sada
+dobar!"*** To je suprotno od KORAKA 39 i 40, gde je LaMa kao baza uvedena baš da
+SD ne izmišlja.
+
+⚠️ **Ali moje merenje se s njim NE slaže**, i tako i stoji u zapisu: na
+`C4S_7891.NEF`, ista maska od 828 px, SD sam je opet stavio velik taman kamen.
+Dakle nalaz nije „SD je sad dobar" nego **veličina rupe i okolina odlučuju, ne
+koji je model.** Zato je prag upozorenja spušten na 600.
+
+### Dve otvorene opcije, obe zapisane gore sa dokazima
+
+1. **🟡 SDXL Inpainting umesto SD 1.5** — FLUX proveren i odbačen (nekomercijalna
+   licenca). SDXL Inpainting i BrushNet jesu upotrebljivi; ništa nije odlučeno.
+2. **🟡 Dugme za „cartoonish"** — **Pony V6 XL je odbijen na licenci** (zabranjena
+   inferenca u monetizovanoj aplikaciji; 7,27 GB). Pet opcija poređanih po ceni,
+   a prve dve koštaju **nula GB i nula pravnih pitanja**. Uz tri pitanja koja se
+   klijentu postavljaju **pre** nego što se išta počne.
+
+### Ostalo otvoreno, nepromenjeno
+
+- **KORAK 163 je i dalje NEDOVRŠEN**: nije provereno da prozor ostaje 834 posle
+  promene teme, ni hover animacije.
+- **Ništa iz 159–166 nije viđeno na ekranu odavde** — app na startu traži lozinku
+  iz keychain-a, a taj prozor agent ne dira.
+- **Testovi: 25 od 29** izlazi sa 0. Preostala 4 nisu pala — traže fotografiju iz
+  `~/Downloads`, koju macOS ovoj sesiji ne da da čita.
+- **Neutralan izvoz `C4S_9331.NEF`-a** iz Lightroom-a se i dalje čeka od 5.09.
+- **`v11.0` se NE SME brisati.**
+- Intel nije potvrđen na pravoj mašini od v11.0 (KORAK 106).
+- 214 MB `build_universal/` u istoriji commit-ova — čeka klijentovu odluku.
+
+---
+
+
+### GDE SMO STALI — 8. septembar 2026, kasno — Kousei 4:3 je skupljao kanvas (NIJE OBJAVLJENO)
+
+**Nema release-a.** Radna kopija, `xcodebuild` prolazi. v11.11 je i dalje ono
+što je gore; 159–164 nisu objavljeni.
+
+| | |
+|---|---|
+| **164** | `fixedSize` u korenu `ContentView`-a — prozor je prestao da prati sadržaj (163), ali sadržaj nije počeo da prati prozor |
+
+#### ⚠️ ŠTA OVA SESIJA POTVRĐUJE
+
+**Popravka koja rešava polovinu kvara izgleda kao popravka.** KORAK 163 je
+ispravno zaustavio prozor da prati sadržaj i tu je stao; druga polovina —
+sadržaj koji odbija da prati prozor — je ostala, i klijent je prijavio **isti
+doživljaj drugi put**. Pre nego što se korak zatvori, pita se da li je uzrok
+uklonjen ili je uklonjena jedna njegova strana.
+
+**Drugo: lenjir koji ništa ne meri ne prijavljuje nijedan pad.** U
+`run-slideshow-layout-test.py` je regex prestao da poklapa kad se prozor
+promenio, pa **dve provere uopšte nisu izvršavane** — a test je bio zelen. Isto
+je pravilo koje ovaj fajl već beleži tri puta, ali prvi put u obliku „lenjir
+prećutno prestane da postoji", ne „lenjir pogrešno padne".
+
+#### ⚠️ PRVO ZA SLEDEĆU SESIJU
+
+1. **Klijent gleda 164 na ekranu:** `Theme` ▸ **Kousei 4:3** — crni kanvas mora
+   da **ostane iste veličine**; isto za `Kirigami 4:3` i za povratak na Free.
+   Kolona mora da popunjava prozor do dna, bez praznog pojasa ispod trake.
+2. **I dalje čeka klijentova proba 159–162** (v. odeljak ispod) — ništa od toga
+   nije viđeno na ekranu.
+3. **KORAK 163 je i dalje NEDOVRŠEN.** Neprovereno: da prozor ostaje 834 posle
+   promene teme, i hover animacije.
+4. **Testovi:** 25 od 29 izlazi sa 0. Preostala 4 nisu pala — traže fotografiju
+   iz `~/Downloads`, koju macOS **ne da da čita** iz ove sesije
+   (`Operation not permitted`, i sa isključenim sandboxom).
+5. **I dalje se čeka neutralan izvoz `C4S_9331.NEF`-a iz Lightroom-a.** Traženo
+   5.09; nije stiglo do 8.09. Kalibracija stoji.
+6. **`v11.0` se NE SME brisati** — provereno 8.09.
+7. **🟡 OTVORENA OPCIJA: SDXL Inpainting umesto SD 1.5.** Klijent je pitao za
+   FLUX.1 Fill; FLUX je proveren i odbačen (nekomercijalna licenca, 12B + T5-XXL,
+   nema Core ML puta). SDXL Inpainting i BrushNet **jesu** upotrebljivi, ali
+   **ništa nije odlučeno** — v. odeljak „🟡 OTVORENO" gore, uključujući pet
+   stvari koje moraju da se odluče pre nego što iko išta radi. **Prvo merenje po
+   KORAKU 39**, jer SD od KORAKA 40 samo doteruje ono što je LaMa obrisala.
+
+#### ⚠️ Ako se app pokreće odavde
+
+Traži lozinku iz keychain-a (`com.rocketsbrief.briefshow.session`) na startu.
+Taj prozor se **ne dira** — nije na agentu da unosi klijentove lozinke.
+
+---
 
 ### GDE SMO STALI — 8. septembar 2026, dve popravke iz klijentove probe (NIJE OBJAVLJENO)
 
@@ -17051,3 +17335,234 @@ to garantuje, ali nije viđeno), i hover animacije (traže miš na kontroli).
 ⚠️ **Dozvole za snimanje ekrana i pristupačnost RADE** na ovoj mašini — ranija
 beleška da ne rade je opovrgnuta. SwiftUI dugmad nisu AX elementi, pa se klika
 po koordinatama iz snimka (pikseli / 2 na Retini).
+
+---
+
+## KORAK 164 — prozor je prestao da prati sadržaj, ali sadržaj nije počeo da prati prozor (8. septembar 2026)
+
+Klijentova prijava, posle KORAKA 163: *„i dalje je bio problem kada sam kliknuo
+na kousei 4:3 on je onaj black preview suzio.. ne znam zasto umesto da ostavi
+isto cim je to suzio opet je app window bio uskracen"*.
+
+### Uzrok — druga polovina istog kvara
+
+KORAK 163 je stavio običan `NSView` između prozora i `NSHostingView`-a, i to je
+zaista zaustavilo **prozor** da prati sadržaj. Ali u korenu `ContentView`-a je i
+dalje stajalo:
+
+```swift
+.fixedSize(horizontal: false, vertical: true)
+```
+
+To znači: **ignoriši visinu koju prozor nudi, uzmi svoju idealnu.** Iz toga
+slede tačno dve stvari koje je klijent opisao, i kontejner nije popravio nijednu:
+
+- kolona nikad nije popunila prozor, pa je crni kanvas dobijao veličinu koju
+  njegov sadržaj slučajno traži umesto one koju prozor može da da — prazan pojas
+  ispod se čita kao „app je uskraćen";
+- **ta idealna visina se prera­čunava kad se promeni tema** (Kousei menja šta
+  preview stranica gradi), pa je izbor `Kousei 4:3` ponovo izmerio kolonu i crni
+  kanvas se skupio.
+
+⚠️ **Obe polovine su potrebne, i svaka sama izgleda kao rešenje.** Kontejner sam
+ostavlja prozor tačne veličine sa kolonom skrojenom po sopstvenoj meri unutra —
+što je tačno ono što je klijent video i drugi put prijavio.
+
+### Popravka
+
+`fixedSize` je uklonjen, a `maxHeight: .infinity` dodat na **dva** mesta:
+
+| gde | zašto |
+|---|---|
+| koren `ContentView`-a (`.frame(minWidth: 980 …)`) | ZStack uzima visinu prozora |
+| kolona unutar njega (`.frame(maxWidth: .infinity … alignment: .top)`) | bez ovog VStack stoji centriran na svojoj idealnoj visini u punom ZStack-u, a kanvas opet po meri sadržaja |
+
+Kapica kanvasa (`maxHeight: 620`) ostaje netaknuta i dalje odlučuje koliko slika
+sme da uzme od onoga ispod nje.
+
+### Usput ispravljeno, jer je bilo aktivno pogrešno
+
+- Komentar kod `ShowGridWindowController.open` se pozivao na `fixedSize` kao na
+  razlog za zaseban prozor. Modifikator više ne postoji; zaseban prozor ostaje
+  ispravan, ali ne iz tog razloga.
+- Komentari uz kapicu kanvasa su tvrdili `minHeight` 220 i `maxHeight` 420, a
+  linija ispod njih odavno glasi 150 i 620. Brojevi ispravljeni, obrazloženja
+  ostaju.
+
+### Provereno
+
+`Tools/run-slideshow-layout-test.py` — sada **20** provera, `xcodebuild` prolazi.
+
+**Dve negativne kontrole puštene, obe pale tačno gde treba:**
+
+| šta je namerno pokvareno | šta je palo |
+|---|---|
+| `fixedSize` vraćen u koren | „ContentView's root is not sized to its own ideal height" + „its root frame takes the window's height" |
+| `maxHeight: .infinity` skinut sa kolone | „…and so does the column inside it" |
+
+### ⚠️ Lenjir koji je merio prazninu — nađen usput
+
+U istom testu je stajalo `windowHeight = min\((\d+),`, a te linije **nema** od
+kad se prozor otvara na ceo `visibleFrame`. Regex nije pao — samo je prestao da
+poklapa, pa **dve provere u tom bloku uopšte nisu ni izvršavane.** Lenjir koji
+ništa ne meri ne prijavljuje nijedan pad. Blok je prekrojen na ono što je i
+dalje broj koji se može pogrešiti (`minSize`).
+
+Isto i u `Tools/run-thumbnail-context-pool-test.py`: tražio je da pool bude
+**jednak** svakoj širini reda, što je važilo dok su svi redovi bili 4. Traka je
+od KORAKA 163 namerno **2** (RAW demosaic drži stotine MB, četiri paralelno su
+držala app na 2,4 GB). Uži red samo ostavlja kontekste neiskorišćene i nije kvar;
+kvar je **širi** red od poola, jer to su dve operacije na jednom `CIContext`-u.
+Provera sada meri to, plus da pool nije veći od najšireg punjenja.
+
+Time je i taj test opet zelen na izvornoj polovini — pao je od 163. naovamo, a
+nijedna sesija to nije primetila jer su posle prekida puštena samo dva testa.
+
+### Stanje testova
+
+**25 od 29** `Tools/run-*-test.py` izlazi sa 0. Preostala **4** nisu pala —
+traže fotografiju iz `~/Downloads`, a **ovoj sesiji macOS ne da da čita
+`~/Downloads`** (`Operation not permitted`, i sa isključenim sandboxom). Njihove
+polovine koje čitaju izvor prolaze.
+
+### ⚠️ NIJE VIĐENO NA EKRANU
+
+App je pokrenut, ali je na startu tražio lozinku iz keychain-a
+(`com.rocketsbrief.briefshow.session`) usred klijentovog video poziva, pa je
+odmah ugašen bez diranja tog prozora. Kod se prevodi, oba načina poništavanja su
+zaključana testom; **kako izgleda nije provereno.**
+
+Šta klijent gleda:
+1. `Theme` ▸ **Kousei 4:3** — crni kanvas mora da **ostane iste veličine**.
+   Isto i za `Kirigami 4:3`, i pri povratku na Free.
+2. Da kolona popunjava prozor do dna, bez praznog pojasa ispod trake.
+3. Da se pri povećanju prozora slika povećava do svoje granice, pa stane.
+
+---
+
+## KORAK 165 — crne strelice u Settings-u: kontejner iz 163 je presekao još jednu žicu (9. septembar 2026)
+
+Klijentova prijava, uz snimak: *„ove u settingsu strelice gore i dple su previse
+crne!"* — `Stepper` kontrole u Settings kartici, jedva vidljive na tamnoj temi.
+
+### Uzrok — treći put ista posledica
+
+`Stepper` su **jedine native AppKit kontrole** u tom prozoru. `ContentView` nosi
+`.preferredColorScheme` još otkad su prvi put bile tamno na tamnom, i **i dalje
+ga nosi.** Ali taj modifikator na macOS-u do `NSWindow`-a stiže **kroz hosting
+view** — a KORAK 163 je između njih ubacio obični `NSView` kontejner. Hosting
+view je prestao da bude `contentView` prozora i izgled više nije stizao do njega.
+
+⚠️ **Ovo je druga stvar koju je taj kontejner prekinuo**, posle kolone koja je
+prestala da prati prozor (KORAK 164). Kontejner je ispravan i ostaje; ali svaka
+sledeća pojava „radilo je pre 163, a nije dirano" prvo se proverava ovde.
+
+### Popravka
+
+Izgled prozora se postavlja **direktno u `BriefShowWindowController`**, iz teme,
+i ne zavisi od hijerarhije pogleda. Plus pretplata na promenu teme, jer klijent
+menja White/Sand/Dark dok je prozor otvoren.
+
+⚠️ **`.receive(on: RunLoop.main)` nije ukras.** `@Published` javlja iz `willSet`,
+pa bi sink koji radi odmah pročitao **staru** temu i postavio izgled koji je
+klijent upravo napustio. Isti „jedan okret run loop-a" koji lanac recepata već
+beleži kod `flattenPhoto`.
+
+⚠️ **NIJE VIĐENO NA EKRANU** — app na startu traži lozinku iz keychain-a
+(`com.rocketsbrief.briefshow.session`), a taj prozor agent ne dira.
+
+---
+
+## KORAK 166 — LaMa kao baza je bila ta koja je KVARILA rezultat (9. septembar 2026)
+
+⚠️ **NEDOVRŠENO — ovo je TEST, ne isporuka. `generativeUsesLaMaBase` mora nazad
+na `true` pre bilo kog release-a.**
+
+### Nalaz koji obara pola KORAKA 39 i 40
+
+Klijent je tražio da proba Generative bez LaMe: *„zameni da testiram da kada
+kliknem na Ai generative dugme lama nema nikakve veze samo SD"*. Presuda posle
+probe:
+
+> *„bio si u pravu lama je pravila lose.. ovako treba da bude SD je sada dobar!"*
+
+**To je suprotno od onoga što je bilo zaključano.** KORAK 40 je LaMu kao bazu
+uveo baš zato da SD ne izmišlja, a KORAK 39 je zaključio da SD sam ne valja. Na
+klijentovim fotografijama je obrnuto.
+
+⚠️ **I moje merenje se NE slaže s njim, i to mora ovako da stoji.** Na
+`C4S_7891.NEF`, ista maska od 828 px kao u KORAKU 39, SD sam je opet stavio
+**velik taman kamen** u rupu. Dakle nalaz nije „SD je sad dobar" nego:
+
+> **veličina rupe i šta je oko nje odlučuju, ne koji je model.**
+
+Klijentove maske su očigledno u drugom režimu od test-kadra. Njegov ekran
+odlučuje (KORAK 111), ali se test-kadar ne briše iz zapisa.
+
+### Šta je promenjeno
+
+| gde | šta |
+|---|---|
+| `SDInpaintPipeline.generativeUsesLaMaBase` | nov imenovan prekidač, `false` = LaMa se ne poziva, SD kreće od šuma i vrti ceo raspored |
+| `cautionAreaPixels(.generative)` | prati prekidač: **1400 → 600** |
+| `oversizeReason(.generative)` | prati prekidač: više ne obećava „It will not invent anything" |
+
+⚠️ **Geometrija je NAMERNO netaknuta** — *„ne povecavaj SD da ne bi stavljao
+automobile"*. `imageSide` je i dalje 512.
+
+#### ⚠️ Dve mine koje bi test učinile lažljivim
+
+1. **Prag 1400 je bio tačan SAMO zato što LaMa prva popuni rupu** — u kodu je
+   doslovno pisalo „Inventing is no longer what happens". Da je ostao, klijent bi
+   ofarbao rupu od 1200 px, **ne dobio nikakvo upozorenje**, i dobio kamen.
+   Vraćen na 600, broj izmeren baš za ovu konfiguraciju.
+2. **Tekst upozorenja je obećavao da neće ništa izmisliti.** To je obećanje koje
+   drži LaMa, ne SD.
+
+### Brzina — pitanje postavljeno, izmereno, i ODUSTALO SE
+
+*„zbog cega tako sada sporije? i jel moze da se ubrza aliiii da ostane isti
+kvalitet"*.
+
+Uzrok nije poskupljenje nego **broj koraka**: ranije je SD vrteo poslednjih 40%
+rasporeda (~5 poziva) nad LaMinim filom, sad vrti svih 12.
+
+Dve poluge su zatvorene **pre** merenja, obe već zapisanim nalazima:
+
+- **guidance** — KORAK 39 je izmerio da je 1,0 **najgori** rezultat, jer je tamo
+  vođenje isključeno po definiciji. Uz to je UNet konvertovan sa batch-om
+  **fiksiranim na 2**, pa jedan prolaz ne bi ni bio moguć bez rekonverzije.
+- **compute units** — već optimalno: UNet na ANE (~95% računa), VAE na GPU.
+
+Ostao je broj koraka. `Tools/inpaint-sweep.swift` je umeo guidance, prompt i
+refine — **ne i korake**; dodat je `--steps`. Mereno na `C4S_7891.NEF`, jedan
+topao proces:
+
+| koraka | vreme |
+|---|---|
+| 12 | 13,5 s |
+| 10 | 11,6 s |
+| 8 | 9,7 s |
+| 6 | 7,8 s — vidljivo mekše, kamen se razmaže |
+
+#### ⚠️ Ishod: vraćeno na 12, i to je poučnije od tabele
+
+8 je isporučeno prvo — **vraćeno**: *„stavi ipak na 10 koraka malo je sada
+losije od porslog puta"*. Pa 10 — presuda: *„pa ista je brzina iskreno.. stavi
+onda na 12 koraka.. da bude jos bolje na oko"*.
+
+**Dva odvojena merenja su tvrdila da je 8 čisto** — ovaj sweep, i komentar uz
+`defaultSteps` napisan još pri konverziji („still clean at 8"). Oba su gledala
+kamen na pesku; on je gledao svoje fotografije.
+
+> ⚠️ **NAJKORISNIJI NALAZ: 11,6 s i 13,5 s su klijentu ISTO čekanje.** Koraci
+> difuzije nisu tamo gde ide vreme koje on oseća. Ko sledeći bude hteo da
+> Generative deluje brže — **ne vraća se na ovaj broj.** Gleda pun render u
+> punoj rezoluciji pre i posle 512 bafera, i hladno učitavanje težina
+> (**43 s hladno naspram 2 s toplo**, izmereno u istom sweep-u).
+
+### Provereno
+
+`xcodebuild` prolazi. Sweep je pušten dvaput; PNG-ovi su **gledani**, ne bodovani
+— nema metrike koja razlikuje verodostojan pesak od izmišljenog kamena.
+

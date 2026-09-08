@@ -15166,7 +15166,16 @@ struct DevelopView: View {
             // so it cannot decide a car belongs in the gap any more. What is
             // left is the softness both models share once the area is large,
             // measured on C4S_7891: clean at 1242px, soft from 1656px.
-            case .generative: return 1400
+            //
+            // ⚠️ AND IT FOLLOWS THE SWITCH, 8.09. 1400 is true only BECAUSE
+            // LaMa fills the hole first. With `generativeUsesLaMaBase` off, SD
+            // starts from noise and inventing is exactly what happens again —
+            // leaving 1400 there would mean the client paints a 1200px hole,
+            // gets no caution at all, and gets a car. 600 is the number that
+            // was measured for this configuration, so this goes back to it
+            // whenever that configuration is the one running.
+            case .generative:
+                return SDInpaintPipeline.generativeUsesLaMaBase ? 1400 : 600
             }
         }
 
@@ -15175,6 +15184,14 @@ struct DevelopView: View {
             case .quick:
                 return "Quick works from a downscaled copy, and past about this size it smears a big region instead of rebuilding it. Paint a smaller area, or take this one out in a few passes."
             case .generative:
+                // ⚠️ "It will not invent anything" is a promise LaMa keeps, not
+                // SD. It is true only while Generative starts from LaMa's fill;
+                // with that switched off the sentence would be telling the
+                // client the opposite of what the model is about to do.
+                guard SDInpaintPipeline.generativeUsesLaMaBase else {
+                    return "Stable Diffusion is running on its own here, with no base fill under it — at this size it may invent something that was never in the frame. Take the area out in two or three smaller passes."
+                }
+
                 return "An area this large comes back softer than the photo around it — there is not enough left nearby to rebuild it sharply. It will not invent anything, but taking it out in two or three smaller passes will look better."
             }
         }

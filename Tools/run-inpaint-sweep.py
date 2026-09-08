@@ -39,6 +39,9 @@ parser.add_argument("--onone", action="store_true",
                          "the honest way to answer 'why does this take minutes in Xcode?'")
 parser.add_argument("--sweep", default="7.5", help="guidance values, comma separated")
 parser.add_argument("--prompts", default="@default", help="prompts, | separated")
+parser.add_argument("--steps", default=None,
+                    help="diffusion step counts, comma separated; the lever left after "
+                         "guidance was ruled out (KORAK 39). Default: the shipped value.")
 parser.add_argument("--refine", default="@default",
                     help="refine strengths over LaMa's fill, comma separated; 'off' for the old start-from-noise path")
 args = parser.parse_args()
@@ -73,6 +76,8 @@ if build.returncode != 0:
 
 out = pathlib.Path(args.out) if args.out else work / "out"
 env = dict(os.environ, SWEEP=args.sweep, PROMPTS=args.prompts, REFINE=args.refine)
+if args.steps:
+    env["STEPS"] = args.steps
 env.setdefault("BRIEFSHOW_MODELS", str(root.parent / "CoreMLModels"))
 
 cmd = [str(work / "sweep"), str(photo), str(out),

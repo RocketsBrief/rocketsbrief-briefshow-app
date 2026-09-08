@@ -111,8 +111,19 @@ if engine == "lama" {
 let env = ProcessInfo.processInfo.environment
 // Prompts are separated by "|" so a prompt can contain commas.
 let prompts = (env["PROMPTS"] ?? "@default").split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+// ⚠️ STEPS added 9.09, and it is the knob this file could not turn.
+//
+// With Generative running SD on its own (no LaMa base), the whole schedule
+// runs instead of its last 40%, and the client asked the only question that
+// matters about that: *„jel moze da se ubrza aliiii da ostane isti kvalitet"*.
+// Guidance was ruled out by KORAK 39 and the compute units are already right,
+// so the step count is what is left — and whether 10 or 8 looks the same as 12
+// is not something to assert. It is looked at, on his photograph.
+let stepValues = (env["STEPS"] ?? String(SDInpaintPipeline.defaultSteps))
+    .split(separator: ",").compactMap { Int($0) }
 for guidance in (env["SWEEP"] ?? "7.5").split(separator: ",") {
     setenv("BRIEFSHOW_SD_GUIDANCE", String(guidance), 1)
+    for stepCount in stepValues {
     for refine in (env["REFINE"] ?? "@default").split(separator: ",") {
     for (n, raw) in prompts.enumerated() {
         // A non-default prompt has to go through the live TextEncoder; the
@@ -122,18 +133,19 @@ for guidance in (env["SWEEP"] ?? "7.5").split(separator: ",") {
         let strength: Float? = refine == "@default"
             ? SDInpaintPipeline.defaultRefineStrength
             : (refine == "off" ? nil : Float(refine))
-        let label = "g\(guidance)-p\(n)-r\(refine)"
+        let label = "g\(guidance)-p\(n)-r\(refine)-s\(stepCount)"
         let start = Date()
         do {
             if let r = try InpaintPipeline.aiRemoval(
                 mask: mask, from: image, context: context, prompt: prompt,
-                refineStrength: strength) {
-                print(String(format: "%@  %.1fs   refine %@", label,
-                             Date().timeIntervalSince(start),
+                steps: stepCount, refineStrength: strength) {
+                print(String(format: "%@  %.1fs   steps %d  refine %@", label,
+                             Date().timeIntervalSince(start), stepCount,
                              strength.map { String($0) } ?? "off"))
                 write(r, "sd-\(label)")
             } else { print("\(label): nil") }
         } catch { print("\(label): \(error)") }
+    }
     }
     }
 }

@@ -613,6 +613,43 @@ final class SDInpaintPipeline: ObservableObject {
     /// trailing timesteps gets there in far fewer model calls — verified
     /// against the 30-step result on the user's own photos, and still clean at
     /// 8, so this leaves margin rather than sitting on the edge.
+    ///
+    /// ⚠️ EIGHT WHILE THE TEST SWITCH IS OFF, 9.09. Asked for in these words:
+    /// *„jel moze da se ubrza aliiii da ostane isti kvalitet"*.
+    ///
+    /// Twelve was chosen while Generative ran only the LAST 40% of the
+    /// schedule over LaMa's fill — about 5 model calls. Running SD alone runs
+    /// all twelve, which is where the slowdown comes from; nothing else
+    /// changed. Measured on `C4S_7891.NEF`, same 828px mask as KORAK 39, one
+    /// warm process:
+    ///
+    ///     12 steps   13.5 s
+    ///     10 steps   11.6 s
+    ///      8 steps    9.7 s
+    ///      6 steps    7.8 s   visibly softer, the rock smears
+    ///
+    /// The PNGs were looked at, not scored — there is no metric that separates
+    /// a plausible beach from an invented one.
+    ///
+    /// ⚠️ AND THE WHOLE ATTEMPT WAS TRIED AND ABANDONED. 8 went out first;
+    /// he sent it back — *„stavi ipak na 10 koraka malo je sada losije od
+    /// porslog puta"*. Then 10 went out, and the verdict on that was: *„pa
+    /// ista je brzina iskreno.. stavi onda na 12 koraka.. da bude jos bolje na
+    /// oko"*. So it is back at twelve, and this is the record of why nobody
+    /// should trim it again.
+    ///
+    /// **Two separate measurements said 8 was clean** — this sweep, on one
+    /// frame, and the sentence above, written at conversion time. Both were
+    /// looking at a rock on sand; he was looking at his own photographs. His
+    /// screen decides (KORAK 111).
+    ///
+    /// ⚠️ THE MORE USEFUL FINDING IS THE SECOND SENTENCE: 11.6 s and 13.5 s
+    /// are **the same wait to the person doing the work.** The diffusion steps
+    /// are not where the time he feels goes — so the next person who wants
+    /// Generative to feel faster should not come back to this number. Look at
+    /// the full-resolution Core Image render before and after the 512 buffer,
+    /// and at the cold weight load (43 s cold against 2 s warm, measured in
+    /// the same sweep). Those are the parts he is actually waiting on.
     static let defaultSteps = 12
 
     /// How far the repaired patch fades into the photo at its edge, 0...1.
@@ -667,7 +704,30 @@ final class SDInpaintPipeline: ObservableObject {
     /// palm looks right, so it reads as better until the same setting meets a
     /// clean background and puts an object in it. That is the whole reason
     /// this number is low.
-    static let defaultRefineStrength: Float? = 0.4
+    /// ⚠️ TEST SWITCH, 8.09 — NOT A SHIPPING SETTING. Put back to `true`
+    /// before any release.
+    ///
+    /// Client's request, in his words: *„zameni da testiram da kada kliknem na
+    /// Ai generative dugme lama nema nikakve veze samo SD.. pa da vidimo sta
+    /// ce da uradi.. ali ne povecavaj SD da ne bi stavljao automobile"*.
+    ///
+    /// `false` makes Generative Clean Up what it was before KORAK 40: LaMa is
+    /// never called, SD starts from NOISE and runs the whole schedule. That is
+    /// the exact configuration KORAK 39 measured, and its finding stands —
+    /// **on an empty prompt SD put a CAR in an 828px hole.** This is here so
+    /// the client can see that on his own photographs, not because it is
+    /// better.
+    ///
+    /// ⚠️ The geometry is deliberately UNTOUCHED — `imageSide` is still 512
+    /// and `defaultSteps` still 12. *„ne povecavaj SD"*. The car comes from
+    /// the size of the hole, so enlarging the canvas while testing this would
+    /// be feeding the very failure being looked at.
+    static let generativeUsesLaMaBase = false
+
+    /// nil hands SD an empty hole and the full schedule; 0.4 hands it LaMa's
+    /// fill and only the last part of the schedule. The 0.4 below is the
+    /// shipped, measured value and is NOT changed by the switch — only bypassed.
+    static let defaultRefineStrength: Float? = generativeUsesLaMaBase ? 0.4 : nil
 
     // Loading the 1.6 GB UNet is ~18 seconds of Neural Engine compilation, so
     // the models are loaded once and kept. `warmUp()` moves that cost to the

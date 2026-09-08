@@ -13338,13 +13338,18 @@ struct ThemePickerPopover: View {
 
                 ThemePickerSectionTitle("Other")
 
-                ThemePickerOption(
+                ThemePickerLayoutOption(
                     title: "Kousei",
                     subtitle: "Editorial pages with one, three, or more photos.",
-                    isSelected: selectedTheme == .magazine,
-                    isLocked: false
-                ) {
-                    selectedTheme = .magazine
+                    selectedLayout: selectedTheme == .magazine ? .free
+                        : (selectedTheme == .magazine43 ? .fourThree : nil)
+                ) { layout in
+                    // ⚠️ Every one of these settings was on BOTH Kousei cards
+                    // before, identically. They belong to Kousei, not to a
+                    // layout, so they are set once here — and having them in
+                    // one place is the reason the two lists cannot drift apart
+                    // again, which they could while they were typed twice.
+                    selectedTheme = (layout == .fourThree) ? .magazine43 : .magazine
                     transitionStyle = .fade
                     timingMode = .customSpeed
                     secondsPerPhoto = 4
@@ -13356,41 +13361,15 @@ struct ThemePickerPopover: View {
                     isPresented = false
                 }
 
-                ThemePickerOption(
-                    title: "Kousei 4:3",
-                    subtitle: "Same editorial pages, every photo cropped to a clean 4:3 or 3:4 grid.",
-                    isSelected: selectedTheme == .magazine43,
-                    isLocked: false
-                ) {
-                    selectedTheme = .magazine43
-                    transitionStyle = .fade
-                    timingMode = .customSpeed
-                    secondsPerPhoto = 4
-                    magazineImageFadeSeconds = 0.3
-                    magazineImageDelaySeconds = 0.3
-                    musicFadeInSeconds = 4
-                    musicFadeOutSeconds = 4
-                    shouldLoopPreview = false
-                    isPresented = false
-                }
-
-                ThemePickerOption(
+                ThemePickerLayoutOption(
                     title: "Kirigami",
                     subtitle: "Geometric folded-panel movement and page layouts.",
-                    isSelected: selectedTheme == .origami,
-                    isLocked: false
-                ) {
-                    selectedTheme = .origami
-                    isPresented = false
-                }
-
-                ThemePickerOption(
-                    title: "Kirigami 4:3",
-                    subtitle: "Same folded-panel movement, every photo cropped to a clean 4:3 or 3:4 grid.",
-                    isSelected: selectedTheme == .origami43,
-                    isLocked: false
-                ) {
-                    selectedTheme = .origami43
+                    selectedLayout: selectedTheme == .origami ? .free
+                        : (selectedTheme == .origami43 ? .fourThree : nil)
+                ) { layout in
+                    // Kirigami sets nothing else, exactly as both of its cards
+                    // did before — its timing comes from its own page plans.
+                    selectedTheme = (layout == .fourThree) ? .origami43 : .origami
                     isPresented = false
                 }
 
@@ -13570,6 +13549,127 @@ struct ThemePickerOption: View {
         }
 
         return AppColors.border.opacity(isLocked ? 0.45 : 0.85)
+    }
+}
+
+/// One style, two layouts — the card Kousei and Kirigami share.
+///
+/// ⚠️ Requested 8.09: *„tamo stoji kousei 4:3 i kirigami 4:3 i malo je
+/// neuredno … da ima jedan kousei i da bude dugme da se izabere 4:3 layout i
+/// jos jedno dugme free … i to je samo za kousei i kirigami"*. The picker
+/// carried four cards for what is two styles: Kousei, Kousei 4:3, Kirigami,
+/// Kirigami 4:3, each spelling out the same sentence twice.
+///
+/// The crop is not a style, it is a setting OF one, and this says so: one name,
+/// one description, and the two layouts as the choice they always were.
+///
+/// ⚠️ `SlideshowVisualTheme` is deliberately UNCHANGED — still four cases, and
+/// `.magazine43`/`.origami43` are still what 37 places in this file read. Their
+/// raw values are persisted strings, so folding them into one case would be a
+/// rendering change and a migration, to tidy a menu. This is the picker only:
+/// the same four values, chosen in two presses instead of read as four styles.
+///
+/// There is no separate tap target for the card itself. Both layouts are always
+/// one press away, so a card that ALSO selected something would only raise the
+/// question of which layout it picked.
+struct ThemePickerLayoutOption: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+    let title: String
+    let subtitle: String
+    /// Whichever of the two is currently active, or nil when neither is.
+    let selectedLayout: Layout?
+    let onSelect: (Layout) -> Void
+
+    enum Layout {
+        case free
+        case fourThree
+
+        var label: String {
+            switch self {
+            case .free: return "Free"
+            case .fourThree: return "4:3"
+            }
+        }
+
+        /// Said on the card, because "Free" on its own does not say what it
+        /// frees you from.
+        var caption: String {
+            switch self {
+            case .free: return "photos keep their own shape"
+            case .fourThree: return "every photo cropped to a 4:3 or 3:4 cell"
+            }
+        }
+    }
+
+    @State private var isHovered = false
+
+    private var isSelected: Bool { selectedLayout != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.custom("Figtree", size: 12.5).weight(.medium))
+                    .fontWeight(isSelected || isHovered ? .semibold : nil)
+                    .foregroundColor(isSelected || isHovered ? AppColors.hoverInk : AppColors.ink)
+
+                Text(subtitle)
+                    .font(.custom("Figtree", size: 10.5).weight(.regular))
+                    .foregroundColor(AppColors.muted.opacity(0.78))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 8) {
+                layoutButton(.free)
+                layoutButton(.fourThree)
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? AppColors.panel : AppColors.background)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(isSelected || isHovered ? AppColors.hoverInk : AppColors.border.opacity(0.85),
+                        lineWidth: isSelected ? 1.9 : 1.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .onHover { hovering in
+            withAnimation(.linear(duration: 0.10)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private func layoutButton(_ layout: Layout) -> some View {
+        let isOn = selectedLayout == layout
+
+        return Button {
+            onSelect(layout)
+        } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(layout.label)
+                    .font(.custom("Figtree", size: 11).weight(isOn ? .semibold : .medium))
+                    .foregroundColor(isOn ? AppColors.hoverInk : AppColors.ink)
+
+                Text(layout.caption)
+                    .font(.custom("Figtree", size: 9).weight(.regular))
+                    .foregroundColor(AppColors.muted.opacity(0.75))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 11))
+            .background(isOn ? AppColors.panelAlt : Color.clear)
+            .overlay(
+                RoundedRectangle(cornerRadius: 11)
+                    .stroke(isOn ? AppColors.hoverInk : AppColors.border.opacity(0.75),
+                            lineWidth: isOn ? 1.6 : 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 11))
+        }
+        .buttonStyle(PlainButtonStyle())
     }
 }
 

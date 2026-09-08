@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 8. septembar 2026 (KORAK 159-160, nije objavljeno; v11.11 je gore).
+Beleška za nastavak rada. Poslednja izmena: 8. septembar 2026 (KORAK 159-161, nije objavljeno; v11.11 je gore).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -16820,3 +16820,67 @@ kompajliranju).
 
 ⚠️ **NIJE VIĐENO NA EKRANU.** Nema dozvole za snimanje ovde. Vidi „gde smo
 stali" za tačan spisak šta klijent gleda.
+
+---
+
+## KORAK 161 — jedan Kousei, jedan Kirigami, i 4:3 kao layout a ne kao stil (8. septembar 2026)
+
+Klijentova prijava: *„tamo stoji kousei 4:3 i kirigami 4:3 i malo je neuredno..
+jel mozemo da namestimo da Ima jedan kousei i da bude dugme da se izabere 4:3
+layout i Jos jedno dugme free … i to je samo za kousei i kirigami"*.
+
+Izbornik je nosio **četiri kartice za dva stila**, i svaka je istu rečenicu
+pisala dvaput. Kadriranje nije stil — ono je **podešavanje** stila, i sada tako
+i stoji: jedno ime, jedan opis, i dva layouta kao izbor koji su oduvek i bili.
+
+### Šta je urađeno
+
+`ThemePickerLayoutOption` — kartica sa jednim naslovom i dva dugmeta, **Free**
+i **4:3**, svako sa svojim kratkim objašnjenjem ispod („photos keep their own
+shape" / „every photo cropped to a 4:3 or 3:4 cell"), jer „Free" samo po sebi ne
+kaže od čega oslobađa.
+
+Nema zasebne mete za samu karticu: oba layouta su uvek jedan pritisak daleko, pa
+bi kartica koja i sama nešto bira otvarala jedino pitanje **koji** je layout
+izabrala.
+
+### ⚠️ Šta NIJE dirano, i to je namerno
+
+`SlideshowVisualTheme` je **nepromenjen** — i dalje četiri slučaja, i
+`.magazine43` / `.origami43` su i dalje ono što **37 mesta** u ovom fajlu čita.
+Njihovi raw stringovi se **čuvaju u podešavanjima**, pa bi spajanje u jedan
+slučaj bilo izmena rendera i migracija zatečenih korisnika — da bi se sredio
+meni. Ovo je **samo izbornik**: iste četiri vrednosti, birane u dva pritiska
+umesto čitane kao četiri stila.
+
+Pomoćni tekstovi po temi i dalje kažu „Kousei 4:3 uses the same editorial
+pages…" i to je i dalje tačno — oni opisuju temu, a `.magazine43` to i jeste.
+Ono što je moralo da prestane da bude **ime stila** jeste naslov kartice.
+
+Sva Kousei podešavanja (`transitionStyle`, `timingMode`, `secondsPerPhoto`,
+oba magazine fade broja, oba music fade broja, `shouldLoopPreview`) stajala su
+**na obe stare kartice, identično**. Sad stoje na jednom mestu — i to je razlog
+zbog kog više ne mogu tiho da se raziđu, što su dok su bila kucana dvaput mogla.
+
+### ⚠️ Način na koji bi ovo tiho zakazalo — IZGUBLJENA VARIJANTA
+
+Četiri teme moraju da ostanu dostupne. Spoji se dve kartice u jednu i zaboravi
+grana — `Kousei 4:3` je i dalje u enumu, i dalje se čita na 37 mesta, i dalje
+je u nečijim podešavanjima, a **niko više ne može da je izabere.** Ništa na
+ekranu to ne bi reklo.
+
+### Provereno
+
+`Tools/run-theme-picker-test.py` — 19 provera, `xcodebuild` prolazi.
+
+**Negativna kontrola puštena:** Kirigami grana je namerno pokvarena da oba
+dugmeta biraju `.origami43`; test je pao tačno na „`.origami` is still
+reachable", pa je vraćena.
+
+⚠️ Tri provere su prvo PALE, i **sve tri zbog lenjira, ne pravila** — treći put
+u ovom fajlu: jedna je „4:3 u imenu" tražila po celom fajlu pa uhvatila pomoćne
+tekstove koji su tačni, a druge dve su tražile `.magazine : ` dok u kodu stoji
+`? .magazine43 : .magazine`. Uz to, `.magazine` je **prefiks** od `.magazine43`,
+pa nesidrena pretraga nađe pogrešan i prijavi izgubljenu varijantu kao prisutnu.
+
+⚠️ **NIJE VIĐENO NA EKRANU.**

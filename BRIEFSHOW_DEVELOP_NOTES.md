@@ -16979,3 +16979,75 @@ prevodi i redosled je zaključan testom; kako to **izgleda** nije provereno.
    **Ako smeta — to je znak da se ide na vodoravno razlivanje podešavanja**, ne
    da se traka povećava dok ne pojede video.
 3. Da li mu prazan prostor desno od dve kolone smeta (kolone su fiksnih 290 px).
+
+---
+
+## KORAK 163 — Slideshow: odbegla memorija (43 GB) i nov raspored (8. septembar 2026)
+
+⚠️ **NEDOVRŠENO — rad je u toku, prekinut na klijentov zahtev. Ne objavljivati.**
+
+### 1. Memorija — zatečen kvar, NE moja izmena
+
+Klijent: *„app je pukao kad sam kliknuo da udje u briefshow"*. Prvo sam mislio da
+je moj novi raspored kriv. **Nije.** Merenje na **baseline build-u vraćenom na
+v11.11, bez ijedne moje izmene**:
+
+```
+15:04:17  peak  305 MB     (mirno)
+15:06:29  peak 3602 MB     ← klik na Slideshow
+15:06:31  peak 5111 MB     → cuvar ubio
+```
+
+Ranije, na build-u sa mojim izmenama: **42,9 GB, macOS zaustavio proces,** ceo
+Mac zamrznut. `sample` je uhvatio glavnu nit u
+`CA::Layer::prepare_contents → ImageIO → RawCamera → CIContext render` — dakle
+**pun RAW dekod na glavnoj niti, u Core Animation commit-u.**
+
+⚠️ **Moj čuvar je prvo gledao `ps rss` i pokazivao 285 MB dok je `footprint`
+pokazivao 42,9 GB.** RSS ne broji komprimovano/odloženo. Meriti `footprint`.
+
+**Tri uzroka, sva tri popravljena:**
+
+| gde | šta je bilo | šta je sad |
+|---|---|---|
+| `TimelinePhotoThumb` | `NSImage(contentsOf:)` **u `body`**, ceo NEF, za svaku fotku | dekodirana sličica 240 px, van glavne niti, keširana |
+| `makePreviewImage` | pun dekod (5176×3448) da bi se dobilo 1400 px; a ako je slika manja, vraćao **nerasterizovan** NSImage | `CGImageSourceCreateThumbnailAtIndex` sa granicom 1400 |
+| `preparePhotos` petlja | bez `autoreleasepool` — svi privremeni objekti 200 fotki žive do kraja petlje | jedan bazen po fotografiji |
+| traka | 4 paralelna RAW demosaica za sličicu 92×56 | 2 paralelno, prvo ugrađeni preview kamere (8,9 ms naspram 98) |
+
+**Rezultat:** 42,9 GB → **vrh 1,5 GB, slegne se na ~430 MB.** App preživi.
+
+### 2. Raspored — video gore, dugmad ispod, kartice koje plutaju
+
+- Video preko cele širine; kapica visine podignuta sa 260.
+- Donji red su **samo dugmad**: Photos, Music, Theme, Settings, Export, Preview.
+- Svako otvara **plutajuću karticu** koja se **povlači za zaglavlje**, bez okvira
+  (`FloatingCard`). Preview otvara pun ekran.
+- Linije okvira sklonjene sa svih panela i sa opcija u Theme kartici.
+- Free / 4:3 dobili tačke za izbor kao Single Fade, i hover animaciju.
+
+### ⚠️ 3. Prozor se skupljao prema sadržaju — i to je bilo najteže
+
+Klijent: *„kada izaberem kousei ovako se suzi app“*. `NSHostingView` prijavljuje
+prirodnu veličinu sadržaja kao svoju, pa **prozor prati sadržaj**. Tri pokušaja,
+sva izmerena i sva pala:
+
+```
+sizingOptions = []          prozor i dalje 1470x599
+setFrame posle showWindow   ishodište uhvatilo, visina nije
+setFrame u sledećem ciklusu isto
+```
+
+**Rešenje:** SwiftUI pogled ide u **običan `NSView` kontejner** sa
+`autoresizingMask`. Običan `NSView` nema prirodnu veličinu, pa prozor nema šta
+da prati. Izmereno posle toga: **1470×834 = tačno `visibleFrame`.**
+
+### Stanje na prekidu
+
+`xcodebuild` prolazi; `run-slideshow-layout-test.py` i `run-theme-picker-test.py`
+prolaze. **Nije provereno:** da prozor ostaje 834 posle promene teme (mehanizam
+to garantuje, ali nije viđeno), i hover animacije (traže miš na kontroli).
+
+⚠️ **Dozvole za snimanje ekrana i pristupačnost RADE** na ovoj mašini — ranija
+beleška da ne rade je opovrgnuta. SwiftUI dugmad nisu AX elementi, pa se klika
+po koordinatama iz snimka (pikseli / 2 na Retini).

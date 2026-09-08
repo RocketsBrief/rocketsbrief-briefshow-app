@@ -448,6 +448,10 @@ struct ContentView: View {
     @State private var manualMagazineLayoutOverrides: [Int: Int] = [:]
     @State private var manualOrigamiLayoutOverrides: [Int: Int] = [:]
     @State private var isCropEditorPresented: Bool = false
+    @State private var isMusicSheetPresented = false
+    @State private var isThemeSheetPresented = false
+    @State private var isSettingsSheetPresented = false
+    @State private var isExportSheetPresented = false
 
     // The Origami page remains fixed while individual
     // image slots are replaced one at a time.
@@ -616,56 +620,31 @@ struct ContentView: View {
                     }
                 )
 
-                // ⚠️ A BOUNDED band, and it has to be bounded. The settings
-                // column is a tall column - a dozen sections, and more of them
-                // appear for the Kousei and Kirigami themes - measured at
-                // roughly 500-600pt. Stacked at its natural height under a
-                // large picture it would ask for a window over 1100pt tall,
-                // and on any smaller one SwiftUI would take the difference out
-                // of the picture: the request granted on paper and reversed on
-                // screen.
+                // ⚠️ ONE ROW OF BUTTONS, and what each one opens is a card.
+                // Requested 8.09: *„nek budu samo dugmici … ako dugme Theme i
+                // onda kada se klikne na theme onda otvori novu karticu gde se
+                // pokazuje koja tema da se izabere … bitno je da bude sve u
+                // jednom screen-u"*.
                 //
-                // So the band keeps its height and scrolls, and the picture
-                // gets everything else. Nothing is dropped or hidden behind a
-                // disclosure - *„svi dugmici koji trenutno postoje"* - and on a
-                // 900pt window this leaves the preview around 440pt against
-                // the 260 it had.
-                ScrollView(.vertical) {
-                    HStack(alignment: .top, spacing: 14) {
-                        LeftImportPanel(
-                            timingMode: $timingMode,
-                            secondsPerPhoto: $secondsPerPhoto,
-                            fadeDuration: $fadeDuration,
-                            magazineImageFadeSeconds: $magazineImageFadeSeconds,
-                            magazineImageDelaySeconds: $magazineImageDelaySeconds,
-                            origamiImagesBeforePageChange: $origamiImagesBeforePageChange,
-                            origamiInternalHoldSeconds: $origamiInternalHoldSeconds,
-                            musicFadeInSeconds: $musicFadeInSeconds,
-                            musicFadeOutSeconds: $musicFadeOutSeconds,
-                            shouldLoopPreview: $shouldLoopPreview,
-                            transitionStyle: $transitionStyle,
-                            visualTheme: $visualTheme,
-                            hasPhotos: !selectedPhotoURLs.isEmpty,
-                            onOpenCropEditor: {
-                                isCropEditorPresented = true
-                            }
-                        )
-                        RightExportPanel(
-                            selectedResolution: $selectedExportResolution,
-                            selectedFormat: $selectedExportFormat,
-                            selectedMusicURL: selectedMusicURL,
-                            selectedMusicCount: selectedMusicTrackCount,
-                            canExport: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
-                            isExporting: isExportingVideo,
-                            exportProgress: exportProgress,
-                            exportStatusText: exportStatusText,
-                            onExportVideo: openExportSavePanel
-                        )
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.bottom, 2)
-                }
-                .frame(height: 300)
+                // What was here before was the settings column and the export
+                // column, side by side in a band that scrolled because their
+                // content is ~500pt tall and the band could only be ~170. Two
+                // panels nobody could read without scrolling, taking the height
+                // the timeline needed. The panels themselves are unchanged -
+                // they are the contents of the Settings and Export cards now,
+                // and the window pays for their height only while one is open.
+                SlideshowActionBar(
+                    photoCount: selectedPhotoURLs.count,
+                    musicCount: selectedMusicTrackCount,
+                    themeName: visualTheme.rawValue,
+                    canPreview: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
+                    onAddPhotos: openPhotoPicker,
+                    onOpenMusic: { isMusicSheetPresented = true },
+                    onOpenTheme: { isThemeSheetPresented = true },
+                    onOpenSettings: { isSettingsSheetPresented = true },
+                    onOpenExport: { isExportSheetPresented = true },
+                    onOpenFullScreen: { openCinemaFullScreenPreview() }
+                )
 
                 TimelinePanel(
                     photoURLs: $selectedPhotoURLs,
@@ -774,6 +753,90 @@ struct ContentView: View {
                 .ignoresSafeArea()
                 .zIndex(9999)
                 .transition(.opacity)
+            }
+
+            // ⚠️ Draggable cards, not sheets. Requested 8.09: *„ove kartice da
+            // budu u stilu ovome: i da mogu da se draguju na screnu … bez
+            // bordera"*. A .sheet is modal and pinned to the middle of the
+            // window - it cannot be moved, and it stops the client looking at
+            // the picture while they change a setting about it. These sit at
+            // the window root, above everything, and go where they are put.
+            if isMusicSheetPresented {
+                FloatingCard(title: "Music Playlist",
+                             subtitle: "Up to 3 tracks • repeats until the slideshow ends",
+                             width: 460,
+                             isPresented: $isMusicSheetPresented) {
+                    MusicPlaylistSheet(
+                        selectedMusicURLs: selectedMusicURLs,
+                        onAddMusic: { slotIndex in openMusicPicker(for: slotIndex) }
+                    )
+                }
+            }
+
+            if isThemeSheetPresented {
+                FloatingCard(title: "Choose Theme",
+                             subtitle: "Pick the slideshow style.",
+                             width: 520,
+                             isPresented: $isThemeSheetPresented) {
+                    ThemePickerPopover(
+                        selectedTheme: $visualTheme,
+                        transitionStyle: $transitionStyle,
+                        timingMode: $timingMode,
+                        secondsPerPhoto: $secondsPerPhoto,
+                        magazineImageFadeSeconds: $magazineImageFadeSeconds,
+                        magazineImageDelaySeconds: $magazineImageDelaySeconds,
+                        musicFadeInSeconds: $musicFadeInSeconds,
+                        musicFadeOutSeconds: $musicFadeOutSeconds,
+                        shouldLoopPreview: $shouldLoopPreview,
+                        isPresented: $isThemeSheetPresented
+                    )
+                }
+            }
+
+            if isSettingsSheetPresented {
+                FloatingCard(title: "Settings",
+                             subtitle: "Timing and transitions",
+                             width: 460,
+                             isPresented: $isSettingsSheetPresented) {
+                    LeftImportPanel(
+                        timingMode: $timingMode,
+                        secondsPerPhoto: $secondsPerPhoto,
+                        fadeDuration: $fadeDuration,
+                        magazineImageFadeSeconds: $magazineImageFadeSeconds,
+                        magazineImageDelaySeconds: $magazineImageDelaySeconds,
+                        origamiImagesBeforePageChange: $origamiImagesBeforePageChange,
+                        origamiInternalHoldSeconds: $origamiInternalHoldSeconds,
+                        musicFadeInSeconds: $musicFadeInSeconds,
+                        musicFadeOutSeconds: $musicFadeOutSeconds,
+                        shouldLoopPreview: $shouldLoopPreview,
+                        transitionStyle: $transitionStyle,
+                        visualTheme: $visualTheme,
+                        hasPhotos: !selectedPhotoURLs.isEmpty,
+                        onOpenCropEditor: {
+                            isSettingsSheetPresented = false
+                            isCropEditorPresented = true
+                        }
+                    )
+                }
+            }
+
+            if isExportSheetPresented {
+                FloatingCard(title: "Export",
+                             subtitle: "Render your video",
+                             width: 460,
+                             isPresented: $isExportSheetPresented) {
+                    RightExportPanel(
+                        selectedResolution: $selectedExportResolution,
+                        selectedFormat: $selectedExportFormat,
+                        selectedMusicURL: selectedMusicURL,
+                        selectedMusicCount: selectedMusicTrackCount,
+                        canExport: !selectedPhotoURLs.isEmpty && !isPreparingPhotos,
+                        isExporting: isExportingVideo,
+                        exportProgress: exportProgress,
+                        exportStatusText: exportStatusText,
+                        onExportVideo: openExportSavePanel
+                    )
+                }
             }
 
             if isCropEditorPresented {
@@ -3330,9 +3393,23 @@ struct ContentView: View {
             var preparedImages: [NSImage] = []
 
             for url in sortedURLs {
-                if let image = makePreviewImage(from: url) {
-                    preparedURLs.append(url)
-                    preparedImages.append(image)
+                // ⚠️ ONE POOL PER PHOTO, and it is not a tidiness measure.
+                // Decoding an image leaves autoreleased temporaries behind, and
+                // a loop on a dispatch queue has no pool of its own draining
+                // between iterations — so every temporary from every photo
+                // stays alive until the whole loop ends. Two hundred RAWs is
+                // then two hundred decodes' worth of intermediates held at once,
+                // which is the shape of the runaway measured on 8.09: 305 MB to
+                // 5.1 GB in two seconds on opening this window.
+                //
+                // The pool is what makes the cost per photo rather than per
+                // folder. The bounded decode in makePreviewImage is the other
+                // half; neither alone is enough.
+                autoreleasepool {
+                    if let image = makePreviewImage(from: url) {
+                        preparedURLs.append(url)
+                        preparedImages.append(image)
+                    }
                 }
 
                 let currentCount = preparedImages.count
@@ -11777,36 +11854,44 @@ enum BriefShowExportError: LocalizedError {
     }
 }
 
+/// A slideshow preview frame, at most 1400px on the long side.
+///
+/// ⚠️ ASKS FOR 1400 AND IS GIVEN 1400. This used to load the whole file with
+/// `NSImage(contentsOf:)` and then draw it down, which on a 5176×3448 NEF meant
+/// the full demosaic — ~71 MB of pixels before the RAW pipeline's own working
+/// set — materialised for every photo, to end up with a picture 1400 wide.
+///
+/// It was also the wrong answer twice over, because of the guard it used to
+/// have: an image whose long side was already under 1400 was returned AS THE
+/// LAZY NSImAGE, undecoded. Handed to SwiftUI that is decoded by Core Animation
+/// at commit time, on the main thread — the same trap TimelinePhotoThumb was
+/// caught in. Now every path returns a decoded bitmap of a known size.
+///
+/// Measured 8.09 on the client's machine: opening the Slideshow window on a
+/// folder of RAWs took the app from 305 MB to 5.1 GB in two seconds, and in an
+/// earlier run to 42.9 GB with the machine frozen and macOS suspending the
+/// process. This function and the loop that calls it are where that came from.
 private func makePreviewImage(from url: URL) -> NSImage? {
-    guard let sourceImage = NSImage(contentsOf: url) else {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
         return nil
     }
 
-    let maxSide: CGFloat = 1400
-    let originalSize = sourceImage.size
-    let largestSide = max(originalSize.width, originalSize.height)
-
-    guard largestSide > maxSide else {
-        return sourceImage
+    // Always, not IfAbsent: this is the picture the slideshow shows, so a
+    // camera's small embedded JPEG is not good enough here — unlike the
+    // filmstrip's stand-in, which exists precisely to be replaced. The cost is
+    // time, and it is bounded by the max pixel size: ImageIO scales as it
+    // decodes rather than handing back a full-resolution frame to shrink.
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceShouldCacheImmediately: true,
+        kCGImageSourceThumbnailMaxPixelSize: 1400
+    ] as CFDictionary) else {
+        return nil
     }
 
-    let scale = maxSide / largestSide
-    let previewSize = NSSize(
-        width: originalSize.width * scale,
-        height: originalSize.height * scale
-    )
-
-    let previewImage = NSImage(size: previewSize)
-    previewImage.lockFocus()
-    sourceImage.draw(
-        in: NSRect(origin: .zero, size: previewSize),
-        from: NSRect(origin: .zero, size: originalSize),
-        operation: .copy,
-        fraction: 1
-    )
-    previewImage.unlockFocus()
-
-    return previewImage
+    return NSImage(cgImage: cgImage,
+                   size: NSSize(width: cgImage.width, height: cgImage.height))
 }
 
 func loadDroppedFileURLs(
@@ -12493,19 +12578,13 @@ struct LeftImportPanel: View {
             }
             .padding(14)
             .background(AppColors.background)
-            .overlay(
-                RoundedRectangle(cornerRadius: 24)
-                    .stroke(AppColors.border, lineWidth: 4)
-            )
             .clipShape(RoundedRectangle(cornerRadius: 24))
         }
         .padding(14)
-        .frame(width: 290)
-        .background(AppColors.background)
-        .overlay(
-            RoundedRectangle(cornerRadius: 34)
-                .stroke(AppColors.border, lineWidth: 4)
-        )
+        // Fills the band rather than sitting at 290 with the rest of the
+        // window empty beside it. The two share the width evenly.
+        .frame(maxWidth: .infinity)
+        .background(AppColors.panel)
         .clipShape(RoundedRectangle(cornerRadius: 34))
         
     }
@@ -13324,29 +13403,11 @@ struct ThemePickerPopover: View {
     @Binding var isPresented: Bool
 
     var body: some View {
+        // ⚠️ No title, no close button, no card of its own. This is shown
+        // inside a FloatingCard, which carries all three - and while it had its
+        // own as well the client got two "Choose Theme" headings and two x
+        // buttons stacked on each other.
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center) {
-                Text("Choose Theme")
-                    .font(.custom("Figtree", size: 22).weight(.semibold))
-                    .foregroundColor(AppColors.ink)
-
-                Spacer()
-
-                Button {
-                    isPresented = false
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10.5, weight: .bold))
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(HeaderLinkButtonStyle())
-            }
-
-            Text("Pick the slideshow style. New themes are added regularly as C4S Suite keeps improving.")
-                .font(.custom("Figtree", size: 12).weight(.regular))
-                .foregroundColor(AppColors.muted)
-                .fixedSize(horizontal: false, vertical: true)
-
             VStack(alignment: .leading, spacing: 10) {
                 ThemePickerSectionTitle("Classic")
 
@@ -13434,9 +13495,7 @@ struct ThemePickerPopover: View {
                 )
             }
         }
-        .padding(22)
-        .frame(width: 500, height: 680, alignment: .topLeading)
-        .background(AppColors.background)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
 
@@ -13537,11 +13596,11 @@ struct ThemePickerOption: View {
             .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(RoundedRectangle(cornerRadius: 16))
-            .background(backgroundColor)
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(borderColor, lineWidth: isSelected ? 1.9 : 1.5)
-            )
+            // ⚠️ No outline. *„evo stila ovakvog bez bordera"* - the action bar
+            // separates its buttons with a fill and nothing else, and these
+            // rows now do the same. Selection reads from the fill and the tick
+            // on the right, which is what a client looks at anyway.
+            .background(isSelected ? AppColors.panelAlt : AppColors.panel)
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(PlainButtonStyle())
@@ -13638,6 +13697,9 @@ struct ThemePickerLayoutOption: View {
     }
 
     @State private var isHovered = false
+    /// Which of the two layout buttons the pointer is over, so each one lights
+    /// on its own rather than the whole card lighting for either.
+    @State private var hoveredLayout: Layout?
 
     private var isSelected: Bool { selectedLayout != nil }
 
@@ -13664,12 +13726,7 @@ struct ThemePickerLayoutOption: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? AppColors.panel : AppColors.background)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(isSelected || isHovered ? AppColors.hoverInk : AppColors.border.opacity(0.85),
-                        lineWidth: isSelected ? 1.9 : 1.5)
-        )
+        .background(isSelected ? AppColors.panelAlt : AppColors.panel)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .onHover { hovering in
             withAnimation(.linear(duration: 0.10)) {
@@ -13680,32 +13737,48 @@ struct ThemePickerLayoutOption: View {
 
     private func layoutButton(_ layout: Layout) -> some View {
         let isOn = selectedLayout == layout
+        let isHot = hoveredLayout == layout
 
         return Button {
             onSelect(layout)
         } label: {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(layout.label)
-                    .font(.custom("Figtree", size: 11).weight(isOn ? .semibold : .medium))
-                    .foregroundColor(isOn ? AppColors.hoverInk : AppColors.ink)
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(layout.label)
+                        .font(.custom("Figtree", size: 11).weight(isOn || isHot ? .semibold : .medium))
+                        .foregroundColor(isOn || isHot ? AppColors.hoverInk : AppColors.ink)
 
-                Text(layout.caption)
-                    .font(.custom("Figtree", size: 9).weight(.regular))
-                    .foregroundColor(AppColors.muted.opacity(0.75))
+                    Text(layout.caption)
+                        .font(.custom("Figtree", size: 9).weight(.regular))
+                        .foregroundColor(AppColors.muted.opacity(isHot ? 0.9 : 0.75))
+                }
+
+                Spacer(minLength: 0)
+
+                // ⚠️ The same mark Single Fade and Single Blink carry, and for
+                // the same reason: *„da kousei free i 4:3 imaju ove selective
+                // tacke kao single i single blink"*. Free and 4:3 are a choice
+                // of one out of two, exactly as those are - so they say so the
+                // same way, instead of leaving the fill to carry it alone.
+                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(isOn || isHot ? AppColors.hoverInk : AppColors.muted.opacity(0.5))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(RoundedRectangle(cornerRadius: 11))
-            .background(isOn ? AppColors.panelAlt : Color.clear)
-            .overlay(
-                RoundedRectangle(cornerRadius: 11)
-                    .stroke(isOn ? AppColors.hoverInk : AppColors.border.opacity(0.75),
-                            lineWidth: isOn ? 1.6 : 1)
-            )
+            .background(isOn ? AppColors.hoverInk.opacity(0.16)
+                             : (isHot ? AppColors.panelAlt : AppColors.background.opacity(0.5)))
             .clipShape(RoundedRectangle(cornerRadius: 11))
+            .scaleEffect(isHot ? 1.015 : 1)
         }
         .buttonStyle(PlainButtonStyle())
+        .onHover { hovering in
+            withAnimation(.linear(duration: 0.10)) {
+                hoveredLayout = hovering ? layout : (hoveredLayout == layout ? nil : hoveredLayout)
+            }
+        }
     }
 }
 
@@ -19787,7 +19860,33 @@ struct CenterPreviewPanel: View {
                 // minHeight stays, raised to the old ceiling: the stage must
                 // never collapse to nothing on a short window, and 260 is a
                 // size that was in front of the client for months.
-                .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity)
+                // ⚠️ maxHeight is a NUMBER, and it must stay one.
+                //
+                // Not because of the memory runaway of 8.09 - that was a full
+                // RAW decode handed to a layer, and it reproduced on code with
+                // none of this in it. `.infinity` was suspected and cleared,
+                // and this comment says so because the wrong cause written down
+                // is worse than none.
+                //
+                // The reason is plainer: this is a column now, its parts have to
+                // fit a real window, and an unbounded child in a stack that is
+                // already over budget is the piece nothing can size.
+                //
+                // 620 is a ceiling, not a demand: inside a VStack this takes
+                // whatever the window can spare and stops, so the picture still
+                // grows with the window and nothing asks for the impossible.
+                //
+                // minHeight is back at 220, its original value. Raising it to
+                // 260 "because that was the old ceiling" was wrong: the taller
+                // the floor, the larger the window this layout needs to survive,
+                // and the floor is what has to give on a small one.
+                // ⚠️ 420, down from 620. *„kad se otvore sve slike ne mora
+                // slika da bude toliko velika.. da bi gurnula sve ispod"* -
+                // the picture was taking every point the window could spare,
+                // and Photos and Music Playlist under it were off the bottom
+                // of a 832pt display. A ceiling here is a ceiling on how much
+                // it can take from what follows it.
+                .frame(maxWidth: .infinity, minHeight: 150, maxHeight: 620)
                 .clipShape(RoundedRectangle(cornerRadius: 34))
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                     loadDroppedFileURLs(from: providers) { urls in
@@ -19853,135 +19952,22 @@ struct CenterPreviewPanel: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .top)
-            .background(AppColors.background)
-            .overlay(
-                RoundedRectangle(cornerRadius: 34)
-                    .stroke(AppColors.border, lineWidth: 4)
-            )
+            .background(AppColors.panel)
             .clipShape(RoundedRectangle(cornerRadius: 34))
 
-            HStack(spacing: 10) {
-                Button(action: onAddPhotos) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "photo.on.rectangle.angled")
-                                .font(.system(size: 19, weight: isPhotosCardHovered ? .semibold : .medium))
-                                .foregroundColor(isPhotosCardHovered ? AppColors.hoverInk : AppColors.ink)
-                                .scaleEffect(isPhotosCardHovered ? 1.08 : 1)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Photos")
-                                    .font(.custom("Figtree", size: 13).weight(.medium))
-                                    .fontWeight(isPhotosCardHovered ? .semibold : nil)
-                                    .foregroundColor(isPhotosCardHovered ? AppColors.hoverInk : AppColors.ink)
-                                    .scaleEffect(isPhotosCardHovered ? 1.025 : 1, anchor: .leading)
-
-                                Text(photoStatusText)
-                                    .font(.custom("Figtree", size: 10.5).weight(.regular))
-                                    .fontWeight(isPhotosCardHovered ? .semibold : nil)
-                                    .foregroundColor(isPhotosCardHovered ? AppColors.hoverInk.opacity(0.82) : AppColors.muted.opacity(0.72))
-                                    .scaleEffect(isPhotosCardHovered ? 1.02 : 1, anchor: .leading)
-                                    .lineLimit(1)
-                            }
-
-                            Spacer()
-                        }
-
-                        VStack(spacing: 6) {
-                            PhotoImportInfoRow(
-                                icon: "photo.stack",
-                                title: "Select multiple photos",
-                                isHovered: isPhotosCardHovered
-                            )
-
-                            PhotoImportInfoRow(
-                                icon: "arrow.down.doc",
-                                title: "Drag & drop supported",
-                                isHovered: isPhotosCardHovered
-                            )
-
-                            PhotoImportInfoRow(
-                                icon: "arrow.left.arrow.right",
-                                title: "Reorder anytime in Timeline",
-                                isHovered: isPhotosCardHovered
-                            )
-                        }
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(HoverScaleButtonStyle(isHovered: isPhotosCardHovered))
-                .onHover { hovering in
-                    withAnimation(.linear(duration: 0.10)) {
-                        isPhotosCardHovered = hovering
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: "music.note.list")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(AppColors.ink)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Music Playlist")
-                                .font(.custom("Figtree", size: 13).weight(.medium))
-                                .foregroundColor(AppColors.ink)
-
-                            Text("Up to 3 tracks • repeats until slideshow ends")
-                                .font(.custom("Figtree", size: 10.5).weight(.regular))
-                                .foregroundColor(AppColors.muted.opacity(0.72))
-                                .lineLimit(1)
-                        }
-
-                        Spacer()
-                    }
-
-                    VStack(spacing: 6) {
-                        ForEach(0..<3, id: \.self) { index in
-                            MusicTrackRow(
-                                index: index,
-                                hasTrack: selectedMusicURLs.indices.contains(index),
-                                subtitle:
-                                    selectedMusicURLs.indices.contains(index)
-                                        ? selectedMusicURLs[index].lastPathComponent
-                                        : index == 0 ? "Add main track" : "Optional",
-                                action: {
-                                    onAddMusic(index)
-                                }
-                            )
-                        }
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity)
-            .contentShape(RoundedRectangle(cornerRadius: 34))
-            .background(AppColors.background)
-            .overlay(
-                RoundedRectangle(cornerRadius: 34)
-                    .stroke(AppColors.border, lineWidth: 4)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 34))
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                loadDroppedFileURLs(from: providers) { urls in
-                    let musicURLs = urls.filter { url in
-                        UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true
-                    }
-
-                    let photoURLs = urls.filter { url in
-                        UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
-                    }
-
-                    if !musicURLs.isEmpty {
-                        onDropMusic(musicURLs)
-                    } else if !photoURLs.isEmpty {
-                        onDropPhotos(photoURLs)
-                    }
-                }
-            }
+            // ⚠️ Photos and Music Playlist used to sit here, as two cards
+            // under the picture. They are buttons in the window's action bar
+            // now, each opening its own card - requested 8.09: *„nek budu samo
+            // dugmici i kada se recimo otvori add music onda otvori karticu i
+            // pitaj za 1 muziku 2 muziku i trecu"*.
+            //
+            // The reason is height. This section, the settings column and the
+            // export column together asked for more window than a 1470x956
+            // display has, so the timeline sat under the Dock. A button is one
+            // row; what it opens costs nothing until it is opened.
+            //
+            // Dropping files still works and is not lost with them: the preview
+            // stage above carries its own .onDrop for photos and music.
         
         }
     }
@@ -20293,20 +20279,14 @@ struct RightExportPanel: View {
             }
             .padding(14)
             .background(AppColors.background)
-            .overlay(
-                RoundedRectangle(cornerRadius: 24)
-                    .stroke(AppColors.border, lineWidth: 4)
-            )
             .clipShape(RoundedRectangle(cornerRadius: 24))
 
         }
         .padding(14)
-        .frame(width: 290)
-        .background(AppColors.background)
-        .overlay(
-            RoundedRectangle(cornerRadius: 34)
-                .stroke(AppColors.border, lineWidth: 4)
-        )
+        // Fills the band rather than sitting at 290 with the rest of the
+        // window empty beside it. The two share the width evenly.
+        .frame(maxWidth: .infinity)
+        .background(AppColors.panel)
         .clipShape(RoundedRectangle(cornerRadius: 34))
         .popover(isPresented: $isShowingExportConfirmation, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 12) {
@@ -20519,11 +20499,7 @@ struct TimelinePanel: View {
             }
         }
         .padding(14)
-        .background(AppColors.background)
-        .overlay(
-            RoundedRectangle(cornerRadius: 34)
-                .stroke(AppColors.border, lineWidth: 4)
-        )
+        .background(AppColors.panel)
         .clipShape(RoundedRectangle(cornerRadius: 34))
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             loadDroppedFileURLs(from: providers) { urls in
@@ -20588,19 +20564,313 @@ struct EmptyTimelinePlaceholderThumb: View {
     }
 }
 
+// Decoded timeline thumbnails, kept so a body pass never pays for one twice.
+//
+// 92×56pt at 2x needs 184px; 240 leaves headroom for a taller strip and still
+// costs ~0.23 MB decoded. The count limit is what bounds the whole strip: 300
+// of them is about 70 MB and a folder of two thousand photos cannot grow past
+// it, which is the property the thing this replaced did not have.
+private let timelineThumbnailCache: NSCache<NSURL, NSImage> = {
+    let cache = NSCache<NSURL, NSImage>()
+    cache.countLimit = 300
+    return cache
+}()
+
+// Four wide and .utility, the same shape and for the same reasons as the
+// filmstrip's queue in Develop.swift: off the interactive path entirely, and
+// wide enough that a folder fills left to right at a usable rate instead of
+// one photo at a time.
+// ⚠️ TWO, not four. Each of these can end in a RAW demosaic, and a demosaic's
+// working set is hundreds of megabytes - measured 8.09, four in parallel held
+// the app at 2.4 GB while a folder filled. The strip is 92pt tall and nobody is
+// waiting on it, so the extra pair of lanes buys a fill rate no one is watching
+// at a peak everyone pays.
+private let timelineThumbnailQueue: OperationQueue = {
+    let queue = OperationQueue()
+    queue.name = "com.rocketsbrief.briefshow.timeline-thumbnails"
+    queue.maxConcurrentOperationCount = 2
+    queue.qualityOfService = .utility
+    return queue
+}()
+
+/// A 92×56 strip thumbnail, for the least money the file will take.
+///
+/// ⚠️ THE CAMERA'S OWN PREVIEW FIRST, and this is the whole function. Every RAW
+/// carries a JPEG the camera already rendered; `...IfAbsent` takes it and
+/// settles for nothing else, while `...Always` — which is what
+/// makeShowGridThumbnail asks for — demosaics the RAW to produce the same few
+/// hundred pixels. Develop's filmstrip measured that pair at 8.9 ms against 98,
+/// and the cost that matters here is not the time but the working set: a
+/// demosaic runs through CoreImage and holds hundreds of megabytes while it
+/// does.
+///
+/// Measured 8.09: with the strip falling through to the Always path, two
+/// hundred photos held the app at 2.4 GB. makePlaceholderThumbnail in
+/// Develop.swift asks ImageIO the same cheap question, but it is gated on the
+/// photo being an unedited RAW with no flattened copy — right for a filmstrip
+/// that has a second pass behind it, and here it just meant the cheap path was
+/// skipped and the expensive one ran.
+///
+/// The fallback is still there and still bounded: a file with no embedded
+/// preview at all gets one real decode, capped at 240px.
+private func makeTimelineThumbnail(from url: URL) -> NSImage? {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+        return nil
+    }
+
+    let embedded = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+        kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+        kCGImageSourceCreateThumbnailFromImageAlways: false,
+        kCGImageSourceThumbnailMaxPixelSize: 240,
+        // Or a portrait frame lies on its side in the strip.
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceShouldCacheImmediately: true
+    ] as CFDictionary)
+
+    if let embedded {
+        return NSImage(cgImage: embedded,
+                       size: NSSize(width: embedded.width, height: embedded.height))
+    }
+
+    return makeShowGridThumbnail(from: url, maxPixelSize: 240)
+}
+
+/// The window's one row of controls.
+///
+/// ⚠️ Buttons, and nothing else. Everything these open used to be on screen at
+/// all times - a settings column and an export column, ~500pt each, crushed
+/// into a band that scrolled, plus Photos and Music cards under the picture.
+/// Together they asked for more window than the display has, which is how the
+/// timeline ended up under the Dock. Requested 8.09: *„nek budu samo dugmici …
+/// bitno je da bude sve u jednom screen-u"*.
+///
+/// Each button says what it holds - how many photos, how many tracks, which
+/// theme - so the row still reports the state the panels used to show, in one
+/// line instead of four hundred points.
+struct SlideshowActionBar: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+    let photoCount: Int
+    let musicCount: Int
+    let themeName: String
+    let canPreview: Bool
+    let onAddPhotos: () -> Void
+    let onOpenMusic: () -> Void
+    let onOpenTheme: () -> Void
+    let onOpenSettings: () -> Void
+    let onOpenExport: () -> Void
+    let onOpenFullScreen: () -> Void
+
+    /// Which button the pointer is over, by title. One value for the row rather
+    /// than a flag per button - only one of them can be hovered at a time.
+    @State private var hovered: String?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            action("Photos", photoCount == 0 ? "None yet" : "\(photoCount) selected",
+                   "photo.on.rectangle.angled", true, onAddPhotos)
+
+            action("Music", musicCount == 0 ? "No tracks" : "\(musicCount) of 3",
+                   "music.note.list", true, onOpenMusic)
+
+            action("Theme", themeName, "sparkles", true, onOpenTheme)
+
+            action("Settings", "Timing and transitions", "slider.horizontal.3", true, onOpenSettings)
+
+            action("Export", "Render your video", "square.and.arrow.up", true, onOpenExport)
+
+            // ⚠️ Preview opens the full-screen player rather than a card, and
+            // that is the request: *„ako kliknem preview onda mi otvori full
+            // screen preview"*. It is also the only honest place for it - the
+            // panel above says in as many words that Full Screen is what shows
+            // the true exported look.
+            action("Preview", canPreview ? "Full screen" : "Add photos first",
+                   "arrow.up.left.and.arrow.down.right", canPreview, onOpenFullScreen)
+        }
+    }
+
+    // ⚠️ Every control in this window answers the pointer - *„sta god hoverujem
+    // bude animacija"*. The icon and the title lift, the surface lightens, and
+    // the whole button takes the same 0.10s linear step every other hovering
+    // control in this file uses, so nothing here moves at its own speed.
+    private func action(_ title: String, _ subtitle: String, _ icon: String,
+                        _ enabled: Bool, _ tap: @escaping () -> Void) -> some View {
+        let isHot = enabled && hovered == title
+
+        return Button(action: tap) {
+            HStack(spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: isHot ? .semibold : .medium))
+                    .foregroundColor(!enabled ? AppColors.muted.opacity(0.5)
+                                     : (isHot ? AppColors.hoverInk : AppColors.ink))
+                    .scaleEffect(isHot ? 1.10 : 1)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.custom("Figtree", size: 12.5).weight(.medium))
+                        .fontWeight(isHot ? .semibold : nil)
+                        .foregroundColor(!enabled ? AppColors.muted.opacity(0.5)
+                                         : (isHot ? AppColors.hoverInk : AppColors.ink))
+                        .scaleEffect(isHot ? 1.025 : 1, anchor: .leading)
+
+                    Text(subtitle)
+                        .font(.custom("Figtree", size: 10).weight(.regular))
+                        .foregroundColor(AppColors.muted.opacity(!enabled ? 0.45 : (isHot ? 0.92 : 0.75)))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 16))
+            .background(isHot ? AppColors.panelAlt : AppColors.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(PlainButtonStyle())
+        .disabled(!enabled)
+        .onHover { hovering in
+            withAnimation(.linear(duration: 0.10)) {
+                hovered = hovering ? title : (hovered == title ? nil : hovered)
+            }
+        }
+    }
+}
+
+/// A card that floats over the window and can be dragged anywhere in it.
+///
+/// ⚠️ NOT a .sheet, and that is the point. A sheet is modal and pinned to the
+/// middle of the window: it cannot be moved, and while it is up the client
+/// cannot look at the picture they are changing a setting about. Requested
+/// 8.09: *„da mogu da se draguju na screnu"*.
+///
+/// ⚠️ NO BORDERS. *„evo stila ovakvog bez bordera"*, pointing at the action bar
+/// - a filled rounded surface and nothing drawn around it. The separation comes
+/// from the fill and the shadow, the way the buttons under the picture do it.
+struct FloatingCard<Content: View>: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+    let title: String
+    let subtitle: String
+    let width: CGFloat
+    @Binding var isPresented: Bool
+    @ViewBuilder let content: () -> Content
+
+    /// Where the client has dragged it to, and where it was when the drag
+    /// started. Two values rather than one so a second drag continues from
+    /// where the first one left the card instead of jumping back to centre.
+    @State private var offset: CGSize = .zero
+    @State private var dragStart: CGSize = .zero
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.custom("Figtree", size: 15).weight(.semibold))
+                        .foregroundColor(AppColors.ink)
+
+                    Text(subtitle)
+                        .font(.custom("Figtree", size: 10.5).weight(.regular))
+                        .foregroundColor(AppColors.muted.opacity(0.75))
+                }
+
+                Spacer()
+
+                Button {
+                    isPresented = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(AppColors.muted)
+                        .padding(7)
+                        .background(AppColors.panelAlt)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            // The whole header is the drag handle, so a card is moved the way a
+            // window is - by its title, not by hunting for a grip.
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        offset = CGSize(width: dragStart.width + value.translation.width,
+                                        height: dragStart.height + value.translation.height)
+                    }
+                    .onEnded { _ in dragStart = offset }
+            )
+
+            // The panels inside are tall by nature; the card scrolls so a long
+            // one is reachable without the WINDOW having to be tall enough.
+            ScrollView(.vertical) {
+                content()
+            }
+        }
+        .padding(18)
+        .frame(width: width)
+        .frame(maxHeight: 620)
+        .background(AppColors.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .shadow(color: .black.opacity(0.45), radius: 28, y: 10)
+        .offset(offset)
+    }
+}
+
+struct MusicPlaylistSheet: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+    let selectedMusicURLs: [URL]
+    let onAddMusic: (Int) -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(0..<3, id: \.self) { index in
+                MusicTrackRow(
+                    index: index,
+                    hasTrack: selectedMusicURLs.indices.contains(index),
+                    subtitle:
+                        selectedMusicURLs.indices.contains(index)
+                            ? selectedMusicURLs[index].lastPathComponent
+                            : index == 0 ? "Add main track" : "Optional",
+                    action: { onAddMusic(index) }
+                )
+            }
+        }
+    }
+}
+
 struct TimelinePhotoThumb: View {
     @ObservedObject private var themeManager = ThemeManager.shared
     let index: Int
     let url: URL
     let isActive: Bool
 
+    @State private var thumbnail: NSImage?
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             RoundedRectangle(cornerRadius: 14)
                 .fill(AppColors.panel)
 
-            if let image = NSImage(contentsOf: url) {
-                Image(nsImage: image)
+            // ⚠️ A DECODED THUMBNAIL, and never the file itself.
+            //
+            // This line used to read `if let image = NSImage(contentsOf: url)`,
+            // inside body, for every photo in the strip. That hands SwiftUI an
+            // image nothing has rasterised, so Core Animation decodes it at
+            // commit time - on the main thread, through RawCamera and CoreImage,
+            // at the file's full resolution - in order to draw it 92pt wide.
+            //
+            // Measured 8.09 on the client's own machine, on the released code:
+            // the Slideshow window went from 305 MB to 5.1 GB in two seconds on
+            // open, and an earlier run reached 42.9 GB and was suspended by
+            // macOS with the whole machine frozen. A `sample` of it caught the
+            // main thread inside CA::Layer::prepare_contents -> ImageIO ->
+            // RawCamera -> CIContext render. One 5176×3448 NEF is ~71 MB as
+            // pixels before the RAW pipeline's own intermediates, and there is
+            // one of these per photo.
+            //
+            // Being in `body` was the other half: a body pass re-read the file.
+            if let thumbnail {
+                Image(nsImage: thumbnail)
                     .resizable()
                     .scaledToFill()
                     .frame(width: 92, height: 56)
@@ -20626,6 +20896,34 @@ struct TimelinePhotoThumb: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(borderColor, lineWidth: isActive ? 4 : 3)
         )
+        .task(id: url) {
+            await loadThumbnail()
+        }
+    }
+
+    /// Off the main thread, bounded, and cached — the three things the line
+    /// this replaces was missing.
+    private func loadThumbnail() async {
+        if let cached = timelineThumbnailCache.object(forKey: url as NSURL) {
+            thumbnail = cached
+            return
+        }
+
+        let made: NSImage? = await withCheckedContinuation { continuation in
+            timelineThumbnailQueue.addOperation {
+                // One pool per thumbnail, for the same reason the preparation
+                // loop has one: these run back to back on a queue that has no
+                // pool draining between operations.
+                let image = autoreleasepool { makeTimelineThumbnail(from: url) }
+                continuation.resume(returning: image)
+            }
+        }
+
+        guard let made, !Task.isCancelled else {
+            return
+        }
+        timelineThumbnailCache.setObject(made, forKey: url as NSURL)
+        thumbnail = made
     }
 
     private var borderColor: Color {
@@ -21199,8 +21497,37 @@ final class BriefShowWindowController {
             return
         }
 
+        // ⚠️ 560 was right for the layout this window USED TO HAVE - one row of
+        // settings, preview and export, which is wide and short. It is a column
+        // now, and a column needs height: at 560 the parts came to roughly
+        // 840pt inside 560, with no arrangement that satisfies it.
+        //
+        // minSize goes with it and is not decoration - without it the window can
+        // be dragged straight back into the size that had no answer.
+        // ⚠️ SIZED TO THE SCREEN, not to a number. Two numbers were wrong here
+        // in one afternoon: 560, which was the old ROW layout's height and far
+        // too short for a column, and then 900, which was too TALL for this
+        // client's 1280x832 display - reported with a screenshot, the controls
+        // and the timeline sitting under the Dock, off the bottom.
+        //
+        // visibleFrame is the area left after the menu bar and the Dock, so
+        // this asks for the column's comfortable height and takes whatever the
+        // display can actually give.
+        // ⚠️ THE WHOLE VISIBLE FRAME, and never a point more. Requested 8.09:
+        // *„kad se otovri slideshow da bude full screen! ne sme da prelazi
+        // nista dole ispod screen-a"*.
+        //
+        // visibleFrame is exactly the area the menu bar and the Dock leave, so
+        // opening at it means the window is as large as the display allows and
+        // cannot have anything under the Dock. That is the property being asked
+        // for - not "fullscreen" in the green-button sense, which hides the menu
+        // bar and would take the client out of the rest of the suite.
+        let available = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1180, height: 800)
+        let windowHeight = available.height
+        let windowWidth = available.width
+
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -21211,12 +21538,57 @@ final class BriefShowWindowController {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
-        window.center()
+        // Never above what the screen can show, or the minimum itself becomes
+        // the thing that pushes the bottom of the window off the display.
+        window.minSize = NSSize(width: min(900, windowWidth),
+                                height: min(720, windowHeight))
+        // setFrame rather than center(): the window IS the visible frame, so it
+        // is placed at its origin. Centring a window that is already the full
+        // size is a rounding error away from pushing it off an edge.
+        window.setFrame(available, display: true)
 
         let controller = NSWindowController(window: window)
         windowController = controller
 
-        window.contentView = NSHostingView(rootView: ContentView(initialPhotoURLs: initialPhotoURLs))
+        // ⚠️ sizingOptions = [] — THE WINDOW IS NOT SIZED BY ITS CONTENT.
+        //
+        // Without this an NSHostingView pushes its SwiftUI content's fitting
+        // size onto the window, so the window changes size whenever the content
+        // does. Reported 8.09 with a screenshot: *„kada izaberem kousei ovako
+        // se suzi app .. a treba da ostane isto, nema suzavanja ili sirenja,
+        // maximum je full screen"*. Choosing Kousei swaps which controls the
+        // settings panel shows, the content's minimum height changes with it,
+        // and the window shrank under the client's hands.
+        //
+        // It is also what made the earlier sizes so hard to reason about: the
+        // window was created at 560, then at 900, and measured 1031 either way,
+        // because the content's minimum was 1031 and the content was deciding.
+        // ⚠️ A PLAIN NSView BETWEEN THE WINDOW AND THE SWIFTUI VIEW, and it is
+        // the only thing that actually held. *„app treba da bude uvek full
+        // screen sa ili bez slika i sa bilo kojom temom"*.
+        //
+        // An NSHostingView reports its content's fitting size as its own, and
+        // the window follows it - so the window changed size whenever the
+        // content did: choosing Kousei swapped which controls the settings
+        // panel shows and the window shrank under the client's hands. Three
+        // things were tried against that and measured, in this order:
+        //
+        //   sizingOptions = []            window still came out 1470x599
+        //   setFrame after showWindow     origin took, height did not
+        //   setFrame on the next tick     same
+        //
+        // A plain NSView has no intrinsic size at all, so there is nothing for
+        // the window to follow. The hosting view is pinned inside it and
+        // resizes with the window instead of the other way round.
+        let hosting = NSHostingView(rootView: ContentView(initialPhotoURLs: initialPhotoURLs))
+        hosting.sizingOptions = []
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight))
+        container.autoresizingMask = [.width, .height]
+        hosting.frame = container.bounds
+        hosting.autoresizingMask = [.width, .height]
+        container.addSubview(hosting)
+        window.contentView = container
 
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)

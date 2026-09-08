@@ -94,34 +94,110 @@ def main() -> int:
         check("the two control columns are side by side, in that order",
               where["LeftImportPanel"] < where["RightExportPanel"])
 
+        # ⚠️ Against the ACTION BAR, not against the export panel. The two
+        # control panels are no longer laid out in the window at all - they are
+        # the contents of draggable cards declared at the window root, after the
+        # column - so "the timeline comes after the export panel" stopped being
+        # a statement about the layout and started being a statement about
+        # declaration order in a ZStack.
         check("and the timeline is last, along the bottom",
-              where["TimelinePanel"] > where["RightExportPanel"])
+              where["TimelinePanel"] > window.index("SlideshowActionBar("))
 
     print("\nthe two ways this gets reversed later")
 
-    # ⚠️ The ceiling. Read off the stage's own frame inside CenterPreviewPanel.
+    # ⚠️ REVERSED 8.09, an hour after it was written, and the reason belongs
+    # here. This first read "the preview stage has no fixed height ceiling" and
+    # required `.infinity` — and the build that satisfied it took 40 GB and was
+    # suspended by macOS the moment the Slideshow window opened. The window is
+    # a column now and its parts came to ~840pt inside a 560pt window; asking
+    # for an unbounded height on top of that gave the layout nothing to solve.
+    #
+    # So the rule is the opposite of what it was: the ceiling must be a NUMBER.
+    # What the original check was really protecting is still protected, by the
+    # second one — the picture must be free to grow well past the 260 it was
+    # stuck at. A ceiling does that; an infinity does not, it just removes the
+    # answer.
     stage = body_of(source, r"^struct CenterPreviewPanel: View[\s\S]*?^    var body: some View")
     frame = re.search(r"\.frame\(maxWidth: \.infinity, minHeight: (\d+), maxHeight: ([\w.]+)\)", stage)
-    check("the preview stage has no fixed height ceiling",
-          frame is not None and frame.group(2) == ".infinity",
+    check("the preview stage's height ceiling is a number, never .infinity",
+          frame is not None and frame.group(2).isdigit(),
           frame.group(0) if frame else "the stage frame was not found at all")
 
-    check("…and it still cannot collapse to nothing",
-          frame is not None and int(frame.group(1)) >= 260,
+    # ⚠️ Lowered from 500 to 380 on 8.09, and the reason is the opposite of the
+    # one that put the number there. The picture WAS free to grow past 260 - too
+    # free: it took every point the window could spare and pushed Photos and
+    # Music Playlist off the bottom of an 832pt display. The rule is still "well
+    # past the 260 it was stuck at"; what changed is that a ceiling here is also
+    # a ceiling on how much it can take from what sits under it.
+    check("…and that ceiling still lets the picture grow well past the old 260",
+          frame is not None and frame.group(2).isdigit() and int(frame.group(2)) >= 380,
+          frame.group(2) if frame else "")
+
+    check("…while its floor stays low enough to survive a short window",
+          frame is not None and int(frame.group(1)) <= 220,
           frame.group(1) if frame else "")
 
-    # ⚠️ The band. Bounded and scrolling, so the settings column cannot take
-    # the height back out of the picture on a shorter window.
-    band = window[where.get("LeftImportPanel", 0) - 400:where.get("LeftImportPanel", 0)] \
-        if "LeftImportPanel" in where else ""
-    check("the control band is inside a ScrollView",
-          "ScrollView(.vertical)" in band,
-          "the settings column can grow without limit")
+    # ⚠️ REPLACED 8.09. This used to require a bounded, scrolling BAND holding
+    # both control panels, because they were laid out in the window. They are
+    # not any more: the row under the picture is buttons, and each panel is the
+    # content of a card that opens over the window. *„nek budu samo dugmici …
+    # bitno je da bude sve u jednom screen-u"*.
+    #
+    # The rule the old checks protected - the settings column must not take the
+    # height the timeline needs - is protected far better now, because a card
+    # costs the window nothing until it is opened. What has to be asserted
+    # instead is that the panels really are in cards and not back in the column.
+    check("the control row is buttons, not the panels themselves",
+          "SlideshowActionBar(" in window,
+          "the action bar is gone")
 
-    after = window[where.get("RightExportPanel", 0):] if "RightExportPanel" in where else ""
-    check("…and that band has a fixed height",
-          re.search(r"\.frame\(height: \d+\)", after) is not None,
-          "the band is unbounded")
+    for panel in ("LeftImportPanel", "RightExportPanel"):
+        in_card = re.search(rf"FloatingCard\([\s\S]{{0,600}}?{panel}\(", window)
+        check(f"{panel} is shown in a card, not laid out in the window",
+              in_card is not None,
+              "it is back in the window column")
+
+    # ⚠️ THE ARITHMETIC THAT WAS MISSING. A column layout has to FIT the window
+    # it is put in, and this one did not: the picture's floor, the band, the
+    # timeline, the header and the footer came to roughly 840pt inside a window
+    # created at 560, and later inside a 900pt window on an 832pt display.
+    #
+    # ⚠️ It is NOT what caused the memory runaway of the same afternoon. That
+    # was a full-resolution RAW decode handed to a layer, and it reproduced on
+    # code carrying none of this. The two were investigated together and are
+    # unrelated; this note exists so the next reader does not re-merge them.
+    #
+    # Checked as a sum rather than as "the window looks big enough", because the
+    # failure was a sum. Anyone raising the band or the picture's floor has to
+    # raise the window with it, and this is what says so.
+    # ⚠️ The window is no longer a literal - it is min(wanted, what the screen
+    # can give), because 900 was as wrong as 560 had been: too tall for a 1280x832
+    # display once the menu bar and the Dock are taken out, so the controls and
+    # the timeline sat under the Dock. The number read here is the WANTED one,
+    # and the sum below is what has to fit inside whatever the screen allows.
+    controller = body_of(source, r"^final class BriefShowWindowController")
+    rect = re.search(r"windowHeight = min\((\d+),", controller)
+    min_size = re.search(r"window\.minSize = NSSize\(width: min\(\d+, \w+\),\s*height: min\((\d+),", controller)
+
+    check("the window is sized against the screen, not a fixed number",
+          "NSScreen.main?.visibleFrame" in controller,
+          "a literal height cannot know what the display can show")
+
+    check("the Slideshow window has a minimum size at all",
+          min_size is not None,
+          "it can be dragged down into a size the layout cannot satisfy")
+
+    if frame and rect and min_size:
+        # Floor of the stack: picture floor + band + timeline(66) + header and
+        # footer and spacings, kept deliberately rough and rounded UP.
+        # The action bar is one row (~60) where the band was 170-300.
+        needed = int(frame.group(1)) + 60 + 66 + 190
+        check(f"the window opens tall enough for the column (~{needed}pt)",
+              int(rect.group(1)) >= needed,
+              f"opens at {rect.group(1)}pt")
+        check(f"…and cannot be shrunk below it (~{needed}pt)",
+              int(min_size.group(1)) >= needed - 60,
+              f"minSize is {min_size.group(1)}pt")
 
     print("\nall good" if failures == 0 else f"\n{failures} FAILED")
     return 1 if failures else 0

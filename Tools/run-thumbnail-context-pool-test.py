@@ -85,12 +85,29 @@ def check_source() -> int:
         return failures
     size = int(size.group(1))
 
-    # ⚠️ The whole point. Both fills run four wide; a pool that does not match
-    # them is either a bottleneck (too small) or memory for nothing (too big),
-    # and on a 8 GB machine the second is not free either.
+    # ⚠️ WIDER, not EQUAL — and this changed on 8.09 for a measured reason.
+    #
+    # This read "the pool matches every thumbnail queue width", which was true
+    # while every fill ran four wide. The timeline strip is TWO wide now: each
+    # of its operations can end in a RAW demosaic, whose working set is
+    # hundreds of megabytes, and four in parallel held the app at 2.4 GB while
+    # a folder filled (KORAK 163). A narrower queue simply leaves contexts
+    # unused; it is not a defect.
+    #
+    # The defect this check exists for is the other direction: a queue WIDER
+    # than the pool puts two operations on one CIContext, which is the
+    # contention the pool was created to end. That is what is asserted.
     found = widths(develop) + widths(grid)
-    check(f"the pool ({size}) matches every thumbnail queue width {found}",
-          found and all(width == size for width in found))
+    check(f"no thumbnail queue is wider than the pool ({size}) {found}",
+          bool(found) and all(width <= size for width in found),
+          "a queue would have two operations sharing one CIContext")
+
+    # And the pool must not be sized past the widest fill that can use it —
+    # unused CIContexts are memory for nothing, and on an 8 GB machine that is
+    # not free either.
+    check(f"…and the pool is no larger than the widest fill ({max(found) if found else 0})",
+          bool(found) and size <= max(found),
+          f"the pool is {size}")
 
     # The single shared context this replaced must be gone, not merely unused —
     # a leftover would be the thing a later change reaches for by name.

@@ -176,7 +176,7 @@ def main() -> int:
     # the timeline sat under the Dock. The number read here is the WANTED one,
     # and the sum below is what has to fit inside whatever the screen allows.
     controller = body_of(source, r"^final class BriefShowWindowController")
-    rect = re.search(r"windowHeight = min\((\d+),", controller)
+
     min_size = re.search(r"window\.minSize = NSSize\(width: min\(\d+, \w+\),\s*height: min\((\d+),", controller)
 
     check("the window is sized against the screen, not a fixed number",
@@ -187,17 +187,53 @@ def main() -> int:
           min_size is not None,
           "it can be dragged down into a size the layout cannot satisfy")
 
-    if frame and rect and min_size:
+    if frame and min_size:
         # Floor of the stack: picture floor + band + timeline(66) + header and
         # footer and spacings, kept deliberately rough and rounded UP.
         # The action bar is one row (~60) where the band was 170-300.
         needed = int(frame.group(1)) + 60 + 66 + 190
-        check(f"the window opens tall enough for the column (~{needed}pt)",
-              int(rect.group(1)) >= needed,
-              f"opens at {rect.group(1)}pt")
-        check(f"…and cannot be shrunk below it (~{needed}pt)",
+        # ⚠️ The "opens tall enough" half of this used to read
+        # `windowHeight = min(<number>,` and there is no such line any more —
+        # the window opens at the whole visibleFrame. The regex did not fail
+        # loudly, it just stopped matching, and BOTH checks in this block went
+        # silently unrun. A ruler that measures nothing reports no failures.
+        # The opening height is covered by the visibleFrame check above; only
+        # the floor is still a number that can be got wrong here.
+        check(f"the window cannot be shrunk below the column (~{needed}pt)",
               int(min_size.group(1)) >= needed - 60,
               f"minSize is {min_size.group(1)}pt")
+
+    print("\nthe column has to FOLLOW the window, not its own content")
+
+    # ⚠️ THE HALF THE CONTAINER DID NOT FIX. KORAK 163 put a plain NSView
+    # between the window and the hosting view so the WINDOW would stop
+    # following the content. Reported again straight after, 8.09:
+    # *„kada sam kliknuo na kousei 4:3 on je onaj black preview suzio … opet
+    # je app window bio uskracen"*.
+    #
+    # `.fixedSize(horizontal: false, vertical: true)` was still on ContentView's
+    # root, and it says: ignore the height the window proposes, take my ideal.
+    # So the window was the right size and the column inside it was not — and
+    # that ideal is re-measured when the theme changes, which is why choosing
+    # Kousei 4:3 shrank the black stage.
+    #
+    # Both halves are needed and each one alone looks like a fix.
+    check("ContentView's root is not sized to its own ideal height",
+          ".fixedSize(" not in window,
+          "a fixedSize is back on the column — the stage will shrink with the theme")
+
+    root_frame = re.search(r"\.frame\(\s*minWidth: 980[\s\S]{0,240}?\)", window)
+    check("…and its root frame takes the window's height",
+          root_frame is not None and "maxHeight: .infinity" in root_frame.group(0),
+          root_frame.group(0).replace("\n", " ") if root_frame else "the root frame was not found")
+
+    # The ZStack filling the window is not enough on its own: the VStack inside
+    # it would sit centred at its ideal height with the stage at whatever size
+    # its content wanted. Removing this one puts the picture back at the mercy
+    # of the theme without touching anything named fixedSize.
+    check("…and so does the column inside it",
+          ".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)" in window,
+          "the column asks only for its ideal height")
 
     print("\nall good" if failures == 0 else f"\n{failures} FAILED")
     return 1 if failures else 0

@@ -674,7 +674,13 @@ struct ContentView: View {
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .top)
+            // maxHeight: .infinity, for the same reason as the root's frame
+            // below: the ZStack around this column is what fills the window,
+            // and a column that only asks for its ideal height would sit
+            // centred inside it with the stage at whatever size its content
+            // wanted. Both frames have to say it — the root one alone gives a
+            // full-height ZStack with a short column floating in it.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .overlayPreferenceValue(PreviewTooltipPreferenceKey.self) { items in
                 // Reads the same preference key CenterPreviewPanel's buttons report into,
                 // but attached at the window root so the bubble always paints above every
@@ -887,11 +893,36 @@ struct ContentView: View {
                 .transition(.opacity)
             }
         }
-        .fixedSize(horizontal: false, vertical: true)
+        // ⚠️ NO fixedSize HERE, and this is the piece that survived the window
+        // fix. Reported 8.09, after the plain-NSView container was already in:
+        // *„kada sam kliknuo na kousei 4:3 on je onaj black preview suzio …
+        // opet je app window bio uskracen"*.
+        //
+        // `.fixedSize(horizontal: false, vertical: true)` stood here and it
+        // told this view to IGNORE the height the window proposes and take its
+        // own ideal instead. Two things followed from that, and the container
+        // fixed neither:
+        //
+        //   - the column never filled the window, so the stage was sized by
+        //     what its content happened to want rather than by what the window
+        //     could give — the empty band under it read as a cut-off app;
+        //   - that ideal CHANGES with the theme (Kousei swaps which controls
+        //     the preview page builds), so choosing Kousei 4:3 re-measured the
+        //     column and the black stage shrank under the client's hands.
+        //
+        // The plain NSView container stopped the WINDOW from following the
+        // content (KORAK 163). This stops the CONTENT from refusing to follow
+        // the window, and both are needed: the container alone leaves a window
+        // of the right size with a column sized to its own ideal inside it.
+        //
+        // maxHeight: .infinity replaces it - the column takes the window's
+        // height, and the stage's own 620 ceiling decides how much of it the
+        // picture may claim.
         .frame(
             minWidth: 980,
             idealWidth: 1180,
             maxWidth: .infinity,
+            maxHeight: .infinity,
             alignment: .top
         )
         // Our custom themes only recolor our own SwiftUI views — native
@@ -19876,16 +19907,23 @@ struct CenterPreviewPanel: View {
                 // whatever the window can spare and stops, so the picture still
                 // grows with the window and nothing asks for the impossible.
                 //
-                // minHeight is back at 220, its original value. Raising it to
-                // 260 "because that was the old ceiling" was wrong: the taller
-                // the floor, the larger the window this layout needs to survive,
-                // and the floor is what has to give on a small one.
-                // ⚠️ 420, down from 620. *„kad se otvore sve slike ne mora
-                // slika da bude toliko velika.. da bi gurnula sve ispod"* -
-                // the picture was taking every point the window could spare,
-                // and Photos and Music Playlist under it were off the bottom
-                // of a 832pt display. A ceiling here is a ceiling on how much
-                // it can take from what follows it.
+                // The floor was lowered rather than raised: raising it to 260
+                // "because that was the old ceiling" was wrong — the taller the
+                // floor, the larger the window this layout needs to survive,
+                // and the floor is what has to give on a small one. It is 150.
+                //
+                // ⚠️ THE NUMBERS IN THIS COMMENT DRIFTED, and the code is the
+                // one to read. It said "minHeight is back at 220" and "420,
+                // down from 620" while the line below has read 150 and 620 for
+                // longer than that. Corrected 8.09; the reasoning above each
+                // number still holds, only the figures were stale.
+                //
+                // The ceiling exists because *„kad se otvore sve slike ne mora
+                // slika da bude toliko velika.. da bi gurnula sve ispod"* — the
+                // picture was taking every point the window could spare, and
+                // Photos and Music Playlist under it were off the bottom of an
+                // 832pt display. A ceiling here is a ceiling on how much it can
+                // take from what follows it.
                 .frame(maxWidth: .infinity, minHeight: 150, maxHeight: 620)
                 .clipShape(RoundedRectangle(cornerRadius: 34))
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -21365,9 +21403,13 @@ final class ShowGridWindowController {
     // Opens (or refocuses) the ShowGrid screen in its own standalone,
     // user-resizable/maximizable window instead of as an in-window
     // overlay — an in-window overlay would inherit ContentView's own
-    // root layout, which is `.fixedSize(vertical: true)` and locked to
-    // its ideal content height, cutting off anything meant to fill the
-    // physical screen.
+    // root layout, its padding and its stacking order, and would be sized by
+    // that column rather than by the display.
+    //
+    // ⚠️ The original reason written here was ContentView's
+    // `.fixedSize(vertical: true)`. That modifier is GONE — it was what made
+    // the black stage shrink when the theme changed (see the root frame). The
+    // separate window is still right, but not for that reason any more.
     func open(initialPhotoURLs: [URL] = []) {
         if let controller = windowController {
             controller.window?.makeKeyAndOrderFront(nil)
@@ -21483,8 +21525,34 @@ final class BriefShowWindowController {
     static let windowTitle = "BriefShow"
 
     private var windowController: NSWindowController?
+    private var appearanceObserver: AnyCancellable?
 
     private init() {}
+
+    /// ⚠️ THE WINDOW'S APPEARANCE IS SET HERE, not by `.preferredColorScheme`.
+    ///
+    /// Reported 8.09: *„ove u settingsu strelice gore i dole su previse
+    /// crne"* — the Steppers in the Settings card, the only native AppKit
+    /// controls left in this window, drew their chevrons near-black on the
+    /// near-black Dark theme.
+    ///
+    /// ContentView's root has carried `.preferredColorScheme` for exactly this
+    /// reason since the Stepper first went dark-on-dark, and it still does. On
+    /// macOS that modifier works by reaching the NSWindow through the hosting
+    /// view — and KORAK 163 put a plain NSView container between them, so the
+    /// hosting view stopped being the window's contentView and the appearance
+    /// stopped reaching the window. The container is right and stays; what it
+    /// broke is restored here, where it does not depend on the view hierarchy
+    /// at all.
+    ///
+    /// Our own SwiftUI views never read this — they paint from AppColors. It
+    /// exists solely so the native controls are handed the same light/dark the
+    /// client's chosen theme is already painting around them.
+    private func syncAppearance(of window: NSWindow) {
+        window.appearance = NSAppearance(
+            named: ThemeManager.shared.current == .dark ? .darkAqua : .aqua
+        )
+    }
 
     // initialPhotoURLs is only used the first time this opens a fresh
     // window — if a BriefShow window is already open, this just refocuses
@@ -21590,11 +21658,30 @@ final class BriefShowWindowController {
         container.addSubview(hosting)
         window.contentView = container
 
+        // Once now, and again on every theme change — the client switches
+        // White/Sand/Dark while the window is open, and a window that only
+        // learns its appearance at creation would keep near-black chevrons
+        // until it was closed and reopened.
+        //
+        // ⚠️ `.receive(on: RunLoop.main)` is not decoration. `@Published`
+        // fires from willSet, so a sink that runs inline reads the OLD theme
+        // out of ThemeManager and sets the appearance the client just left.
+        // One turn of the run loop later the value is in place — the same
+        // one-turn trap the recipe chain documents at `flattenPhoto`.
+        syncAppearance(of: window)
+        appearanceObserver = ThemeManager.shared.$current
+            .receive(on: RunLoop.main)
+            .sink { [weak window] _ in
+                guard let window else { return }
+                self.syncAppearance(of: window)
+            }
+
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func close() {
+        appearanceObserver = nil
         windowController?.close()
         windowController = nil
     }

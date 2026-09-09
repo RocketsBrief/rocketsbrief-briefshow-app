@@ -704,10 +704,25 @@ final class SDInpaintPipeline: ObservableObject {
     /// palm looks right, so it reads as better until the same setting meets a
     /// clean background and puts an object in it. That is the whole reason
     /// this number is low.
-    /// ⚠️ TEST SWITCH, 8.09 — NOT A SHIPPING SETTING. Put back to `true`
-    /// before any release.
+    /// ⚠️ SHIPPING SETTING SINCE v11.12, 9.09 — no longer a test.
     ///
-    /// Client's request, in his words: *„zameni da testiram da kada kliknem na
+    /// It arrived as a test on 8.09 with "put it back to `true` before any
+    /// release" written here. At the v11.12 release the client was asked which
+    /// of the two to publish, with both his verdict and the contrary
+    /// measurement in front of him, and chose to keep this one. That is the
+    /// conscious decision KORAK 166 asked for, so the warning is retired.
+    ///
+    /// His verdict after trying it: *„bio si u pravu lama je pravila lose..
+    /// ovako treba da bude SD je sada dobar!"*
+    ///
+    /// ⚠️ MY MEASUREMENT STILL DISAGREES, and that is not a reason to change
+    /// it back — it is the reason the caution threshold is 600 and not 1400.
+    /// On C4S_7891, the same 828px mask as KORAK 39, SD alone put a large dark
+    /// stone in the hole again. So the finding is not "SD is fine now" but
+    /// **the size of the hole and what surrounds it decide, not which model**.
+    /// His masks are evidently in a different regime from the test frame.
+    ///
+    /// Original request, in his words: *„zameni da testiram da kada kliknem na
     /// Ai generative dugme lama nema nikakve veze samo SD.. pa da vidimo sta
     /// ce da uradi.. ali ne povecavaj SD da ne bi stavljao automobile"*.
     ///
@@ -715,8 +730,8 @@ final class SDInpaintPipeline: ObservableObject {
     /// never called, SD starts from NOISE and runs the whole schedule. That is
     /// the exact configuration KORAK 39 measured, and its finding stands —
     /// **on an empty prompt SD put a CAR in an 828px hole.** This is here so
-    /// the client can see that on his own photographs, not because it is
-    /// better.
+    /// the client can see that on his own photographs — and, from v11.12, what
+    /// he chose to keep after seeing it.
     ///
     /// ⚠️ The geometry is deliberately UNTOUCHED — `imageSide` is still 512
     /// and `defaultSteps` still 12. *„ne povecavaj SD"*. The car comes from

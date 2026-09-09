@@ -606,6 +606,49 @@ lično je — pitaj klijenta pre nego što uđe u build.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 9. septembar 2026 — v11.12 OBJAVLJENA, univerzalna
+
+| | |
+|---|---|
+| **167-168** | Toonish napravljen — pa **169: obrisan** na klijentov zahtev, v. KORAK 169 |
+| **v11.12** | univerzalan paket (arm64 + x86_64), min macOS 13.0, LaMa unutra, SD preko dugmeta |
+
+#### ✅ ZATVORENO — `generativeUsesLaMaBase` više NIJE test
+
+Pitan je pred sam release, sa svojom presudom i mojim suprotnim merenjem pred
+sobom, i izabrao da **ostane `false`** — čist SD, bez LaMe, prag upozorenja 600.
+To je svesna odluka koju je KORAK 166 tražio; upozorenje u kodu je povučeno.
+
+⚠️ Moje merenje se i dalje ne slaže (kamen na `C4S_7891`, maska 828 px) i zato
+prag ostaje 600, a ne 1400. Nalaz nije „SD je sad dobar“ nego **veličina rupe i
+okolina odlučuju**.
+
+#### ⚠️ Tag: v11.4 je TRAŽEN pa ODBIJEN, i vredi znati zašto
+
+Klijent je tražio tag `v11.4`. Provereno pozivom stvarnog koda
+(`RocketsBriefAccount.swift:423`, `compare(options: .numeric)`):
+
+| latest | current | ponudi update? |
+|---|---|---|
+| **11.4** | **11.11** | **NE** |
+| 11.12 | 11.11 | da |
+
+`.numeric` čita `11.4` kao 11 pa 4 — dakle **stariji** od `11.11`. Ceo update
+lanac bi tiho stao za sve postojeće klijente. Objašnjeno, pa je izabrano
+**v11.12**. Ko sledeći bude birao broj: 11.9 → 11.10 je već prošlo dobro, ali
+svaki povratak ispod tećeg minora lomi lanac.
+
+### Ostalo otvoreno, nepromenjeno
+
+- **`v11.0` se NE SME brisati** — dugme za preuzimanje SD-a u app-i ga gadja.
+- KORAK 163 nedovršen: nije provereno da prozor ostaje 834 posle promene teme.
+- Intel nije potvrđen na pravoj mašini od v11.0 (KORAK 106).
+- 214 MB `build_universal/` u istoriji commit-ova.
+- Neutralan izvoz `C4S_9331.NEF`-a se čeka od 5.09.
+
+---
+
+
 ### GDE SMO STALI — 9. septembar 2026, kasno — Toonish radi, i uvećanje je ono što odlučuje (NIJE OBJAVLJENO)
 
 **Nema release-a i nema push-a.** v11.11 je i dalje ono što je gore.

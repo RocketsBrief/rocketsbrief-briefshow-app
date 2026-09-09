@@ -10123,10 +10123,10 @@ private func computeImaginationRevealTargets(
         usesSecondTwinScene ? 1.05 : (usesTwoPhotoScene ? 0.70 : 0.96)
 
     let secondaryStartScale: CGFloat =
-        usesSecondTwinScene ? 1.45 : 1.08
+        usesSecondTwinScene ? 0.62 : 1.02
 
     let secondaryEndScale: CGFloat =
-        usesSecondTwinScene ? 1.05 : 0.70
+        usesSecondTwinScene ? 0.42 : 0.68
 
     return ImaginationRevealTargets(
         revealStartScale: revealStartScale,
@@ -10166,8 +10166,8 @@ private func computeImaginationRevealTargets(
         distantStartRotationZ: distantStartingRotationZ,
         distantEndRotationZ: distantEndingRotationZ,
 
-        secondaryDistantStartScale: 1.56156,
-        secondaryDistantEndScale: 1.20666,
+        secondaryDistantStartScale: 1.20,
+        secondaryDistantEndScale: 0.92,
         secondaryDistantStartOffsetX: secondaryDistantStartingX,
         secondaryDistantEndOffsetX: secondaryDistantEndingX,
         secondaryDistantStartOffsetY: secondaryDistantStartingY,
@@ -10668,8 +10668,8 @@ private struct ImaginationExportSceneView: View {
                             secondaryImage.size.width / max(1, secondaryImage.size.height)
                         )
 
-                        let secondaryAvailableWidth = proxy.size.width * 0.72
-                        let secondaryAvailableHeight = proxy.size.height * 0.76
+                        let secondaryAvailableWidth = proxy.size.width * 0.48
+                        let secondaryAvailableHeight = proxy.size.height * 0.54
                         let secondaryAvailableRatio = secondaryAvailableWidth / secondaryAvailableHeight
 
                         if secondaryRatio > secondaryAvailableRatio {
@@ -10714,8 +10714,8 @@ private struct ImaginationExportSceneView: View {
                                 .resizable()
                                 .scaledToFill()
                                 .frame(
-                                    width: secondaryCardSize.width,
-                                    height: secondaryCardSize.height
+                                    width: secondaryCardSize.width * (usesSecondTwinScene ? 1.55 : 1.0),
+                                    height: secondaryCardSize.height * (usesSecondTwinScene ? 1.55 : 1.0)
                                 )
                                 .clipped()
                                 .blur(radius: 16)
@@ -10726,8 +10726,8 @@ private struct ImaginationExportSceneView: View {
                             Color.black.opacity(0.20)
                         }
                         .frame(
-                            width: secondaryCardSize.width,
-                            height: secondaryCardSize.height
+                            width: secondaryCardSize.width * (usesSecondTwinScene ? 1.55 : 1.0),
+                            height: secondaryCardSize.height * (usesSecondTwinScene ? 1.55 : 1.0)
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                         .mask(
@@ -10749,8 +10749,8 @@ private struct ImaginationExportSceneView: View {
                                 .resizable()
                                 .scaledToFill()
                                 .frame(
-                                    width: secondaryCardSize.width * (usesSecondTwinScene ? 0.70 : 1.0),
-                                    height: secondaryCardSize.height * (usesSecondTwinScene ? 0.70 : 1.0)
+                                    width: secondaryCardSize.width * (usesSecondTwinScene ? 1.55 : 1.0),
+                                    height: secondaryCardSize.height * (usesSecondTwinScene ? 1.55 : 1.0)
                                 )
                                 .clipped()
                                 .saturation(state.secondarySaturation)
@@ -10759,8 +10759,8 @@ private struct ImaginationExportSceneView: View {
                                 .blur(radius: state.secondaryBlur)
                         }
                         .frame(
-                            width: secondaryCardSize.width * (usesSecondTwinScene ? 0.70 : 1.0),
-                            height: secondaryCardSize.height * (usesSecondTwinScene ? 0.70 : 1.0)
+                            width: secondaryCardSize.width * (usesSecondTwinScene ? 1.55 : 1.0),
+                            height: secondaryCardSize.height * (usesSecondTwinScene ? 1.55 : 1.0)
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                         .compositingGroup()
@@ -18164,7 +18164,7 @@ struct ImaginationCardPage: View {
     @State private var revealTiltY: Double = 0
     @State private var revealRotationZ: Double = 0
 
-    // Druga fotografija u two-photo sceni — ista veličina kao glavna.
+    // Dodatna manja fotografija za novu two-photo scenu.
     @State private var secondaryScale: CGFloat = 1.34
     @State private var secondaryBlur: CGFloat = 30
     @State private var secondarySaturation: Double = 0
@@ -18293,10 +18293,10 @@ struct ImaginationCardPage: View {
                         )
 
                         let secondaryAvailableWidth =
-                            proxy.size.width * 0.72
+                            proxy.size.width * 0.48
 
                         let secondaryAvailableHeight =
-                            proxy.size.height * 0.76
+                            proxy.size.height * 0.54
 
                         let secondaryAvailableRatio =
                             secondaryAvailableWidth
@@ -18394,9 +18394,19 @@ struct ImaginationCardPage: View {
                                 .scaledToFill()
                                 .frame(
                                     width:
-                                        secondaryCardSize.width,
+                                        secondaryCardSize.width
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        ),
                                     height:
                                         secondaryCardSize.height
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        )
                                 )
                                 .clipped()
                                 .blur(radius: 16)
@@ -18408,8 +18418,18 @@ struct ImaginationCardPage: View {
                                 .opacity(0.20)
                         }
                         .frame(
-                            width: secondaryCardSize.width,
+                            width: secondaryCardSize.width
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        ),
                             height: secondaryCardSize.height
+                                        * (
+                                            usesSecondTwinScene
+                                            ? 1.55
+                                            : 1.0
+                                        )
                         )
                         .clipShape(
                             RoundedRectangle(
@@ -18453,8 +18473,7 @@ struct ImaginationCardPage: View {
                         .opacity(0.62)
                         .zIndex(6)
 
-                        // Drugi original: ista veličina kao glavna
-                        // fotografija, samo drugačije rotiran.
+                        // Manji, drugačije rotiran original.
                         ZStack {
                             Image(nsImage: secondaryImage)
                                 .resizable()
@@ -18464,14 +18483,14 @@ struct ImaginationCardPage: View {
                                         secondaryCardSize.width
                                         * (
                                             usesSecondTwinScene
-                                            ? 0.70
+                                            ? 1.55
                                             : 1.0
                                         ),
                                     height:
                                         secondaryCardSize.height
                                         * (
                                             usesSecondTwinScene
-                                            ? 0.70
+                                            ? 1.55
                                             : 1.0
                                         )
                                 )
@@ -18494,14 +18513,14 @@ struct ImaginationCardPage: View {
                                 secondaryCardSize.width
                                 * (
                                     usesSecondTwinScene
-                                    ? 0.70
+                                    ? 1.55
                                     : 1.0
                                 ),
                             height:
                                 secondaryCardSize.height
                                 * (
                                     usesSecondTwinScene
-                                    ? 0.70
+                                    ? 1.55
                                     : 1.0
                                 )
                         )
@@ -19297,8 +19316,8 @@ struct ImaginationCardPage: View {
 
             secondaryScale =
                 usesSecondTwinScene
-                ? 1.45
-                : 1.08
+                ? 0.62
+                : 1.02
 
             secondaryBlur = 30
             secondarySaturation = 0
@@ -19311,7 +19330,7 @@ struct ImaginationCardPage: View {
             secondaryRotationZ =
                 secondaryStartingRotationZ
 
-            secondaryDistantScale = 1.56156
+            secondaryDistantScale = 1.20
             secondaryDistantOffsetX =
                 secondaryDistantStartingX
             secondaryDistantOffsetY =
@@ -19392,8 +19411,8 @@ struct ImaginationCardPage: View {
             if usesTwoPhotoScene {
                 secondaryScale =
                     usesSecondTwinScene
-                    ? 1.05
-                    : 0.70
+                    ? 0.42
+                    : 0.68
                 secondaryOffsetX = secondaryEndingX
                 secondaryOffsetY = secondaryEndingY
                 secondaryTiltX = secondaryEndingTiltX
@@ -19419,7 +19438,7 @@ struct ImaginationCardPage: View {
             distantRotationZ = distantEndingRotationZ
 
             if usesTwoPhotoScene {
-                secondaryDistantScale = 1.20666
+                secondaryDistantScale = 0.92
                 secondaryDistantOffsetX =
                     secondaryDistantEndingX
                 secondaryDistantOffsetY =

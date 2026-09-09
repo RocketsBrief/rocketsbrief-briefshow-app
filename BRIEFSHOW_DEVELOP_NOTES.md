@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 9. septembar 2026 (KORAK 159-166, nije objavljeno; v11.11 je gore).
+Beleška za nastavak rada. Poslednja izmena: 9. septembar 2026 (KORAK 170-171; **v11.14 je gore**).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -18058,3 +18058,97 @@ pojačava zasićenje — koji se na neutralnom kadru ne vidi.
 ### Ako se ikad vrati
 
 Ne kroz img2img nad fotografijom. Taj put je iscrpljen i zapisan gore.
+
+
+---
+
+## KORAK 170 — Kanata: dve fotografije u sceni su DVE fotografije (9. septembar 2026)
+
+Klijent: *„kada prikazuje dve slike uvek da budu obe velike i da dolaze isto kao
+do sada sa strane"*. Scena sa jednom fotografijom je proglašena dobrom i nije
+dirana.
+
+### Zašto je druga bila manja
+
+Merila se po **svojoj** kutiji, ne po glavnoj:
+
+| | glavna | druga (pre) |
+|---|---|---|
+| raspoloživa kutija | `0.72 × 0.76` ekrana | `0.48 × 0.54` |
+| množilac okvira (twin varijanta 2) | `× 0.70` | `× 1.55` |
+| scale, start → kraj | `1.08 → 0.70` (var. 2: `1.45 → 1.05`) | `1.02 → 0.68` (var. 2: `0.62 → 0.42`) |
+
+Na 16:9 sa fotografijom 3:2 to je bilo 0,449 W prema 0,31 W — odnos ~1,45, i
+na ekranu je čitano kao jedna fotografija sa sličicom pored nje.
+
+### Šta je urađeno
+
+Druga fotografija je puštena kroz **istu matematiku kao glavna**: ista kutija,
+isti množilac okvira, isti portretni boost (1,50 u two-photo sceni), iste start
+i end scale vrednosti. Njena blurry tamna kopija ogledalo je glavne (`1.56156 →
+1.20666`, bez množioca), da dve polovine scene teže isto.
+
+Ulazak sa suprotnih strana, rotacije, nagibi, blur i color reveal tajminzi —
+netaknuti. Na novim veličinama dve landscape kartice završe jedna do druge oko
+centra bez preklapanja: glavna `[-0.41, 0.035]`, druga `[-0.48, -0.03]` u
+jedinicama širine ekrana.
+
+⚠️ **Menjano na DVA mesta**, jer scena postoji dvaput: živi preview
+(`ImaginationCardPage`) i export replika (`computeImaginationRevealTargets` +
+`ImaginationExportSceneView`). Izmena samo u jednom znači da renderovan video ne
+liči na ono što je klijent gledao.
+
+Rezervna kopija pre izmene: `ContentView.swift.before_kanata_two_equal_large_photos`.
+
+---
+
+## KORAK 171 — RELEASE v11.14: jedan paket, bez 2 GB (9. septembar 2026)
+
+Isti zahtev i isti PS kao u KORAKU 152: *„zapakuj oba AI modela i LaMa i SD"*,
+pa *„ne moraš da uploaduješ 2gb jer već imaju u appu dugme za AI SD download"*.
+Dakle **jedan paket**, LaMa unutra, SD dugmetom iz app-a:
+`python3 Tools/make-release.py 11.14 --small-only`.
+
+`MARKETING_VERSION` 11.12 → **11.14**, `CURRENT_PROJECT_VERSION` 29 → **30**.
+Traženi tag je ovde bio i moguć: 11.14 je pod `.numeric` iznad 11.12 koja je
+bila u radnoj kopiji (11 = 11, pa 14 > 12), pa se update kartica pojavljuje i
+kod onih na 11.11 i kod onih na 11.12.
+
+### Provere na PAKETU (raspakovan zip, ne projekat)
+
+| provera | rezultat |
+|---|---|
+| `lipo -archs` | **x86_64 arm64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.14 / 30** |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` |
+| `LaMa.mlmodelc` | da |
+| `SD15-Inpainting` | ne, namerno |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| zip lokalno / `content-length` | **114.992.059 / 114.992.059** — bajt u bajt |
+| direktan link | HTTP **200** |
+| `releases/latest` | **v11.14**, draft ne, prerelease ne, jedan asset |
+
+- stranica: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.14`
+- direktno: `…/releases/download/v11.14/C4S-Suite-11.14.zip`
+- tag `v11.14` → `4aac9d9` (grana `briefshow-develop`, pushovano)
+
+### Intel — nije menjano, provereno da je već tako
+
+Zahtev *„da SD radi na Intel procesorima ali da deli rad"* isporučen je u
+KORAKU 105 i stoji u `DevelopSDInpaint.swift`: na `#else` grani
+`aneConfiguration.computeUnits = .all` (nema Neural Engine-a, pa Core ML deli
+posao između diskretne kartice i jezgara), VAE prolazi `.cpuAndGPU`. Provereno
+čitanjem koda pre objave, ne pretpostavljeno.
+
+### Label sa verzijom — nije trebalo dodavati
+
+Klijent ga je tražio; već postoji od KORAKA 108/74, ispod wordmark-a i na dnu
+Create panela, i čita `CFBundleShortVersionString` **iz bundle-a**. Dizanjem
+verzije je sam postao `C4S Suite v11.14` i ne može da se raziđe sa tagom.
+
+### ⚠️ `v11.0` se NE SME brisati
+
+Ugrađeno preuzimanje SD-a i dalje gađa `…/releases/download/v11.0/SD15-Inpainting.aar`.
+Provereno pri ovoj objavi: HTTP **200**.

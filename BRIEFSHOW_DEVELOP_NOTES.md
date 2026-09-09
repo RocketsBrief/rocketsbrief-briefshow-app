@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 8. septembar 2026 (KORAK 159-162, nije objavljeno; v11.11 je gore).
+Beleška za nastavak rada. Poslednja izmena: 9. septembar 2026 (KORAK 159-166, nije objavljeno; v11.11 je gore).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -110,6 +110,46 @@ Tri odvojene prepreke, svaka sama blokira:
 3. **Runtime.** Nema Core ML puta za FLUX Fill; na Mac-u se vrti kroz MLX
    (`mflux`), što je **drugi motor pored postojećeg**, samo Apple Silicon.
 
+#### ⚠️ DOPUNA 9.09. — FLUX.2 [klein] 4B: licenca JESTE čista, pada na mašini
+
+Povod: *„ajde ipak da ubacimo onaj što si rekao najbliži nano banani a da je
+free i da ima komercijalnu upotrebu?"*. Provereno na izvoru istog dana.
+
+**Prepreka 1 gore (licenca) je za OVAJ model pala.** FLUX.2 [klein] **4B** ide
+pod **Apache 2.0** — doslovno `license: apache-2.0` u frontmatter-u HF stranice
+`black-forest-labs/FLUX.2-klein-4B`, uz rečenicu „open weights available for
+commercial use under the Apache 2.0 license". To nije isti model kao FLUX.1 Fill
+[dev] iz odeljka iznad; taj zapis ostaje tačan za ono što je gledao.
+
+⚠️ **Samo 4B varijanta. FLUX.2 [klein] 9B je NEKOMERCIJALAN.** Ko bude čitao ovo,
+ne sme da povuče „FLUX.2 je Apache" kao pravilo.
+
+**Prepreke 2 i 3 stoje netaknute, i sada su one te koje odlučuju:**
+
+| | |
+|---|---|
+| traži unified memorije | **12 GB** (4-bitno kvantizovan, `Runpod/FLUX.2-klein-4B-mflux-4bit`), 32 GB za udoban rad |
+| **razvojna mašina** | **8 GB, M2** — izmereno `sysctl hw.memsize`, 9.09. |
+| već zapisano | KORAK 19: OOM na 9 GB sa modelom od **512** |
+| paket | +4,6 GB preuzimanja na sadašnjih 1,98 GB |
+| runtime | MLX (`mflux`, ili `VincentGourbin/flux-2-swift-mlx`) — **drugi motor pored Core ML-a**, samo Apple Silicon |
+| Intel (podržan od v11.0) | ne može ni teorijski |
+
+Postoji native Swift MLX implementacija, što je više nego što je važilo za
+FLUX.1 — dakle integracija nije nemoguća. **Ali model se na 8 GB ne može ni
+učitati, pa se ne može ni izmeriti.** Bez merenja se ne kupuje paket; to je isti
+redosled koji je već dvaput zapisan kao pravilo.
+
+**Qwen-Image-Edit** — po sposobnosti najbliži Nano Banani, i **jeste** Apache 2.0
+i komercijalan. 20,4B DiT + 8,3B Qwen2.5-VL enkoder: 40 GB u BF16, ~14 GB u
+Q4_K_M. Još dalje van domašaja od FLUX-a. Zapisano da se ne istražuje ponovo.
+
+> **Zaključak koji ostaje:** pitanje više nije licenca nego **8 GB**. Dok se ne
+> zna na kojoj mašini klijent radi, svaki model preko ~2 GB je nagađanje. Ono
+> što na 8 GB radi danas je **Opcija 2 iz odeljka o cartoonish dugmetu** —
+> img2img preko SD 1.5 koji već isporučujemo: nula GB, nula pravnih pitanja,
+> radi i na Intelu.
+
 ### Dva kandidata koja JESU komercijalno upotrebljiva
 
 | | licenca | komercijalno | radna rezolucija |
@@ -170,6 +210,117 @@ release i **novo preuzimanje kod svakog klijenta koji već ima SD**.
    upotrebljiv; a Intel nije potvrđen ni od v11.0 (KORAK 106).
 5. **Rezultat AI Clean Up-a je 31.08. proglašen dobrim.** Zamena modela ga menja
    — i na bolje i na gore. Mora se izmeriti na istim fotkama, ne proceniti.
+
+
+## 🟡 OTVORENO — ilustratorski checkpoint za Toonish (9. septembar 2026)
+
+**NIŠTA NIJE PREUZETO NI ODLUČENO.** Zapisano da se ne istražuje ponovo.
+
+Povod: posle KORAKA 168 klijent traži *„najbliži nano banani ali da može i na
+Intel i na Silicon"*.
+
+### ⚠️ Prvo ono što obara pitanje: na Intelu nema MLX-a
+
+| motor | Intel |
+|---|---|
+| MLX (FLUX.2 klein, Qwen-Image-Edit, GLM-Image) | **ne postoji** — traži unified memory, Intel ima CPU put |
+| Core ML | **radi na oba**, pokriva SD / SDXL porodicu |
+
+**Model iz „nano banana" klase koji radi na Intelu ne postoji** — ne zbog cene
+ni licence, nego zbog hardvera. Ovo zatvara i FLUX.2 klein 4B iz gornjeg
+odeljka za svaki slučaj gde je Intel uslov.
+
+### Zašto je checkpoint pravi krivac, i to je IZMERENO
+
+SD 1.5 **inpainting** je treniran da rekonstruiše fotografsku okolinu. Izmereno
+na `C4S_7891` kroz `Tools/run-toonish-preview.py`:
+
+| jačina | šta se dobije |
+|---|---|
+| 0,35 | fotografija, stila nema |
+| 0,65 | **izmišljen ceo grad** — plaže nema, ljudi nema |
+
+> **Nema prozora između. Jačina ne može da kupi stil.** Crtež nije u ovom
+> checkpoint-u; mi ga promptom molimo za nešto što nikad nije naučio.
+
+### Tri kandidata, licence pročitane doslovno iz README frontmatter-a 9.09.
+
+| model | licenca | osnova | čime je treniran |
+|---|---|---|---|
+| `ogkalu/Comic-Diffusion` | `creativeml-openrail-m` | SD 1.5 fine-tune | **šest imenovanih živih ilustratora** kao tokeni |
+| `ogkalu/Illustration-Diffusion` | `creativeml-openrail-m` | SD 1.5 fine-tune | rad **Hollie Mengert** |
+| `nitrosocke/mo-di-diffusion` | `creativeml-openrail-m` | SD 1.5 fine-tune | „modern disney style" |
+
+### ⚠️ LICENCA NIJE PRAVI RIZIK OVDE — POREKLO STILA JESTE
+
+Sva tri su komercijalno dozvoljena po slovu licence. Ali:
+
+- **Comic-Diffusion** ima šest tokena, i svaki je ime **živog ilustratora**:
+  charliebo, holliemengert, marioalberti, pepelarraz, andreasrocha, jamesdaly.
+- **Illustration-Diffusion** je treniran na radu Hollie Mengert, i **sama model
+  stranica beleži da se ona javno usprotivila** njegovom postojanju.
+- **mo-di-diffusion** okida na „modern disney style"; stranica namerno izbegava
+  da imenuje studio.
+
+Sva tri su **čista po licenci i prljava po poreklu** za alat koji se prodaje
+pod klijentovim imenom. To je odluka za klijenta, ne za sesiju.
+
+**Čistija klasa** su stilovi opisani **medijem** (ink, akvarel, cel shading), ne
+osobom ni studijom. Postoje uglavnom kao LoRA — ali licencu svake LoRA-e piše
+njen autor posebno i mora se čitati pojedinačno (ista zamka „licenca koda ≠
+licenca težina" kao kod LaMe).
+
+### Kandidati opisani MEDIJEM — licence čitane doslovno 9.09.
+
+Traženo posle odbijanja tri stilska checkpoint-a: stil opisan medijem, ne
+osobom ni studijom.
+
+| model | osnova | licenca | poreklo podataka | presuda |
+|---|---|---|---|---|
+| **`fladdict/watercolor`** | **LoRA za SD 1.5** | `creativeml-openrail-m` | **„All training data is from public domain historical paintings"** | ✅ **jedini čist** |
+| `Envvi/Inkpunk-Diffusion` | SD 1.5 fine-tune | `creativeml-openrail-m` | „inspired by Gorillaz, FLCL, and **Yoji Shinkawa**" | ❌ živ autor + IP |
+| `py-img-gen/lora-ukiyo-e-face-blip2-captions` | LoRA za SD 1.5 | `creativeml-openrail-m` | u model card-u doslovno stoji `TODO: describe the data used to train the model` | ❌ nedeklarisano, i samo lica |
+| `MaxNoichl/engraving-sdxl-lora-001`, `ming-yang/sdxl_chinese_ink_lora` | **SDXL** | openrail | — | ❌ pogrešna osnova; SDXL ruši Intel |
+
+#### ⚠️ `Reallusion/Lora_LineArt` — ZAMKA, i vredi je pamtiti
+
+U HF frontmatter-u stoji `license: creativeml-openrail-m`. U **telu** iste
+stranice stoji da je licenciran pod **LibLibAI Commercial Guidelines**, da je
+*„not intended for direct download or commercial service deployment"*, da važe
+*„restrictions on unlawful, harmful, or **commercial** uses"*, i da autor
+zadržava autorsko pravo.
+
+> **Oznaka licence na HF-u nije licenca.** Ovo je treći put da se ista greška
+> nudi — posle LaMe i BrushNet-a — i prvi put da su tag i telo u otvorenoj
+> protivrečnosti. Svaki kandidat se čita do kraja, ne po tagu.
+
+### ⚠️ Za INK nema čistog SD 1.5 modela — i ne treba mu model
+
+Pretraga nije našla nijedan SD 1.5 ink/engraving LoRA sa deklarisanim poreklom
+podataka. Čisti su SDXL, što ruši Intel.
+
+**Ali konture ne traže model.** Ink prolaz iz KORAKA 168 crta linije iz same
+fotografije preko `CIEdges`, na punoj rezoluciji: nula trening podataka, nula
+licence, nula pitanja o poreklu, i radi na Intelu.
+
+> **Predloženi sastav, i on je tačno referentna slika:**
+> **boja** = `fladdict/watercolor` spojen u SD 1.5 pa konvertovan u Core ML;
+> **konture** = postojeći Core Image prolaz na punoj rezoluciji;
+> **lica** = Vision zaštita iz KORAKA 168.
+>
+> Polovina koja nosi pravni rizik je jedina koja ima čisto poreklo, a polovina
+> koja nema poreklo uopšte ne koristi model.
+
+### Tehnička posledica, bez obzira koji se izabere
+
+Ovo su **4-kanalni** standardni checkpoint-i, ne 9-kanalni inpainting. Znači:
+
+- nov, **običan img2img put** u kodu — zapravo jednostavniji od sadašnjeg
+  aranžmana sa punom maskom;
+- **zaseban UNet, ~1,7 GB**. Ne sme da zameni postojeći: Clean Up je 31.08.
+  proglašen dobrim i zaključan;
+- LoRA ne pomaže veličini — Core ML peče težine, pa se spaja pre konverzije i
+  izlazi pun UNet iste veličine.
 
 
 ## 🟡 OTVORENO — dugme za „cartoonish" slike (9. septembar 2026, ZA SUTRA)
@@ -454,6 +605,29 @@ lično je — pitaj klijenta pre nego što uđe u build.
 
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 9. septembar 2026, kasno — Toonish radi, i uvećanje je ono što odlučuje (NIJE OBJAVLJENO)
+
+**Nema release-a i nema push-a.** v11.11 je i dalje ono što je gore.
+
+| | |
+|---|---|
+| **167** | „Toonish" — cartoonish paint style preko SD-a koji već isporučujemo; **nula novih GB** |
+
+#### ⚠️ Dva nalaza koja vrede više od dugmeta
+
+1. **Uvećanje, ne jačina, odlučuje kvalitet.** 512 → 1195 px (2,3×) daje tačno
+   klijentov referentni stil. 512 → 5176 px (10×) pretvara osunčan pesak u
+   kamenje. To je **ista mana kao KORAK 39**, stigla iz trećeg pravca.
+2. **FLUX.2 [klein] 4B JESTE Apache 2.0 i komercijalan** — licenca više nije
+   prepreka, memorija jeste: traži 12 GB, ova mašina ima 8. Zapisano gore, uz
+   Qwen-Image-Edit, da se ne istražuje treći put.
+
+#### ⚠️ I dalje prvo, nepromenjeno
+
+**`generativeUsesLaMaBase` je `false` i to je TEST, ne isporuka.** v. KORAK 166.
+
+---
 
 ### GDE SMO STALI — 9. septembar 2026 — SD bez LaMe, i dve otvorene opcije za sutra (NIJE OBJAVLJENO)
 
@@ -17566,3 +17740,278 @@ kamen na pesku; on je gledao svoje fotografije.
 `xcodebuild` prolazi. Sweep je pušten dvaput; PNG-ovi su **gledani**, ne bodovani
 — nema metrike koja razlikuje verodostojan pesak od izmišljenog kamena.
 
+
+---
+
+## KORAK 167 — „Toonish": cartoonish paint style, na težinama koje već isporučujemo (9. septembar 2026)
+
+Klijentov zahtev: *„kreni sa opcijom 2 na drugo dugme u ai sekcije pored ai
+generation da bude Toonish ime dugmeta"*, pa dopuna: *„da bude cartoonish paint
+style"*. To je **Opcija 2** iz odeljka o cartoonish dugmetu — img2img preko SD
+1.5 koji je već instaliran.
+
+**Nula novih gigabajta, nula novih pravnih pitanja, nula novih preuzimanja.**
+Ko ima Generative Clean Up, ima i Toonish.
+
+### Referenca je nađena na disku, i promenila je prompt
+
+`~/Desktop/Cartoonish Style Image Sample.jpeg` — pročelje Iberostar hotela,
+pored fascikle `Iberostar Images Boook Session`. Nije „crtani film" nego
+**grafička novela / arhitektonska ilustracija**: čvrste crne ink konture, ravni
+pastelni fil unutar njih, nimalo fotografskog senčenja.
+
+To je i reklo **šta je subjekat** — zgrade, palme, nebo. Ne portreti. Prompt je
+pisan protiv te slike, ne protiv reči „cartoonish".
+
+### Kako inpaint UNet radi img2img — i zašto očigledan raspored ne radi
+
+Checkpoint prima 9 kanala: šum (4), maska (1), maskirana fotka (4). Dva
+rasporeda izgledaju moguća, radi samo jedan:
+
+| raspored | šta se dobije |
+|---|---|
+| maska PRAZNA, maskirana fotka = prava fotka | skoro identitet — UNet dobije gotovu sliku kao uslov i drži je; prompt jedva pomera |
+| **maska PUNA, maskirana fotka = ravno sivo** | fotografija ne ulazi kao uslov nego kao **polazna tačka** preko `refineStrength` — kompozicija i boja opstaju, prompt daje stil |
+
+Drugi je udžbenički img2img, i **već je dokazan u ovom kodu**:
+`BRIEFSHOW_SD_DEBUG=full` maskira ceo kadar kroz istu petlju.
+
+⚠️ **Ništa iz zaključanog odeljka nije dirano.** `imageSide` = 512,
+`defaultSteps` = 12, `generativeUsesLaMaBase` se ne konsultuje, `fill` se zove
+sa isporučenim potpisom. Rezultat Clean Up-a se ne može pomeriti zbog ovog
+fajla.
+
+⚠️ **Bela mrlja iz KORAKA 41 ovde ne može da se desi**, i to nije sreća:
+`toneMatch` meri korekciju iz POZNATIH piksela oko rupe. Kad su svi piksel
+nepoznati, njegov `count > 1000` padne prvi i vrati identitet.
+
+### Izmereno — i dva fajla se ne slažu, što je najkorisniji nalaz
+
+`Tools/run-toonish-preview.py` + `Tools/toonish-preview.swift`, po istom pravilu
+kao inpaint sweep: kompajlira ono što se isporučuje.
+
+| fajl | jačina | rezultat |
+|---|---|---|
+| `Cas Vista Beach Image Sunset.jpeg` (1195×896) | **0,35** | referentni stil, jasno. Konture, ravan pastel, lice čitljivo, hotel i palme nacrtani |
+| `C4S_7891.NEF` (5176×3448) | 0,45 | osunčan pesak → polje tamnih kamenih krhotina; **lice žene obrisano** |
+| isto | 0,28 | pozadina i nebo opstaju; pesak i dalje dolazi kao kaldrma |
+
+> ⚠️ **JAČINA NIJE ONO ŠTO IH RAZDVAJA. UVEĆANJE JESTE.** 512 na 1195 px je
+> 2,3×; 512 na 5176 px je **10×**. Na 10× je fina tekstura koja stigne do
+> modela kaša, a ovaj checkpoint kašu razrešava u **predmete**. Pesak koji
+> postaje kamenje je **ista mana** kao kamen u obrisanoj rupi iz KORAKA 39,
+> samo stigla iz trećeg pravca.
+
+Podrazumevano je **0,35** — izmereno dobro na fajlu koji odgovara klijentovoj
+referenci. Spuštanje na 0,28 zarad NEF-a bi zamenilo slučaj koji je pokazao za
+slučaj koji nije.
+
+#### ⚠️ Pogrešna atribucija, zapisana da se ne ponovi
+
+Prvo sam krhotine u pesku pripisao svom ink prolazu. **Nije bio on** — sa
+`lines 0` krhotine su i dalje tu. Kriv je SD. Provereno pre nego što sam bilo
+šta „popravio".
+
+### Nebo NIJE kvar
+
+Na `C4S_7891` je nebo belo i u originalu — KORAK 41 je za baš ovaj kadar već
+zapisao odsečene svetline. Provereno gledanjem originala pre pripisivanja.
+
+### Šta je isporučeno
+
+| gde | šta |
+|---|---|
+| `BriefShow/DevelopToonish.swift` | nov fajl: `ToonishPipeline.paint` → isti `InpaintPipeline.Removal` kao dva Clean Up dugmeta |
+| `Develop.swift` | dugme „Toonish" u AI sekciji, red ispod Quick/Generative; `toonishUnavailableReason`; `paintToonish()` |
+| `Tools/toonish-preview.swift`, `Tools/run-toonish-preview.py` | headless harness — jer i ovaj model **pada tiho** |
+
+Konture se crtaju na **punoj rezoluciji, iz same fotografije** (`CIEdges`), ne
+iz modelovog izlaza — ravan fil sme da bude mek, crtež ne sme. Namerno se NE
+poziva `nativeDetailPass`: on vraća fotografsku zrnastost, a crtani film treba
+da bude ravan.
+
+### Brzina
+
+7–10 s toplo, ~50 s hladno (41,5 s je učitavanje težina). Isto kao Generative —
+i isto kao tamo, vreme nije u koracima difuzije.
+
+### ⚠️ NEPROVERENO / OTVORENO
+
+- **Ništa od ovoga nije viđeno u pokrenutoj app-i.** Sve je mereno kroz harness.
+  App na startu traži lozinku iz keychain-a, koju agent ne dira.
+- **Sloj je ~16 MB PNG-a na 5176 px** (1,9 MB na 1195 px). Svaki drugi sloj u
+  ovoj app-i je zakrpa od par stotina KB. Pada na undo stack po pritisku, na
+  mašini sa 8 GB. **Izmereno, ali nije isprobano koliko ih stane.**
+- **Lica na velikim fajlovima.** Kvadratno stiskanje 3:2 → 512 menja proporcije;
+  na 1195 px se lice odlično drži, na 5176 px propada. Otvoreno.
+- **Nema slajdera** za jačinu ni za konture. Namerno — prvo se gleda da li je
+  izgled uopšte taj. Ručke su imenovane i pomeraju se u jednoj liniji.
+- **Intel neproveren**, kao i sve od v11.0.
+
+---
+
+## KORAK 168 — Toonish: klijentova fotka je pala, pa tri popravke i jedan pogrešan zaokret (9. septembar 2026)
+
+Presuda na KORAK 167, na fotografiji dvoje ljudi na travi: **„this is disaster :)"**.
+I bila je: oba lica prefarbana u nekog drugog, noga savijena naopako, a crteža
+nema — trava i odeća su se vratile fotografske.
+
+### Uzrok, i zašto nijedna ručka iz 167 ne pomaže
+
+Ceo kadar stisnut u **jedan** 512 buffer ostavlja licu dvoje ljudi u punoj
+figuri oko **60 px**. SD 1.5 lice od 60 px ne vidi, pa ga ne čuva — naslika
+drugo. Istovremeno je 0,35 samo 4 od 12 koraka: dovoljno da uništi malo lice,
+nedovoljno da prefarba veliku travnatu površinu. **To je KORAK 39 po treći put.**
+
+### ⚠️ Zaokret na Opciju 1 koji je bio POGREŠAN, i zapisuje se kao takav
+
+Prebacio sam dugme na čist Core Image (bez modela) jer ne može da izobliči lice.
+Lica jesu ostala savršena, puna rezolucija sačuvana, 0,5 s umesto 10 s — **ali
+stila nema.** To je blago omekšana fotografija, ne crtež. Tri stvari izmerene i
+odbačene usput:
+
+| pokušaj | ishod |
+|---|---|
+| `CIColorPosterize` | **pogrešan alat.** Kvantizuje R, G i B nezavisno; na osunčanom pesku tri kanala padnu u različite trake → ljubičaste, roze i tirkizne mrlje. Zasićenje pre, posle, i spušteno-pa-podignuto — ništa ne pomaže. Isključena (`posterLevels = 0`). |
+| konture iz fotografije | crtaju **teksturu, ne objekte** — svaki otisak stopala je prava ivica |
+| konture posle blura 0,004 | prestaju da crtaju **bilo šta**; izlaz je fotografija nazad |
+
+⚠️ **I jedna moja greška u rasuđivanju:** stavio sam ink gamu **iznad** 1 da
+prigušim slabe ivice — ali posle spljoštavanja su sve ivice slabe, pa je to
+zgnječilo i one prave. Mora **ispod** 1.
+
+### Pločice — klijentova odluka, i one su rešile scenu
+
+3×2 pločice po ~1725 px umesto jedne preko 5176: uvećanje **3,4× umesto 10×**.
+39,5 s. Nestali su i kamen-krhotine u pesku i nekoherentnost; kadar se čita kao
+jedna ilustracija.
+
+⚠️ **Tiling stilizacije je bezbedan onako kako tiling text-to-image nije:** svaka
+pločica kreće od svog parčeta fotografije (`refineStrength`), pa ih drži zajedno
+fotografija, a ne sreća sa seed-om.
+
+#### Dva buga u spajanju, oba tiha
+
+1. **Maska nije imala alfa kanal.** Siva 8-bitna CGImage sa `alphaInfo.none` —
+   CGImage je odbio, `rampMask` vratio `nil`, kod pao na tvrdi `composited`.
+   Ništa nije puklo; rampa je izračunata, skalirana i bačena. Sad je RGBA sa
+   stvarnom alfom.
+2. **Rampa je bila okrenuta naopako.** Red 0 bitmape je **vrh** CGImage-a, a
+   Core Image y ide odozdo — pa sam `rampsBottom` crtao na gornjoj ivici.
+   Svaka pločica je bledela tamo gde nema suseda i ostajala tvrda tamo gde ga
+   ima. Linija je zato stajala na donjoj ivici gornjeg reda, **ne** na granici
+   redova, i to je bio trag koji je odao grešku.
+
+> ⚠️ Prva zamena `CIBlendWithMask` → `CIBlendWithRedMask` dala je **bajt
+> identičan PNG**. Ta identičnost je dokaz da maska nikad nije stizala ni do
+> jednog filtera. Vredi kao metod: kad izmena ništa ne promeni, ne podešavaj
+> dalje — proveri da li uopšte radi.
+
+### ⚠️ NALAZ: gušće pločice lice ČINE GORIM, ne boljim
+
+12 pločica umesto 6 (71 s): čovek se vratio kao **drugi čovek** — tamna kosa,
+brkovi, naočare koje ne nosi. Više piksela po pločici je više prostora modelu da
+naslika lice. **Rezolucija je pogrešna poluga i uvek je bila.**
+
+### Rešenje: lice se ne prefarbava bolje, nego se NE prefarbava
+
+`VNDetectFaceRectanglesRequest`, pa se preko svakog lica vrati **Core Image
+obrada originala** (`flattened`) kroz meku elipsu. Stil se poklapa jer je isti
+flatten; osoba ostaje osoba jer je niko nije gradio. Kutija se širi za 50% —
+ono što čini čoveka prepoznatljivim ide preko Vision-ove kutije, u kosu i vilicu.
+
+Time i Opcija 1 nije bačena: postala je **zaštita lica** unutar Opcije 2.
+
+### Stanje
+
+| | |
+|---|---|
+| vreme | ~40 s na 24 MP (6 pločica × ~7 s) |
+| sloj | ~22 MB PNG |
+| `usesModel` | `true`; `BRIEFSHOW_TOON_MODEL=0` daje čist Core Image put |
+
+### ⚠️ NEPROVERENO / OTVORENO
+
+- **Ništa nije viđeno u pokrenutoj app-i** — app traži lozinku iz keychain-a.
+- **Lica su bleđa i mekša** od ilustracije oko njih; ink prolaz ih ne hvata.
+- **Haljina se i dalje reinterpretira** — zaštićeno je lice, ne odeća.
+- Prag od 1400 px za jednu pločicu nije izmeren, izveden je iz jedinog fajla
+  koji je prošao kroz jednu pločicu dobro (1195 px).
+- Intel neproveren.
+
+---
+
+## KORAK 169 — Toonish: napravljen, četiri puta prepravljan, pa OBRISAN na klijentov zahtev (9. septembar 2026)
+
+**Dugmeta više nema.** *„ne nesvidja mi se mozes da izbrises taj toonish deo
+ceo!"* — `DevelopToonish.swift`, dugme, oba pomoćna metoda i ceo harness su
+uklonjeni. `Develop.swift` i `DevelopSDInpaint.swift` su **bajt-identični**
+stanju pre Toonish-a; `git diff` na njima je prazan.
+
+⚠️ **Clean Up nije diran ni u jednom trenutku** i to je bio klijentov uslov od
+početka: *„ali poseban da ne unisti Ai generativ clean up"*.
+
+### ⚠️ NE PRAVITI PONOVO BEZ ČITANJA OVOGA
+
+Četiri različita pristupa su probana i sva četiri su odbijena. Redom:
+
+| pristup | presuda |
+|---|---|
+| SD 1.5 inpainting kao img2img, jedan 512 kadar | *„this is disaster :)"* — lica prefarbana u druge ljude |
+| Core Image, bez modela | *„ne ne ne valja"* — lica savršena, stila nema |
+| pločice 3×2 + Vision zaštita lica | bolje, ali *„ne valja"* |
+| `fladdict/watercolor` LoRA u zasebnom UNet-u | *„ne nesvidja mi se"* |
+
+### Zid, i on je sada izmeren tri puta
+
+> **Referenca koju je klijent pokazao je CRTEŽ KOJI JE MODEL NACRTAO OD NULE,
+> ne stilizovana fotografija.** Da bi se tamo stiglo, model mora da sme da
+> izmišlja — a čim sme, izmisli i ljude.
+
+Izmereno na `C4S_7891`, sa akvarelnim checkpoint-om:
+
+| jačina | ishod |
+|---|---|
+| 0,25–0,40 | fotografija ostaje, stil prigušen |
+| 0,55 | prelep akvarel, **para nestala**, izmišljena bašta |
+| 0,70 | isto, još dalje |
+
+**Nema prozora između.** Dva zahteva — „da liči na crtež" i „da to budu oni" —
+su u direktnom sudaru, i nijedno podešavanje ne pomera tu liniju; ono samo bira
+tačku na njoj. Isti zid kao KORAK 39, sada potvrđen i sa trećim modelom.
+
+### ⚠️ GREŠKA KOJU SAM PONOVIO IZ KORAKA 166 — najvredniji deo ovog zapisa
+
+Sva merenja sam radio na `C4S_7891` — plaži koja je skoro bela i neutralna.
+Klijent sudi na `C4S_8932` — travi, gustoj srednjetonskoj zelenoj od ivice do
+ivice. **Te dve fotografije se ponašaju suprotno.**
+
+Guidance 13 je na plaži dao pravi akvarel. Na travi je dao kričavu zelenu i
+presudu *„ovo je jos gore"*. Uzrok je poznat CFG artefakt — visok guidance
+pojačava zasićenje — koji se na neutralnom kadru ne vidi.
+
+> **Broj nije bio pogrešan. Pogrešan je bio kadar na kom je meren.**
+>
+> KORAK 166 već beleži isto: *„Dva odvojena merenja su tvrdila da je 8 čisto —
+> on je gledao svoje fotografije."* Ko sledeći bude podešavao bilo šta vizuelno:
+> **traži klijentovu fotografiju PRE prvog merenja, ne posle četvrtog odbijanja.**
+
+### Šta je zadržano, jer vredi i bez dugmeta
+
+- **Odeljak o ilustratorskim checkpoint-ima gore** — licence tri kandidata
+  pročitane doslovno, plus zamka `Reallusion/Lora_LineArt` (HF tag kaže
+  openrail, telo stranice zabranjuje komercijalu).
+- **`CoreMLModels/SD15-Watercolor/Unet.mlmodelc`, 1,6 GB** — SD 1.5 inpainting
+  sa `fladdict/watercolor` spojenom unutra, konvertovan i **proveren da radi**.
+  Ostavljen jer je koštao sat vremena, a ništa ga ne učitava. Slobodno obrisati.
+  Međurezultati konverzije (7,2 GB) su obrisani.
+- **Nalaz o zaštiti lica**: Vision `VNDetectFaceRectanglesRequest` + meka elipsa
+  preko koje se vraća neizmišljena obrada — jedini pristup koji je lice očuvao.
+  Ako Clean Up ikad bude izmišljao lica, ovo je gotovo rešenje.
+- **Nalaz o pločicama**: 3×2 po ~1725 px umesto jednog 512 preko celog kadra
+  ukida „kamen u pesku". Ali ⚠️ **gušće pločice čine lice GORIM** — na 12
+  pločica se čovek vratio kao drugi čovek. Rezolucija nije poluga za lica.
+
+### Ako se ikad vrati
+
+Ne kroz img2img nad fotografijom. Taj put je iscrpljen i zapisan gore.

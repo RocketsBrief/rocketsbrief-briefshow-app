@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 11. septembar 2026 (KORAK 172, nije objavljen; **v11.14 je gore**).
+Beleška za nastavak rada. Poslednja izmena: 11. septembar 2026 (KORAK 173, nije objavljen; **v11.14 je gore**).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -671,6 +671,21 @@ mogu videti na ekranu**: da prozor ostaje 834 posle promene teme, i hover
 animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 11. septembar 2026, kasno — KORAK 173 (NIJE OBJAVLJENO, commit lokalan)
+
+| | |
+|---|---|
+| **173** | kartica je izlazila PREKO svog dugmeta (položaj se zaključavao pre nego što se sadržaj izmeri) i vukla se na **pola** puta miša (`.local` prostor koji se i sam pomera); oba izmerena na ekranu i potvrđena od klijenta |
+| **173** | dvostruka zaglavlja u Settings i Export kartici uklonjena; „More Themes Coming" uklonjen; Exposure ±3 → **±1,5 EV** |
+
+- **Prvi put je kartica viđena i izmerena na ekranu odavde** — app otvorena, klijent otključao keychain.
+- `run-slideshow-cards-test.py`: **27 provera** (bilo 16), sve nove padaju bez svoje popravke.
+- 26 od 34 testa izlazi sa 0 — nepromenjeno, osam poznatih.
+- ⚠️ Dok klijent radi u editoru, sintetički klik ide **prozoru koji je ispred**. Prvo `activate`, pa klik.
+
+---
+
 
 ### GDE SMO STALI — 11. septembar 2026 — KORAK 172 (NIJE OBJAVLJENO, commit lokalan)
 
@@ -18236,6 +18251,112 @@ verzije je sam postao `C4S Suite v11.14` i ne može da se raziđe sa tagom.
 
 Ugrađeno preuzimanje SD-a i dalje gađa `…/releases/download/v11.0/SD15-Inpainting.aar`.
 Provereno pri ovoj objavi: HTTP **200**.
+
+---
+
+## KORAK 173 — kartica je izlazila PREKO svog dugmeta, i vukla se na pola brzine (11. septembar 2026)
+
+Dve greške u `FloatingCard`, obe iz KORAKA 172, obe **izmerene na ekranu** a ne pročitane iz koda.
+Uz njih dve izmene po klijentovom zahtevu. **Nije objavljeno, commit je lokalan.** Rezervna kopija:
+`ContentView.swift.before_card_drag_coordinate_space`.
+
+### 1. Kartica se otvarala PREKO dugmeta — a trebalo je iznad njega
+
+Klijent, sa dve slike: *„nije dobro kada kliknem na dugme otvara mi ovde … a treba da mi otvori
+iznad dugmeta ovako (znaci modal window da ne prekriva dugmad!)"*.
+
+Izmereno na Settings kartici, prozor 1470×831:
+
+| | |
+|---|---|
+| dugme Settings | y 613–658 |
+| kartica pre popravke | y **305–806** — dugme je bilo ispod nje |
+| kartica posle popravke | y **96–597**, centar x 854 = centar dugmeta |
+
+**Uzrok nije bio račun nego TRENUTAK.** `placeAtButtonIfNeeded()` je pisao položaj u `@State` i
+zaključavao ga (`didPlaceAtButton`). Na prvom frejmu `contentHeight` je 0, pa je kartica tada bila
+**samo svoje zaglavlje, oko 100 px** umesto 501 koliko se slegne. „Iznad dugmeta" je izračunato za
+karticu petine prave visine, zapamćeno — i kad je sadržaj stigao, kartica je narasla oko te iste
+tačke i sela na dugme.
+
+⚠️ **Prvi pokušaj popravke NIJE radio, i vredi znati zašto:** dodat je uslov `contentHeight > 0` i
+poziv iz `onPreferenceChange`. Ali `placeAtButtonIfNeeded()` pozvan odatle i dalje čita **prošlu**
+`cardSize` — visina još nije prošla kroz raspored — pa je zaključao isti pogrešan položaj. Zakrpa
+koja liči na popravku, a meri se isto.
+
+**Rešenje je da se položaj više NE PAMTI.** `basePlacement` je sada *computed* svojstvo: čita se dok
+se kartica crta, dakle uvek sa veličinom koju kartica stvarno ima, i nijedan redosled (sadržaj →
+frame → geometry reader) ne može da ga ostavi sa starim brojem. Vučenje se ne gubi jer je zaseban
+offset koji se **sabira** sa njim:
+
+```swift
+.offset(x: basePlacement.width + dragOffset.width,
+        y: basePlacement.height + dragOffset.height)
+```
+
+### 2. Kartica se vukla na POLA puta miša
+
+Izmereno pre bilo kakve izmene, ukrštanjem dva snimka ekrana (`Tools`-a nema za ovo, pisano ad hoc):
+
+| miš | kartica |
+|---|---|
+| 300 pt desno | **150 pt** |
+| 200 pt desno | 99 pt |
+| 200 pt levo | 100 pt |
+
+Dosledno 50%, i na sporom i na brzom vučenju — dakle nije izgubljen događaj nego **faktor 2**.
+
+**Uzrok:** `DragGesture()` bez argumenta meri u `.local` — u sopstvenom prostoru zaglavlja, a taj
+prostor pomera ista `.offset()` koja pomera karticu. Dok se kartica vuče, pokazivač u tom prostoru
+klizi unazad tačno za ono što je kartica upravo prešla, pa je `translation` = pomeraj miša − pomeraj
+kartice, a iz `offset = dragStart + translation` ispada **pomeraj/2**. Posledica koju klijent oseti:
+kurzor sklizne sa zaglavlja i vučenje stane u pola pokreta.
+
+**Popravka:** `DragGesture(coordinateSpace: .named(SlideshowCards.coordinateSpace))` — imenovani
+prostor stoji na korenu slideshow-a i ne pomera se.
+
+### 3. Dva zaglavlja u istoj kartici (Settings i Export)
+
+`LeftImportPanel` i `RightExportPanel` su svaki ispisivali `PanelTitle` sa istim tekstom koji kartica
+već piše u svom zaglavlju. Oba panela se koriste **samo** unutar svoje kartice (provereno), pa je
+`PanelTitle` uklonjen iz oba — oko 50 px visine koje kartica iznad dugmeta nema da baci.
+
+### 4. „More Themes Coming" uklonjen
+
+Na zahtev: *„ovo mozes da uklonis skroz"* — naslov i obe info-kutije iz `ThemePickerPopover`.
+Struktura `ThemePickerInfoCard` je ostavljena u fajlu (ništa je više ne zove), da povratak bude
+jedan poziv a ne ponovo pisanje.
+
+### 5. Exposure: opseg prepolovljen na ±1,5 EV
+
+*„ako malo pomerim on doda puno expose … da bude barem za 50% manje senzitivnije"*. Ista širina
+trake, upola manji opseg = tačno upola manja promena po pomeraju miša. Sva tri Exposure slajdera
+(glavni, maska, layer) idu sada **−1,5…+1,5**, korak ostaje 0,05 pa strelice ← → rade isto.
+
+⚠️ **Uvoz iz Lightroom-a i dalje kleše na ±3** (`DevelopLightroomPreset.swift`) i to je namerno:
+preset koji traži +2 EV mora i dalje da **izgleda** kao +2 EV. Takva vrednost stoji na kraju trake
+dok se ne pomeri rukom.
+
+### Čime je zaključano
+
+`Tools/run-slideshow-cards-test.py` — sada **27 provera** (bilo 16). Nove tri, sve tri padaju bez
+svoje popravke (provereno vraćanjem koda unazad):
+
+- položaj se **računa** iz visine koju kartica ima, ne zaključava na prvom frejmu;
+- kartica izlazi **iznad** dugmeta (`anchor.minY` minus pola svoje visine);
+- vučenje se meri u **imenovanom** prostoru, ne u kartici koja se pomera;
+- povučena kartica ostaje gde je puštena (base + drag, ne umesto).
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`, app sagrađena, instalirana i restartovana;
+**26 od 34** testa izlazi sa 0 (osam poznatih: četiri traže RAW koga na mašini nema, četiri su alati).
+
+⚠️ **Ovo je prvi put da je nešto iz kartica VIĐENO I IZMERENO na ekranu odavde** — app je otvorena,
+keychain prozor je klijent otključao, a merenje je išlo `screencapture` + `cliclick` + ukrštanje
+snimaka. Klijent je potvrdio: *„super radi.."*.
+
+⚠️ **Naučeno, da se ne ponovi:** dok klijent radi u svom editoru, sintetički klik ode **prozoru koji
+je ispred**, ne app-i. Dva merenja su tako pala u prazno i izgledala kao da popravka ne radi. Pre
+svakog klika: `tell application "C4S Suite" to activate`, pa provera koji je prozor frontmost.
 
 ---
 

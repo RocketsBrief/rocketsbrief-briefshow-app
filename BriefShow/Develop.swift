@@ -13863,7 +13863,14 @@ struct DevelopView: View {
     private var lightSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Light")
-            editSlider("Exposure", value: $settings.exposure, range: -3...3, step: 0.05) { String(format: "%+.2f", $0) }
+            // ⚠️ ±1.5 EV, NOT ±3. Halving the range halves how much a given
+            // drag changes: *„ako malo pomerim on doda puno expose … da bude
+            // barem za 50% manje senzitivnije"*, 11.09. The arrow keys are
+            // untouched (still 0.05 an press) — the complaint was the mouse.
+            // ⚠️ The Lightroom import still clamps to ±3 (DevelopLightroomPreset),
+            // on purpose: a preset that asks for +2 EV must still LOOK like +2 EV.
+            // Such a value sits at the end of the track until it is dragged.
+            editSlider("Exposure", value: $settings.exposure, range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
             editSlider("Contrast", value: $settings.contrast, range: -1...1)
             editSlider("Highlights", value: $settings.highlights, range: -1...1)
             editSlider("Shadows", value: $settings.shadows, range: -1...1)
@@ -14477,7 +14484,7 @@ struct DevelopView: View {
             if adjustment.type != .patch {
                 Divider()
 
-                editSlider("Exposure", key: "mask.exposure", value: localAdjustmentBinding(\.exposure), range: -3...3, step: 0.05) { String(format: "%+.2f", $0) }
+                editSlider("Exposure", key: "mask.exposure", value: localAdjustmentBinding(\.exposure), range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
                 editSlider("Contrast", key: "mask.contrast", value: localAdjustmentBinding(\.contrast), range: -1...1)
                 editSlider("Highlights", key: "mask.highlights", value: localAdjustmentBinding(\.highlights), range: -1...1)
                 editSlider("Shadows", key: "mask.shadows", value: localAdjustmentBinding(\.shadows), range: -1...1)
@@ -15763,7 +15770,7 @@ struct DevelopView: View {
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.muted)
 
-            editSlider("Exposure", key: "layer.exposure", value: layerAdjustmentBinding(\.exposure), range: -3...3, step: 0.05) { String(format: "%+.2f", $0) }
+            editSlider("Exposure", key: "layer.exposure", value: layerAdjustmentBinding(\.exposure), range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
             editSlider("Contrast", key: "layer.contrast", value: layerAdjustmentBinding(\.contrast), range: -1...1)
             editSlider("Highlights", key: "layer.highlights", value: layerAdjustmentBinding(\.highlights), range: -1...1)
             editSlider("Shadows", key: "layer.shadows", value: layerAdjustmentBinding(\.shadows), range: -1...1)

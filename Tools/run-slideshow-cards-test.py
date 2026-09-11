@@ -190,12 +190,33 @@ def main() -> int:
           "the height it is given comes from nowhere")
 
     check("the card knows where its button is",
-          "placeAtButtonIfNeeded" in card and "anchor" in card,
+          "basePlacement" in card and "anchor" in card,
           "it will open in the middle of the window again")
-    place = body_of(source, r"private func placeAtButtonIfNeeded")
-    check("…and places itself only once",
-          "didPlaceAtButton" in place,
-          "it would snap back to the button while being dragged")
+    place = body_of(source, r"private var basePlacement: CGSize")
+
+    # ⚠️ The position must be COMPUTED while the card is drawn, never written
+    # into state on the first frame. On that frame the content has not been
+    # measured, the card is only its header - about 100pt against the 500pt it
+    # settles at - and a position locked then puts the card ON TOP of the very
+    # button it was meant to sit above. Measured 11.09 on Settings, reported
+    # twice by the client: *„ona kartica window sto izadje prekriva dugmad"*.
+    check("…and its place is computed from the size it HAS, not locked once",
+          re.search(r"private var basePlacement: CGSize \{", source) is not None
+          and "didPlaceAtButton" not in source,
+          "the placement is locked on the first frame and the card grows over its button")
+
+    # It opens above the button: the card's bottom edge ends up ABOVE anchor.minY.
+    check("…and it opens ABOVE the button, not over it",
+          "anchor.minY" in place and "cardSize.height / 2" in place,
+          "the card is centred on the button instead of sitting above it")
+
+    # Dragging has to survive that recomputation, which it does by being a
+    # separate offset added to it rather than overwriting it.
+    check("…and a dragged card stays where it was dropped",
+          "basePlacement.width + dragOffset.width" in card
+          and "basePlacement.height + dragOffset.height" in card,
+          "recomputing the placement would drag the card back to its button")
+
     check("…and never off the edge of the window",
           "limitX" in place and "limitY" in place,
           "a card opened at a button near the edge cannot be dragged back")
@@ -205,6 +226,16 @@ def main() -> int:
     check("every action-bar button reports its frame",
           "SlideshowButtonAnchorKey" in bar,
           "no anchors are ever collected, so every card opens centred")
+
+    # ⚠️ The drag has to be measured in a space that does NOT move with the
+    # card. A plain DragGesture() reads .local, the header's own space, which
+    # this card's .offset() drags along with it: the translation then grows at
+    # half speed and the card follows the cursor at half the distance
+    # (measured 11.09: 300 pt of mouse, 150 pt of card).
+    check("the drag is measured in the fixed card space, not the moving card",
+          re.search(r"DragGesture\(coordinateSpace: \.named\(SlideshowCards\.coordinateSpace\)\)", card)
+          is not None,
+          "the card trails the cursor at half speed and the drag dies mid-move")
 
     check("dragging moves a flattened layer, not a live panel",
           ".compositingGroup()" in card,

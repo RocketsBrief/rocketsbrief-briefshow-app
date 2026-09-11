@@ -12427,11 +12427,8 @@ struct LeftImportPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // ⚠️ NO PanelTitle here. This panel is only ever shown inside the
-            // Settings card, and the card already writes "Settings / Timing and
-            // transitions" in its own header. Printed twice it cost the card
-            // about 50pt of height for nothing, which is exactly the height a
-            // card anchored above its button does not have to spare.
+            PanelTitle(title: "Settings", subtitle: "Timing and transitions")
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Slideshow Settings")
                     .font(.custom("Figtree", size: 13).weight(.medium))
@@ -13598,6 +13595,17 @@ struct ThemePickerPopover: View {
                     isPresented = false
                 }
 
+                ThemePickerSectionTitle("More Themes Coming")
+
+                ThemePickerInfoCard(
+                    icon: "hammer.fill",
+                    text: "C4S Suite is still in active development, so new themes can show up at any time. Keep the app updated to unlock them as soon as they're ready."
+                )
+
+                ThemePickerInfoCard(
+                    icon: "bubble.left.and.bubble.right.fill",
+                    text: "Need help or want to report a bug? Click Support above. Sign in or create a free account, then message us directly through the support chat."
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -20302,9 +20310,8 @@ struct RightExportPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // ⚠️ NO PanelTitle here — same reason as LeftImportPanel: this
-            // panel lives only inside the Export card, whose header already
-            // says "Export / Render your video".
+            PanelTitle(title: "Export", subtitle: "Render your video")
+
             VStack(alignment: .leading, spacing: 10) {
                 Text("Video Settings")
                     .font(.custom("Figtree", size: 13).weight(.medium))
@@ -20945,43 +20952,28 @@ struct FloatingCard<Content: View>: View {
     /// Where the client has dragged it to, and where it was when the drag
     /// started. Two values rather than one so a second drag continues from
     /// where the first one left the card instead of jumping back to centre.
-    ///
-    /// ⚠️ THIS IS THE DRAG ALONE, not the card's position. Where the card opens
-    /// is `basePlacement`, computed from the button and the card's real size on
-    /// every pass; the two are added when the card is drawn. They used to be one
-    /// stored number, and that is precisely how the card came to open ON TOP of
-    /// the button it was meant to sit above: the position had to be written into
-    /// state on the first frame, when the content had not been measured yet and
-    /// the card was still only its header - about 100pt against the 500pt it
-    /// settles at - and it stayed locked there. Measured 11.09 on Settings, and
-    /// reported twice by the client with screenshots.
-    @State private var dragOffset: CGSize = .zero
+    @State private var offset: CGSize = .zero
     @State private var dragStart: CGSize = .zero
 
     @State private var contentHeight: CGFloat = 0
     @State private var cardSize: CGSize = .zero
+    @State private var didPlaceAtButton = false
 
-    /// Where this card sits when nobody has dragged it: centred over its own
-    /// button and just above it, and never past the edge of the window.
-    ///
-    /// ⚠️ COMPUTED, NOT STORED. It is read while the card is being drawn, so it
-    /// always uses the size the card actually has - no ordering between the
-    /// content being measured, the frame being applied and the geometry reader
-    /// reporting back can leave it holding last pass's number. Dragging is not
-    /// disturbed: the drag is a separate offset added on top, and this one only
-    /// changes if the card itself changes size.
-    private var basePlacement: CGSize {
-        guard let anchor,
+    /// ⚠️ Placed ONCE, and never again. Re-running this while the client drags
+    /// would pull the card back to its button on every frame; re-running it when
+    /// the content grows would move a card the client had already put somewhere.
+    private func placeAtButtonIfNeeded() {
+        guard !didPlaceAtButton,
+              let anchor,
               cardSize.height > 0,
               containerSize.width > 0, containerSize.height > 0
         else {
-            return .zero
+            return
         }
 
-        // The card is centred in the space, and the offset moves it from there.
+        // The card is centred in the space, and `offset` moves it from there.
         // It opens ABOVE its button, because the bar sits along the bottom of
-        // this window and a card dropped on top of its own button hides it:
-        // *„modal window da ne prekriva dugmad!"*, 11.09.
+        // this window and a card dropped on top of its own button hides it.
         let wantedCentreX = anchor.midX
         let wantedCentreY = anchor.minY - 12 - cardSize.height / 2
 
@@ -20993,7 +20985,9 @@ struct FloatingCard<Content: View>: View {
         let dx = min(max(wantedCentreX - containerSize.width / 2, -limitX), limitX)
         let dy = min(max(wantedCentreY - containerSize.height / 2, -limitY), limitY)
 
-        return CGSize(width: dx, height: dy)
+        offset = CGSize(width: dx, height: dy)
+        dragStart = offset
+        didPlaceAtButton = true
     }
 
     var body: some View {
@@ -21026,24 +21020,13 @@ struct FloatingCard<Content: View>: View {
             // The whole header is the drag handle, so a card is moved the way a
             // window is - by its title, not by hunting for a grip.
             .contentShape(Rectangle())
-            // ⚠️ MEASURED IN THE CARD SPACE, NOT IN THE CARD. A plain
-            // DragGesture() reads .local - the header's own space, and that
-            // space is moved by this card's own .offset(). So while the card
-            // is dragged the pointer's local position slides back by exactly
-            // what the card just moved, the translation grows at half speed,
-            // and the card trails the cursor at HALF the distance. Measured
-            // 11.09 on the Theme card: 300 pt of mouse -> 150 pt of card, and
-            // after a drag or two the cursor had slid off the header and the
-            // next drag did nothing at all. The named space is on the
-            // slideshow root (SlideshowCardSpaceReporter), it does not move,
-            // so the translation is the true one and the card follows 1:1.
             .gesture(
-                DragGesture(coordinateSpace: .named(SlideshowCards.coordinateSpace))
+                DragGesture()
                     .onChanged { value in
-                        dragOffset = CGSize(width: dragStart.width + value.translation.width,
-                                            height: dragStart.height + value.translation.height)
+                        offset = CGSize(width: dragStart.width + value.translation.width,
+                                        height: dragStart.height + value.translation.height)
                     }
-                    .onEnded { _ in dragStart = dragOffset }
+                    .onEnded { _ in dragStart = offset }
             )
 
             // The panels inside are tall by nature; the card scrolls so a long
@@ -21085,18 +21068,20 @@ struct FloatingCard<Content: View>: View {
         .compositingGroup()
         .shadow(color: .black.opacity(0.45), radius: 28, y: 10)
         // Measured AFTER padding and frame, so this is the card the client
-        // actually sees - the size basePlacement needs to keep it on screen and
-        // off its own button.
+        // actually sees - the number placeAtButtonIfNeeded() needs to keep it
+        // on screen.
         .background(
             GeometryReader { geo in
                 Color.clear
-                    .onAppear { cardSize = geo.size }
-                    .onChange(of: geo.size) { newValue in cardSize = newValue }
+                    .onAppear { cardSize = geo.size; placeAtButtonIfNeeded() }
+                    .onChange(of: geo.size) { newValue in
+                        cardSize = newValue
+                        placeAtButtonIfNeeded()
+                    }
             }
         )
-        // Where it opens, plus wherever the client has dragged it since.
-        .offset(x: basePlacement.width + dragOffset.width,
-                y: basePlacement.height + dragOffset.height)
+        .offset(offset)
+        .onAppear { placeAtButtonIfNeeded() }
     }
 }
 

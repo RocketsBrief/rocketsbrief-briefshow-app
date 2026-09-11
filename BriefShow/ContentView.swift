@@ -445,6 +445,27 @@ struct ContentView: View {
     @State private var magazinePageIndex: Int = 0
     @State private var origamiPageIndex: Int = 0
     @State private var photoCropTransforms: [URL: MagazinePhotoCrop] = [:]
+
+    /// Auto-framing: where the faces are in each photo, as a crop.
+    ///
+    /// ⚠️ SEPARATE FROM photoCropTransforms ON PURPOSE. That dictionary is the
+    /// client's own hand-made crops and nothing may write into it but the crop
+    /// editor - merged, not mixed, by `effectivePhotoCrops`, so switching the
+    /// setting off gives every photo its manual crop back untouched.
+    @State private var autoFaceCrops: [URL: MagazinePhotoCrop] = [:]
+
+    /// Which photos the face pass has already looked at, so a preview tick
+    /// never re-runs Vision over a folder that is already done. A photo with
+    /// nobody in it is in here too, with no crop - "looked, found nobody" and
+    /// "not looked at yet" are different states.
+    @State private var autoFaceScannedURLs: Set<URL> = []
+    @State private var isScanningFaces = false
+
+    /// ⚠️ OFF by default, and that is the request: *„da postoji opcija da
+    /// klijent pre toga klikne na to da se auto kadrira"*, 11.09. Nothing
+    /// reframes anybody's photograph until the client asks for it.
+    /// @AppStorage so the answer outlives the window.
+    @AppStorage("briefshow.autoFrameFaces") private var autoFrameFaces: Bool = false
     @State private var manualMagazineLayoutOverrides: [Int: Int] = [:]
     @State private var manualOrigamiLayoutOverrides: [Int: Int] = [:]
     /// Where each action-bar button is, and how big the space the cards float
@@ -827,6 +848,7 @@ struct ContentView: View {
                         musicFadeInSeconds: $musicFadeInSeconds,
                         musicFadeOutSeconds: $musicFadeOutSeconds,
                         shouldLoopPreview: $shouldLoopPreview,
+                        autoFrameFaces: $autoFrameFaces,
                         transitionStyle: $transitionStyle,
                         visualTheme: $visualTheme,
                         hasPhotos: !selectedPhotoURLs.isEmpty,
@@ -873,6 +895,7 @@ struct ContentView: View {
                         ? origamiReviewPagePlans
                         : [],
                     cropTransforms: $photoCropTransforms,
+                    autoFaceCrops: autoFrameFaces ? autoFaceCrops : [:],
                     manualMagazineLayoutOverrides: $manualMagazineLayoutOverrides,
                     manualOrigamiLayoutOverrides: $manualOrigamiLayoutOverrides,
                     onClose: {
@@ -956,6 +979,15 @@ struct ContentView: View {
         .onAppear {
             if selectedPhotoURLs.isEmpty, !initialPhotoURLs.isEmpty {
                 importPhotoURLs(initialPhotoURLs)
+            }
+
+            refreshAutoFaceCrops()
+        }
+        // Switched on with photos already open, the pass has to run now - the
+        // client turned it on to see it happen, not on their next import.
+        .onChange(of: autoFrameFaces) { isOn in
+            if isOn {
+                refreshAutoFaceCrops()
             }
         }
         // ⚠️ Photos for a window that is ALREADY open. Requested 11.09:
@@ -1111,12 +1143,71 @@ struct ContentView: View {
         usesMagazineTheme || usesOrigamiTheme
     }
 
+    /// The crop every part of the app should use: the client's own where they
+    /// made one, the face pass's where they did not and asked for it.
+    ///
+    /// ⚠️ THE MERGE DIRECTION IS THE WHOLE POINT. `photoCropTransforms` wins on
+    /// a key collision, always. Reverse these two and a photo the client
+    /// cropped by hand would be quietly re-framed by a detector.
+    private var effectivePhotoCrops: [URL: MagazinePhotoCrop] {
+        guard autoFrameFaces, !autoFaceCrops.isEmpty else {
+            return photoCropTransforms
+        }
+
+        return autoFaceCrops.merging(photoCropTransforms) { _, manual in manual }
+    }
+
+    /// Looks for faces in the photos that have not been looked at yet, and
+    /// turns what it finds into crops.
+    ///
+    /// ⚠️ ONE PASS AT A TIME (`isScanningFaces`) and one autoreleasepool PER
+    /// PHOTO - the same discipline importPhotoURLs is under, and for the same
+    /// measured reason: a loop on a dispatch queue drains no pool of its own,
+    /// so without it a folder's worth of Vision intermediates are all alive at
+    /// once on a machine with 8 GB.
+    private func refreshAutoFaceCrops() {
+        guard autoFrameFaces, !isScanningFaces else {
+            return
+        }
+
+        let pending = zip(selectedPhotoURLs, previewImages)
+            .filter { !autoFaceScannedURLs.contains($0.0) }
+
+        guard !pending.isEmpty else {
+            return
+        }
+
+        isScanningFaces = true
+
+        DispatchQueue.global(qos: .utility).async {
+            var found: [URL: MagazinePhotoCrop] = [:]
+            var looked: Set<URL> = []
+
+            for (url, image) in pending {
+                autoreleasepool {
+                    if let crop = FaceFraming.crop(for: image) {
+                        found[url] = crop
+                    }
+                    looked.insert(url)
+                }
+            }
+
+            DispatchQueue.main.async {
+                autoFaceCrops.merge(found) { _, new in new }
+                autoFaceScannedURLs.formUnion(looked)
+                isScanningFaces = false
+            }
+        }
+    }
+
     // Lets Kousei preview tiles look up a manual crop for the exact NSImage
     // instance they were handed, without threading photo URLs through the
     // whole preview view hierarchy (previewImages/selectedPhotoURLs already
     // share NSImage instances everywhere they're sliced or passed down).
     private var photoCropByImageIdentity: [ObjectIdentifier: MagazinePhotoCrop] {
-        guard !photoCropTransforms.isEmpty else {
+        let crops = effectivePhotoCrops
+
+        guard !crops.isEmpty else {
             return [:]
         }
 
@@ -1124,7 +1215,7 @@ struct ContentView: View {
 
         for (index, url) in selectedPhotoURLs.enumerated()
         where previewImages.indices.contains(index) {
-            if let crop = photoCropTransforms[url] {
+            if let crop = crops[url] {
                 result[ObjectIdentifier(previewImages[index])] = crop
             }
         }
@@ -3234,8 +3325,10 @@ struct ContentView: View {
         pieces.append(contentsOf: selectedPhotoURLs.map { $0.path })
         pieces.append(contentsOf: selectedMusicURLs.map { $0.path })
 
+        let signatureCrops = effectivePhotoCrops
+
         for url in selectedPhotoURLs {
-            if let crop = photoCropTransforms[url] {
+            if let crop = signatureCrops[url] {
                 pieces.append("\(url.path)=\(crop.focusX)-\(crop.focusY)-\(crop.zoom)")
             }
         }
@@ -3302,7 +3395,7 @@ struct ContentView: View {
         let selectedVisualTheme = visualTheme
         let selectedMagazineImageFade = magazineImageFadeSeconds
         let selectedMagazineImageDelay = magazineImageDelaySeconds
-        let selectedPhotoCropTransforms = photoCropTransforms
+        let selectedPhotoCropTransforms = effectivePhotoCrops
         let selectedManualMagazineLayoutOverrides = manualMagazineLayoutOverrides
         let selectedManualOrigamiLayoutOverrides = manualOrigamiLayoutOverrides
         let selectedOrigamiHoldSeconds = origamiInternalHoldSeconds
@@ -3544,6 +3637,12 @@ struct ContentView: View {
                     preparedPhotoCount = preparedImages.count
                     isPreparingPhotos = false
                     resetPreviewState()
+
+                    // A new folder's photos have never been looked at, and the
+                    // old folder's answers are about photos that are gone.
+                    autoFaceCrops = [:]
+                    autoFaceScannedURLs = []
+                    refreshAutoFaceCrops()
                 }
             }
         }
@@ -3654,7 +3753,7 @@ struct ContentView: View {
         let selectedMagazineImageDelay =
             magazineImageDelaySeconds
         let selectedPhotoCropTransforms =
-            photoCropTransforms
+            effectivePhotoCrops
         let selectedManualMagazineLayoutOverrides =
             manualMagazineLayoutOverrides
         let selectedManualOrigamiLayoutOverrides =
@@ -12417,6 +12516,7 @@ struct LeftImportPanel: View {
     @Binding var musicFadeInSeconds: Double
     @Binding var musicFadeOutSeconds: Double
     @Binding var shouldLoopPreview: Bool
+    @Binding var autoFrameFaces: Bool
     @Binding var transitionStyle: SlideshowTransitionStyle
     @Binding var visualTheme: SlideshowVisualTheme
     let hasPhotos: Bool
@@ -12677,6 +12777,31 @@ struct LeftImportPanel: View {
                     .foregroundColor(AppColors.ink)
                     .padding(.top, 2)
 
+                // ⚠️ OFF until the client switches it on, and that is the whole
+                // request: *„ali da postoji opcija da klijent pre toga klikne
+                // na to da se auto kadrira"*, 11.09. Nobody's photograph is
+                // re-framed by a detector without being asked.
+                Toggle("Auto-Frame Faces", isOn: $autoFrameFaces)
+                    .toggleStyle(.checkbox)
+                    .font(.custom("Figtree", size: 12).weight(.medium))
+                    .foregroundColor(AppColors.ink)
+                    .padding(.top, 2)
+
+                Text(autoFrameFacesHelperText)
+                    .font(.custom("Figtree", size: 11).weight(.regular))
+                    .foregroundColor(AppColors.muted.opacity(0.78))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppColors.panel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18)
+                            .stroke(AppColors.border.opacity(0.85), lineWidth: 2)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .padding(.top, 2)
+
                 Text(timingModeHelperText)
                     .font(.custom("Figtree", size: 11).weight(.regular))
                     .foregroundColor(AppColors.muted.opacity(0.78))
@@ -12703,6 +12828,22 @@ struct LeftImportPanel: View {
         .background(AppColors.panel)
         .clipShape(RoundedRectangle(cornerRadius: 34))
         
+    }
+
+    /// ⚠️ Says out loud which themes it can possibly affect. Kousei and
+    /// Kirigami crop a photo to fill a cell; Single Fade, Single Blink and
+    /// Kanata show the whole picture, so on those this setting changes nothing
+    /// and the client should not be left waiting to see it.
+    private var autoFrameFacesHelperText: String {
+        guard autoFrameFaces else {
+            return "Photos cropped into a Kousei or Kirigami cell are framed from the top. Switch this on to keep the faces in the cell instead."
+        }
+
+        if usesMagazineSettings || usesOrigamiSettings {
+            return "Faces are kept in frame when a photo is cropped to a cell. A photo you cropped yourself keeps your crop."
+        }
+
+        return "On now, but this theme shows every photo whole — it changes nothing until you pick Kousei or Kirigami."
     }
 
     private var usesMagazineSettings: Bool {
@@ -12836,6 +12977,12 @@ struct MagazineCropEditorSheet: View {
     let pageRanges: [Range<Int>]
     let origamiPagePlans: [OrigamiPagePlan]
     @Binding var cropTransforms: [URL: MagazinePhotoCrop]
+    /// What auto-framing made of each photo, read-only. The editor has to OPEN
+    /// on what is actually on screen; without this a face-framed photo would
+    /// show the editor its untouched default and the first nudge would jump.
+    /// The first drag writes into `cropTransforms`, and from then on the
+    /// client's crop is the one that counts.
+    var autoFaceCrops: [URL: MagazinePhotoCrop] = [:]
     @Binding var manualMagazineLayoutOverrides: [Int: Int]
     @Binding var manualOrigamiLayoutOverrides: [Int: Int]
     let onClose: () -> Void
@@ -12892,7 +13039,7 @@ struct MagazineCropEditorSheet: View {
         let url = photoURLs[index]
 
         return Binding(
-            get: { cropTransforms[url] ?? .default },
+            get: { cropTransforms[url] ?? autoFaceCrops[url] ?? .default },
             set: { cropTransforms[url] = $0 }
         )
     }

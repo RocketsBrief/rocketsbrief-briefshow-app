@@ -32,7 +32,25 @@ else:
 
 extracted = src[start:i + 1]
 
+# ⚠️ The Swift file hard-codes the Exposure range it measures. If the app's own
+# range moves and this does not, the test goes on passing while measuring a
+# slider that no longer exists — the "ruler that measures nothing" this project
+# has already been bitten by four times. So check them against each other.
+import re as _re
+_slider = _re.search(r'editSlider\("Exposure", value: \$settings\.exposure, range: (-?[\d.]+)\.\.\.(-?[\d.]+)', src)
+if not _slider:
+    sys.exit("could not find the Exposure slider's range in Develop.swift")
+
 test = (root / "Tools" / "test-slider-drag.swift").read_text(encoding="utf-8")
+_test_range = _re.search(r"let range = (-?[\d.]+)\.\.\.(-?[\d.]+)", test)
+if not _test_range:
+    sys.exit("could not find the range this test measures in test-slider-drag.swift")
+
+if (float(_slider.group(1)), float(_slider.group(2))) != (float(_test_range.group(1)), float(_test_range.group(2))):
+    sys.exit(
+        f"the app's Exposure slider is {_slider.group(1)}...{_slider.group(2)} but this test "
+        f"measures {_test_range.group(1)}...{_test_range.group(2)} — fix test-slider-drag.swift"
+    )
 anchor = "// ---- the real type, pasted in by the extractor at run time ----------------"
 if anchor not in test:
     sys.exit("marker line missing from test-slider-drag.swift")

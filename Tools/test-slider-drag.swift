@@ -22,9 +22,14 @@ func check(_ label: String, _ pass: Bool, _ detail: String = "") {
     if !pass { failures += 1 }
 }
 
-// The Exposure slider as the panel really builds it: ±3 EV, a 16pt thumb, and
-// a track the width of the panel at its default size less the padding.
-let range = -3.0...3.0
+// The Exposure slider as the panel really builds it: ±1.5 EV, a 16pt thumb,
+// and a track the width of the panel at its default size less the padding.
+//
+// ⚠️ ±1.5, NOT ±3, since 11.09: the range was halved so the same drag changes
+// half as much (*„da bude barem za 50% manje senzitivnije"*). If this number
+// and Develop.swift's editSlider("Exposure", range:) ever disagree, this whole
+// file is measuring a slider the app does not have.
+let range = -1.5...1.5
 let thumbSize: CGFloat = 16
 let trackWidth: CGFloat = 286
 let usable = trackWidth - thumbSize
@@ -43,7 +48,7 @@ func drag(from value: Double, pressX: CGFloat, moved: CGFloat) -> Double {
     return EditSliderDrag.value(at: pressX + moved, grab: grab, usable: usable, range: range)
 }
 
-print("exposure slider, ±3 EV over a \(Int(trackWidth))pt track")
+print("exposure slider, ±1.5 EV over a \(Int(trackWidth))pt track")
 
 // 1. Press the thumb, move nothing. This is the whole complaint: the picture
 //    must not change the instant the mouse goes down.
@@ -66,9 +71,9 @@ check("a 3pt nudge is a small change", abs(nudge) < 0.08,
 
 // 4. The travel is honest: moving the thumb a third of the track moves a
 //    third of the range, wherever the drag started from.
-// A third of the TRACK is a third of the SPAN — 6 EV / 3 = 2 EV. Written as
+// A third of the TRACK is a third of the SPAN — 3 EV / 3 = 1 EV. Written as
 // span/6 at first, which is a third of one HALF of the range; the harness
-// caught the arithmetic, not the code, and the code's +2.000 was right.
+// caught the arithmetic, not the code, and the code's answer was right.
 let third = drag(from: 0, pressX: centre, moved: usable / 3)
 check("a third of the track is a third of the range",
       abs(third - span / 3) < 0.01, String(format: "%+.3f EV", third))
@@ -88,7 +93,11 @@ check("dragging far past the end stops at the maximum", hardRight == range.upper
 //    for, and it is the one jump that is asked for rather than suffered.
 let farPress = thumbX(0) + thumbSize / 2 + 60
 let jumped = drag(from: 0, pressX: farPress, moved: 0)
-check("a press 60pt away on the bare track does jump there", jumped > 1.0,
+// ⚠️ Measured against the SPAN, not against a number of EV. 60pt is 22% of
+// this track wherever the range ends up, so "it jumped" stays the same
+// statement after the range was halved on 11.09; written as `> 1.0 EV` it
+// started failing for the right behaviour.
+check("a press 60pt away on the bare track does jump there", jumped > span * 0.15,
       String(format: "%+.2f EV — this is the OLD behaviour, kept only for a deliberate press", jumped))
 
 // 8. …and after that jump the drag is relative, not absolute again.

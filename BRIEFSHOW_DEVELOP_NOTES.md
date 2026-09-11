@@ -604,6 +604,72 @@ Odgovor je uvek: **ne ubacuj**. Ako nešto izgleda kao da treba da ide uz app a
 lično je — pitaj klijenta pre nego što uđe u build.
 
 
+## 🟢 ISPRAVKA — 11. septembar 2026: 4 testa ne padaju zbog DOZVOLE, nego zato što fotografije NEMA
+
+Od 8.09. na tri mesta u ovom dokumentu stoji da četiri testa ne rade jer
+*„macOS ovoj sesiji ne da da čita `~/Downloads`"* (`Operation not permitted`).
+**To više nije tačno, i danas je izmereno.**
+
+```
+head -c 8 "/Users/esti/Downloads/BUZZ Logo.png"   ->  .PNG....   rc=0
+ls ~/Downloads                                    ->  ceo spisak, bez greške
+```
+
+`~/Downloads` se **čita normalno**. Pravi razlog je drugi i mnogo jednostavniji:
+
+| provera | rezultat |
+|---|---|
+| `~/Downloads/Summer Walker and Original/` | **ne postoji više** |
+| `C4S_9331` bilo gde u Downloads/Desktop | **nema ga** |
+| **ijedan `.NEF` na mašini** (`~/Desktop ~/Pictures ~/Documents ~/Downloads`) | **0 fajlova** |
+
+Dakle testovi ne mere ništa zato što **na mašini nema nijedne RAW fotografije.**
+
+⚠️ **Ovo je isti obrazac koji dokument već beleži četiri puta** — „lenjir koji
+ništa ne meri ne prijavljuje nijedan pad". Ovde je varijanta gora: lenjir je
+**tačno prijavljivao** da nema fotografije, a zapis je tri dana nosio pogrešan
+uzrok, pa je izgledalo kao prepreka sistema umesto kao fajl koji fali.
+
+**Šta to znači u praksi:** nije potreban nikakav zahvat oko dozvola. Testovi
+primaju putanju kao prvi argument:
+
+```bash
+python3 Tools/run-preview-decode-test.py <putanja/do/fotke.NEF>
+python3 Tools/run-placeholder-thumbnail-test.py <putanja/do/fotke.NEF>
+python3 Tools/run-thumbnail-context-pool-test.py <putanja/do/fotke.NEF>
+python3 Tools/run-thumbnail-parity-test.py <putanja/do/fotke.NEF> [preset.xmp] [size]
+```
+
+Dovoljno je da bilo koji RAW stoji negde na disku. **To je i dalje isti fajl koji
+se čeka od 5.09** (neutralan izvoz `C4S_9331.NEF`-a) — samo sada znamo da ga ne
+blokira sistem, nego ga prosto nema.
+
+### Stanje testova danas
+
+**25 prolazi, 8 ne izlazi sa 0, od ukupno 33.** Od tih 8:
+
+| fajl | zašto |
+|---|---|
+| `run-preview-decode-test.py`, `run-placeholder-thumbnail-test.py`, `run-thumbnail-context-pool-test.py`, `run-thumbnail-parity-test.py` | **nema RAW fotografije** — v. gore |
+| `run-inpaint-sweep.py` | alat, traži argumente (`photo ux uy`), nije test |
+| `run-lightroom-calibration.py`, `run-region-compare.py`, `run-tone-search.py` | alati za merenje, traže ulaz |
+
+`run-slideshow-layout-test.py` **prolazi u celini** — uključujući i provere iz
+KORAKA 163/164 (prozor se meri prema ekranu, kolona prati prozor, nema
+`fixedSize` na korenu).
+
+### Instalirana app je bila STARA — sređeno
+
+`/Applications/C4S Suite.app` je bila **v11.7**, dok je objavljeno v11.14 a radna
+kopija na 11.14. Sagrađeno iz izvora (`xcodebuild … Release` → `BUILD SUCCEEDED`),
+instalirano i pokrenuto: sada je **11.14 / build 30**.
+
+⚠️ **GUI provera i dalje stoji na istom mestu.** Na startu app traži lozinku za
+keychain (`com.rocketsbrief.briefshow.session`), i **taj prozor se odavde ne
+dira** — to je klijentova lozinka. Dok se ona ne unese, **KORAK 163/164 se ne
+mogu videti na ekranu**: da prozor ostaje 834 posle promene teme, i hover
+animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
+
 ## TL;DR — gde smo stali
 
 ### GDE SMO STALI — 9. septembar 2026 — v11.12 OBJAVLJENA, univerzalna
@@ -717,6 +783,8 @@ koji je model.** Zato je prag upozorenja spušten na 600.
   iz keychain-a, a taj prozor agent ne dira.
 - **Testovi: 25 od 29** izlazi sa 0. Preostala 4 nisu pala — traže fotografiju iz
   `~/Downloads`, koju macOS ovoj sesiji ne da da čita.
+  ⚠️ **OPOVRGNUTO 11.09** — Downloads se čita; fotografije prosto nema na mašini.
+  v. „ISPRAVKA — 11. septembar 2026" na vrhu.
 - **Neutralan izvoz `C4S_9331.NEF`-a** iz Lightroom-a se i dalje čeka od 5.09.
 - **`v11.0` se NE SME brisati.**
 - Intel nije potvrđen na pravoj mašini od v11.0 (KORAK 106).
@@ -760,6 +828,7 @@ prećutno prestane da postoji", ne „lenjir pogrešno padne".
 4. **Testovi:** 25 od 29 izlazi sa 0. Preostala 4 nisu pala — traže fotografiju
    iz `~/Downloads`, koju macOS **ne da da čita** iz ove sesije
    (`Operation not permitted`, i sa isključenim sandboxom).
+   ⚠️ **OPOVRGNUTO 11.09** — v. „ISPRAVKA — 11. septembar 2026" na vrhu.
 5. **I dalje se čeka neutralan izvoz `C4S_9331.NEF`-a iz Lightroom-a.** Traženo
    5.09; nije stiglo do 8.09. Kalibracija stoji.
 6. **`v11.0` se NE SME brisati** — provereno 8.09.

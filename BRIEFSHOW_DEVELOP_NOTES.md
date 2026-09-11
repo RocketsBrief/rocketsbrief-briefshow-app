@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 11. septembar 2026 (KORAK 173, nije objavljen; **v11.14 je gore**).
+Beleška za nastavak rada. Poslednja izmena: 11. septembar 2026 (KORAK 175; **v11.17 je gore**).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -672,7 +672,22 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
 
-### GDE SMO STALI — 11. septembar 2026, kasno — KORAK 173 (NIJE OBJAVLJENO, commit lokalan)
+### GDE SMO STALI — 11. septembar 2026 — v11.17 OBJAVLJENA, univerzalna
+
+| | |
+|---|---|
+| **174** | auto-kadriranje po licima (Vision), **ugašeno dok klijent ne uključi**; ručni crop uvek pobeđuje |
+| **175** | **v11.17** objavljena: univerzalan paket (arm64 + x86_64), min macOS 13.0, LaMa unutra, SD dugmetom |
+
+- Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.030.064 bajta, `codesign` ok.
+- Update lanac proveren pravim poređenjem: **svaka** verzija od 11.7 do 11.14 dobija karticu za 11.17.
+- **`v11.0` se i dalje NE SME brisati** — dugme za SD u app-i ga gađa (HTTP 200 pri objavi).
+- 27 od 35 testova izlazi sa 0; osam poznatih (četiri traže RAW koga nema, četiri su alati).
+
+---
+
+
+### GDE SMO STALI — 11. septembar 2026, kasno — KORAK 173 (OBJAVLJENO u v11.17)
 
 | | |
 |---|---|
@@ -18198,6 +18213,134 @@ jedinicama širine ekrana.
 liči na ono što je klijent gledao.
 
 Rezervna kopija pre izmene: `ContentView.swift.before_kanata_two_equal_large_photos`.
+
+---
+
+## KORAK 175 — RELEASE v11.17: auto-kadriranje isporučeno, jedan paket (11. septembar 2026)
+
+Isti zahtev i isti PS kao u KORACIMA 152 i 171: *„zapakuj oba AI modela i LaMa i
+SD"*, pa *„ne moraš da uploaduješ 2gb jer već imaju u appu dugme za AI SD
+download"*. Dakle opet **jedan paket**, LaMa unutra, SD dugmetom:
+`python3 Tools/make-release.py 11.17 --small-only`.
+
+`MARKETING_VERSION` 11.14 → **11.17**, `CURRENT_PROJECT_VERSION` 30 → **31**.
+
+### Provere na PAKETU — i to na SKINUTOM, ne na sagrađenom
+
+| provera | rezultat |
+|---|---|
+| `lipo -archs` | **x86_64 arm64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.17 / 31** |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` |
+| `LaMa.mlmodelc` | da |
+| `SD15-Inpainting` | ne, namerno |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| zip lokalno / skinuti `content-length` | **115.030.064 / 115.030.064** |
+| SHA-256 lokalno vs skinuto | **isti** — `6c80f58b…56742dc` |
+| direktan link | HTTP **200** |
+| `releases/latest` | **v11.17**, draft ne, prerelease ne, jedan asset |
+| `v11.0/SD15-Inpainting.aar` (dugme u app-u) | HTTP **200** |
+
+- stranica: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.17`
+- direktno: `…/releases/download/v11.17/C4S-Suite-11.17.zip`
+- tag `v11.17` → `4062ba2` (grana `briefshow-develop`, pushovano)
+
+### Update lanac — proveren pozivom pravog poređenja, ne na oko
+
+`RocketsBriefAccount.swift:423`, `compare(options: .numeric)`, za svaku verziju
+koja je ikad bila napolju:
+
+| instalirano | 11.7 | 11.9 | 11.10 | 11.11 | 11.12 | 11.14 |
+|---|---|---|---|---|---|---|
+| nudi 11.17? | da | da | da | da | da | da |
+
+17 > 14 i 17 > 12 pod `.numeric`, pa nijedan postojeći klijent ne ostaje bez
+kartice za update. (Zamka iz KORAKA 171 — `11.4` bi bilo **starije** od `11.11`.)
+
+### Intel i label — opet provereni, opet nije trebalo menjati
+
+- **Intel:** `DevelopSDInpaint.swift:966`, `#else` grana → `computeUnits = .all`
+  (nema Neural Engine-a, pa Core ML deli posao između diskretne kartice i
+  jezgara), VAE prolazi `.cpuAndGPU`. Pročitano pre objave.
+- **Label sa verzijom:** postoji od KORAKA 108/74 na četiri mesta i čita
+  `CFBundleShortVersionString` **iz bundle-a**, pa se dizanjem verzije sam
+  pretvorio u `v11.17` i ne može da se raziđe sa tagom.
+
+### ⚠️ `v11.0` se NE SME brisati
+
+Ugrađeno preuzimanje SD-a i dalje gađa `…/releases/download/v11.0/SD15-Inpainting.aar`.
+Provereno pri ovoj objavi: HTTP **200**.
+
+---
+
+## KORAK 174 — auto-kadriranje po licima, ugašeno dok klijent ne kaže (11. septembar 2026)
+
+Klijent: *„hajde da uradimo auto-kadriranje po licima ali da postoji opcija da
+klijent pre toga klikne na to da se auto kadrira … recimo u settingsu"*.
+
+Kousei i Kirigami seku svaku fotografiju da popuni 4:3/3:4 ćeliju, a taj rez je
+bio slep: fiksnih 15% odozgo (`MagazinePhotoCrop` podrazumevano `focusY = 0.15`).
+Gde god subjekat nije tamo gde ta pretpostavka misli, seče se glava.
+
+### Gde je ušlo — i zašto baš tu
+
+**Ništa novo ne odlučuje kako se fotografija crta.** `FaceFraming` samo računa
+`focusX/focusY` za crop koji već postoji i koji već vode i pregled i export.
+Jedan šav, bez druge grane koja bi mogla da se raziđe sa prvom.
+
+### Tri obećanja, i sva tri su test a ne namera
+
+1. **Ugašeno dok se ne traži.** `@AppStorage("briefshow.autoFrameFaces")` je
+   `false`, prekidač je u Settings kartici. Podrazumevano `true` nije manja
+   verzija ovog zahteva nego drugi zahtev.
+2. **Ručni crop UVEK pobeđuje.** Dva rečnika se **spajaju, ne mešaju**
+   (`autoFaceCrops.merging(photoCropTransforms) { _, manual in manual }`), pa
+   gašenje prekidača vraća svaki ručni rez netaknut. Obrnut smer spajanja je
+   jedina stvar koju ova funkcija ne sme da uradi — i test pada ako se obrne.
+3. **Stiže i do pregleda i do export-a**, i ulazi u potpis pregleda, pa
+   uključivanje prekidača ponovo renderuje umesto da ostavi stari kadar.
+
+### Geometrija je odvojena od Vision-a, i tu je bila mina
+
+⚠️ **Vision-ovi pravougaonici imaju koordinatni početak DOLE-levo, a focus point
+GORE-levo.** Ako se taj obrt promaši, svaka uspravna fotografija se kadrira na
+grudi — tiho, na svakoj slici. Zato je matematika čista funkcija i testira se
+protiv **pravog** tipa (isti trik kao `EditSliderDrag`): izvučena iz
+`FaceFraming.swift` i puštena kroz `swift`. Provereno obrtanjem znaka unazad —
+test odmah pada na oba kraja (glava gore dala `focusY 0.875` umesto `0.215`).
+
+| odluka | vrednost | zašto |
+|---|---|---|
+| `minRelativeFaceHeight` | **0,4** | stranac dvadeset metara iza para ne sme da vuče kadar; osoba pored njih sme |
+| `headroomBias` | **0,25** visine lica | tačka koja se centrira sedi ISPOD lica, što lice diže iznad sredine ćelije |
+| `zoom` | **1, uvek** | odlučivanje GDE se gleda je kadriranje; skraćivanje bliže je izmena tuđe fotografije |
+| `detectionMaxSide` | **1024 px** | lice se nalazi po obliku, a 5176 px košta memoriju koje na 8 GB nema |
+
+### Prolaz kroz folder
+
+Van glavne niti, **jedan `autoreleasepool` po fotografiji** — ista disciplina
+pod kojom je `importPhotoURLs` i iz istog merenog razloga (8.09: 305 MB → 5,1 GB
+za dve sekunde) — i nikad dvaput preko iste fotografije (`autoFaceScannedURLs`,
+gde „gledano, nema nikoga" i „još nije gledano" nisu isto stanje).
+
+### Usput: lenjir koji je prestao da meri
+
+`Tools/test-slider-drag.swift` je merio Exposure od **±3 EV**, a KORAK 173 ga je
+prepolovio na ±1,5 — test je i dalje prolazio, mereći slajder koji app nema.
+Sada `run-slider-drag-test.py` **čita opseg iz `Develop.swift`** i odbija da se
+pokrene ako se ta dva broja raziđu. Ista porodica greške koju ovaj dokument već
+beleži četiri puta.
+
+### Čime je zaključano
+
+`Tools/run-face-framing-test.py` — 13 provera geometrije nad pravim tipom i 11
+provera veze (prekidač ugašen, ručni crop pobeđuje, stiže i do pregleda i do
+export-a, prolaz je van glavne niti i sa poolom). **Provereno da pada bez
+popravke**, oba puta: obrnut koordinatni sistem i obrnut smer spajanja.
+
+**Stanje:** 27 od 35 testova izlazi sa 0; osam poznatih je nepromenjeno.
 
 ---
 

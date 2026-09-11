@@ -447,12 +447,6 @@ struct ContentView: View {
     @State private var photoCropTransforms: [URL: MagazinePhotoCrop] = [:]
     @State private var manualMagazineLayoutOverrides: [Int: Int] = [:]
     @State private var manualOrigamiLayoutOverrides: [Int: Int] = [:]
-    /// Where each action-bar button is, and how big the space the cards float
-    /// in is. Both feed FloatingCard so it opens at its button rather than in
-    /// the middle of the window.
-    @State private var cardButtonAnchors: [String: CGRect] = [:]
-    @State private var cardSpaceSize: CGSize = .zero
-
     @State private var isCropEditorPresented: Bool = false
     @State private var isMusicSheetPresented = false
     @State private var isThemeSheetPresented = false
@@ -777,9 +771,7 @@ struct ContentView: View {
                 FloatingCard(title: "Music Playlist",
                              subtitle: "Up to 3 tracks • repeats until the slideshow ends",
                              width: 460,
-                             isPresented: $isMusicSheetPresented,
-                             anchor: cardButtonAnchors["Music"],
-                             containerSize: cardSpaceSize) {
+                             isPresented: $isMusicSheetPresented) {
                     MusicPlaylistSheet(
                         selectedMusicURLs: selectedMusicURLs,
                         onAddMusic: { slotIndex in openMusicPicker(for: slotIndex) }
@@ -791,9 +783,7 @@ struct ContentView: View {
                 FloatingCard(title: "Choose Theme",
                              subtitle: "Pick the slideshow style.",
                              width: 520,
-                             isPresented: $isThemeSheetPresented,
-                             anchor: cardButtonAnchors["Theme"],
-                             containerSize: cardSpaceSize) {
+                             isPresented: $isThemeSheetPresented) {
                     ThemePickerPopover(
                         selectedTheme: $visualTheme,
                         transitionStyle: $transitionStyle,
@@ -813,9 +803,7 @@ struct ContentView: View {
                 FloatingCard(title: "Settings",
                              subtitle: "Timing and transitions",
                              width: 460,
-                             isPresented: $isSettingsSheetPresented,
-                             anchor: cardButtonAnchors["Settings"],
-                             containerSize: cardSpaceSize) {
+                             isPresented: $isSettingsSheetPresented) {
                     LeftImportPanel(
                         timingMode: $timingMode,
                         secondsPerPhoto: $secondsPerPhoto,
@@ -842,9 +830,7 @@ struct ContentView: View {
                 FloatingCard(title: "Export",
                              subtitle: "Render your video",
                              width: 460,
-                             isPresented: $isExportSheetPresented,
-                             anchor: cardButtonAnchors["Export"],
-                             containerSize: cardSpaceSize) {
+                             isPresented: $isExportSheetPresented) {
                     RightExportPanel(
                         selectedResolution: $selectedExportResolution,
                         selectedFormat: $selectedExportFormat,
@@ -946,13 +932,6 @@ struct ContentView: View {
         // control) on our custom Dark theme's near-black background. This
         // tells SwiftUI which appearance to hand those native controls.
         .preferredColorScheme(themeManager.current == .dark ? .dark : .light)
-        // ⚠️ ONE modifier, not four. Written out inline these four lines tipped
-        // this body over the type-checker's limit ("unable to type-check this
-        // expression in reasonable time") - the root of this view is already
-        // very large. A modifier is checked on its own and costs the body one
-        // step.
-        .modifier(SlideshowCardSpaceReporter(size: $cardSpaceSize,
-                                             anchors: $cardButtonAnchors))
         .onAppear {
             if selectedPhotoURLs.isEmpty, !initialPhotoURLs.isEmpty {
                 importPhotoURLs(initialPhotoURLs)
@@ -20830,93 +20809,11 @@ struct SlideshowActionBar: View {
         }
         .buttonStyle(PlainButtonStyle())
         .disabled(!enabled)
-        // Where this button is, for the card it opens. A background reader adds
-        // nothing to the layout and cannot change the row.
-        .background(
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: SlideshowButtonAnchorKey.self,
-                    value: [title: geo.frame(in: .named(SlideshowCards.coordinateSpace))]
-                )
-            }
-        )
         .onHover { hovering in
             withAnimation(.linear(duration: 0.10)) {
                 hovered = hovering ? title : (hovered == title ? nil : hovered)
             }
         }
-    }
-}
-
-/// Where each action-bar button sits, in the cards' own coordinate space, so a
-/// card can open at its button instead of in the middle of the window.
-/// Requested 11.09: *„da se otvori uvek gde je dugme"*. Keyed by title - the bar
-/// is one row and no title appears twice in it.
-struct SlideshowButtonAnchorKey: PreferenceKey {
-    static var defaultValue: [String: CGRect] = [:]
-
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue()) { _, new in new }
-    }
-}
-
-/// The space the cards float in. Read from a background reader rather than by
-/// wrapping the root in a GeometryReader: this window's size was fought over
-/// three times (see BriefShowWindowController.open) and a greedy, top-leading
-/// GeometryReader at the root is exactly the kind of thing that reopened it.
-/// A .background never changes the layout it sits behind.
-struct SlideshowCardSpaceKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
-
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        let next = nextValue()
-        if next != .zero { value = next }
-    }
-}
-
-/// How tall a card's content actually is, so the card can be that tall.
-/// Constants shared by the cards and the bar that opens them.
-///
-/// ⚠️ They live here and not on FloatingCard because that is generic over its
-/// content, and Swift does not allow a static stored property on a generic
-/// type. Putting them back there is a compile error, not a style question.
-/// Reports the card space's size and every action-bar button's frame, and names
-/// the coordinate space both are measured in.
-struct SlideshowCardSpaceReporter: ViewModifier {
-    @Binding var size: CGSize
-    @Binding var anchors: [String: CGRect]
-
-    func body(content: Content) -> some View {
-        content
-            .coordinateSpace(name: SlideshowCards.coordinateSpace)
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(key: SlideshowCardSpaceKey.self, value: geo.size)
-                }
-            )
-            .onPreferenceChange(SlideshowCardSpaceKey.self) { newSize in
-                size = newSize
-            }
-            .onPreferenceChange(SlideshowButtonAnchorKey.self) { newAnchors in
-                anchors = newAnchors
-            }
-    }
-}
-
-enum SlideshowCards {
-    /// The name every card and every action-bar button measures itself in.
-    static let coordinateSpace = "slideshowCards"
-
-    /// The tallest a card may get. Past this the scroller inside earns its keep;
-    /// under it there is nothing to scroll and the card is as tall as it shows.
-    static let maxContentHeight: CGFloat = 560
-}
-
-struct CardContentHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 
@@ -20936,17 +20833,6 @@ struct FloatingCard<Content: View>: View {
     let subtitle: String
     let width: CGFloat
     @Binding var isPresented: Bool
-
-    /// Where the button that opened this card is, and how big the space is.
-    /// Both may be empty on the very first frame - the card simply stays
-    /// centred until they arrive, which is where it used to stay for good.
-    ///
-    /// ⚠️ Declared BEFORE `content`. The memberwise initialiser follows
-    /// declaration order, and a trailing closure has to be the last argument -
-    /// put these after `content` and every call site stops compiling.
-    var anchor: CGRect? = nil
-    var containerSize: CGSize = .zero
-
     @ViewBuilder let content: () -> Content
 
     /// Where the client has dragged it to, and where it was when the drag
@@ -20954,41 +20840,6 @@ struct FloatingCard<Content: View>: View {
     /// where the first one left the card instead of jumping back to centre.
     @State private var offset: CGSize = .zero
     @State private var dragStart: CGSize = .zero
-
-    @State private var contentHeight: CGFloat = 0
-    @State private var cardSize: CGSize = .zero
-    @State private var didPlaceAtButton = false
-
-    /// ⚠️ Placed ONCE, and never again. Re-running this while the client drags
-    /// would pull the card back to its button on every frame; re-running it when
-    /// the content grows would move a card the client had already put somewhere.
-    private func placeAtButtonIfNeeded() {
-        guard !didPlaceAtButton,
-              let anchor,
-              cardSize.height > 0,
-              containerSize.width > 0, containerSize.height > 0
-        else {
-            return
-        }
-
-        // The card is centred in the space, and `offset` moves it from there.
-        // It opens ABOVE its button, because the bar sits along the bottom of
-        // this window and a card dropped on top of its own button hides it.
-        let wantedCentreX = anchor.midX
-        let wantedCentreY = anchor.minY - 12 - cardSize.height / 2
-
-        // ...but never so far that it leaves the window. A card half off the
-        // screen cannot be dragged back by a header that is off it too.
-        let limitX = max(0, containerSize.width / 2 - cardSize.width / 2 - 12)
-        let limitY = max(0, containerSize.height / 2 - cardSize.height / 2 - 12)
-
-        let dx = min(max(wantedCentreX - containerSize.width / 2, -limitX), limitX)
-        let dy = min(max(wantedCentreY - containerSize.height / 2, -limitY), limitY)
-
-        offset = CGSize(width: dx, height: dy)
-        dragStart = offset
-        didPlaceAtButton = true
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -21031,57 +20882,17 @@ struct FloatingCard<Content: View>: View {
 
             // The panels inside are tall by nature; the card scrolls so a long
             // one is reachable without the WINDOW having to be tall enough.
-            //
-            // ⚠️ A ScrollView IS GREEDY. Offered 620pt it takes 620pt, whatever
-            // is inside it - so the Music card, three rows and about 200pt of
-            // content, stood 620pt tall with empty panel under the last track.
-            // Reported 11.09 with a screenshot: *„kartica ne mora da bude
-            // ovoliko velika nego onoliko koliko ima sta da se pokaze u njoj"*.
-            //
-            // The cap did not cause that and is not what was removed: it is
-            // still here, as a ceiling rather than a height. The content is
-            // measured and the scroller is given exactly that, up to the cap.
             ScrollView(.vertical) {
                 content()
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(key: CardContentHeightKey.self,
-                                                   value: geo.size.height)
-                        }
-                    )
             }
-            .frame(height: min(max(contentHeight, 1), SlideshowCards.maxContentHeight))
         }
         .padding(18)
         .frame(width: width)
-        .onPreferenceChange(CardContentHeightKey.self) { height in
-            contentHeight = height
-        }
+        .frame(maxHeight: 620)
         .background(AppColors.panel)
         .clipShape(RoundedRectangle(cornerRadius: 20))
-        // ⚠️ FLATTENED BEFORE THE SHADOW, and that is about the drag, not the
-        // look. *„da moze da se pomera draguje smoothly ne da secka"*. Without
-        // this the shadow is recomputed from the card's whole live content -
-        // panel, text, rows, every one of them - on every frame the card moves.
-        // compositingGroup renders the card once into one layer and casts the
-        // shadow from that, so dragging moves a finished picture.
-        .compositingGroup()
         .shadow(color: .black.opacity(0.45), radius: 28, y: 10)
-        // Measured AFTER padding and frame, so this is the card the client
-        // actually sees - the number placeAtButtonIfNeeded() needs to keep it
-        // on screen.
-        .background(
-            GeometryReader { geo in
-                Color.clear
-                    .onAppear { cardSize = geo.size; placeAtButtonIfNeeded() }
-                    .onChange(of: geo.size) { newValue in
-                        cardSize = newValue
-                        placeAtButtonIfNeeded()
-                    }
-            }
-        )
         .offset(offset)
-        .onAppear { placeAtButtonIfNeeded() }
     }
 }
 

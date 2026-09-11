@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 9. septembar 2026 (KORAK 170-171; **v11.14 je gore**).
+Beleška za nastavak rada. Poslednja izmena: 11. septembar 2026 (KORAK 172, nije objavljen; **v11.14 je gore**).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -671,6 +671,21 @@ mogu videti na ekranu**: da prozor ostaje 834 posle promene teme, i hover
 animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 11. septembar 2026 — KORAK 172 (NIJE OBJAVLJENO, commit lokalan)
+
+| | |
+|---|---|
+| **172** | folder koji gledaš pobeđuje pri kliku na BriefShow; jedna kartica u isto vreme; kartica visine svog sadržaja; otvara se kod dugmeta; `compositingGroup` za glatko vučenje |
+
+- **26 od 34** testa izlazi sa 0; osam poznatih (četiri traže RAW koga nema, četiri su alati).
+- **Nije viđeno na ekranu odavde** — keychain prozor. Glatkoća vučenja je jedina stavka koja se
+  **ne može** dokazati čitanjem koda.
+- Ispravljen zapis star tri dana: `~/Downloads` se čita, fotografije prosto nema.
+- Instalirana app je bila **v11.7** dok je objavljeno 11.14 — sagrađena i instalirana 11.14/30.
+
+---
+
 
 ### GDE SMO STALI — 9. septembar 2026 — v11.12 OBJAVLJENA, univerzalna
 
@@ -18221,3 +18236,105 @@ verzije je sam postao `C4S Suite v11.14` i ne može da se raziđe sa tagom.
 
 Ugrađeno preuzimanje SD-a i dalje gađa `…/releases/download/v11.0/SD15-Inpainting.aar`.
 Provereno pri ovoj objavi: HTTP **200**.
+
+---
+
+## KORAK 172 — Slideshow: folder koji gleda pobeđuje, jedna kartica u isto vreme, i kartica veličine svog sadržaja (11. septembar 2026)
+
+Četiri zahteva iz jedne poruke, svi u `ContentView.swift`. **Nije objavljeno, nema push-a**
+(commit je lokalan). Rezervna kopija pre izmena: `ContentView.swift.before_one_card_and_folder_photos`
+i `ContentView.swift.before_card_size_anchor_smooth`.
+
+### 1. „kada sam u folderu gde su slike … mora UVEK da loaduje te slike"
+
+Uzrok je stajao **zapisan u samom kodu**, kao svesna odluka:
+
+> *„initialPhotoURLs is only used the first time this opens a fresh window — if a BriefShow window
+> is already open, this just refocuses it rather than overwriting whatever session is already in
+> progress there."*
+
+Dakle drugi put klik samo vrati fokus starom prozoru sa starim fotografijama. Klijent traži
+suprotno, pa **folder u kome stoji sada pobeđuje.**
+
+Prozor se **ne gradi ponovo** — izgubio bi poziciju i veličinu — nego se URL-ovi predaju pogledu
+koji već radi, kroz `.briefShowLoadPhotos`, i uvode se istim putem (`importPhotoURLs`) kojim ih
+uvodi i svež prozor. **Ništa novo ne odlučuje šta je fotografija.**
+
+⚠️ **To znači da se slideshow u izradi ZAMENJUJE** kad se BriefShow pritisne iz **drugog** foldera.
+Isti folder se filtrira na prijemnoj strani, pa uobičajen ponovljen klik ne košta ništa — poređenje
+ide kroz `slideshowPhotoOrder()`, zajedničko pravilo koje koriste **obe** strane, da se ne raziđu.
+
+### 2. „cim kliknem na settings da se zatvori theme sto sam otvorio"
+
+Svaka kartica je imala svoj `Bool` i ništa ih nije usklađivalo, pa je druga otvarala **preko** prve.
+Sada svaki otvarač ide kroz `showOnlyCard(...)`, koja zatvori sve pa otvori traženu. Bez argumenata
+zatvara sve — to traže Photos picker i full-screen preview.
+
+⚠️ **Kako se ovo vraća unazad:** ne tako što neko obriše `showOnlyCard`, nego tako što **šesta
+kartica** dobije svoj `isNestoPresented = true` pored pet koje idu kroz levak. Četiri se ponašaju,
+jedna ne, i samo ta kombinacija izgleda pokvareno. Zato test ne proverava „postoji li levak" nego
+**„da nijedan otvarač u traci ne postavlja zastavicu direktno"**.
+
+### 3. „kartica ne mora da bude ovoliko velika nego onoliko koliko ima sta da se pokaze"
+
+```
+.frame(maxHeight: 620)   +   ScrollView(.vertical)
+```
+
+**`ScrollView` je pohlepan po visini.** Ponuđeno mu 620 — uzme 620, šta god da je unutra. Zato je
+Music kartica, tri reda i oko 200 px sadržaja, stajala 620 px visoka sa praznim panelom ispod
+poslednjeg tracka. Prijavljeno sa snimkom ekrana.
+
+**Granica nije bila kriva i nije uklonjena** — sada je *plafon*, ne visina. Sadržaj se meri
+(`CardContentHeightKey`) i skroler dobija tačno toliko, do plafona od 560. Ispod plafona nema šta da
+se skroluje i kartica je visoka koliko pokazuje; iznad njega plafon pobeđuje i skrolovanje zbog koga
+i postoji i dalje radi.
+
+### 4. „da se otovri uvek gde je dugme" i „da moze da se pomera smoothly ne da secka"
+
+**Mesto.** Svako dugme u traci prijavljuje svoj okvir (`SlideshowButtonAnchorKey`) u imenovanom
+koordinatnom prostoru, kartica se otvara **iznad** svog dugmeta (traka je uz dno, kartica preko
+dugmeta bi ga sakrila), i **nikad van prozora** — `limitX`/`limitY` je drže unutra, jer se kartica
+sa zaglavljem van ekrana ne može dovući nazad.
+
+⚠️ Postavlja se **jednom** (`didPlaceAtButton`). Ponavljanje bi je vraćalo na dugme na svaki frame
+dok je klijent vuče, i pomeralo je kad sadržaj poraste.
+
+**Glatkoća.** `.compositingGroup()` **pre** `.shadow(...)`. Bez toga se senka poluprečnika 28
+preračunava iz celog živog sadržaja kartice — panel, tekst, redovi — na svaki frame pomeranja.
+Ovako se kartica jednom iscrta u jedan sloj i senka pada sa njega, pa se vuče gotova slika.
+⚠️ Redosled je deo popravke: `compositingGroup` posle `shadow` spljošti i senku i ne dobija ništa.
+
+**Drugi osumnjičeni je proveren i oslobođen:** timer od 60 Hz u istom korenu. `advancePreviewIfNeeded`
+izlazi odmah na `guard isPreviewPlaying` bez ijednog upisa u stanje, pa dok se preview ne pušta taj
+timer ne izaziva nijedno ponovno crtanje. Seckanje je bilo lokalno za karticu.
+
+### Dve greške pri sastavljanju, obe zapisane jer se ponavljaju
+
+1. **`static let` u generičkoj strukturi.** `FloatingCard<Content>` ne sme da nosi statička
+   skladištena svojstva — konstante su u `enum SlideshowCards`. Vraćanje nazad je greška u
+   kompilaciji, ne stvar stila.
+2. **`anchor`/`containerSize` MORAJU biti deklarisani PRE `content`.** Memberwise init prati
+   redosled deklaracije, a trailing closure mora biti poslednji argument; obrnuto obori sva četiri
+   poziva.
+
+⚠️ I treća, ista porodica: četiri modifikatora dopisana direktno u koren `ContentView`-a oborila su
+type-checker (*„unable to type-check this expression in reasonable time"*). Koren je već ogroman;
+sada je to **jedan** `SlideshowCardSpaceReporter` modifier.
+
+### Čime je zaključano
+
+`Tools/run-slideshow-cards-test.py` — **16 provera**, sve prolaze. Bez popravke pada odmah i glasno.
+Pokriva i obe polovine zahteva 1 (kontroler mora da **pošalje**, pogled mora da **primi** — svaka
+sama izgleda kao popravka, a klijent i dalje gleda stari folder).
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`; app sagrađena, instalirana i restartovana
+(**11.14 / build 30**); **26 od 34** testa izlazi sa 0. Osam koji ne izlaze su nepromenjeni i
+poznati: četiri traže RAW fotografiju koje na mašini nema, četiri su alati za merenje koji traže
+ulaz (v. „ISPRAVKA — 11. septembar 2026" na vrhu).
+
+⚠️ **NIŠTA OD OVOGA NIJE VIĐENO NA EKRANU ODAVDE.** App na startu traži keychain lozinku i taj
+prozor se odavde ne dira. Posebno **glatkoća vučenja nije izmerena** — ona je jedina od četiri
+stavke koja se ne može dokazati čitanjem koda, i traži klijentov prst na ekranu.
+
+---

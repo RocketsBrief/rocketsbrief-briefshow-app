@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 12. septembar 2026 (KORACI 176–178; **v11.17 je gore, 176–178 NIJE objavljeno**).
+Beleška za nastavak rada. Poslednja izmena: 12. septembar 2026 (KORAK 179; **v11.20 je gore**).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -718,7 +718,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
 
-### GDE SMO STALI — 12. septembar 2026 — kalibracija layera i nov Exposure (NIJE OBJAVLJENO)
+### GDE SMO STALI — 12. septembar 2026 — v11.20 OBJAVLJENA, univerzalna
 
 | | |
 |---|---|
@@ -729,7 +729,11 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 - **Fotografije su se vratile na mašinu**: 15 `.NEF` u `~/Desktop/RAW Tests Images/`. Zapis od 11.09. („nema nijedne RAW fotografije") više ne važi, i tri od četiri testa koja su zbog toga stajala sad prolaze.
 - **34 od 35** testova izlazi sa 0. Jedini koji ne izlazi je `run-thumbnail-parity-test.py`, i to je **pravi nalaz, ne alat koji fali** — v. ispod.
 - Upisan **🔴 MUST** na vrh dokumenta: slajder na layeru je isti slajder kao na slici.
-- ⚠️ **Ništa od ovoga nije objavljeno.** App je sagrađena, instalirana i pokrenuta (11.17 / 31), commit-ovi lokalni.
+| **179** | **v11.20** objavljena: univerzalan paket (arm64 + x86_64), min macOS 13.0, LaMa unutra, SD dugmetom |
+
+- Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.048.108 bajta, `codesign` ok, nula fotografija.
+- Update lanac proveren pozivom pravog poređenja: **svaka** verzija od 11.7 do 11.17 dobija karticu za 11.20.
+- **`v11.0` se i dalje NE SME brisati** — dugme za SD u app-i ga gađa (HTTP 200 pri objavi).
 
 #### ⚠️ NOV OTVOREN NALAZ — sličica je svetlija od platna
 
@@ -18292,6 +18296,60 @@ jedinicama širine ekrana.
 liči na ono što je klijent gledao.
 
 Rezervna kopija pre izmene: `ContentView.swift.before_kanata_two_equal_large_photos`.
+
+---
+
+## KORAK 179 — RELEASE v11.20: jedan paket, SD dugmetom (12. septembar 2026)
+
+Isti zahtev i isti PS kao u KORACIMA 152, 171 i 175: *„zapakuj oba AI modela i
+LaMa i SD"*, pa *„ne moras da uploadujes 2gb jer vec imaju u appu dugme za Ai SD
+download, a oni koji vec koriste App oni imaju downlodovan vec SD"*. Dakle opet
+**jedan paket**, LaMa unutra, SD dugmetom:
+`python3 Tools/make-release.py 11.20 --small-only`.
+
+`MARKETING_VERSION` 11.17 → **11.20**, `CURRENT_PROJECT_VERSION` 31 → **32**.
+
+### Provere na PAKETU — i to na SKINUTOM, ne na sagrađenom
+
+| provera | rezultat |
+|---|---|
+| `lipo -archs` | **x86_64 arm64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.20 / 32** |
+| `LaMa.mlmodelc` | da |
+| `SD15-Inpainting` | ne, namerno |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| zip lokalno / skinuti `content-length` | **115.048.108 / 115.048.108** |
+| SHA-256 lokalno vs skinuto | **isti** — `549364d2…5459521` |
+| direktan link | HTTP **200** |
+| `releases/latest` | **v11.20**, draft ne, prerelease ne, jedan asset |
+| `v11.0/SD15-Inpainting.aar` (dugme u app-u) | HTTP **200** |
+
+- stranica: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.20`
+- direktno: `…/releases/download/v11.20/C4S-Suite-11.20.zip`
+- grana `briefshow-develop`, commit `f759c2f`, pushovano
+
+### Update lanac — proveren pozivom pravog poređenja, ne na oko
+
+`RocketsBriefAccount.swift:423`, `compare(options: .numeric)`:
+
+| instalirano | 11.7 | 11.9 | 11.10 | 11.11 | 11.12 | 11.14 | 11.17 |
+|---|---|---|---|---|---|---|---|
+| nudi 11.20? | da | da | da | da | da | da | da |
+
+20 > 17 pod `.numeric`, pa nijedan postojeći klijent ne ostaje bez kartice.
+(Zamka iz KORAKA 171 — `11.4` bi bilo **starije** od `11.11`.)
+
+### Intel i label — opet provereni, opet nije trebalo menjati
+
+- **Intel:** `DevelopSDInpaint.swift`, `#else` grana → `computeUnits = .all`
+  (nema Neural Engine-a, pa Core ML deli posao između diskretne kartice i
+  jezgara), VAE prolazi `.cpuAndGPU`. Komentar tamo nosi i klijentovu formulaciju
+  *„da deli rad da bi bio brži i bolji jer nije M procesor"*.
+- **Label sa verzijom:** čita `CFBundleShortVersionString` **iz bundle-a** na
+  šest mesta, pa se dizanjem verzije sam pretvorio u v11.20 i ne može da se
+  raziđe sa tagom.
 
 ---
 

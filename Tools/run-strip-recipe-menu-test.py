@@ -22,10 +22,17 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "BriefShow" / "Develop.swift"
 
 # label → the recipe it must run, and whether it copies first.
+#
+# ⚠️ "Background Enhanced" is matched by the EXPRESSION that builds its label,
+# not by the words. Its name is taken from PortraitRecipe.backgroundEnhanced
+# .title so that the menu, the grid's menu and the Sync dialog cannot end up
+# calling one button three things — which means there is no literal here to
+# search for, and a test that demanded one would be demanding the duplication.
 ITEMS = [
     ("Duplicate Subject Mono", ".subjectMono", True),
     ("Duplicate Mono Background", ".monoBackground", True),
     ("Youthify", ".youthify", False),
+    ("PortraitRecipe.backgroundEnhanced.title", ".backgroundEnhanced", False),
 ]
 
 
@@ -49,11 +56,23 @@ def read_body(text: str, start: int) -> str:
     sys.exit("unbalanced braces")
 
 
-def func_body(text: str, name: str) -> str:
-    match = re.search(rf"^[ \t]*(?:private )?func {name}\b", text, re.MULTILINE)
+def func_body(text: str, name: str, after=None) -> str:
+    """The body of `func name`, optionally the first one after `after`.
+
+    `after` is how a function inside a particular type is reached — the service
+    the recipes now run through has a `run` of its own, and there are others.
+    """
+    offset = 0
+    if after is not None:
+        offset = text.find(after)
+        if offset == -1:
+            sys.exit(f"could not find {after} in {SOURCE.name}")
+    match = re.search(rf"^[ \t]*(?:(?:private|static|@\w+)\s+)*func {name}\b",
+                      text[offset:], re.MULTILINE)
     if not match:
         sys.exit(f"could not find func {name} in {SOURCE.name}")
-    return read_body(text, text.index("{", match.start()))
+    start = offset + match.start()
+    return read_body(text, text.index("{", start))
 
 
 def button_action(text: str, label: str):
@@ -65,7 +84,10 @@ def button_action(text: str, label: str):
     read four for three buttons — it had swallowed Delete's own guard. Correct
     code, wrong ruler.
     """
-    match = re.search(rf'Button\([^)]*"{re.escape(label)}', text)
+    # Either a literal label ("Youthify") or the expression that builds one
+    # (PortraitRecipe.backgroundEnhanced.title) — see ITEMS.
+    quote = "" if label.startswith("PortraitRecipe") else '"'
+    match = re.search(rf'Button\([^)]*{quote}{re.escape(label)}', text)
     if not match:
         return "", -1
     # The action closure is the brace that follows the Button's closing paren.
@@ -97,7 +119,7 @@ def main() -> int:
 
     source = strip_comments(SOURCE.read_text())
 
-    print("the three items on the strip's right-click menu")
+    print(f"the {len(ITEMS)} recipe items on the strip's right-click menu")
 
     for label, recipe, duplicates in ITEMS:
         action, end = button_action(source, label)
@@ -182,7 +204,9 @@ def main() -> int:
           recipes_signature is not None and "openFirstWhenDone: Bool = false" in recipes_signature.group(0),
           recipes_signature.group(0).strip() if recipes_signature else "no signature found")
 
-    opened = re.search(r"if openFirstWhenDone, let (\w+) = (\w+)\.first", recipes_body)
+    # \s* rather than a single space: the guard is written over two lines since
+    # the loop moved into PortraitRecipeService and the condition grew.
+    opened = re.search(r"if openFirstWhenDone,\s*let (\w+) = (\w+)\.first", recipes_body)
     check("the photo it opens is picked in strip order",
           opened is not None and opened.group(2) == "targets",
           opened.group(0).strip() if opened else "no guarded open found")
@@ -192,16 +216,34 @@ def main() -> int:
     # wrong unpredictably, and the kind of wrong nobody reports because it
     # looks like a choice.
     check("…never out of the unordered results dictionary",
-          opened is not None and "results.first" not in recipes_body,
-          "results.first appears in the body")
+          opened is not None
+          and "results.first" not in recipes_body
+          and "settingsByURL.first" not in recipes_body,
+          "the open is taken from the dictionary")
 
     # ⚠️ selectPhoto reads the photo's record back out of PhotoEditStore, so it
-    # has to run AFTER the loop that writes it. Opened first, the canvas would
-    # show the copy with its pre-recipe record - which is the original bug
-    # wearing a different hat.
-    wrote = recipes_body.find("PhotoEditStore.setSettings")
+    # has to run AFTER the write. Opened first, the canvas would show the copy
+    # with its pre-recipe record - which is the original bug wearing a different
+    # hat.
+    #
+    # The write moved out of this function on 12.09, when the loop became
+    # PortraitRecipeService so the grid's "Background Enhanced" could run the
+    # same one. So the ordering is now proved in two pieces instead of one, and
+    # BOTH are needed: the open must sit in the service's `completion` (not its
+    # `progress`, which runs per photo, before any of them are written), and the
+    # service must write and flush before it calls that completion.
+    service_body = func_body(SOURCE.read_text(), "run", after="enum PortraitRecipeService")
+    wrote = service_body.find("PhotoEditStore.setSettings")
+    flushed = service_body.find("PhotoEditStore.flushNow()")
+    told = service_body.find("completion(outcome)")
     check("…and after the new settings are written, not before",
-          wrote != -1 and opened is not None and opened.start() > wrote)
+          -1 not in (wrote, flushed, told) and wrote < flushed < told,
+          "the service tells its caller before writing the store")
+
+    completion_at = recipes_body.find("completion:")
+    check("…and the open waits for the whole run, not for one photo",
+          completion_at != -1 and opened is not None and opened.start() > completion_at,
+          "the open is not inside the completion closure")
 
     print("\nall good" if failures == 0 else f"\n{failures} FAILED")
     return 1 if failures else 0

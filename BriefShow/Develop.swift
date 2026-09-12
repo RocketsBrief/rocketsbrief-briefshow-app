@@ -3018,7 +3018,13 @@ enum PhotoEditRenderer {
             // documented "+1 = warmer" — same sign the non-RAW path below
             // now uses too (see its own comment for the sign-bug fix this
             // matches).
-            filter.exposure = Float(settings.exposure)
+            // ⚠️ NOT settings.exposure. The stop used to go in here, and that
+            // is where the burning happened: measured 12.09, the light above
+            // white SHRANK as Exposure rose (3.63% → 3.39%), because the
+            // decoder clipped it before anything downstream could roll it off.
+            // Exposure is applied below now, as a curve, for both RAW and not.
+            // See ExposureCurve.
+            filter.exposure = 0
             // An absolute request wins over the offset — see PhotoEditSettings.temperatureKelvin.
             let wantedKelvin = settings.temperatureKelvin.map { Float($0) }
                 ?? (asShotTemperature + Float(settings.temperature) * 3000)
@@ -3027,7 +3033,7 @@ enum PhotoEditRenderer {
             filter.neutralTemperature = min(max(wantedKelvin, 2000), 50000)
             filter.neutralTint = min(max(wantedTint, -150), 150)
             output = reusingRAWDecode
-                ? cachedRAWDecode(from: filter, exposure: Float(settings.exposure),
+                ? cachedRAWDecode(from: filter, exposure: 0,
                                   kelvin: filter.neutralTemperature, tint: filter.neutralTint)
                 : (filter.outputImage ?? CIImage.empty())
             isRAWSource = true
@@ -3065,12 +3071,9 @@ enum PhotoEditRenderer {
             output = filter.outputImage ?? output
         }
 
-        if !isRAWSource, settings.exposure != 0 {
-            let filter = CIFilter.exposureAdjust()
-            filter.inputImage = output
-            filter.ev = Float(settings.exposure)
-            output = filter.outputImage ?? output
-        }
+        // Both kinds of source now, RAW included — see the note on
+        // `filter.exposure = 0` above.
+        output = PhotoEditRenderer.applyExposure(settings.exposure, to: output)
 
         if settings.blacks != 0 || settings.shadows != 0 || settings.highlights != 0 || settings.whites != 0 {
             // Blacks/Shadows/Highlights/Whites all bend one CIToneCurve
@@ -3199,7 +3202,7 @@ enum PhotoEditRenderer {
         // naturally clips whatever part of a layer falls outside the kept
         // area too, instead of needing separate clipping logic.
         if !settings.layers.isEmpty {
-            output = compositeLayers(settings.layers, onto: output)
+            output = compositeLayers(settings.layers, onto: output, base: base, settings: settings)
         }
 
         if applyCrop, let crop = settings.crop {
@@ -3414,6 +3417,26 @@ enum PhotoEditRenderer {
     /// effect as the whole photo — see applyLocalToneColorDetail. The call
     /// site in `render` is unchanged in behaviour; proved pixel-for-pixel
     /// against the pre-extraction code by Tools/run-effect-extraction-test.py.
+    /// Exposure, for the photo and for a layer alike.
+    ///
+    /// ⚠️ THE ONE PLACE. The MUST recorded in BRIEFSHOW_DEVELOP_NOTES.md is
+    /// that a slider on a layer is the same slider as on the photo; Exposure
+    /// is the control that broke that rule twice (the range on 11.09, the
+    /// RAW decoder on 12.09), so both sides now call this and there is no
+    /// second implementation to keep in step.
+    ///
+    /// See ExposureCurve for why this is a curve rather than a multiply.
+    static func applyExposure(_ ev: Double, to image: CIImage) -> CIImage {
+        guard ev != 0 else { return image }
+
+        let cube = CIFilter.colorCubeWithColorSpace()
+        cube.inputImage = image
+        cube.cubeDimension = Float(ExposureCube.dimension)
+        cube.cubeData = ExposureCube.data(for: ev)
+        cube.colorSpace = briefEditsSRGBColorSpace
+        return cube.outputImage ?? image
+    }
+
     private static func applySharpen(_ sharpness: Double, radius: Double, to image: CIImage) -> CIImage {
         var output = image
 
@@ -3843,12 +3866,7 @@ enum PhotoEditRenderer {
             output = filter.outputImage ?? output
         }
 
-        if local.exposure != 0 {
-            let filter = CIFilter.exposureAdjust()
-            filter.inputImage = output
-            filter.ev = Float(local.exposure)
-            output = filter.outputImage ?? output
-        }
+        output = PhotoEditRenderer.applyExposure(local.exposure, to: output)
 
         if local.blacks != 0 || local.shadows != 0 || local.highlights != 0 || local.whites != 0 {
             // The same curve as the global one, and deliberately the same
@@ -3862,10 +3880,39 @@ enum PhotoEditRenderer {
             output = PhotoEditRenderer.applyToneCurve(points, to: output)
         }
 
-        if local.contrast != 0 || local.saturation != 0 {
+        // ⚠️ CONTRAST IS THE PHOTO'S CURVE, NOT CICOLORCONTROLS — and this was
+        // measured, 12.09, after the client reported that editing the People
+        // layer *„nije uopste isti kao main edit jedne slike"*.
+        //
+        // These two lines used to be one CIColorControls call carrying both
+        // Contrast and Saturation. That is the linear scaling about mid grey
+        // (out = (in - 0.5) * c + 0.5) that `render` measured as wrong on
+        // 05.09 and abandoned: it drags the white point with it, so every
+        // blown highlight under the layer greys over. The photo has pinned
+        // endpoints and bends only the middle; the layer did not, and at
+        // Contrast -0.5 the same number that cost the photo 0.4 levels of
+        // mean cost the layer 21.5 (Tools/run-layer-edit-parity-test.py).
+        //
+        // So it is the SAME curve and the SAME constant now, in the same
+        // order `render` runs it — contrast first, then saturation on its
+        // own. If contrastMidtoneBend ever moves, both sides move with it,
+        // because both read it.
+        if local.contrast != 0 {
+            let bend = local.contrast * PhotoEditRenderer.contrastMidtoneBend
+            let filter = CIFilter.toneCurve()
+            filter.inputImage = output
+            filter.point0 = CGPoint(x: 0, y: 0)
+            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 - bend, 0), 1))
+            filter.point2 = CGPoint(x: 0.5, y: 0.5)
+            filter.point3 = CGPoint(x: 0.75, y: min(max(0.75 + bend, 0), 1))
+            filter.point4 = CGPoint(x: 1, y: 1)
+            output = filter.outputImage ?? output
+        }
+
+        if local.saturation != 0 {
             let filter = CIFilter.colorControls()
             filter.inputImage = output
-            filter.contrast = Float(1 + local.contrast)
+            filter.contrast = 1
             filter.saturation = Float(1 + local.saturation)
             filter.brightness = 0
             output = filter.outputImage ?? output
@@ -4397,8 +4444,81 @@ enum PhotoEditRenderer {
     /// is nothing behind it but itself — Multiply would just be a darker
     /// version of the same pixels pretending to be a composite. The panel
     /// hides the row for these layers to match.
+    /// The photograph decoded AGAIN with this layer's Temperature/Tint added to
+    /// the photo's own — or nil when that is neither needed nor possible.
+    ///
+    /// ⚠️ THIS IS NOT AN OPTIMISATION IN REVERSE. It is the only way those three
+    /// can mean on a layer what they mean on the photo, and it was measured
+    /// (12.09, `Tools/run-layer-edit-parity-test.py`, the client's own NEF):
+    ///
+    ///     slider            photo      layer (pixels)     gap
+    ///     Exposure +0.5     218.1          241.8        +23.7
+    ///     Exposure -0.5     183.7          142.7        -41.0
+    ///     Temperature +0.5  202.8          194.9         -7.9
+    ///
+    /// On a JPEG the same three matched to 0.00 — because there the photo's own
+    /// path IS `CIExposureAdjust` over pixels, the very filter the layer runs.
+    /// On a RAW it is not: Exposure goes into `CIRAWFilter.exposure` and the
+    /// white balance into `neutralTemperature`, both BEFORE demosaic and before
+    /// the RAW pipeline's own tone mapping. Nothing done to the finished pixels
+    /// afterwards reproduces that — it is a different operation on different
+    /// data, not the same one with a different constant. So a constant could
+    /// not have been calibrated here; the decode has to happen again.
+    ///
+    /// What it costs: one more decode, and ONLY while one of those three is
+    /// off zero on a derived layer. Everything else about a layer — tone
+    /// curve, contrast, colour, detail, vignette — stays in pixels and
+    /// already matched.
+    ///
+    /// ⚠️ `layers` is emptied in the copy, which is what stops this recurring;
+    /// `vignette` is zeroed because the photo's vignette runs after the crop,
+    /// AFTER layers composite, so leaving it in would darken the corners twice
+    /// inside the layer and nowhere else.
+    private static func rawShiftedPhoto(for layer: ImageLayer, base: PhotoBaseImage?,
+                                        settings: PhotoEditSettings?) -> CIImage? {
+        let local = layer.adjustments
+        // ⚠️ Exposure is NOT in this list any more, and that is the whole point
+        // of moving it out of the decoder on 12.09: it is a curve over the
+        // pixels now, so a layer runs the identical function the photo runs and
+        // needs no second decode to do it. White balance is still the
+        // decoder's, so it still does.
+        guard local.temperature != 0 || local.tint != 0,
+              let base, let settings else { return nil }
+        guard case .raw = base else { return nil }
+
+        var shifted = settings
+        shifted.layers = []
+        shifted.vignette = 0
+        // An absolute white balance wins over the offset in `render` (see
+        // PhotoEditSettings.temperatureKelvin), so the layer's offset has to be
+        // folded into the absolute value rather than into the offset it would
+        // ignore. Same 3000 K and 100 the offset path uses.
+        if let kelvin = shifted.temperatureKelvin {
+            shifted.temperatureKelvin = kelvin + local.temperature * 3000
+        } else {
+            shifted.temperature += local.temperature
+        }
+        if let absoluteTint = shifted.tintAbsolute {
+            shifted.tintAbsolute = absoluteTint + local.tint * 100
+        } else {
+            shifted.tint += local.tint
+        }
+
+        // Uncropped, because layers composite before the crop — the matte and
+        // the photo underneath are both in that same pre-crop space.
+        //
+        // ⚠️ `reusingRAWDecode` is left false on purpose. The held decode is a
+        // single slot keyed on exposure/kelvin/tint (see cachedRAWDecode); a
+        // second render with different numbers would evict the one the client's
+        // own slider is riding on, and both would then decode on every frame
+        // instead of one.
+        return render(shifted, on: base, applyCrop: false)
+    }
+
     private static func compositeDerivedLayer(_ layer: ImageLayer, maskData: Data,
-                                              onto image: CIImage, extent: CGRect) -> CIImage {
+                                              onto image: CIImage, extent: CGRect,
+                                              base: PhotoBaseImage? = nil,
+                                              settings: PhotoEditSettings? = nil) -> CIImage {
         guard let stored = CIImage(data: maskData),
               stored.extent.width > 0, stored.extent.height > 0 else {
             return image
@@ -4415,11 +4535,23 @@ enum PhotoEditRenderer {
         // A derived layer adjusts the photo under its own matte — it never
         // replaces it. Replacement existed once, for sky, and went with it
         // (see SKY_ARCHIVE/BRIEFSHOW_SKY_NOTES.md).
-        let base = image
+        //
+        // On a RAW, the starting picture is the photograph decoded again with
+        // this layer's Exposure/Temperature/Tint folded into the decoder, and
+        // those three are then taken OUT of what runs over the pixels so they
+        // cannot land twice. Everywhere else (a JPEG, or a layer that does not
+        // touch those three) it is the photo as already rendered, unchanged.
+        var source = image
+        var local = layer.adjustments
+        if let shifted = rawShiftedPhoto(for: layer, base: base, settings: settings) {
+            source = shifted.cropped(to: extent)
+            local.temperature = 0
+            local.tint = 0
+        }
 
-        var adjusted = layer.adjustments.isNeutral
-            ? base
-            : applyLocalToneColorDetail(layer.adjustments, to: base)
+        var adjusted = local.isNeutral
+            ? source
+            : applyLocalToneColorDetail(local, to: source)
         if layer.blur > 0 {
             adjusted = layerBlur(adjusted, amount: layer.blur, extent: extent)
         }
@@ -4539,7 +4671,12 @@ enum PhotoEditRenderer {
         return hash
     }
 
-    private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage) -> CIImage {
+    /// `base` and `settings` are carried in for ONE reason: a derived layer's
+    /// Exposure, Temperature and Tint on a RAW file cannot be done in pixels.
+    /// See `rawShiftedPhoto`.
+    private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage,
+                                        base: PhotoBaseImage? = nil,
+                                        settings: PhotoEditSettings? = nil) -> CIImage {
         var output = image
         let extent = image.extent
         guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
@@ -4558,7 +4695,8 @@ enum PhotoEditRenderer {
             // uses for a mask. No cutout, so no edge artefacts, and it
             // follows the photo when the global sliders move.
             if let maskData = layer.maskData {
-                output = compositeDerivedLayer(layer, maskData: maskData, onto: output, extent: extent)
+                output = compositeDerivedLayer(layer, maskData: maskData, onto: output, extent: extent,
+                                               base: base, settings: settings)
                 continue
             }
 
@@ -5178,6 +5316,7 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
     case youthify
     case subjectMono
     case monoBackground
+    case backgroundEnhanced
 
     var id: String { rawValue }
 
@@ -5186,6 +5325,7 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
         case .youthify: return "Youthify"
         case .subjectMono: return "Subject Mono"
         case .monoBackground: return "Mono Background"
+        case .backgroundEnhanced: return "Background Enhanced"
         }
     }
 
@@ -5194,6 +5334,7 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
         case .youthify: return "sparkles"
         case .subjectMono: return "person.crop.circle"
         case .monoBackground: return "person.crop.circle.badge.moon"
+        case .backgroundEnhanced: return "photo.on.rectangle.angled"
         }
     }
 
@@ -5207,13 +5348,23 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
             return "Select People, then Black & White and Contrast +30 on the people, then Flatten."
         case .monoBackground:
             return "Select People, then Black & White and Contrast +40 on the background, then Flatten."
+        case .backgroundEnhanced:
+            return "Select People, then Shadows −100, Saturation +30 and Clarity +30 on the background, then Flatten."
         }
     }
 
     /// Which of the two layers this recipe writes on — shown in the UI, and
     /// the reason Subject Mono and Mono Background can be run together.
     var targetLayerName: String {
-        self == .monoBackground ? "Background" : "People"
+        writesOnBackground ? "Background" : "People"
+    }
+
+    /// Which of the two layers this recipe writes on, as a fact rather than a
+    /// string — read by `applied`, by the editor when it selects the layer it
+    /// just wrote on, and by `targetLayerName` above, so those three cannot
+    /// drift apart when a recipe is added.
+    var writesOnBackground: Bool {
+        self == .monoBackground || self == .backgroundEnhanced
     }
 
     /// Applies this recipe to a settings record that ALREADY carries the two
@@ -5225,7 +5376,7 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
     func applied(to settings: PhotoEditSettings,
                  backgroundID: UUID, peopleID: UUID) -> PhotoEditSettings {
         var result = settings
-        let wantedID = (self == .monoBackground) ? backgroundID : peopleID
+        let wantedID = writesOnBackground ? backgroundID : peopleID
         guard let index = result.layers.firstIndex(where: { $0.id == wantedID }) else {
             return result
         }
@@ -5246,9 +5397,117 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
         case .monoBackground:
             result.layers[index].adjustments.saturation = -1
             result.layers[index].adjustments.contrast = 0.40
+
+        case .backgroundEnhanced:
+            // The client's own three numbers, 12.09: *„select layer backround,
+            // and edit like this: Shadows -100, situration plus 30, Clarity
+            // plus 30"*. Stored on the −1…1 scale the panel reads out as
+            // ×100, same as every recipe above — and Shadows negative is the
+            // darkening direction (see PhotoEditSettings.shadows).
+            result.layers[index].adjustments.shadows = -1
+            result.layers[index].adjustments.saturation = 0.30
+            result.layers[index].adjustments.clarity = 0.30
         }
 
         return result
+    }
+}
+
+/// Runs the one-press portrait jobs over a list of photos, off the main thread.
+///
+/// Lifted out of `DevelopView.runPortraitRecipes` when the grid's right-click
+/// menu gained "Background Enhanced", for the reason `PeopleLayerFactory`'s own
+/// comment gives: two copies of this would be two answers to "what does a
+/// recipe do", and the one nobody looks at would be the one that drifts. The
+/// editor and the grid now differ only in what they SAY while it runs.
+///
+/// ⚠️ Every recipe ends in a FLATTEN, which writes pixels. Unflatten takes it
+/// back; nothing else here does.
+enum PortraitRecipeService {
+    struct Outcome {
+        /// The cleared record each finished photo should be left with.
+        var settingsByURL: [URL: PhotoEditSettings] = [:]
+        /// Vision found nobody. A normal answer, not a failure.
+        var noPeople = 0
+        var failed = 0
+    }
+
+    /// `progress` reports (finished-so-far, total) on the main queue before
+    /// each photo; `completion` lands on the main queue with the store already
+    /// written and flushed.
+    static func run(_ recipes: [PortraitRecipe], on targets: [URL],
+                    progress: @escaping (Int, Int) -> Void,
+                    completion: @escaping (Outcome) -> Void) {
+        guard !recipes.isEmpty, !targets.isEmpty else {
+            completion(Outcome())
+            return
+        }
+
+        let ordered = PortraitRecipe.allCases.filter { recipes.contains($0) }
+
+        developRenderQueue.async(qos: .userInitiated) {
+            var outcome = Outcome()
+
+            for (offset, url) in targets.enumerated() {
+                DispatchQueue.main.async {
+                    progress(offset, targets.count)
+                }
+
+                // loadBaseImage opens the photo's flattened copy when it has
+                // one, so a photo baked earlier is worked on from the picture
+                // it actually shows rather than the file underneath it.
+                guard let base = PhotoEditRenderer.loadBaseImage(from: url) else {
+                    outcome.failed += 1
+                    continue
+                }
+
+                var photoSettings = PhotoEditStore.settings(for: url)
+                // applyCrop: false — a layer's geometry lives in the pre-crop
+                // unit space, same as everywhere else layers are made.
+                let full = PhotoEditRenderer.render(photoSettings, on: base, applyCrop: false)
+
+                // No selection to confine to: there is no editor open on this
+                // photo, and a rope drawn on a different photograph means
+                // nothing here.
+                guard let made = PeopleLayerFactory.make(from: full, confinedTo: nil,
+                                                         backgroundName: "Background",
+                                                         peopleName: "People") else {
+                    outcome.noPeople += 1
+                    continue
+                }
+
+                photoSettings.layers.append(made.background)
+                photoSettings.layers.append(made.people)
+                for recipe in ordered {
+                    photoSettings = recipe.applied(to: photoSettings,
+                                                   backgroundID: made.background.id,
+                                                   peopleID: made.people.id)
+                }
+
+                let rendered = PhotoEditRenderer.render(photoSettings, on: base, applyCrop: false)
+                do {
+                    try FlattenedImageStore.flatten(rendered, settings: photoSettings,
+                                                    for: url, context: briefEditsCIContext)
+                } catch {
+                    outcome.failed += 1
+                    continue
+                }
+
+                // Everything is in the pixels now. The crop is the one thing
+                // kept, because it was not baked — same rule as flattenPhoto.
+                var cleared = PhotoEditSettings()
+                cleared.crop = photoSettings.crop
+                outcome.settingsByURL[url] = cleared
+            }
+
+            DispatchQueue.main.async {
+                for (url, cleared) in outcome.settingsByURL {
+                    PhotoEditStore.setSettings(cleared, for: url)
+                }
+                PhotoEditStore.flushNow()
+                completion(outcome)
+            }
+        }
     }
 }
 
@@ -8458,6 +8717,22 @@ struct DevelopView: View {
             }
             .disabled(isAIWorkingOnOpenPhoto)
 
+            // Asked for here as well as in the grid, 12.09, with the grid's
+            // menu on screen: *„ovde mora da bude na desnom kliku na kartici
+            // selektovane slike da imaju enhanced backround as well"*.
+            //
+            // ⚠️ In place, like Youthify, NOT duplicated. The two Duplicate
+            // items above copy first because they were asked for that way; this
+            // one was asked for as "process the selected photos", so it writes
+            // on them — it ends in a flatten like every recipe, and Unflatten
+            // is what takes that back.
+            Button(bwTargets.count > 1
+                   ? "\(PortraitRecipe.backgroundEnhanced.title) (\(bwTargets.count))"
+                   : PortraitRecipe.backgroundEnhanced.title) {
+                runPortraitRecipes([.backgroundEnhanced], on: bwTargets)
+            }
+            .disabled(isAIWorkingOnOpenPhoto)
+
             Divider()
 
             Button(bwTargets.count > 1 ? "Delete (\(bwTargets.count))" : "Delete", role: .destructive) {
@@ -9150,7 +9425,7 @@ struct DevelopView: View {
             // if the bake fails and the layers stay: "Mono Background" writing
             // on Background while the People layer sat selected was the one
             // way this could look like it had done nothing.
-            selectedLayerID = (recipe == .monoBackground) ? backgroundID : peopleID
+            selectedLayerID = recipe.writesOnBackground ? backgroundID : peopleID
             // No jump to the Layers tab. Select People on its own does that,
             // and it is right there — it ENDS on those two layers. A recipe
             // bakes them a second later, so the jump would be to a tab that is
@@ -13870,7 +14145,7 @@ struct DevelopView: View {
             // ⚠️ The Lightroom import still clamps to ±3 (DevelopLightroomPreset),
             // on purpose: a preset that asks for +2 EV must still LOOK like +2 EV.
             // Such a value sits at the end of the track until it is dragged.
-            editSlider("Exposure", value: $settings.exposure, range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
+            editSlider("Exposure", value: $settings.exposure, range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
             editSlider("Contrast", value: $settings.contrast, range: -1...1)
             editSlider("Highlights", value: $settings.highlights, range: -1...1)
             editSlider("Shadows", value: $settings.shadows, range: -1...1)
@@ -14484,7 +14759,7 @@ struct DevelopView: View {
             if adjustment.type != .patch {
                 Divider()
 
-                editSlider("Exposure", key: "mask.exposure", value: localAdjustmentBinding(\.exposure), range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
+                editSlider("Exposure", key: "mask.exposure", value: localAdjustmentBinding(\.exposure), range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
                 editSlider("Contrast", key: "mask.contrast", value: localAdjustmentBinding(\.contrast), range: -1...1)
                 editSlider("Highlights", key: "mask.highlights", value: localAdjustmentBinding(\.highlights), range: -1...1)
                 editSlider("Shadows", key: "mask.shadows", value: localAdjustmentBinding(\.shadows), range: -1...1)
@@ -15770,7 +16045,7 @@ struct DevelopView: View {
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.muted)
 
-            editSlider("Exposure", key: "layer.exposure", value: layerAdjustmentBinding(\.exposure), range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
+            editSlider("Exposure", key: "layer.exposure", value: layerAdjustmentBinding(\.exposure), range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
             editSlider("Contrast", key: "layer.contrast", value: layerAdjustmentBinding(\.contrast), range: -1...1)
             editSlider("Highlights", key: "layer.highlights", value: layerAdjustmentBinding(\.highlights), range: -1...1)
             editSlider("Shadows", key: "layer.shadows", value: layerAdjustmentBinding(\.shadows), range: -1...1)
@@ -17761,93 +18036,33 @@ struct DevelopView: View {
         isFlattening = true
         exportStatusText = "\(label) 1 of \(targets.count)…"
 
-        developRenderQueue.async(qos: .userInitiated) {
-            var results: [URL: PhotoEditSettings] = [:]
-            var noPeople = 0
-            var failed = 0
+        PortraitRecipeService.run(recipes, on: targets) { done, total in
+            exportStatusText = "\(label) \(done + 1) of \(total)…"
+        } completion: { outcome in
+            isFlattening = false
 
-            for (offset, url) in targets.enumerated() {
-                DispatchQueue.main.async {
-                    exportStatusText = "\(label) \(offset + 1) of \(targets.count)…"
-                }
-
-                // loadBaseImage opens the photo's flattened copy when it has
-                // one, so a photo baked earlier is worked on from the picture
-                // it actually shows rather than the file underneath it.
-                guard let base = PhotoEditRenderer.loadBaseImage(from: url) else {
-                    failed += 1
-                    continue
-                }
-
-                var photoSettings = PhotoEditStore.settings(for: url)
-                // applyCrop: false — a layer's geometry lives in the pre-crop
-                // unit space, same as everywhere else layers are made.
-                let full = PhotoEditRenderer.render(photoSettings, on: base, applyCrop: false)
-
-                // No selection to confine to: there is no editor open on this
-                // photo, and a rope drawn on a different photograph means
-                // nothing here.
-                guard let made = PeopleLayerFactory.make(from: full, confinedTo: nil,
-                                                         backgroundName: "Background",
-                                                         peopleName: "People") else {
-                    noPeople += 1
-                    continue
-                }
-
-                photoSettings.layers.append(made.background)
-                photoSettings.layers.append(made.people)
-                for recipe in ordered {
-                    photoSettings = recipe.applied(to: photoSettings,
-                                                   backgroundID: made.background.id,
-                                                   peopleID: made.people.id)
-                }
-
-                let rendered = PhotoEditRenderer.render(photoSettings, on: base, applyCrop: false)
-                do {
-                    try FlattenedImageStore.flatten(rendered, settings: photoSettings,
-                                                    for: url, context: briefEditsCIContext)
-                } catch {
-                    failed += 1
-                    continue
-                }
-
-                // Everything is in the pixels now. The crop is the one thing
-                // kept, because it was not baked — same rule as flattenPhoto.
-                var cleared = PhotoEditSettings()
-                cleared.crop = photoSettings.crop
-                results[url] = cleared
+            // ⚠️ Chosen out of `targets`, never out of the dictionary, which
+            // has no order. Picking "the first" from it would open whichever
+            // copy the hashing happened to put first — right most of the time,
+            // wrong unpredictably, and the kind of wrong nobody reports as a
+            // bug because it looks like a choice. This opens the first copy IN
+            // STRIP ORDER that actually finished.
+            //
+            // After the service has written and flushed the store, not before:
+            // selectPhoto reads this photo's record back out of
+            // PhotoEditStore, and opening it first would show the picture with
+            // its pre-recipe record — the same one-turn-of-the-run-loop trap
+            // the single recipe documents where it hands `next` to
+            // flattenPhoto explicitly.
+            if openFirstWhenDone,
+               let opened = targets.first(where: { outcome.settingsByURL[$0] != nil }) {
+                selectPhoto(opened)
             }
 
-            DispatchQueue.main.async {
-                for (url, cleared) in results {
-                    PhotoEditStore.setSettings(cleared, for: url)
-                }
-                PhotoEditStore.flushNow()
-                isFlattening = false
-
-                // ⚠️ Chosen out of `targets`, never out of `results`, which is a
-                // dictionary and has no order. Picking "the first" from it
-                // would open whichever copy the hashing happened to put first
-                // — right most of the time, wrong unpredictably, and the kind
-                // of wrong nobody reports as a bug because it looks like a
-                // choice. This opens the first copy IN STRIP ORDER that
-                // actually finished.
-                //
-                // After the settings above are written, not before: selectPhoto
-                // reads this photo's record back out of PhotoEditStore, and
-                // opening it first would show the picture with its pre-recipe
-                // record — the same one-turn-of-the-run-loop trap the single
-                // recipe already documents where it hands `next` to
-                // flattenPhoto explicitly.
-                if openFirstWhenDone, let opened = targets.first(where: { results[$0] != nil }) {
-                    selectPhoto(opened)
-                }
-
-                var message = "\(label) on \(results.count)"
-                if noPeople > 0 { message += ", \(noPeople) with no people" }
-                if failed > 0 { message += ", \(failed) failed" }
-                showTransientStatus(message)
-            }
+            var message = "\(label) on \(outcome.settingsByURL.count)"
+            if outcome.noPeople > 0 { message += ", \(outcome.noPeople) with no people" }
+            if outcome.failed > 0 { message += ", \(outcome.failed) failed" }
+            showTransientStatus(message)
         }
     }
 

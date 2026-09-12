@@ -23646,6 +23646,28 @@ struct PhotoShowSheet: View {
 
         Divider()
 
+        // Select People on every one of them, then the client's three numbers
+        // on the Background layer, then Flatten — asked for by name, 12.09:
+        // *„da mogu da budu obradjene ovim putem select people, da razdvoji
+        // backround od coveka/ljudi, i kada to uradi select layer backround,
+        // and edit like this: Shadows -100, situration plus 30, Clarity plus
+        // 30. i naravno flatten image posle toga"*.
+        //
+        // Runs the SAME PortraitRecipeService the editor's own recipe buttons
+        // run, so the numbers live in exactly one place (PortraitRecipe).
+        //
+        // ⚠️ It BAKES, unlike everything else in this menu except Black &
+        // White, and the name alone does not say so — the running status does,
+        // and Unflatten in Create takes it back.
+        Button(targets.count > 1
+               ? "\(PortraitRecipe.backgroundEnhanced.title) (\(targets.count))"
+               : PortraitRecipe.backgroundEnhanced.title) {
+            runBackgroundEnhancedInGrid(targets)
+        }
+        .help(PortraitRecipe.backgroundEnhanced.help)
+
+        Divider()
+
         // "Delete", not "Add to Bin". It is the same word the keyboard
         // uses for the same action, and the confirmation it opens already
         // says where the photos go ("Move to the Trash"), so the menu item
@@ -24101,6 +24123,35 @@ struct PhotoShowSheet: View {
             showGridStatus(failed == 0
                            ? "\(baked.count) in black & white"
                            : "\(baked.count) in black & white, \(failed) failed")
+        }
+    }
+
+    /// Select People across a selection, the Background Enhanced numbers on the
+    /// background layer, then Flatten — all of it off the main thread.
+    ///
+    /// The work itself is `PortraitRecipeService`, the same one Create's recipe
+    /// buttons call. What is here is only what the GRID has to say while it
+    /// runs, and what it has to say is different: there is no editor open, so a
+    /// photo where Vision finds nobody is left exactly as it was and counted
+    /// rather than reported one by one.
+    ///
+    /// Thumbnails refresh themselves: the service writes the cleared records
+    /// and flushes, and refreshEditedThumbnails is already listening for that.
+    private func runBackgroundEnhancedInGrid(_ targets: [URL]) {
+        guard !targets.isEmpty else {
+            return
+        }
+
+        let title = PortraitRecipe.backgroundEnhanced.title
+        gridActionStatus = "\(title) 1 of \(targets.count)…"
+
+        PortraitRecipeService.run([.backgroundEnhanced], on: targets) { done, total in
+            gridActionStatus = "\(title) \(done + 1) of \(total)…"
+        } completion: { outcome in
+            var message = "\(title) on \(outcome.settingsByURL.count)"
+            if outcome.noPeople > 0 { message += ", \(outcome.noPeople) with no people" }
+            if outcome.failed > 0 { message += ", \(outcome.failed) failed" }
+            showGridStatus(message)
         }
     }
 

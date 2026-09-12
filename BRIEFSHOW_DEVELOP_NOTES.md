@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 11. septembar 2026 (KORAK 175; **v11.17 je gore**).
+Beleška za nastavak rada. Poslednja izmena: 12. septembar 2026 (KORACI 176–178; **v11.17 je gore, 176–178 NIJE objavljeno**).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -61,6 +61,52 @@ rešenje, ili se prvo pita korisnik.
 Jedina dva poluga su **manje koraka difuzije** i **manji radni kvadrat**, i oba
 plaćaju kvalitetom. Ne dirati bez izričite reči korisnika.
 
+
+## 🔴 MUST — SLAJDER NA LAYERU JE ISTI SLAJDER KAO NA SLICI (12. septembar 2026)
+
+**Zahtev klijenta, 12.09, doslovno:** *„znaci kalibriraj edit na oba slidebar-a
+i kada se edituje slika cela i kada se samo edituje layer — ta dva sidebar
+edita settingsa uvek moraju da budu ista kada se updatuju. znaci kada updatuje
+jedan settings za slike onda mora da se updatuje settings za layers isto.
+napisi to u dokumentu kao must!"*
+
+**Ovo nije preporuka.** Svaka izmena bilo kog slajdera — opseg, korak, format
+ispisa, ili matematika iza njega — mora istovremeno da se uradi na **sva tri**
+mesta ili ni na jednom:
+
+| panel | gde | struktura |
+|---|---|---|
+| fotografija | `Develop.swift`, `editSlider(… $settings.…)` | `PhotoEditSettings` |
+| **layer** (People / Background) | `editSlider(… layerAdjustmentBinding …)` | `LocalAdjustmentSettings` |
+| **maska** | `editSlider(… localAdjustmentBinding …)` | `LocalAdjustmentSettings` |
+
+### Dva lenjira koja ovo drže, i oba padaju kad se raziđe
+
+| test | šta meri | treba li mu fotografija |
+|---|---|---|
+| `Tools/run-slider-parity-test.py` | **opseg i korak** svakog slajdera na sva tri panela | **ne** — čita izvor |
+| `Tools/run-layer-edit-parity-test.py` | da isti broj daje **isti piksel**, fotografija vs layer | da, bilo koji RAW |
+
+Drugi je namerno bez fotografije: ovaj dokument već četiri puta beleži „lenjir
+koji ništa ne meri ne prijavljuje nijedan pad", a fotografija na ovoj mašini
+zna da nestane.
+
+### Kako se piše nova zajednička poluga
+
+Ne kopirati filter u oba puta. Napraviti **jednu** funkciju na
+`PhotoEditRenderer` i zvati je sa obe strane — `applyExposure` je primer koji
+je za to i napravljen. Dva poziva istog koda ne mogu da se raziđu; dva slična
+bloka koda hoće, i to tiho.
+
+### Šta je 12.09. NAĐENO da se već razišlo
+
+| slajder | šta je bilo | uzrok |
+|---|---|---|
+| **Contrast** | layer je grejao belo, fotografija nije | layer je vukao `CIColorControls` (linearno oko srednje sive) koji je fotografija **izmerila i odbacila 05.09** |
+| **Exposure / Temperature / Tint** | poklapali se na JPEG-u do 0,00, razilazili se na RAW-u | fotografija je išla kroz RAW dekoder, layer preko već iscrtanih piksela |
+| **opseg Exposure-a** | fotografija ±1,5, layer ±1,5 — *slučajno* isto | KORAK 173 je menjao samo fotografiju; layer je zatečeno bio isti |
+
+Izmereno, popravljeno i zaključano u KORAKU 176.
 
 ## 🟡 OTVORENO — možda SDXL Inpainting umesto SD 1.5 (8. septembar 2026)
 
@@ -671,6 +717,39 @@ mogu videti na ekranu**: da prozor ostaje 834 posle promene teme, i hover
 animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 12. septembar 2026 — kalibracija layera i nov Exposure (NIJE OBJAVLJENO)
+
+| | |
+|---|---|
+| **176** | slajderi na layeru sad daju **isti piksel** kao na slici — 6 od 18 se razilazilo, sad je svih 18 na 0,00 |
+| **177** | **Background Enhanced** — desni klik u gridu i u Create traci: Select People, pa Shadows −100 / Saturation +30 / Clarity +30 na pozadini, pa Flatten |
+| **178** | Exposure spušten na **±1 EV** i prestao da bude ravan gain — nova kriva sa ramenom, po klijentovoj specifikaciji |
+
+- **Fotografije su se vratile na mašinu**: 15 `.NEF` u `~/Desktop/RAW Tests Images/`. Zapis od 11.09. („nema nijedne RAW fotografije") više ne važi, i tri od četiri testa koja su zbog toga stajala sad prolaze.
+- **34 od 35** testova izlazi sa 0. Jedini koji ne izlazi je `run-thumbnail-parity-test.py`, i to je **pravi nalaz, ne alat koji fali** — v. ispod.
+- Upisan **🔴 MUST** na vrh dokumenta: slajder na layeru je isti slajder kao na slici.
+- ⚠️ **Ništa od ovoga nije objavljeno.** App je sagrađena, instalirana i pokrenuta (11.17 / 31), commit-ovi lokalni.
+
+#### ⚠️ NOV OTVOREN NALAZ — sličica je svetlija od platna
+
+`run-thumbnail-parity-test.py` sad kad ima fotografije **meri i pada**. Na šest fotki:
+
+| | blok RMS (granica 6,5) | razlika svetline (granica ±2) |
+|---|---|---|
+| C4S_5743 | 2,66 | +0,6 |
+| C4S_8932 | 4,06 | +1,3 |
+| C4S_5740 | 4,61 | +1,4 |
+| C4S_7891 | 4,81 | **+2,5** |
+| C4S_7888 | 4,93 | **+2,4** |
+| C4S_7792 | 5,02 | **+2,8** |
+
+Blok RMS je svuda ispod granice — **ista je slika**, nije se vratio kvar od 5.09
+(tada 30,7 nivoa tamnije, RMS 36,2). Ali odstupanje je **uvek u istom smeru:
+sličica je svetlija**. Sistematski pomak, nije šum. Nije dirano u ovoj sesiji.
+
+---
+
 
 ### GDE SMO STALI — 11. septembar 2026 — v11.17 OBJAVLJENA, univerzalna
 
@@ -18213,6 +18292,221 @@ jedinicama širine ekrana.
 liči na ono što je klijent gledao.
 
 Rezervna kopija pre izmene: `ContentView.swift.before_kanata_two_equal_large_photos`.
+
+---
+
+## KORAK 176 — slajder na layeru nije bio isti slajder kao na slici (12. septembar 2026)
+
+Klijent: *„kada se podele layeri na background i people, taj edit nije uopste
+isti kao main edit jedne slike — zasto ne znam.. ajde to prvo da iskalibrisemo"*.
+
+### Prvo lenjir, pa tek onda popravka
+
+`Tools/run-layer-edit-parity-test.py`: prevodi **izvor same app-e** i renderuje
+dve stvari nad istom fotografijom — fotografiju sa pomerenim slajderom, i istu
+fotografiju netaknutu ispod **derived layera preko celog kadra** sa istim brojem
+na njegovom slajderu. Maska je bela svuda, pa je svaka razlika između te dve
+slike doslovno „slajder znači dve različite stvari".
+
+Od 18 kontrola, **12 je bilo identično do 0,00** — što je ujedno i dokaz da
+lenjir meri ono što treba. Razilazilo se šest:
+
+| | RAW | JPEG | dakle |
+|---|---|---|---|
+| **Contrast** | pada | **pada** | čista razlika u matematici |
+| **Exposure, Temperature, Tint** | pada | **0,00** | razlika je u RAW dekoderu |
+
+### Uzrok 1 — Contrast je vukao filter koji je fotografija već odbacila
+
+`applyLocalToneColorDetail` je terao Contrast kroz `CIColorControls`, dakle
+linearno skaliranje oko srednje sive. To je **tačno onaj filter koji je
+`render` 05.09. izmerio i napustio** jer vuče belu tačku sa sobom: svaki
+pregoreli highlight ispod layera je posiveo. Na Contrast −0,5 fotografija
+izgubi 0,4 nivoa srednje vrednosti, layer je gubio **21,5**.
+
+Sada je ista kriva i ista konstanta (`contrastMidtoneBend`), istim redosledom
+kojim ih `render` radi — prvo kontrast, pa zasićenje zasebno.
+
+### Uzrok 2 — Exposure/WB na RAW-u se pikselima ne mogu dostići
+
+Fotografija gura Exposure u `CIRAWFilter.exposure`, a belu ravnotežu u
+`neutralTemperature` — **pre demozaika**. Layer je radio preko gotovih piksela.
+To nije ista operacija sa drugom konstantom nego druga operacija nad drugim
+podacima; nikakva kalibracija konstante to ne bi spojila.
+
+Zato `rawShiftedPhoto`: fotografija se dekoduje **još jednom**, sa layerovim
+brojem uračunatim u dekoder, pa se kroz masku spoji. Izmereno, oba nivoa:
+
+| | pre | posle |
+|---|---|---|
+| Exposure +0,5 | razlika 23,71 | **0,00** |
+| Exposure −0,5 | razlika −41,01 | **0,00** |
+| Temperature +0,5 | −7,90 | **0,00** |
+| Tint +0,5 | +6,01 | **0,00** |
+
+⚠️ **Exposure je iz ovog spiska ispao u KORAKU 178** — otkad je kriva nad
+pikselima, layer radi identičnu funkciju i ne traži drugi dekod. Belu ravnotežu
+i dalje traži.
+
+### ⚠️ Provera koju puna maska NE MOŽE da uradi
+
+RAW `PhotoBaseImage` nosi **jedan deljen `CIRAWFilter`**, a drugi prolaz menja
+parametre na toj istoj instanci. Da `filter.outputImage` nije snimak zatečenih
+parametara, pomerila bi se i fotografija **ispod** layera — klijent bi taknuo
+People layer i gledao kako se ceo kadar pomera. Pod belom maskom preko celog
+kadra to se ne vidi, jer ispod nema ničega vidljivog.
+
+Zato test ima i **polovičnu masku**, i dve polovine se porede sa **različitim**
+referencama: leva mora da bude fotografija SA slajderom, desna fotografija BEZ
+njega, u jednom renderu. Izmereno: `+0.00` na obe. Nema curenja.
+
+### Cena drugog dekoda — izmerena, i nije je bilo
+
+| | fotografija sama | sa layerom koji nosi WB |
+|---|---|---|
+| 2600 px | 0,07 s | 0,07 s |
+| native (5176 px) | 0,20 s | 0,20 s |
+
+Core Image renderuje svaki dekod samo tamo gde ga njegova maska traži, pa dva
+polukadra koštaju kao jedan ceo.
+
+⚠️ Prva dva merenja vremena su bila **pogrešna i izgledala su tačno**: „sa
+layerom" je ispadalo brže od „bez", jer prvi render u procesu plaća zagrevanje;
+i nativni render je prijavio 0,00 s, jer `createCGImage` vraća **lenj** CGImage
+koji se ne iscrta dok ga neko ne nacrta. Sad ide `render(toBitmap:)` i najbolje
+od tri.
+
+---
+
+## KORAK 177 — „Background Enhanced" na desni klik (12. septembar 2026)
+
+Klijent: *„kada se selektuju slike na desni klik, sve selektovane slike da mogu
+da budu obradjene ovim putem select people, da razdvoji backround od
+coveka/ljudi, i kada to uradi select layer backround, and edit like this:
+Shadows -100, situration plus 30, Clarity plus 30. i naravno flatten image posle
+toga. I to dugme na desnom kliku da se zove Backround Enhanced"* — pa, sa
+snimkom ekrana Create trake: *„ovde mora da bude na desnom kliku na kartici
+selektovane slike da imaju enhanced backround as well"*.
+
+### Nije napravljen nov posao nego četvrti recept
+
+Mašinerija je već postojala — `PortraitRecipe` (Youthify, Subject Mono, Mono
+Background) radi tačno taj niz: Select People, brojevi na jednom od dva layera,
+Flatten. Dodat je četvrti slučaj sa klijentovim brojevima: `shadows = -1`,
+`saturation = 0.30`, `clarity = 0.30` na **Background** layeru.
+
+⚠️ Brojevi su na skali −1…1, koju panel ispisuje kao ×100. Test odbija 30 na
+mestu gde treba 0,30 — trideset puta predaleko, i izgledalo bi kao „radi".
+
+### Petlja je izvučena u servis, i to je bio pravi posao
+
+`runPortraitRecipes` je živeo unutar `DevelopView`, pa mu grid nije mogao
+prići. Jeftin način da dugme proradi bio bi **druga kopija te petlje** — i ta
+druga kopija je ona koja bi se razišla sa klijentovim brojevima. Sad je
+`PortraitRecipeService`, i zovu ga oba mesta; razlikuju se samo po tome šta
+ispisuju dok radi.
+
+`writesOnBackground` je iz istog razloga osobina, a ne poređenje slučaja:
+`applied` je ranije birao layer sa `self == .monoBackground`, i drugi
+pozadinski recept bi to tiho oborio.
+
+### Gde je dugme
+
+- **Grid**, desni klik na fotografiju: radi nad **celom selekcijom** kad je
+  kliknuta fotografija deo nje — isto pravilo kao Export i Delete iznad njega.
+- **Create traka**, desni klik: ispod Youthify.
+- **U mestu, ne duplikat.** Dva „Duplicate …" recepta iznad prave kopiju jer su
+  tako traženi; ovaj je tražen kao „obradi selektovane slike". Peče piksele —
+  Unflatten to vraća.
+
+### Čime je zaključano
+
+`Tools/run-background-enhanced-test.py`: brojevi nad **pravim** `PortraitRecipe`
+tipom, plus provera da grid ne pravi svoje layere i ne peče sam. **Provereno da
+pada** na tri podmetnute greške: pogrešna skala, obrnut znak Shadows-a, i recept
+koji padne na ljude umesto na pozadinu.
+
+---
+
+## KORAK 178 — Exposure prestaje da bude ravan gain (12. septembar 2026)
+
+Dva zahteva, isti slajder: *„namesti exposure da bude maximum 1 ne da bude 1.5
+maximum, zasto sto je i dalje too much senzitivan"* i *„jel lightroomov expose
+radi drugacije nego nas? nekako bude bas lepo, a ovde malo pomerim — sve se
+zapali!"*
+
+### Opseg: ±1,5 → ±1, na sva tri panela
+
+Drugo sužavanje (±3 → ±1,5 je bilo 11.09). Značenje broja se **nije** menjalo:
+1 je jedan stop, isti onaj koji je Lightroom-ovih +1,00.
+
+### Da, Lightroom radi drugačije — i izmereno je koliko
+
+Naš Exposure je bio ravno množenje. Na `C4S_7891.NEF`, udeo kadra na čistoj
+beloj (detalj koji se spuštanjem slajdera **ne vraća**):
+
+| Exposure | na 255, pre | na 255, sad | srednji tonovi, pre → sad |
+|---|---|---|---|
+| +0,00 EV | 19,83 % | 19,83 % | 139,9 → 139,9 |
+| +0,25 EV | 21,85 % | **15,29 %** | 153,1 → 151,3 |
+| +0,50 EV | 24,54 % | **15,11 %** | 166,1 → 163,8 |
+| +1,00 EV | 29,87 % | **14,97 %** | 190,9 → 189,1 |
+
+Desetina kadra je pregorevala preko jednog stopa. Sad paljenje **ne raste**, a
+srednji tonovi se dižu isto kao pre — to je kontrolna kolona: kriva koja bi
+paljenje rešila tako što zatamni sliku videla bi se tu.
+
+### ⚠️ Drugo merenje je odlučilo GDE popravka ide
+
+Koliko svetla preživi **iznad** bele u gotovom renderu:
+
+| | max linearno | iznad bele |
+|---|---|---|
+| +0,00 EV | 1,043 | 3,63 % |
+| +0,50 EV | 1,057 | 3,51 % |
+| +1,00 EV | 1,060 | **3,39 %** |
+
+Rezerva se **smanjuje** kako Exposure raste — dakle RAW dekoder pali sam, pre
+nego što išta nizvodno može da vidi. Rameno primenjeno posle dekoda moglo bi
+samo da zatamni ono što je već izgubljeno. Zato gain **izlazi iz dekodera**
+(`filter.exposure = 0`) i postaje kriva nad pikselima, za RAW i za JPEG isto.
+
+### Oblik krive — `BriefShow/ExposureCurve.swift`
+
+Po klijentovoj specifikaciji: srednji tonovi nose pun stop (srednja siva je
+0,18 linearno), vrh se stiska mekim kolenom, dno isto, korekcija jaše na
+**luminansi** pa nijansa preživi, i malo zasićenja se vraća gde bi koleno
+isprало boju.
+
+⚠️ **Beli prag (whitepoint) je cela stvar, i prva verzija ga nije imala.**
+Fiksno Reinhard koleno merilo je predivno — paljenje 19,83 % → 0,00 % — i bilo
+je pogrešno: +0,10 EV je čistu belu spustio na 230 u jednom koraku. Desetina
+stopa mora da uradi desetinu stopa posla. Sa belim pragom koleno stiska tačno
+onaj opseg koji je gain napravio i ništa više, pa je na EV 0 **identitet**.
+
+⚠️ **I druga greška, iste vrste:** zaštita po kanalu je hvatala sve iznad
+kolena, pa je stiskala **drugi put** ono što je kriva već oblikovala — čisto
+belo je izlazilo kao 0,944. Sad se pali tek kad nešto stvarno pređe belu.
+
+Renderuje se kroz `CIColorCube`, 32³, istim putem kojim već ide Color Mixer:
+jedan prolaz bez obzira na veličinu fotografije, bez drugog build sistema za
+jednu funkciju.
+
+⚠️ **Ovo menja kako se već sačuvan Exposure iscrtava.** Ista vrsta prihvaćenog
+ustupka kao ispravka znaka kod Temperature — staro ponašanje je bilo ono na šta
+se žalilo.
+
+### Čime je zaključano
+
+`Tools/run-exposure-curve-test.py` — dve polovine. Osobine krive nad **pravim**
+tipom: EV 0 je identitet do 1e-12, crna ostaje crna i bela ostaje bela na svakom
+EV-u, nijedan kanal ne može preko bele, srednja siva nosi pun stop, monotono i
+po tonu i po slajderu, nema prevoja na kolenu, kanali čuvaju međusobne odnose
+(nijansa), i tabela kroz koju se renderuje **jeste** ta kriva. Druga polovina je
+tabela paljenja gore, nad pravom fotografijom.
+
+`Tools/run-slider-parity-test.py` — novi lenjir za 🔴 MUST: isti opseg i korak
+na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
 
 ---
 

@@ -22,14 +22,18 @@ func check(_ label: String, _ pass: Bool, _ detail: String = "") {
     if !pass { failures += 1 }
 }
 
-// The Exposure slider as the panel really builds it: ±1.5 EV, a 16pt thumb,
+// The Exposure slider as the panel really builds it: ±1 EV, a 16pt thumb,
 // and a track the width of the panel at its default size less the padding.
 //
-// ⚠️ ±1.5, NOT ±3, since 11.09: the range was halved so the same drag changes
-// half as much (*„da bude barem za 50% manje senzitivnije"*). If this number
-// and Develop.swift's editSlider("Exposure", range:) ever disagree, this whole
-// file is measuring a slider the app does not have.
-let range = -1.5...1.5
+// ⚠️ ±1 since 12.09, and this is the SECOND narrowing. It was ±3 until 11.09,
+// then ±1.5 (*„da bude barem za 50% manje senzitivnije"*), and now ±1 —
+// *„namesti exposure da bude maximum 1 ne da bude 1.5 maximum zasto sto je i
+// dalje too much senstivan"*. The travel is what changed, never the meaning: 1
+// is one stop, the same stop Lightroom's +1.00 is. If this number and
+// Develop.swift's editSlider("Exposure", range:) ever disagree, this whole file
+// is measuring a slider the app does not have — which is exactly what happened
+// on 11.09, caught by run-slider-drag-test.py.
+let range = -1.0...1.0
 let thumbSize: CGFloat = 16
 let trackWidth: CGFloat = 286
 let usable = trackWidth - thumbSize

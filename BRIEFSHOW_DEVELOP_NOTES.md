@@ -733,6 +733,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 | **180** | **Contrast** prestaje da bude rastezanje po kanalu — S-kriva na OKLab luminansi, pivot na srednjoj sivoj, mekani krajevi, chroma prigušena (NIJE OBJAVLJENO) |
 | **181** | četiri prijave iz probe: crop se vuče protiv miša, **kartica sa slajderima i živim prikazom** pre Background Enhanced-a, Generative vraćen na LaMa osnovu, i **Undo Background Enhanced** (NIJE OBJAVLJENO) |
 | **182** | kartica posle prve probe: list joj je **delio pogled** sa drugim listovima pa se nije otvarao, **šest kontrola** umesto tri, i crna slova u dark temi (NIJE OBJAVLJENO) |
+| **183** | kartica je bila vezana za **dva dugmeta od tri** — panel „AI Portrait" ju je zaobilazio; sad **recept sam kaže** da pita pre nego što uradi (NIJE OBJAVLJENO) |
 
 - Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.048.108 bajta, `codesign` ok, nula fotografija.
 - Update lanac proveren pozivom pravog poređenja: **svaka** verzija od 11.7 do 11.17 dobija karticu za 11.20.
@@ -18568,6 +18569,60 @@ tabela paljenja gore, nad pravom fotografijom.
 
 `Tools/run-slider-parity-test.py` — novi lenjir za 🔴 MUST: isti opseg i korak
 na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
+
+---
+
+## KORAK 183 — kartica je bila vezana za dva dugmeta od tri (13. septembar 2026)
+
+Prijava sa dva snimka jedan pored drugog: *„ovde kada kliknem onda dobijem tu
+karticu, a kada kliknem ovde na backround enhanced onda ne dobijem tu karticu da
+editujem backround a treba i tu da je dobijem!"*
+
+### Treći okidač koji je promakao
+
+Background Enhanced se pokreće sa **tri** mesta, ne dva:
+
+| odakle | šta radi | kartica? |
+|---|---|---|
+| desni klik u gridu | `PortraitRecipeService` nad selekcijom | da, od KORAKA 181 |
+| desni klik u traci/editoru | isto | da, od KORAKA 181 |
+| **panel „AI Portrait"** | editorov lanac nad **otvorenom** slikom | **ne** — ovo je pad |
+
+Panel je promakao jer se kartica vezivala **za pozivno mesto**, jedno po jedno.
+Zato je sad obrnuto: **recept sam kaže** da li pita pre nego što uradi
+(`PortraitRecipe.opensCard`), i sam kaže kako se dugme zove
+(`actionTitle`, sa tri tačke). Tri dugmeta danas, četvrto jednog dana — pitanje
+recepta je jedini raspored u kom dodavanje dugmeta ne može da zaboravi.
+
+### ⚠️ Panel NIJE preusmeren na servis, i to je namerno
+
+Ta dva puta su stvarno različita puštanja, ne jedno sa dva dugmeta:
+
+- **selekcija** ide kroz `PortraitRecipeService`, van glavne niti, nad slikama
+  koje nijedan editor ne drži;
+- **panel** radi nad slikom koja je OTVORENA, kroz editorov lanac — koji ljude
+  nalazi u živu listu layera, selektuje layer na koji su brojevi otišli, vozi
+  traku napretka u panelu i vraća četkicu posle.
+
+Da je pritisak iz panela otišao na servis, sve to bi se izgubilo i editor
+otvorene slike bi ostao sa zastarelim zapisom. Zato `BackgroundEnhancedRequest`
+nosi `source`, a kartičin Apply grana po njemu.
+
+### Čime je zaključano
+
+`run-background-enhanced-test.py` — nove provere **broje** pozivna mesta umesto
+da ih imenuju: svaki pritisak koji stiže do `.backgroundEnhanced` mora da prođe
+kroz karticu, i jedino kartičin Apply sme da ga pusti direktno. Novo dugme koje
+to zaobiđe pada ovde onog dana kad se napiše. Uz to: panel pita recept a ne
+imenuje ga, njegov Apply vozi editorov lanac (`case .openPhoto`), selekcija i
+dalje ide na servis (`case .selection`), i editorov lanac **prenosi kartičine
+brojeve** do layera.
+
+`run-strip-recipe-menu-test.py` — traka se sad traži po `actionTitle`, jer tri
+tačke više ne piše pozivno mesto.
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`; app sagrađena,
+instalirana i pokrenuta. Nije objavljeno, nema push-a.
 
 ---
 

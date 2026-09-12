@@ -5572,6 +5572,26 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Whether pressing this one ASKS before it acts.
+    ///
+    /// ⚠️ ONE PLACE, and it exists because the first version of the card was
+    /// wired to two of the three buttons that run this recipe and not the third.
+    /// Reported 13.09 with both screenshots side by side: *„ovde kada kliknem
+    /// onda dobijem tu karticu, a kada kliknem ovde na backround enhanced onda
+    /// ne dobijem tu karticu … a treba i tu da je dobijem!"* — the right-click
+    /// menus opened it, the AI Portrait panel in the editor did not.
+    ///
+    /// There are three buttons and there will be a fourth one day. Asking the
+    /// recipe is the only arrangement where adding a button cannot forget.
+    var opensCard: Bool { self == .backgroundEnhanced }
+
+    /// What a button that runs this recipe is called.
+    ///
+    /// The trailing ellipsis is macOS's own convention for "this one asks
+    /// first", and it comes from here rather than being typed at each call site
+    /// for the same reason `opensCard` does.
+    var actionTitle: String { opensCard ? "\(title)…" : title }
+
     /// Which of the two layers this recipe writes on — shown in the UI, and
     /// the reason Subject Mono and Mono Background can be run together.
     var targetLayerName: String {
@@ -5646,8 +5666,25 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
 /// copy of the target list, so a selection that changes while the card is open
 /// cannot quietly become what Apply acts on.
 struct BackgroundEnhancedRequest: Identifiable {
+
+    /// Which of the two ways into the recipe opened this.
+    ///
+    /// ⚠️ They are genuinely different runs, not one run with two buttons. A
+    /// selection goes through `PortraitRecipeService` off the main thread, on
+    /// photographs no editor is holding. The AI Portrait panel works on the
+    /// photo that is OPEN, through the editor's own chain — which finds the
+    /// people into the live layer list, selects the layer the numbers went on,
+    /// drives the progress bar in the panel, and gives the brush back
+    /// afterwards. Routing the panel's press through the service would lose all
+    /// of that and leave the open photo's editor showing a stale record.
+    enum Source {
+        case selection
+        case openPhoto
+    }
+
     let id = UUID()
     let targets: [URL]
+    var source: Source = .selection
 }
 
 /// The card that stands between pressing Background Enhanced and it happening.
@@ -8380,8 +8417,14 @@ struct DevelopView: View {
                     onCancel: { backgroundEnhancedRequest = nil },
                     onApply: { tuning in
                         let targets = request.targets
+                        let source = request.source
                         backgroundEnhancedRequest = nil
-                        runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)
+                        switch source {
+                        case .selection:
+                            runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)
+                        case .openPhoto:
+                            runPortraitRecipe(.backgroundEnhanced, tuning: tuning)
+                        }
                     }
                 )
             }
@@ -9487,8 +9530,8 @@ struct DevelopView: View {
             // on them — it ends in a flatten like every recipe, and Unflatten
             // is what takes that back.
             Button(bwTargets.count > 1
-                   ? "\(PortraitRecipe.backgroundEnhanced.title)… (\(bwTargets.count))"
-                   : "\(PortraitRecipe.backgroundEnhanced.title)…") {
+                   ? "\(PortraitRecipe.backgroundEnhanced.actionTitle) (\(bwTargets.count))"
+                   : PortraitRecipe.backgroundEnhanced.actionTitle) {
                 backgroundEnhancedRequest = BackgroundEnhancedRequest(targets: bwTargets)
             }
             .disabled(isAIWorkingOnOpenPhoto)
@@ -10143,11 +10186,21 @@ struct DevelopView: View {
             // with no room for its own name.
             ForEach(PortraitRecipe.allCases) { recipe in
                 HStack(spacing: 6) {
-                    toolButton(recipe.title, systemImage: recipe.systemImage,
+                    // ⚠️ The recipe decides whether this asks first, not the
+                    // call site — see PortraitRecipe.opensCard. This panel is
+                    // the button the card was wired to and missed on 13.09.
+                    toolButton(recipe.actionTitle, systemImage: recipe.systemImage,
                                isActive: runningRecipe == recipe,
                                isEnabled: canRunPortraitRecipe,
                                help: recipe.help) {
-                        runPortraitRecipe(recipe)
+                        if recipe.opensCard {
+                            guard let selectedURL, canRunPortraitRecipe else { return }
+                            backgroundEnhancedRequest =
+                                BackgroundEnhancedRequest(targets: [selectedURL],
+                                                          source: .openPhoto)
+                        } else {
+                            runPortraitRecipe(recipe)
+                        }
                     }
 
                     Spacer(minLength: 0)
@@ -10185,7 +10238,8 @@ struct DevelopView: View {
     /// order, because that is what was asked for and because the middle step
     /// is the one that is easy to get wrong by hand: the numbers go on the
     /// LAYER, not on the photograph, and the panel has both.
-    private func runPortraitRecipe(_ recipe: PortraitRecipe) {
+    private func runPortraitRecipe(_ recipe: PortraitRecipe,
+                                   tuning: BackgroundEnhancedTuning = BackgroundEnhancedTuning()) {
         guard canRunPortraitRecipe else {
             return
         }
@@ -10199,7 +10253,8 @@ struct DevelopView: View {
             recipeStepText = "applying \(recipe.title.lowercased())…"
 
             let next = recipe.applied(to: settings,
-                                      backgroundID: backgroundID, peopleID: peopleID)
+                                      backgroundID: backgroundID, peopleID: peopleID,
+                                      tuning: tuning)
             settings = next
             // Selected so the panel is showing the layer the numbers went on
             // if the bake fails and the layers stay: "Mono Background" writing

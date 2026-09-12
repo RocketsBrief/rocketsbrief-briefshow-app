@@ -23698,8 +23698,8 @@ struct PhotoShowSheet: View {
         // get small modul card with all slide bar setting … to show real alive
         // result on the first chosen image"*.
         Button(targets.count > 1
-               ? "\(PortraitRecipe.backgroundEnhanced.title)… (\(targets.count))"
-               : "\(PortraitRecipe.backgroundEnhanced.title)…") {
+               ? "\(PortraitRecipe.backgroundEnhanced.actionTitle) (\(targets.count))"
+               : PortraitRecipe.backgroundEnhanced.actionTitle) {
             backgroundEnhancedRequest = BackgroundEnhancedRequest(targets: targets)
         }
         .help(PortraitRecipe.backgroundEnhanced.help)

@@ -42,7 +42,9 @@ ITEMS = [
     ("Duplicate Subject Mono", ".subjectMono", DUPLICATES),
     ("Duplicate Mono Background", ".monoBackground", DUPLICATES),
     ("Youthify", ".youthify", IN_PLACE),
-    ("PortraitRecipe.backgroundEnhanced.title", "BackgroundEnhancedRequest", OPENS_CARD),
+    # `.actionTitle`, not `.title`: the ellipsis that says "this one asks
+    # first" comes from the recipe now, not from the call site.
+    ("PortraitRecipe.backgroundEnhanced.actionTitle", "BackgroundEnhancedRequest", OPENS_CARD),
 ]
 
 

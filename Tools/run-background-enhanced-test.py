@@ -106,6 +106,46 @@ check("the card previews through the recipe itself, not its own copy of it",
       "PortraitRecipe.backgroundEnhanced" in card and "tuning: wanted" in card)
 check("and the card does not flatten anything", "FlattenedImageStore.flatten" not in card)
 
+# ⚠️ EVERY BUTTON THAT RUNS THIS RECIPE, COUNTED. Reported 13.09 with two
+# screenshots side by side: *„ovde kada kliknem onda dobijem tu karticu, a kada
+# kliknem ovde na backround enhanced onda ne dobijem tu karticu … a treba i tu da
+# je dobijem!"* — the two right-click menus opened the card and the AI Portrait
+# panel in the editor did not, because the card had been wired to the call sites
+# one at a time. So this counts the call sites instead of naming them: every
+# press that reaches .backgroundEnhanced must go through the card, and any new
+# button that does not fails here the day it is written.
+print("\nevery way in goes through the card")
+
+check("the recipe itself says which ones ask first",
+      "var opensCard: Bool { self == .backgroundEnhanced }" in develop)
+check("and names its own button, so no call site types the ellipsis",
+      'var actionTitle: String { opensCard ? "\\(title)…" : title }' in develop)
+
+for label, text in (("editor", develop), ("grid", content)):
+    presses = text.count("BackgroundEnhancedRequest(targets:")
+    direct = (text.count("runPortraitRecipes([.backgroundEnhanced]")
+              + text.count("PortraitRecipeService.run([.backgroundEnhanced]"))
+    check(f"the {label} opens the card from every one of its buttons", presses >= 1,
+          f"{presses} presses")
+    # The one place that is allowed to run it directly is the card's own Apply.
+    check(f"and nothing in the {label} runs it without asking first",
+          direct <= 1, f"{direct} direct runs")
+
+# The AI Portrait panel is the third button and the one that was missed. It runs
+# on the OPEN photo through the editor's own chain, so it must reach the card
+# with that source rather than be routed through the batch service.
+check("the AI Portrait panel asks the recipe instead of naming it",
+      "toolButton(recipe.actionTitle" in develop and "if recipe.opensCard {" in develop)
+check("and its Apply runs the editor's own chain, not the batch service",
+      "case .openPhoto:" in develop
+      and "runPortraitRecipe(.backgroundEnhanced, tuning: tuning)" in develop)
+check("while a selection still goes through the service",
+      "case .selection:" in develop
+      and "runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)" in develop)
+check("the editor's chain carries the card's numbers through to the layer",
+      "tuning: BackgroundEnhancedTuning = BackgroundEnhancedTuning()) {" in develop
+      and "backgroundID: backgroundID, peopleID: peopleID,\n                                      tuning: tuning)" in develop)
+
 print("\nthe card on screen")
 # ⚠️ Reported 12.09: *„kad sam kliknuo backround enhance nisam dobio nikakav
 # modul"* — it opened in one window and not in the other. SwiftUI honours ONE

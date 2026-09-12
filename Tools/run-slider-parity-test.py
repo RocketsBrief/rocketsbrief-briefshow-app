@@ -126,30 +126,55 @@ for label in sorted(mask_shared):
 # named pair on BackgroundEnhancedTuning, and that pair is checked here against
 # the panel the numbers end up on: a LAYER's, because the recipe writes on the
 # Background layer.
-print("\nand the Background Enhanced card, the fourth place these three appear")
+print("\nand the Background Enhanced card, the fourth place these controls appear")
 
-card_range = re.search(r"static let range: ClosedRange<Double> = (-?[\d.]+)\.\.\.(-?[\d.]+)", source)
-card_step = re.search(r"static let step = ([\d.]+)", source)
-check("the card names its range and step in one place",
+# The card's rows come from one table — BackgroundEnhancedTuning.Control — so
+# each one's range, step and readout are read out of that enum and compared with
+# the LAYER panel's row of the same name. The layer, not the photo, because the
+# recipe writes on the Background layer.
+#
+# ⚠️ Exposure is the reason this reads a table instead of one shared pair. It is
+# the ONE control here that does not step by 0.01 and does not read out as
+# value × 100 — it steps by 0.05 and reads in stops, on the photo and on a layer
+# alike. Six rows treated as identical would have got Exposure wrong and looked
+# right doing it.
+card_rows = re.search(r"enum Control: String, CaseIterable \{\s*case ([^\n]+)", source)
+check("the card's rows come from one table", card_rows is not None)
+
+card_range = re.search(r"var range: ClosedRange<Double> \{ (-?[\d.]+)\.\.\.(-?[\d.]+) \}", source)
+card_step = re.search(r"var step: Double \{ self == \.exposure \? ([\d.]+) : ([\d.]+) \}", source)
+check("and so do their range and step",
       card_range is not None and card_step is not None)
 
-if card_range and card_step:
+if card_rows and card_range and card_step:
+    names = [name.strip() for name in card_rows.group(1).split(",")]
     card_span = (float(card_range.group(1)), float(card_range.group(2)))
-    card_step_value = float(card_step.group(1))
-    for label in ("Shadows", "Saturation", "Clarity"):
-        # A row in the card at all: the client asked for *„all slide bar
-        # setting"*, so a recipe number with no slider is a missing feature and
-        # not a tidy default.
-        key = f'key: "card.{label.lower()}"'
-        check(f'the card has a "{label}" row', key in source, key)
+    exposure_step = float(card_step.group(1))
+    other_step = float(card_step.group(2))
 
+    # All six he asked for, by name: his original three plus the three added on
+    # 12.09 — *„tu bi ja stavio i exposure i contrast i dhaze"*.
+    wanted = ["exposure", "contrast", "shadows", "saturation", "clarity", "dehaze"]
+    check("the card carries all six controls he asked for",
+          names == wanted, f"{names} vs {wanted}")
+
+    for name in names:
+        label = name.capitalize()
         if label not in panels["layer"]:
             check(f'"{label}" exists on the layer panel to be compared with', False)
             continue
         layer_span, layer_step = panels["layer"][label]
+        step = exposure_step if name == "exposure" else other_step
         check(f'"{label}" — the card matches the layer panel',
-              card_span == layer_span and card_step_value == layer_step,
-              f"card {card_span}/{card_step_value} vs layer {layer_span}/{layer_step}")
+              card_span == layer_span and step == layer_step,
+              f"card {card_span}/{step} vs layer {layer_span}/{layer_step}")
+
+    # ⚠️ And the readout, which is the half a range check cannot see: Exposure
+    # reading "+30" instead of "+0.30" would be the same slider saying a
+    # different thing, which is what the MUST is about.
+    check("Exposure reads out in stops, the other five as value x 100",
+          'String(format: "%+.2f", value)' in source
+          and 'String(format: "%+.0f", value * 100)' in source)
 
 print("\nwhat the photo has and a layer does not")
 only_photo = sorted(set(panels["photo"]) - set(panels["layer"]))

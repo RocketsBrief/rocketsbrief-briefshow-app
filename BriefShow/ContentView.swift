@@ -22719,17 +22719,30 @@ struct PhotoShowSheet: View {
         // The same card the editor's right-click menu opens, on the same
         // service — one implementation, so "Background Enhanced" cannot come to
         // mean two different things depending on which window it was pressed in.
-        .sheet(item: $backgroundEnhancedRequest) { request in
-            BackgroundEnhancedCard(
-                targets: request.targets,
-                onCancel: { backgroundEnhancedRequest = nil },
-                onApply: { tuning in
-                    let targets = request.targets
-                    backgroundEnhancedRequest = nil
-                    runBackgroundEnhancedInGrid(targets, tuning: tuning)
-                }
-            )
-        }
+        // ⚠️ ATTACHED TO A BACKGROUND VIEW, NOT TO THIS ONE, and that is the
+        // fix for *„kad sam kliknuo backround enhance nisam dobio nikakav
+        // modul"* on 12.09. SwiftUI honours ONE `.sheet` per view; this chain
+        // already carried others, so a second one on the same view is a
+        // coin toss over which of them ever opens — and the card lost it in one
+        // of the two windows while working in the other, which is exactly how it
+        // was reported. A background view is a view of its own, so the card's
+        // sheet no longer competes with anything, and the sheets that were
+        // already here are not touched.
+        .background(
+            Color.clear
+                .allowsHitTesting(false)
+                .sheet(item: $backgroundEnhancedRequest) { request in
+                BackgroundEnhancedCard(
+                    targets: request.targets,
+                    onCancel: { backgroundEnhancedRequest = nil },
+                    onApply: { tuning in
+                        let targets = request.targets
+                        backgroundEnhancedRequest = nil
+                        runBackgroundEnhancedInGrid(targets, tuning: tuning)
+                    }
+                )
+            }
+        )
         .sheet(item: $importingSource) { source in
             CameraImportView(
                 source: source,

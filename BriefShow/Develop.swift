@@ -5401,19 +5401,122 @@ enum PeopleLayerFactory {
 ///
 /// Stored on the −1…1 scale every slider in this app reads out as ×100.
 struct BackgroundEnhancedTuning: Equatable {
+
+    // ⚠️ THE DEFAULTS ARE HIS. Shadows −100, Saturation +30, Clarity +30 — the
+    // three he gave by name on 12.09. The other three arrived the same evening,
+    // after he saw the card: *„tu bi ja stavio i exposure i contrast i dhaze"*.
+    // They default to ZERO, so a recipe run without touching the card is still
+    // byte-for-byte the one that shipped in v11.20.
+    var exposure: Double = 0
+    var contrast: Double = 0
     var shadows: Double = -1
     var saturation: Double = 0.30
     var clarity: Double = 0.30
+    var dehaze: Double = 0
 
-    /// The panel's own ranges, and they are the SAME ranges as the photo's and
-    /// the layer's — the 🔴 MUST at the top of BRIEFSHOW_DEVELOP_NOTES.md. The
-    /// card is a fourth place these three controls appear, so its ranges are
-    /// named here, in one place, and Tools/run-slider-parity-test.py checks them
-    /// against the other three panels rather than trusting this comment.
-    static let range: ClosedRange<Double> = -1...1
-    static let step = 0.01
+    /// The six rows of the card, in the order the LAYER panel puts them.
+    ///
+    /// ⚠️ THE ROWS ARE A TABLE, NOT SIX HAND-WRITTEN SLIDERS, and that is the
+    /// 🔴 MUST at the top of BRIEFSHOW_DEVELOP_NOTES.md doing its work: the card
+    /// is a fourth place these controls appear, and the range, the step and the
+    /// readout of each one are named once, here, where
+    /// Tools/run-slider-parity-test.py reads them and compares each against the
+    /// layer panel's own row of the same name.
+    ///
+    /// ⚠️ Exposure is the reason this is a table. It is the ONE control that
+    /// does not step by 0.01 and does not read out as value × 100 — it steps by
+    /// 0.05 and reads in stops, because that is what it does on the photo and on
+    /// a layer. Six identical rows would have got it wrong and looked right.
+    enum Control: String, CaseIterable {
+        case exposure, contrast, shadows, saturation, clarity, dehaze
+
+        var title: String {
+            switch self {
+            case .exposure: return "Exposure"
+            case .contrast: return "Contrast"
+            case .shadows: return "Shadows"
+            case .saturation: return "Saturation"
+            case .clarity: return "Clarity"
+            case .dehaze: return "Dehaze"
+            }
+        }
+
+        /// The slider key, in the same shape the photo/layer/mask panels use so
+        /// the parity test can tell the card's rows from theirs.
+        var key: String { "card.\(rawValue)" }
+
+        var range: ClosedRange<Double> { -1...1 }
+
+        var step: Double { self == .exposure ? 0.05 : 0.01 }
+
+        func readout(_ value: Double) -> String {
+            self == .exposure
+                ? String(format: "%+.2f", value)
+                : String(format: "%+.0f", value * 100)
+        }
+    }
+
+    subscript(control: Control) -> Double {
+        get {
+            switch control {
+            case .exposure: return exposure
+            case .contrast: return contrast
+            case .shadows: return shadows
+            case .saturation: return saturation
+            case .clarity: return clarity
+            case .dehaze: return dehaze
+            }
+        }
+        set {
+            switch control {
+            case .exposure: exposure = newValue
+            case .contrast: contrast = newValue
+            case .shadows: shadows = newValue
+            case .saturation: saturation = newValue
+            case .clarity: clarity = newValue
+            case .dehaze: dehaze = newValue
+            }
+        }
+    }
 
     var isDefault: Bool { self == BackgroundEnhancedTuning() }
+}
+
+/// The card's own buttons.
+///
+/// ⚠️ WHY THIS EXISTS AND A PLAIN `Button` DOES NOT. Reported on 12.09 with the
+/// card on screen: *„vidis dole cancel slova kako su crna to nikako mora da budu
+/// siva.. sve gde su crna slova tako u appu a dark thema mora da budu normalna
+/// ne crne boje"*. A bare SwiftUI button on macOS draws its label in the
+/// SYSTEM's text colour, which is black whenever the Mac is in light appearance
+/// — and this app carries its own three themes that have nothing to do with the
+/// Mac's. So a card in the dark theme on a Mac set to light drew black letters
+/// on a near-black panel.
+///
+/// Everything the client can read in this app is painted from `AppColors`, and
+/// this is that rule reaching the last two buttons that were not.
+private struct CardButtonStyle: ButtonStyle {
+    var isProminent: Bool = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.custom("Figtree", size: 12).weight(isProminent ? .semibold : .medium))
+            .foregroundColor(isEnabled ? AppColors.ink : AppColors.muted)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(isProminent ? AppColors.panelAlt : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(AppColors.border.opacity(isProminent ? 0.9 : 0.6),
+                            lineWidth: isProminent ? 1.4 : 1)
+            )
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .contentShape(Rectangle())
+    }
 }
 
 /// The one-press portrait jobs: Select People, then a fixed set of moves on
@@ -5525,9 +5628,12 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
             // Shadows negative is the darkening direction (see
             // PhotoEditSettings.shadows), which is why his −100 is −1 and not
             // +1.
+            result.layers[index].adjustments.exposure = tuning.exposure
+            result.layers[index].adjustments.contrast = tuning.contrast
             result.layers[index].adjustments.shadows = tuning.shadows
             result.layers[index].adjustments.saturation = tuning.saturation
             result.layers[index].adjustments.clarity = tuning.clarity
+            result.layers[index].adjustments.dehaze = tuning.dehaze
         }
 
         return result
@@ -5627,10 +5733,12 @@ struct BackgroundEnhancedCard: View {
 
             previewPicture
 
-            VStack(alignment: .leading, spacing: 10) {
-                recipeSlider("Shadows", key: "card.shadows", value: $tuning.shadows)
-                recipeSlider("Saturation", key: "card.saturation", value: $tuning.saturation)
-                recipeSlider("Clarity", key: "card.clarity", value: $tuning.clarity)
+            // Six rows from one table — see BackgroundEnhancedTuning.Control for
+            // why they are not six hand-written sliders.
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(BackgroundEnhancedTuning.Control.allCases, id: \.self) { control in
+                    recipeSlider(control)
+                }
             }
 
             footer
@@ -5710,20 +5818,22 @@ struct BackgroundEnhancedCard: View {
             // hidden when they are already the defaults, so the card always
             // says what "the recipe" means.
             Button("Reset") { tuning = BackgroundEnhancedTuning() }
+                .buttonStyle(CardButtonStyle())
                 .disabled(tuning.isDefault)
 
             Spacer()
 
             Button("Cancel", action: onCancel)
+                .buttonStyle(CardButtonStyle())
                 .keyboardShortcut(.cancelAction)
 
             // ⚠️ Apply is live even when the preview says "no people": the
             // preview is the FIRST photo only, and a selection of forty is not
             // ruled out by the one at the front of it.
             Button("Apply") { onApply(tuning) }
+                .buttonStyle(CardButtonStyle(isProminent: true))
                 .keyboardShortcut(.defaultAction)
         }
-        .font(.custom("Figtree", size: 12))
     }
 
     /// One row. Deliberately NOT `DevelopView.editSlider` — that one is wired
@@ -5733,22 +5843,30 @@ struct BackgroundEnhancedCard: View {
     /// checks them against the photo, layer and mask panels. That is the 🔴 MUST:
     /// this is a fourth place these three controls appear, and a fourth place is
     /// exactly how the first three drifted apart.
-    private func recipeSlider(_ title: String, key: String,
-                              value: Binding<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    /// One row. Deliberately NOT `DevelopView.editSlider` — that one is wired
+    /// into the editor's keyboard nudge registry and its selected-slider
+    /// highlight, neither of which exists out here — but the title, the range,
+    /// the step and the readout all come from `BackgroundEnhancedTuning.Control`
+    /// and Tools/run-slider-parity-test.py checks every one of them against the
+    /// layer panel's own row of the same name. That is the 🔴 MUST: this is a
+    /// fourth place these controls appear, and a fourth place is exactly how the
+    /// first three drifted apart.
+    private func recipeSlider(_ control: BackgroundEnhancedTuning.Control) -> some View {
+        let value = Binding(get: { tuning[control] },
+                            set: { tuning[control] = $0 })
+
+        return VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text(title)
+                Text(control.title)
                     .font(.custom("Figtree", size: 12).weight(.medium))
                     .foregroundColor(AppColors.ink)
                 Spacer()
-                Text(String(format: "%+.0f", value.wrappedValue * 100))
+                Text(control.readout(value.wrappedValue))
                     .font(.custom("Figtree", size: 11).monospacedDigit())
                     .foregroundColor(AppColors.inkSecondary)
             }
 
-            Slider(value: value,
-                   in: BackgroundEnhancedTuning.range,
-                   step: BackgroundEnhancedTuning.step)
+            Slider(value: value, in: control.range, step: control.step)
                 .controlSize(.small)
         }
     }
@@ -8244,17 +8362,30 @@ struct DevelopView: View {
         // result on the first chosen image"* — so pressing Background Enhanced
         // opens this and the recipe runs when Apply is pressed. See
         // BackgroundEnhancedCard.
-        .sheet(item: $backgroundEnhancedRequest) { request in
-            BackgroundEnhancedCard(
-                targets: request.targets,
-                onCancel: { backgroundEnhancedRequest = nil },
-                onApply: { tuning in
-                    let targets = request.targets
-                    backgroundEnhancedRequest = nil
-                    runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)
-                }
-            )
-        }
+        // ⚠️ ATTACHED TO A BACKGROUND VIEW, NOT TO THIS ONE, and that is the
+        // fix for *„kad sam kliknuo backround enhance nisam dobio nikakav
+        // modul"* on 12.09. SwiftUI honours ONE `.sheet` per view; this chain
+        // already carried others, so a second one on the same view is a
+        // coin toss over which of them ever opens — and the card lost it in one
+        // of the two windows while working in the other, which is exactly how it
+        // was reported. A background view is a view of its own, so the card's
+        // sheet no longer competes with anything, and the sheets that were
+        // already here are not touched.
+        .background(
+            Color.clear
+                .allowsHitTesting(false)
+                .sheet(item: $backgroundEnhancedRequest) { request in
+                BackgroundEnhancedCard(
+                    targets: request.targets,
+                    onCancel: { backgroundEnhancedRequest = nil },
+                    onApply: { tuning in
+                        let targets = request.targets
+                        backgroundEnhancedRequest = nil
+                        runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)
+                    }
+                )
+            }
+        )
         .sheet(isPresented: $showSyncDialog) {
             syncDialogView
         }

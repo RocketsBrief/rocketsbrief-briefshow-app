@@ -105,6 +105,46 @@ card = develop[card_start:develop.find("\n/// One step back for the one-press", 
 check("the card previews through the recipe itself, not its own copy of it",
       "PortraitRecipe.backgroundEnhanced" in card and "tuning: wanted" in card)
 check("and the card does not flatten anything", "FlattenedImageStore.flatten" not in card)
+
+print("\nthe card on screen")
+# ⚠️ Reported 12.09: *„kad sam kliknuo backround enhance nisam dobio nikakav
+# modul"* — it opened in one window and not in the other. SwiftUI honours ONE
+# `.sheet` per view and both chains already carried others, so the card's sheet
+# has to sit on a view of its own. This is checked in BOTH files because the
+# symptom was that it worked in one of them.
+for label, text in (("editor", develop), ("grid", content)):
+    marker = text.find(".sheet(item: $backgroundEnhancedRequest)")
+    before = text[max(0, marker - 200):marker]
+    check(f"the {label}'s card sheet sits on its own view, not stacked on another",
+          marker != -1 and ".background(" in before and "Color.clear" in before)
+
+# ⚠️ Reported in the same message: *„vidis dole cancel slova kako su crna to
+# nikako mora da budu siva"*. A bare SwiftUI button draws its label in the
+# SYSTEM's text colour, which is black whenever the Mac is in light appearance —
+# and this app's three themes have nothing to do with the Mac's.
+check("every button in the card is painted from the app's own palette",
+      'Button("Reset")' in card and 'Button("Cancel"' in card and 'Button("Apply")' in card
+      and card.count(".buttonStyle(CardButtonStyle") == 3)
+check("and that style reads its colours from AppColors",
+      "CardButtonStyle" in develop
+      and "foregroundColor(isEnabled ? AppColors.ink : AppColors.muted)" in develop)
+
+# All six, in the enum that drives the rows AND in `applied`, which is what
+# actually writes them onto the Background layer. One without the other is a
+# slider that moves and changes nothing.
+SIX = ("exposure", "contrast", "shadows", "saturation", "clarity", "dehaze")
+check("the card carries all six controls, not the original three",
+      "case exposure, contrast, shadows, saturation, clarity, dehaze" in develop)
+check("and the recipe writes every one of them onto the Background layer",
+      all(f"adjustments.{name} = tuning.{name}" in develop for name in SIX))
+check("and the three that were added default to zero, so an untouched run is "
+      "the recipe that shipped",
+      "var exposure: Double = 0" in develop
+      and "var contrast: Double = 0" in develop
+      and "var dehaze: Double = 0" in develop
+      and "var shadows: Double = -1" in develop
+      and "var saturation: Double = 0.30" in develop
+      and "var clarity: Double = 0.30" in develop)
 check("the grid does NOT build people layers of its own",
       "PeopleLayerFactory" not in content)
 check("the grid does NOT flatten on its own account",

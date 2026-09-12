@@ -732,6 +732,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 | **179** | **v11.20** objavljena: univerzalan paket (arm64 + x86_64), min macOS 13.0, LaMa unutra, SD dugmetom |
 | **180** | **Contrast** prestaje da bude rastezanje po kanalu — S-kriva na OKLab luminansi, pivot na srednjoj sivoj, mekani krajevi, chroma prigušena (NIJE OBJAVLJENO) |
 | **181** | četiri prijave iz probe: crop se vuče protiv miša, **kartica sa slajderima i živim prikazom** pre Background Enhanced-a, Generative vraćen na LaMa osnovu, i **Undo Background Enhanced** (NIJE OBJAVLJENO) |
+| **182** | kartica posle prve probe: list joj je **delio pogled** sa drugim listovima pa se nije otvarao, **šest kontrola** umesto tri, i crna slova u dark temi (NIJE OBJAVLJENO) |
 
 - Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.048.108 bajta, `codesign` ok, nula fotografija.
 - Update lanac proveren pozivom pravog poređenja: **svaka** verzija od 11.7 do 11.17 dobija karticu za 11.20.
@@ -18567,6 +18568,86 @@ tabela paljenja gore, nad pravom fotografijom.
 
 `Tools/run-slider-parity-test.py` — novi lenjir za 🔴 MUST: isti opseg i korak
 na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
+
+---
+
+## KORAK 182 — kartica posle prve probe: tri prijave (13. septembar 2026)
+
+Iz iste probe, sa karticom na ekranu:
+
+1. *„kad sam kliknuo backround enhance nisam dobio nikakav modul da mogu da
+   editujem backround?? Ali sam dobio kada sam selektovao vise slika"*
+2. *„tu bi ja stavio i exposure i contrast i dhaze"*
+3. *„vidis dole cancel slova kako su crna to nikako mora da budu siva.. sve gde
+   su crna slova tako u appu a dark thema mora da budu normalna ne crne boje"*
+
+### 1. Kartica je delila `.sheet` sa drugim listovima
+
+SwiftUI poštuje **JEDAN** `.sheet` po pogledu. Oba lanca su već nosila svoje
+(`showSyncDialog` i `showExportAllOptions` u editoru, `isDisclaimerNoticePresented`
+i `importingSource` u gridu), pa je drugi list na istom pogledu bacanje novčića
+oko toga koji će se ikad otvoriti — i kartica ga je izgubila u jednom prozoru
+dok je radila u drugom. To je tačno oblik prijave: radi kad je selekcija iz
+jednog prozora, ne radi iz drugog.
+
+Popravka: kartica je zakačena na **pozadinski pogled** (`.background(Color.clear
+…)`), koji je pogled za sebe. Time se ni sa čim ne takmiči, a listovi koji su
+već bili tu nisu dirani.
+
+⚠️ **Nije reprodukovano na ekranu odavde** — klijent je radio na mašini i nisam
+mu otimao prozor. Dijagnoza je iz koda, i lenjir je provera da list stoji na
+svom pogledu **u oba fajla**, jer je simptom bio da radi u jednom od njih.
+
+### 2. Šest kontrola umesto tri
+
+`BackgroundEnhancedTuning` sad nosi Exposure, Contrast, Shadows, Saturation,
+Clarity, Dehaze — redom kojim ih panel layera ima. Tri nove idu na **nulu**, pa
+je recept bez diranja kartice i dalje bajt za bajt onaj iz v11.20.
+
+⚠️ **Redovi su TABELA, ne šest ručno pisanih slajdera** (`Control` enum), i to je
+🔴 MUST na delu. Razlog je Exposure: on je **jedina** kontrola ovde koja ne ide
+korakom 0,01 i ne ispisuje se kao vrednost × 100 — ide po **0,05** i čita se u
+stopovima, i na slici i na layeru. Šest jednakih redova bi ga pogrešilo i pritom
+izgledalo ispravno.
+
+`run-slider-parity-test.py` sad poredi svih šest sa panelom layera, **i ispis**:
+Exposure u stopovima, ostalih pet × 100.
+
+### 3. Crna slova u dark temi
+
+Golo SwiftUI dugme crta svoj natpis u **sistemskoj** boji teksta, a ona je crna
+kad god je Mac u svetlom izgledu — a tri teme ove app-e sa Mac-ovom nemaju veze.
+Zato je kartica u tamnoj temi na svetlom Mac-u crtala crna slova na skoro crnom
+panelu. Sad ima `CardButtonStyle`, koji boje čita iz `AppColors` kao i sve ostalo
+u app-i.
+
+#### ⚠️ Pretraženo je da li ima još takvih mesta — nema
+
+Prebrojano nad oba fajla: gola `Button("…")` bez stila i bez boje postoje još na
+22 mesta, i **sva su** stavke kontekstnog menija ili `confirmationDialog` — te
+crta macOS sam, sistemskom bojom, i tako i treba. Sve ostalo što je izgledalo
+kao golo dugme je zapravo `toolButton` / `panelActionButton` / `maskAddButton` /
+`layerToggleButton` / `ShowHeaderButtonStyle`, dakle već obojeno iz `AppColors`.
+Kartica je bila jedino mesto. **Nije rađen slepi prolaz kroz app-u** — to bi
+menjalo izgled koji je već odobren.
+
+### Čime je zaključano
+
+`run-background-enhanced-test.py` — nove provere: list kartice stoji na svom
+pogledu **u oba fajla**, sva tri dugmeta idu kroz `CardButtonStyle`, taj stil
+čita `AppColors`, kartica ima svih šest kontrola, i recept **upisuje** svih šest
+na Background layer (slajder koji se pomera a ništa ne menja je isto pad).
+
+`run-slider-parity-test.py` — svih šest protiv panela layera, uključujući
+Exposure-ov korak 0,05 i njegov ispis u stopovima.
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`; app sagrađena,
+instalirana i restartovana. ⚠️ Prva klijentova proba posle ovoga je bila na
+**kopiji od pre restarta** — snimak pokazuje tri slajdera i crna slova, a
+instalirani binarni fajl je u tom trenutku već imao `CardButtonStyle` u sebi
+(provereno `nm`-om) i star manje od minuta. Zapisano jer je to greška koja se
+ponavlja: posle restarta treba **ponovo otvoriti karticu**, stara ostaje na
+ekranu.
 
 ---
 

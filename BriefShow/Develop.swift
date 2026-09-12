@@ -2402,12 +2402,16 @@ enum PhotoEditRenderer {
     /// preset at all (24.11).
     static let toneControlStrength = 0.10
 
-    /// How far Contrast bends the quarter and three-quarter tones at ±1.
+    /// How far Contrast bent the quarter and three-quarter tones at ±1, in the
+    /// five-knot tone curve that ran from 05.09 to 12.09.
     ///
-    /// The endpoints stay pinned whatever this is, which is the point: contrast
-    /// is a statement about the middle of the range, not about where white
-    /// lives. 0.10 keeps a full-travel Contrast close to what CIColorControls
-    /// used to do in the midtones, where it was never the problem.
+    /// ⚠️ NOTHING READS THIS ANY MORE — Contrast is `ContrastCurve` now — and it
+    /// is kept because it is the only calibrated number that curve inherited.
+    /// 0.10 at each knot is a midtone slope of (0.75 + 0.10 − 0.25 + 0.10) /
+    /// (0.75 − 0.25) = 1.4, and 1.4 is what `ContrastCurve.
+    /// midtoneSlopeAtFullTravel` is set to, so the client's saved edits keep the
+    /// midtone strength they were calibrated to and only the shape changed.
+    /// Deleting this leaves that 1.4 looking like a number somebody liked.
     static let contrastMidtoneBend = 0.10
 
     /// Highlights alone is gentler, and it is the ONLY control that is.
@@ -3138,19 +3142,11 @@ enum PhotoEditRenderer {
         //     put back to zero        23.5%   <- one slider, the entire gap
         //
         // Lightroom's Contrast pivots the midtones and leaves both endpoints
-        // pinned, so -5 there costs the whites nothing. This is that: an
-        // S-curve through (0,0) and (1,1), bending only what lies between.
-        if settings.contrast != 0 {
-            let bend = settings.contrast * contrastMidtoneBend
-            let filter = CIFilter.toneCurve()
-            filter.inputImage = output
-            filter.point0 = CGPoint(x: 0, y: 0)
-            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 - bend, 0), 1))
-            filter.point2 = CGPoint(x: 0.5, y: 0.5)
-            filter.point3 = CGPoint(x: 0.75, y: min(max(0.75 + bend, 0), 1))
-            filter.point4 = CGPoint(x: 1, y: 1)
-            output = filter.outputImage ?? output
-        }
+        // pinned, so -5 there costs the whites nothing. That finding still
+        // holds, and the curve that answered it has since been replaced by a
+        // smooth S on OKLab lightness — pivot on middle grey, soft rolloff at
+        // both ends, chroma held back at high settings. See ContrastCurve.
+        output = PhotoEditRenderer.applyContrast(settings.contrast, to: output)
 
         if settings.saturation != 0 {
             let filter = CIFilter.colorControls()
@@ -3433,6 +3429,27 @@ enum PhotoEditRenderer {
         cube.inputImage = image
         cube.cubeDimension = Float(ExposureCube.dimension)
         cube.cubeData = ExposureCube.data(for: ev)
+        cube.colorSpace = briefEditsSRGBColorSpace
+        return cube.outputImage ?? image
+    }
+
+    /// Contrast, for the photo, for a layer and for a mask alike.
+    ///
+    /// ⚠️ THE ONE PLACE, the same way `applyExposure` above is. Contrast is the
+    /// control the MUST in BRIEFSHOW_DEVELOP_NOTES.md was written about: on
+    /// 05.09 the photo dropped CIColorControls and the layer kept it, and the
+    /// same number cost the photo 0.4 levels of mean and the layer 21.5. There
+    /// is one implementation and three call sites.
+    ///
+    /// See ContrastCurve for why this is an S on OKLab lightness rather than a
+    /// five-knot tone curve on the three channels.
+    static func applyContrast(_ contrast: Double, to image: CIImage) -> CIImage {
+        guard contrast != 0 else { return image }
+
+        let cube = CIFilter.colorCubeWithColorSpace()
+        cube.inputImage = image
+        cube.cubeDimension = Float(ContrastCube.dimension)
+        cube.cubeData = ContrastCube.data(for: contrast)
         cube.colorSpace = briefEditsSRGBColorSpace
         return cube.outputImage ?? image
     }
@@ -3893,21 +3910,11 @@ enum PhotoEditRenderer {
         // Contrast -0.5 the same number that cost the photo 0.4 levels of
         // mean cost the layer 21.5 (Tools/run-layer-edit-parity-test.py).
         //
-        // So it is the SAME curve and the SAME constant now, in the same
-        // order `render` runs it — contrast first, then saturation on its
-        // own. If contrastMidtoneBend ever moves, both sides move with it,
-        // because both read it.
-        if local.contrast != 0 {
-            let bend = local.contrast * PhotoEditRenderer.contrastMidtoneBend
-            let filter = CIFilter.toneCurve()
-            filter.inputImage = output
-            filter.point0 = CGPoint(x: 0, y: 0)
-            filter.point1 = CGPoint(x: 0.25, y: min(max(0.25 - bend, 0), 1))
-            filter.point2 = CGPoint(x: 0.5, y: 0.5)
-            filter.point3 = CGPoint(x: 0.75, y: min(max(0.75 + bend, 0), 1))
-            filter.point4 = CGPoint(x: 1, y: 1)
-            output = filter.outputImage ?? output
-        }
+        // So it is the SAME curve now, in the same order `render` runs it —
+        // contrast first, then saturation on its own. Not a second copy of it
+        // either: both sides call PhotoEditRenderer.applyContrast, so there is
+        // nothing left that CAN drift apart.
+        output = PhotoEditRenderer.applyContrast(local.contrast, to: output)
 
         if local.saturation != 0 {
             let filter = CIFilter.colorControls()

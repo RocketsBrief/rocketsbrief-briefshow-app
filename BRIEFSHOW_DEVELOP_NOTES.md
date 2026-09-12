@@ -730,6 +730,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 - **34 od 35** testova izlazi sa 0. Jedini koji ne izlazi je `run-thumbnail-parity-test.py`, i to je **pravi nalaz, ne alat koji fali** — v. ispod.
 - Upisan **🔴 MUST** na vrh dokumenta: slajder na layeru je isti slajder kao na slici.
 | **179** | **v11.20** objavljena: univerzalan paket (arm64 + x86_64), min macOS 13.0, LaMa unutra, SD dugmetom |
+| **180** | **Contrast** prestaje da bude rastezanje po kanalu — S-kriva na OKLab luminansi, pivot na srednjoj sivoj, mekani krajevi, chroma prigušena (NIJE OBJAVLJENO) |
 
 - Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.048.108 bajta, `codesign` ok, nula fotografija.
 - Update lanac proveren pozivom pravog poređenja: **svaka** verzija od 11.7 do 11.17 dobija karticu za 11.20.
@@ -18565,6 +18566,175 @@ tabela paljenja gore, nad pravom fotografijom.
 
 `Tools/run-slider-parity-test.py` — novi lenjir za 🔴 MUST: isti opseg i korak
 na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
+
+---
+
+## KORAK 180 — Contrast prestaje da bude rastezanje kanala (12. septembar 2026)
+
+Klijentova specifikacija, 12.09, doslovno: *„Klasično rastezanje RGB vrednosti
+oko centra nije prihvatljivo"* — pa pet zahteva: perceptivni prostor, fiksni
+pivot na srednjoj sivoj, glatka S-kriva, mekano koleno na oba kraja, i chroma
+prigušena da koža ne ode u narandžasto (*„toxic saturation"*).
+
+### Šta je tu bilo — i šta je od toga bilo dobro
+
+Od 05.09. Contrast **nije** bio `CIColorControls` (to je tada izmereno i
+izbačeno: na Contrast −5 čisto belo je izlazilo kao 249 i ceo kadar je sivio).
+Bila je tonska kriva sa pet čvorova i oba kraja prikovana. Ta odluka je ostala
+tačna; sve ostalo oko nje nije:
+
+- čvorovi na 0,25 i 0,75 su se krivili fiksnih 0,10, a **oblik između** je bio
+  ono što Core Image interpolira — nije bila S-kriva nego spline kroz pet točaka;
+- radilo se nad **display sRGB, po kanalu**, pa su se tri kanala razdvajala kako
+  se penju — a to je tačno prezasićenje na koje se klijent žali;
+- pivota u smislu specifikacije nije bilo: čvor na 0,5 display je linearno
+  0,214, a ne srednja siva 0,18.
+
+### Nova kriva — `BriefShow/ContrastCurve.swift`
+
+Radi nad **luminansom OKLab-a**. Oblik je `tanh(k·x) / tanh(k)` nad
+normalizovanom udaljenošću od pivota: neparna je (gore i dole isto), pada tačno
+na ±1 na krajevima (bela ostaje bela, crna crna), nagib joj se **sam** gasi ka
+krajevima — to je mekano koleno iz specifikacije, oblikom, ne zakačeno posle — i
+nagib u pivotu je `k / tanh(k)`.
+
+To poslednje je ono po čemu se `k` **rešava**, ne bira: traži se nagib i dobije
+se `k` koji ga tačno daje. U funkciji nema konstante koju je iko izabrao.
+
+| šta | vrednost | zašto |
+|---|---|---|
+| pivot | **0,5646** L | srednja siva 0,18 linearno, prevedena u OKLab |
+| nagib u pivotu na ±1 | **1,4** | **nasleđeno** — v. ispod |
+| `chromaFollow` | **0,5** | pola kompenzacije; 1,0 čita se kao da kontrast nije ni bio |
+
+⚠️ **Pivot je 0,5646, a ne 0,5, i to nije nesaglasnost nego jedinica.**
+Specifikacija ga daje dvaput, kao *„0.18 u linearnom prostoru ili 0.5
+perceptivno"*, a to nisu isti ton: OKLab-ov L za linearno 0,18 je 0,5646, dok je
+L 0,5 linearno 0,125 — dve trećine stopa **tamnije** od srednje sive. Pivot tamo
+bi dizao svaki srednji ton u kadru na putu ka dodavanju kontrasta, što je baš
+greška na koju specifikacija sama upozorava. (Ista vrsta klizanja jedinica kao
+kod ExposureCurve-ovog kolena, i tamo je zapisana.)
+
+⚠️ **1,4 je nasleđeno, ne novo, i namerno.** Stara kriva je na punom hodu krivila
+svoje čvorove po 0,10, što je nagib (0,85 − 0,15) / (0,75 − 0,25) = **1,4** kroz
+srednje tonove — a ta konstanta je jedina stvar iz stare Contrast koja je bila
+bodovana protiv Lightroom-a (`Tools/run-lightroom-calibration.py`). Time
+klijentove sačuvane izmene i uvezeni preseti padaju na **isti** srednji kontrast
+kao juče, a menja se **oblik**: krajevi, nijansa i chroma. Da se jačina menjala
+istovremeno sa oblikom, to dvoje se u merenju ne bi moglo razlučiti.
+
+⚠️ **Negativna strana je tačan inverz pozitivne**, ne druga kriva koja se
+slučajno naginje na drugu stranu — inverz `tanh(kx)/tanh(k)` je
+`atanh(x·tanh(k))/k`, ograničen i gladak na celom intervalu. Kupljeno obećanje
+vredi: +c pa −c vraća **istu** fotografiju (nad krivom tačno, do 1e-12; kroz
+piksel do 1e-6, v. ispod). Klijent koji prebaci slajder i vrati ga dobija svoju
+sliku, ne spljoštenu kopiju.
+
+### Chroma — peti zahtev, i onaj koji se ne vidi ni u jednoj drugoj proveri
+
+U OKLab-u pomeranje samo L-a ostavlja `a` i `b` na miru, pa nijansa preživi po
+konstrukciji. Ali ton koji se **potamni** sa istim `a, b` ima višu chromu
+**u odnosu na svoju svetlinu** — i to je koža u senci koja ode u narandžasto.
+Zato se chroma množi sa `(L' / L)^(0,5·|c|)`: na 0 je faktor tačno 1, a na punom
+hodu chroma **pola** prati svetlinu. Pola, ne cela — cela se čita kao da se
+kontrastu boje nisu ni dogodile.
+
+⚠️ **Kad boja ipak ne ulazi u gamut, ustupa CHROMA, ne svetlina.** ExposureCurve
+u istoj situaciji skalira sva tri kanala — i tamo je to tačno, jer je Exposure
+izjava o svetlu. Contrast je izjava o tome **gde ton stoji**, pa se boja vraća
+ka neutralnom iste svetline dok ne stane. Ton koji je kriva odredila je tačno
+ton koji izlazi, a nijansa se usput ne pomera — odsecanje po kanalu pomerilo bi
+oba.
+
+### Izmereno na `C4S_7891.NEF`
+
+„razmak" je standardna devijacija onih tonova koji su u neutralnom renderu bili
+srednji — **kontrolna kolona**: kriva koja bi krajeve štitila tako što ne radi
+ništa izgledala bi savršeno u prve dve kolone i ne bi bila popravka.
+
+| Contrast | na 255, pre | na 255, sad | razmak, pre → sad | chroma, pre → sad |
+|---|---|---|---|---|
+| +0,00 | 19,83 % | 19,83 % | 18,74 → 18,74 | 0,0465 → 0,0465 |
+| +0,25 | 20,07 % | **20,00 %** | 19,87 → **20,00** | 0,0463 → 0,0464 |
+| +0,50 | 20,48 % | **20,28 %** | 21,03 → **21,26** | 0,0461 → 0,0463 |
+| +1,00 | 21,42 % | **21,00 %** | 23,54 → **23,86** | 0,0457 → **0,0465** |
+
+Dakle **više kontrasta u srednjim tonovima uz manje paljenja** — razmak raste
+celom rampom, a udeo na čistoj beloj raste za 1,17 poena preko punog hoda
+umesto 1,59. Crna se ne zaglavljuje ni na jednoj vrednosti (0,00 % na nuli, cela
+rampa). Chroma stoji na 0,0465 gde je stara padala na 0,0457 — stara kriva je
+boju **ispirala** na punom hodu, a to je ista stvar sa druge strane.
+
+### ⚠️ Negativna strana je proverena na klijentovoj stvarnoj vrednosti
+
+05.09. je pao **Contrast −5**, ne −100, pa je to prvo izmereno:
+
+| Contrast | na 255, pre | na 255, sad |
+|---|---|---|
+| **−0,05** | 19,79 % | **19,64 %** (neutralno je 19,83 %) |
+| −0,25 | 19,65 % | 18,17 % |
+| −1,00 | 19,42 % | 15,66 % |
+
+Na −5 belo se ne obara — 0,19 poena od neutralnog, protiv 32,6 % → 2,8 % koliko
+je `CIColorControls` obarao. Na velikim negativnim vrednostima nova kriva
+**stvarno** sabija vrhove ka pivotu, i to je ono što smanjenje kontrasta jeste;
+stara na −100 nije skoro ni dirala svetla (19,42 % prema 19,83 % neutralno), što
+je bilo tiho neizvršavanje zahteva.
+
+### 🔴 MUST — jedno mesto, tri panela
+
+`PhotoEditRenderer.applyContrast` je **jedina** implementacija, kao
+`applyExposure` pored nje. Contrast je kontrola zbog koje je MUST i napisan (na
+05.09. je fotografija izbacila `CIColorControls`, a layer ga zadržao, pa je isti
+broj fotografiju koštao 0,4 nivoa srednje vrednosti a layer 21,5). Sad i
+fotografija i layer i maska zovu istu funkciju — dva poziva istog koda ne mogu
+da se raziđu.
+
+`PhotoEditRenderer.contrastMidtoneBend` **ostaje u kodu iako ga niko ne čita**:
+on je jedini bodovani broj koji je nova kriva nasledila, i bez njega ono 1,4 gore
+izgleda kao broj koji se nekome dopao.
+
+### Čime je zaključano
+
+`Tools/run-contrast-curve-test.py` — dve polovine, kao kod Exposure-a.
+
+Osobine krive nad **pravim** tipom (Contrast 0 je identitet do 1e-12; srednja
+siva se ne pomera ni na jednoj vrednosti — nad krivom tačno, `==`; oba kraja
+prikovana; ništa ne izlazi iz kutije ni gore ni dole; nagib u pivotu je tačno
+1 + 0,4·c; krajevi su ravniji od sredine i nigde nisu strmiji od 1:1; monotono i
+po tonu i po slajderu, i to sa **znakom** — desno diže sve iznad pivota i spušta
+sve ispod; +c pa −c vraća original; ugao nijanse se ne pomera; chroma se prigušuje
+ali ne spljošti; OKLab se vraća sam u sebe; i tabela kroz koju se renderuje
+**jeste** ta kriva).
+
+Uz to čita `Develop.swift` i proverava da Contrast ima **jednu**
+implementaciju — MUST, bez potrebe za fotografijom.
+
+Druga polovina je rampa gore, nad pravom fotografijom, i u njoj se **stara
+kriva računa pored nove**: neutralan render plus onaj isti petočvorni
+`CIToneCurve`. To nije približno stara staza nego ona sama — sve što `render`
+radi posle kontrasta je identitet na podrazumevanim vrednostima.
+
+### ⚠️ Tolerancija 1e-6 na piksel-proverama, i to je izmereno a ne zgodno
+
+OKLab-ove objavljene matrice (napred i nazad) su inverzne jedna drugoj samo do
+**2,6·10⁻⁷** — inverzna je objavljena zaokružena. Prava inverzija popravlja to i
+kvari nešto što vredi više: prva kolona joj prestaje da bude tačno 1, a to je
+ono što **neutralnu sivu drži neutralnom**. 2,6·10⁻⁷ je desethiljaditi deo nivoa
+na 8 bita i ispod onoga što `Float` tabela ume da zapamti; kast na svakoj sivoj
+u kadru nije. Zato je tolerancija na krivoj samoj 1e-12, a na piksel-proveri
+1e-6, i razlika je zapisana na obe.
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`; app sagrađena,
+instalirana i restartovana (11.20). `run-contrast-curve-test.py` sve prolazi.
+Oba lenjira iz MUST-a prolaze: `run-slider-parity-test.py`, i
+`run-layer-edit-parity-test.py` daje **0,00** na svih 18 slajdera, Contrast
+uključen. Nije objavljeno, nema push-a.
+
+⚠️ **NIJE VIĐENO NA EKRANU.** Sve gore je izmereno kroz isporučeni pipeline, ali
+klijentovo oko na slajderu je jedina provera koja kaže da li 1,4 na punom hodu
+sada izgleda dobro — jačina je namerno ostavljena gde je bila, a promenio se
+oblik, pa je moguće da sad traži drugi broj.
 
 ---
 

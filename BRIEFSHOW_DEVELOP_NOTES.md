@@ -731,6 +731,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 - Upisan **🔴 MUST** na vrh dokumenta: slajder na layeru je isti slajder kao na slici.
 | **179** | **v11.20** objavljena: univerzalan paket (arm64 + x86_64), min macOS 13.0, LaMa unutra, SD dugmetom |
 | **180** | **Contrast** prestaje da bude rastezanje po kanalu — S-kriva na OKLab luminansi, pivot na srednjoj sivoj, mekani krajevi, chroma prigušena (NIJE OBJAVLJENO) |
+| **181** | četiri prijave iz probe: crop se vuče protiv miša, **kartica sa slajderima i živim prikazom** pre Background Enhanced-a, Generative vraćen na LaMa osnovu, i **Undo Background Enhanced** (NIJE OBJAVLJENO) |
 
 - Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.048.108 bajta, `codesign` ok, nula fotografija.
 - Update lanac proveren pozivom pravog poređenja: **svaka** verzija od 11.7 do 11.17 dobija karticu za 11.20.
@@ -18566,6 +18567,152 @@ tabela paljenja gore, nad pravom fotografijom.
 
 `Tools/run-slider-parity-test.py` — novi lenjir za 🔴 MUST: isti opseg i korak
 na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
+
+---
+
+## KORAK 181 — četiri prijave iz klijentove probe (12. septembar 2026)
+
+Jedna poruka, četiri stavke, sve četiri urađene. Doslovno:
+
+1. *„When moving holding crop in «create» on the image, need to be if i move
+   mouse to the right crop need to move on the left, or if i move mouse holding
+   crop and move to down mouse whole crop need to move up."*
+2. *„When enhancing the backround, before enhance to get small modul card with
+   all slide bar setting of how you want to be backround before applying, to
+   show real alive result on the first chosen image."*
+3. *„Ai Generative Clean Up is inviting (halucinating) something in the spot
+   instead to remove the selected area!"*
+4. *„When i want to undo enhanced backround i need to be able to do so. No to be
+   forces to restart all settings from the image!"*
+
+### 1. Crop se vuče PROTIV miša
+
+`DevelopView.cropMoveOffset` — nova, čista, statična funkcija; `moveCrop` je
+zove. Dva minusa su cela izmena, i zato je izdvojena i zaključana lenjirom:
+dva minusa su tačno ono što neko posle „pospremi".
+
+Zašto nije bubica nego Lightroom: tamo se pod okvirom koji stoji **pomera
+fotografija**, pa potiskivanje miša desno vuče sliku desno, a to znači da deo
+koji se ZADRŽAVA ide levo. Naš prekrivač je obrnut — okvir nad slikom koja stoji
+— pa da bi se ponašao kao alat koji klijent koristi ceo dan, okvir mora da ide
+protiv pokazivača. Pročitano kao „potiskujem sliku, ne vučem kutiju", to je
+očigledno, a ne naopako.
+
+⚠️ **Ručke za veličinu NISU dirane.** One hvataju određeni ugao i moraju da idu
+za mišem; zahtev je bio o pomeranju celog okvira.
+
+### 2. Kartica pre nego što Background Enhanced uradi bilo šta
+
+`BackgroundEnhancedCard` — jedna kartica, iz oba menija (grid i traka u
+editoru), na istom servisu. Tri broja kao slajderi, prva izabrana fotografija
+renderovana živo ispod njih, `Reset` na njegove brojeve, `Cancel` i `Apply`.
+Dugme u meniju je dobilo **tri tačke** — to je macOS-ova konvencija za „pita pre
+nego što uradi".
+
+⚠️ **Select People se pušta JEDNOM**, kad se kartica otvori, i maska se drži.
+Vision-ova segmentacija je skupa polovina recepta; tri slajdera su običan
+`CIFilter`. Da se Select People vrti po frejmu, kartica bi razmišljala sekundu
+posle svakog piksela hoda slajdera.
+
+⚠️ **Prikaz je na 900 px i to NE krši zaključanu rezoluciju.** Zaključano je ono
+što se otvara za RAD u LumenoLab-u; sličice su tamo imenovane kao izuzetak, a
+ovo je jedna od njih — mala slika u kartici čiji je posao da pokaže na koju
+stranu slajder ide. Ono što se posle primeni renderuje `PortraitRecipeService`
+u nativnoj rezoluciji, iz fajla, sa tim brojevima.
+
+⚠️ **Njegovi brojevi ostaju njegovi.** `BackgroundEnhancedTuning` ima
+podrazumevane Shadows −100 / Saturation +30 / Clarity +30; recept pušten bez
+diranja kartice je bajt za bajt onaj koji je otišao u v11.20. Broj više nije
+literal u `applied` nego podrazumevana vrednost tog tipa.
+
+⚠️ **Kartica je ČETVRTO mesto gde se ova tri slajdera pojavljuju**, a četvrto
+mesto je tačno način na koji su se prva tri razišla. Zato opseg i korak stoje u
+**jednom** imenovanom paru (`BackgroundEnhancedTuning.range` / `.step`), a
+`run-slider-parity-test.py` ih poredi sa panelom layera — jer recept piše na
+Background layer. Usput je taj lenjir postao stroži: korak koji poziv ne piše
+sad se čita iz **potpisa** `editSlider`-a, pa se porede dva prava koraka, a ne
+dva „nije rečeno" koja se slažu međusobno šta god bila.
+
+### 3. Generative je vraćen na LaMa kao osnovu
+
+`SDInpaintPipeline.generativeUsesLaMaBase` = **`true`**. Prekidač je sad
+postavljan sa obe strane, pa je njegova istorija zapisana u kodu da sledeća
+sesija ne mora da pogađa koja je strana proverena:
+
+| kada | vrednost | zašto |
+|---|---|---|
+| 8.09 | `false` | njegov zahtev, kao test: *„lama nema nikakve veze samo SD"* |
+| 9.09 | `false` | probao i zadržao za v11.12: *„SD je sada dobar!"* — svesna odluka |
+| **12.09** | **`true`** | *„inviting (halucinating) something in the spot instead to remove"* |
+
+Ta poslednja linija je tačno onaj pad koji je KORAK 39 izmerio i zbog kog je
+KORAK 40 napravljen, samo prijavljen sa njegove strane ekrana. Sa `false` SD
+kreće od **šuma** sa praznim promptom i nema odakle da zna da treba nešto da
+UKLONI — izmišljanje u toj konfiguraciji nije bubica, ono je ta konfiguracija.
+
+⚠️ **Ovo je postavka koju je 9.09. odbio, i to mu se ne krije.** Sa LaMom ispod,
+sadržaj rupe je LaMin a SD samo stavlja teksturu preko
+(`defaultRefineStrength` 0,4, mereno u KORACIMA 150/151 — na 0,55 se pojavila
+cela palma). Ako mu se tada nije dopalo da je fil **mek**, a ne da je izmišljen,
+iskrena poluga je ta jačina, i merenja za 0,3 / 0,4 / 0,5 / 0,55 su zapisana da
+se ne puštaju ponovo. Ono što NE sme je vraćanje na šum: to menja meko za
+izmišljeno, a izmišljeno je današnja prijava.
+
+Prag opomene i obećanje u panelu prate prekidač sami (1400 umesto 600, i
+„It will not invent anything" se sad sme reći jer je LaMa ispod). Geometrija
+nije dirana ni sa jedne strane — `imageSide` 512, `defaultSteps` 12,
+*„ne povecavaj SD"*.
+
+### 4. Undo Background Enhanced — jedan korak, ne sve od početka
+
+`PortraitRecipeUndoStore`. Unflatten je bio jedini put nazad i on je pogrešan
+alat za ovo: ide do **pre PRVOG** flatten-a — jedno mesto, koliko god bakeova
+bilo posle — i vraća stanje iz kog je slika zapečena, što za recept znači
+njegove sopstvene layere i brojeve. Zato je na slici na kojoj se radilo undo
+kroz Unflatten bacao sve posle prvog bakea i vraćao recept kao žive layere. To
+je *„restart all settings"* koji je prijavio.
+
+Novo vraća tačno stanje od trenutka pre recepta, i **tri stvari idu zajedno** —
+svaka koja se izgubi ostavlja fotografiju u stanju u kom nikad nije bila:
+
+- zapis podešavanja (layeri koje je Select People napravio, i brojevi),
+- zapečeni pikseli (receptova kopija obrisana, ona ispod nje — ako je bilo —
+  vraćena),
+- i `FlattenedImageStore`-ov sopstveni snimak „pre prvog flatten-a", koji recept
+  upiše ako slika nikad nije bila pečena.
+
+⚠️ **Premeštanje, ne kopiranje.** Zapečena kopija kadra od 45 MP je ~142 MB
+nekompresovanog 16-bitnog TIFF-a, a mašina ima 8 GB. Kopija po slici preko
+selekcije od četrdeset bila bi gigabajti diska za undo koji niko možda ne
+pritisne. `rename` ne košta ništa i bajtovi postoje jednom.
+
+⚠️ **JEDAN korak, po slici.** Recept pušten dvaput ostavlja stanje od pre
+DRUGOG puštanja — ista dubina koju ima Undo u meniju, a alternativa je
+neograničena gomila fajlova od 142 MB.
+
+Dugme se pojavljuje **samo kad ima šta da se vrati**, u oba menija, istim
+rečima: „Undo Background Enhanced". Meni je dugačak, a recept koji nad ovim
+slikama nikad nije pušten nema undo koji bi trebalo objašnjavati.
+
+### Čime je zaključano
+
+| lenjir | šta meri | traži fotografiju |
+|---|---|---|
+| `run-crop-zone-test.py` | **7 novih provera**: miš desno → okvir levo, miš dole → okvir gore, oba znaka i u drugu stranu, rastojanje je razlomak okvira, okvir bez površine ne deli nulom | ne |
+| `run-generative-base-test.py` | **novi**: prekidač je `true`, jačina se obilazi a ne prepisuje, prag prati prekidač, obećanje stoji IZA prekidača, geometrija je 512/12 | ne |
+| `run-recipe-undo-test.py` | **novi**, nad pravim fajlovima: recept na nepečenoj slici, recept na **već pečenoj** (mora da vrati ONU ranije pečenu, ne original), dvaput pušten recept, slika bez recepta, mešana selekcija | ne |
+| `run-slider-parity-test.py` | kartica kao četvrti panel; korak se čita iz potpisa `editSlider`-a | ne |
+| `run-background-enhanced-test.py` | prepravljen: meni vodi do **kartice**, kartica do deljenog servisa, kartica **ne** peče i **ne** drži svoju kopiju recepta | ne |
+| `run-strip-recipe-menu-test.py` | tri oblika stavke umesto dva: duplicira / radi u mestu / **otvara karticu** | ne |
+
+⚠️ **NIJE VIĐENO NA EKRANU.** Sve četiri su izmerene ili čitanjem koda ili preko
+pravih fajlova, ali kartica, njeno ponašanje pod prstom i smer vučenja crop-a su
+stvari koje presuđuje klijentovo oko. Naročito: **živost prikaza u kartici nije
+izmerena na ekranu** — token koji odbacuje stare rendere je logika koja se čita,
+a „da li se to trza dok vučem" nije.
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`; app sagrađena,
+instalirana i restartovana (11.20). Nije objavljeno, nema push-a.
 
 ---
 

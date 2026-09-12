@@ -22,6 +22,9 @@ WANTED = [
     ("func", "cropFrameLocalPoint"),
     ("func", "cropResizeDegrees"),
     ("func", "cropHandle"),
+    # The sign of the frame's own drag — inverted on 12.09 at the client's
+    # request, and the kind of thing a later "tidy-up" removes a minus from.
+    ("func", "cropMoveOffset"),
 ]
 
 

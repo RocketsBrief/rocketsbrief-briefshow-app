@@ -704,23 +704,42 @@ final class SDInpaintPipeline: ObservableObject {
     /// palm looks right, so it reads as better until the same setting meets a
     /// clean background and puts an object in it. That is the whole reason
     /// this number is low.
-    /// ⚠️ SHIPPING SETTING SINCE v11.12, 9.09 — no longer a test.
+    /// ⚠️ BACK TO `true` ON 12.09, ON THE CLIENT'S OWN REPORT.
     ///
-    /// It arrived as a test on 8.09 with "put it back to `true` before any
-    /// release" written here. At the v11.12 release the client was asked which
-    /// of the two to publish, with both his verdict and the contrary
-    /// measurement in front of him, and chose to keep this one. That is the
-    /// conscious decision KORAK 166 asked for, so the warning is retired.
+    /// Its history, because this flag has now been set from both sides and the
+    /// next session should not have to guess which way is the tested one:
     ///
-    /// His verdict after trying it: *„bio si u pravu lama je pravila lose..
-    /// ovako treba da bude SD je sada dobar!"*
+    ///   * 8.09  arrived as `false`, a test, at his request — *„zameni da
+    ///           testiram da kada kliknem na Ai generative dugme lama nema
+    ///           nikakve veze samo SD"*.
+    ///   * 9.09  he tried it and kept it for v11.12: *„bio si u pravu lama je
+    ///           pravila lose.. ovako treba da bude SD je sada dobar!"* — a
+    ///           conscious decision, asked for and given.
+    ///   * 12.09 *„Ai Generative Clean Up is inviting (halucinating) something
+    ///           in the spot instead to remove the selected area!"*
     ///
-    /// ⚠️ MY MEASUREMENT STILL DISAGREES, and that is not a reason to change
-    /// it back — it is the reason the caution threshold is 600 and not 1400.
-    /// On C4S_7891, the same 828px mask as KORAK 39, SD alone put a large dark
-    /// stone in the hole again. So the finding is not "SD is fine now" but
-    /// **the size of the hole and what surrounds it decide, not which model**.
-    /// His masks are evidently in a different regime from the test frame.
+    /// That last line is the failure KORAK 39 measured and KORAK 40 was built
+    /// to prevent, reported from his side of the screen. With `false`, SD
+    /// starts from NOISE with an empty prompt and has no way to know it is
+    /// meant to be removing something — invention is not a bug in that
+    /// configuration, it is what the configuration is. So it goes back.
+    ///
+    /// ⚠️ THIS IS THE SETTING HE REJECTED ON 9.09, and that is not being hidden
+    /// from him: with LaMa under it the content of the hole is LaMa's and SD
+    /// only puts texture on top (`defaultRefineStrength` 0.4, measured in
+    /// KORAKS 150/151 — at 0.55 a whole palm appeared). If what he disliked
+    /// then was the fill being soft rather than invented, the honest lever is
+    /// that strength, and the measurements for 0.3 / 0.4 / 0.5 / 0.55 are
+    /// written out above so nobody re-runs them. What must NOT happen is going
+    /// back to noise: that trades soft for invented, which is the complaint
+    /// being answered today.
+    ///
+    /// ⚠️ My measurement agreed with this all along (C4S_7891, 828px mask: SD
+    /// alone put a large dark stone in the hole), and the finding from 9.09
+    /// still stands and still matters — **the size of the hole and what
+    /// surrounds it decide, not which model.** The caution threshold follows
+    /// this flag for exactly that reason: 1400 is only honest while LaMa is
+    /// under the fill, and 600 is the number for noise.
     ///
     /// Original request, in his words: *„zameni da testiram da kada kliknem na
     /// Ai generative dugme lama nema nikakve veze samo SD.. pa da vidimo sta
@@ -729,15 +748,13 @@ final class SDInpaintPipeline: ObservableObject {
     /// `false` makes Generative Clean Up what it was before KORAK 40: LaMa is
     /// never called, SD starts from NOISE and runs the whole schedule. That is
     /// the exact configuration KORAK 39 measured, and its finding stands —
-    /// **on an empty prompt SD put a CAR in an 828px hole.** This is here so
-    /// the client can see that on his own photographs — and, from v11.12, what
-    /// he chose to keep after seeing it.
+    /// **on an empty prompt SD put a CAR in an 828px hole.**
     ///
-    /// ⚠️ The geometry is deliberately UNTOUCHED — `imageSide` is still 512
-    /// and `defaultSteps` still 12. *„ne povecavaj SD"*. The car comes from
-    /// the size of the hole, so enlarging the canvas while testing this would
-    /// be feeding the very failure being looked at.
-    static let generativeUsesLaMaBase = false
+    /// ⚠️ The geometry is deliberately UNTOUCHED either way — `imageSide` is
+    /// still 512 and `defaultSteps` still 12. *„ne povecavaj SD"*. The car
+    /// comes from the size of the hole, so enlarging the canvas here would be
+    /// feeding the very failure being answered.
+    static let generativeUsesLaMaBase = true
 
     /// nil hands SD an empty hole and the full schedule; 0.4 hands it LaMa's
     /// fill and only the last part of the schedule. The 0.4 below is the

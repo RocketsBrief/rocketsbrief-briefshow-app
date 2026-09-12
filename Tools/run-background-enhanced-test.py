@@ -59,16 +59,29 @@ print("\nthe Create strip's right-click menu")
 # (the lock, the target rule, that it does not duplicate); what is checked here
 # is only that it exists at all, so deleting it fails BOTH tests rather than
 # silently thinning this one.
+# ⚠️ It opens the CARD from 12.09, not the recipe — *„before enhance to get
+# small modul card with all slide bar setting"* — so what is checked is that the
+# menu leads to the card and that the card leads to the shared service. Checking
+# for the old direct call would now fail while the feature works, and loosening
+# it to "mentions the recipe somewhere" would pass while it was broken.
 check("it offers Background Enhanced",
-      "runPortraitRecipes([.backgroundEnhanced], on: bwTargets)" in develop)
+      "BackgroundEnhancedRequest(targets: bwTargets)" in develop)
 check("under the same name as everywhere else",
       "PortraitRecipe.backgroundEnhanced.title" in develop)
+check("and it opens the card rather than acting at once",
+      "BackgroundEnhancedCard(" in develop
+      and ".sheet(item: $backgroundEnhancedRequest)" in develop)
+check("the card's Apply runs the recipe with the card's own numbers",
+      "runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)" in develop)
 
 print("\nthe grid's right-click menu")
 check("it offers Background Enhanced",
       "PortraitRecipe.backgroundEnhanced.title" in content)
-check("pressing it runs the batch",
-      "runBackgroundEnhancedInGrid(targets)" in content)
+check("pressing it opens the card",
+      "BackgroundEnhancedRequest(targets: targets)" in content
+      and ".sheet(item: $backgroundEnhancedRequest)" in content)
+check("and the card's Apply runs the batch",
+      "runBackgroundEnhancedInGrid(targets, tuning: tuning)" in content)
 check("it acts on the WHOLE selection, not the photo under the cursor",
       "private func photoContextMenuItems(for url: URL)" in content
       and "selectedURLs.contains(url) && selectedURLs.count > 1" in content)
@@ -80,9 +93,18 @@ check("it acts on the WHOLE selection, not the photo under the cursor",
 # ContentView.swift, that is what happened.
 print("\none implementation, not two")
 check("the grid calls the shared service",
-      "PortraitRecipeService.run([.backgroundEnhanced], on: targets)" in content)
+      "PortraitRecipeService.run([.backgroundEnhanced], on: targets, tuning: tuning)" in content)
 check("the editor calls the same service",
-      "PortraitRecipeService.run(recipes, on: targets)" in develop)
+      "PortraitRecipeService.run(recipes, on: targets, tuning: tuning)" in develop)
+# ⚠️ The card is a THIRD place that could have grown its own copy of the recipe,
+# and it is the most tempting one — it already holds the layers and the base
+# image. It must ask PortraitRecipe for the numbers like everyone else, or the
+# picture in the card stops being the picture Apply produces.
+card_start = develop.find("struct BackgroundEnhancedCard: View {")
+card = develop[card_start:develop.find("\n/// One step back for the one-press", card_start)]
+check("the card previews through the recipe itself, not its own copy of it",
+      "PortraitRecipe.backgroundEnhanced" in card and "tuning: wanted" in card)
+check("and the card does not flatten anything", "FlattenedImageStore.flatten" not in card)
 check("the grid does NOT build people layers of its own",
       "PeopleLayerFactory" not in content)
 check("the grid does NOT flatten on its own account",

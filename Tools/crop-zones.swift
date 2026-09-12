@@ -91,6 +91,37 @@ checkDegrees("a side of a turned frame gets a cursor turned with it",
 checkDegrees("and so does the edge across it",
              cropResizeDegrees(.top, angle: angle, halfWidth: 200, halfHeight: 100), angle + 90)
 
+// ⚠️ THE FRAME TRAVELS AGAINST THE POINTER. Asked for on 12.09 —
+// *„if i move mouse to the right crop need to move on the left"* — because
+// Lightroom's crop moves the PICTURE under a frame that stays put, and this
+// overlay is a frame over a picture that stays put. Two minus signs are the
+// whole feature, which is exactly the kind of thing a later tidy-up removes.
+print("\nthe crop frame moves against the mouse")
+
+let moveFrame = CGRect(x: 0, y: 0, width: 400, height: 200)
+
+let right = cropMoveOffset(for: CGSize(width: 40, height: 0), frame: moveFrame)
+check("mouse right moves the frame LEFT", right.dx < 0, "got \(right.dx)")
+check("and does not move it vertically", right.dy == 0)
+
+let down = cropMoveOffset(for: CGSize(width: 0, height: 20), frame: moveFrame)
+check("mouse down moves the frame UP", down.dy < 0, "got \(down.dy)")
+check("and does not move it horizontally", down.dx == 0)
+
+let left = cropMoveOffset(for: CGSize(width: -40, height: -20), frame: moveFrame)
+check("and the other way round on both axes", left.dx > 0 && left.dy > 0,
+      "got \(left.dx), \(left.dy)")
+
+// A fraction OF THE FRAME, not of the photograph: 40 px across a 400 px frame
+// is a tenth, whatever the picture behind it is.
+check("the distance is a fraction of the frame",
+      abs(abs(right.dx) - 0.1) < 1e-12 && abs(abs(down.dy) - 0.1) < 1e-12,
+      "got \(right.dx), \(down.dy)")
+
+check("a frame with no area cannot divide by zero",
+      cropMoveOffset(for: CGSize(width: 10, height: 10),
+                     frame: CGRect(x: 0, y: 0, width: 0, height: 0)) == (0, 0))
+
 print("")
 if failures == 0 {
     print("all checks passed")

@@ -40,6 +40,12 @@ def check(label: str, passed: bool, detail: str = "") -> None:
         failures += 1
 
 
+_default_step = re.search(r"func editSlider\([^)]*?step: Double = ([\d.]+)", source, re.S)
+if not _default_step:
+    sys.exit("could not read editSlider's default step out of Develop.swift")
+DEFAULT_STEP = float(_default_step.group(1))
+
+
 def sliders():
     """Every editSlider in the file as (panel, label, range, step).
 
@@ -59,7 +65,11 @@ def sliders():
         step = re.search(r"step: ([\d.]+)", window)
         found.setdefault(panel, {})[label] = (
             (float(span.group(1)), float(span.group(2))),
-            float(step.group(1)) if step else None,
+            # A call that does not name a step gets editSlider's own default,
+            # read out of its signature rather than written down here — so the
+            # comparison is between two REAL steps and not between two "not
+            # stated"s, which would agree with each other whatever they were.
+            float(step.group(1)) if step else DEFAULT_STEP,
         )
     return found
 
@@ -108,6 +118,39 @@ for label in sorted(mask_shared):
 # celokupan edit"*. Listed rather than failed — Crop, Straighten and the like
 # are geometry and have no meaning on a layer — but a new photo slider that
 # never reached the layer panel shows up here the day it is added.
+# ⚠️ THE FOURTH PLACE. Background Enhanced's card (12.09) puts Shadows,
+# Saturation and Clarity in front of the client a fourth time, and a fourth
+# place is exactly how the first three drifted apart. Its rows are not
+# `editSlider` calls — the card has no keyboard nudge registry and no
+# selected-slider highlight to hook into — so the range and step come from one
+# named pair on BackgroundEnhancedTuning, and that pair is checked here against
+# the panel the numbers end up on: a LAYER's, because the recipe writes on the
+# Background layer.
+print("\nand the Background Enhanced card, the fourth place these three appear")
+
+card_range = re.search(r"static let range: ClosedRange<Double> = (-?[\d.]+)\.\.\.(-?[\d.]+)", source)
+card_step = re.search(r"static let step = ([\d.]+)", source)
+check("the card names its range and step in one place",
+      card_range is not None and card_step is not None)
+
+if card_range and card_step:
+    card_span = (float(card_range.group(1)), float(card_range.group(2)))
+    card_step_value = float(card_step.group(1))
+    for label in ("Shadows", "Saturation", "Clarity"):
+        # A row in the card at all: the client asked for *„all slide bar
+        # setting"*, so a recipe number with no slider is a missing feature and
+        # not a tidy default.
+        key = f'key: "card.{label.lower()}"'
+        check(f'the card has a "{label}" row', key in source, key)
+
+        if label not in panels["layer"]:
+            check(f'"{label}" exists on the layer panel to be compared with', False)
+            continue
+        layer_span, layer_step = panels["layer"][label]
+        check(f'"{label}" — the card matches the layer panel',
+              card_span == layer_span and card_step_value == layer_step,
+              f"card {card_span}/{card_step_value} vs layer {layer_span}/{layer_step}")
+
 print("\nwhat the photo has and a layer does not")
 only_photo = sorted(set(panels["photo"]) - set(panels["layer"]))
 print(f"  {', '.join(only_photo) if only_photo else 'nothing'}")

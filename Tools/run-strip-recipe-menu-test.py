@@ -28,11 +28,21 @@ SOURCE = ROOT / "BriefShow" / "Develop.swift"
 # .title so that the menu, the grid's menu and the Sync dialog cannot end up
 # calling one button three things — which means there is no literal here to
 # search for, and a test that demanded one would be demanding the duplication.
+# (label, what pressing it must reach, how it runs)
+#
+# ⚠️ Three shapes, not two, from 12.09. Background Enhanced no longer acts when
+# pressed: it opens a card with the three numbers as sliders and a live preview
+# of the first photo, and the recipe runs on Apply — *„before enhance to get
+# small modul card with all slide bar setting … to show real alive result on the
+# first chosen image"*. So "runs" is the wrong question for it, and the right one
+# is "does it open the card".
+DUPLICATES, IN_PLACE, OPENS_CARD = "duplicates", "in place", "card"
+
 ITEMS = [
-    ("Duplicate Subject Mono", ".subjectMono", True),
-    ("Duplicate Mono Background", ".monoBackground", True),
-    ("Youthify", ".youthify", False),
-    ("PortraitRecipe.backgroundEnhanced.title", ".backgroundEnhanced", False),
+    ("Duplicate Subject Mono", ".subjectMono", DUPLICATES),
+    ("Duplicate Mono Background", ".monoBackground", DUPLICATES),
+    ("Youthify", ".youthify", IN_PLACE),
+    ("PortraitRecipe.backgroundEnhanced.title", "BackgroundEnhancedRequest", OPENS_CARD),
 ]
 
 
@@ -121,7 +131,7 @@ def main() -> int:
 
     print(f"the {len(ITEMS)} recipe items on the strip's right-click menu")
 
-    for label, recipe, duplicates in ITEMS:
+    for label, recipe, how in ITEMS:
         action, end = button_action(source, label)
         check(f'"{label}" is there', bool(action))
         if not action:
@@ -133,23 +143,36 @@ def main() -> int:
               ".disabled(isAIWorkingOnOpenPhoto)" in source[end:end + 80],
               source[end:end + 60].strip())
 
-        check(f'"{label}" runs {recipe}', recipe in action, action.strip())
+        check(f'"{label}" reaches {recipe}', recipe in action, action.strip())
 
         # Same target rule as Export, Delete and the plain Duplicate above it.
         check(f'"{label}" acts on the right-click selection',
               "bwTargets" in action, action.strip())
 
-        if duplicates:
+        if how == DUPLICATES:
             # ⚠️ It must COPY. Both of these end in a flatten, so run in place
             # they would write over the photograph the client selected.
             check(f'"{label}" duplicates first',
                   "duplicatePhotos" in action and "thenRecipe:" in action,
                   action.strip())
-        else:
+        elif how == IN_PLACE:
             # ⚠️ …and Youthify must NOT, because that is how it was asked for.
             check(f'"{label}" does NOT duplicate',
                   "duplicatePhotos" not in action and "runPortraitRecipes" in action,
                   action.strip())
+        else:
+            # The card acts on Apply, so the BUTTON must not act at all — and it
+            # must not duplicate either, since this one was asked for in place.
+            check(f'"{label}" only opens the card, and does not act',
+                  "duplicatePhotos" not in action
+                  and "runPortraitRecipes" not in action
+                  and "PortraitRecipeService" not in action,
+                  action.strip())
+            # …and the card it opens has to lead somewhere. Checked against the
+            # whole file rather than the button: the sheet is declared elsewhere.
+            check(f'"{label}" opens a card that runs the recipe on Apply',
+                  "BackgroundEnhancedCard(" in source
+                  and "runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)" in source)
 
     print("\nthe handover, which is where this would go wrong quietly")
 

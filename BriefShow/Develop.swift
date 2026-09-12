@@ -1737,6 +1737,87 @@ enum FlattenedImageStore {
         return previous
     }
 
+    /// The snapshot `unflatten` would hand back, without taking anything apart.
+    ///
+    /// Added for the recipe undo, which has to put this back exactly as it
+    /// found it: a recipe run on an ALREADY flattened photo must not become the
+    /// photo's "before the first flatten" state just because it was the last
+    /// thing to touch it.
+    static func snapshot(for photo: URL) -> PhotoEditSettings? {
+        storedSettings[key(for: photo)]
+    }
+
+    static func setSnapshot(_ settings: PhotoEditSettings?, for photo: URL) {
+        var all = storedSettings
+        if let settings {
+            all[key(for: photo)] = settings
+        } else {
+            all.removeValue(forKey: key(for: photo))
+        }
+        storedSettings = all
+    }
+
+    // MARK: One step back for the portrait recipes
+
+    /// Where a flattened copy waits while a recipe writes a new one over it.
+    private static func undoFileURL(for photo: URL) -> URL? {
+        guard let directory else { return nil }
+        let safe = key(for: photo).replacingOccurrences(of: "/", with: "_")
+        return directory.appendingPathComponent(safe + ".recipe-undo.tiff")
+    }
+
+    /// Moves this photo's flattened copy aside so a recipe can be taken back,
+    /// and says whether there was one. Call immediately BEFORE the recipe's own
+    /// flatten.
+    ///
+    /// ⚠️ A MOVE, not a copy, and that is the whole reason this is affordable.
+    /// A flattened copy of a 45-megapixel frame is ~142 MB of uncompressed
+    /// 16-bit TIFF (see this type's own measurement), and the machine this is
+    /// developed on has 8 GB. Copying one per photo across a selection of forty
+    /// would be gigabytes of disk for an undo nobody may press. A rename costs
+    /// nothing and the bytes exist once.
+    ///
+    /// Only ONE step is kept. Running a recipe twice leaves the state from
+    /// before the SECOND run — the same depth of undo a menu's Undo item has,
+    /// and the alternative is an unbounded pile of 142 MB files.
+    @discardableResult
+    static func setAsideForRecipeUndo(_ photo: URL) -> Bool {
+        guard let aside = undoFileURL(for: photo) else { return false }
+        try? FileManager.default.removeItem(at: aside)
+
+        guard let existing = flattenedURL(for: photo) else { return false }
+        do {
+            try FileManager.default.moveItem(at: existing, to: aside)
+            return true
+        } catch {
+            // Could not be moved: the honest answer is "there is no undo copy",
+            // not a half-recorded one that restores nothing.
+            return false
+        }
+    }
+
+    /// Puts the set-aside copy back, or removes the recipe's own copy when
+    /// there was nothing underneath it.
+    static func restoreFromRecipeUndo(_ photo: URL, hadFlattenedCopy: Bool) {
+        if let current = flattenedURL(for: photo) {
+            try? FileManager.default.removeItem(at: current)
+        }
+        guard hadFlattenedCopy,
+              let aside = undoFileURL(for: photo),
+              FileManager.default.fileExists(atPath: aside.path),
+              let destination = fileURL(for: photo) else {
+            return
+        }
+        try? FileManager.default.moveItem(at: aside, to: destination)
+    }
+
+    /// Drops a set-aside copy without using it — the undo has been spent, or
+    /// overwritten by a newer one.
+    static func discardRecipeUndoCopy(for photo: URL) {
+        guard let aside = undoFileURL(for: photo) else { return }
+        try? FileManager.default.removeItem(at: aside)
+    }
+
     private static var storedSettings: [String: PhotoEditSettings] {
         get {
             guard let data = UserDefaults.standard.data(forKey: settingsKey) else { return [:] }
@@ -5307,6 +5388,34 @@ enum PeopleLayerFactory {
     }
 }
 
+/// What Background Enhanced does to the background, as numbers the client can
+/// move before he commits to them.
+///
+/// ⚠️ THE DEFAULTS ARE HIS AND THEY STAY HIS. 12.09: *„select layer backround,
+/// and edit like this: Shadows -100, situration plus 30, Clarity plus 30"*. This
+/// type exists because he then asked for the OTHER half — *„before enhance to get
+/// small modul card with all slide bar setting of how you want to be backround
+/// before applying, to show real alive result on the first chosen image"* — so
+/// the numbers became a starting point instead of the only point. A recipe run
+/// without touching the card is byte-for-byte the recipe that shipped in v11.20.
+///
+/// Stored on the −1…1 scale every slider in this app reads out as ×100.
+struct BackgroundEnhancedTuning: Equatable {
+    var shadows: Double = -1
+    var saturation: Double = 0.30
+    var clarity: Double = 0.30
+
+    /// The panel's own ranges, and they are the SAME ranges as the photo's and
+    /// the layer's — the 🔴 MUST at the top of BRIEFSHOW_DEVELOP_NOTES.md. The
+    /// card is a fourth place these three controls appear, so its ranges are
+    /// named here, in one place, and Tools/run-slider-parity-test.py checks them
+    /// against the other three panels rather than trusting this comment.
+    static let range: ClosedRange<Double> = -1...1
+    static let step = 0.01
+
+    var isDefault: Bool { self == BackgroundEnhancedTuning() }
+}
+
 /// The one-press portrait jobs: Select People, then a fixed set of moves on
 /// the layers it made, then Flatten.
 ///
@@ -5381,7 +5490,8 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
     /// place so several recipes can be folded over one photo in a row — which
     /// is what a Sync with two of them ticked does.
     func applied(to settings: PhotoEditSettings,
-                 backgroundID: UUID, peopleID: UUID) -> PhotoEditSettings {
+                 backgroundID: UUID, peopleID: UUID,
+                 tuning: BackgroundEnhancedTuning = BackgroundEnhancedTuning()) -> PhotoEditSettings {
         var result = settings
         let wantedID = writesOnBackground ? backgroundID : peopleID
         guard let index = result.layers.firstIndex(where: { $0.id == wantedID }) else {
@@ -5408,15 +5518,449 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
         case .backgroundEnhanced:
             // The client's own three numbers, 12.09: *„select layer backround,
             // and edit like this: Shadows -100, situration plus 30, Clarity
-            // plus 30"*. Stored on the −1…1 scale the panel reads out as
-            // ×100, same as every recipe above — and Shadows negative is the
-            // darkening direction (see PhotoEditSettings.shadows).
-            result.layers[index].adjustments.shadows = -1
-            result.layers[index].adjustments.saturation = 0.30
-            result.layers[index].adjustments.clarity = 0.30
+            // plus 30"* — now the DEFAULTS of `tuning` rather than literals
+            // here, because from 12.09 he can move them in the card before
+            // applying. Untouched, they are the same three numbers.
+            //
+            // Shadows negative is the darkening direction (see
+            // PhotoEditSettings.shadows), which is why his −100 is −1 and not
+            // +1.
+            result.layers[index].adjustments.shadows = tuning.shadows
+            result.layers[index].adjustments.saturation = tuning.saturation
+            result.layers[index].adjustments.clarity = tuning.clarity
         }
 
         return result
+    }
+}
+
+/// What the Background Enhanced card is open ABOUT.
+///
+/// Identifiable so `.sheet(item:)` can carry it: the sheet then holds its own
+/// copy of the target list, so a selection that changes while the card is open
+/// cannot quietly become what Apply acts on.
+struct BackgroundEnhancedRequest: Identifiable {
+    let id = UUID()
+    let targets: [URL]
+}
+
+/// The card that stands between pressing Background Enhanced and it happening.
+///
+/// ⚠️ WHY IT EXISTS, in the client's words, 12.09: *„When enhancing the
+/// backround, before enhance to get small modul card with all slide bar setting
+/// of how you want to be backround before applying, to show real alive result on
+/// the first chosen image."*
+///
+/// So: the three numbers as sliders, and the FIRST chosen photograph rendered
+/// live underneath them. Not a thumbnail of the recipe's fixed result — the
+/// picture as the sliders currently stand, moving as they move.
+///
+/// ⚠️ SELECT PEOPLE RUNS ONCE, and that is the whole reason this is quick enough
+/// to be called live. Vision's person segmentation is the expensive half of the
+/// recipe by a wide margin; the three sliders are ordinary CIFilters. So the
+/// mask is made once when the card opens, held, and only the tone work is redone
+/// on each drag. Re-running Select People per frame would be a card that thinks
+/// for a second after every pixel of slider travel.
+///
+/// ⚠️ THE PREVIEW IS DOWNSCALED and that does not break the resolution lock at
+/// the top of BRIEFSHOW_DEVELOP_NOTES.md. What is locked is the image opened for
+/// WORK in LumenoLab; thumbnails and strip pictures are named there as the
+/// exception, and this is one of those — a small picture in a card, whose job is
+/// to show which way the sliders go. What is applied afterwards is rendered at
+/// native resolution by PortraitRecipeService, from the file, with these numbers.
+struct BackgroundEnhancedCard: View {
+
+    /// Everything the recipe will be applied to. Only the first is previewed —
+    /// *„on the first chosen image"* — and the count is shown so nobody presses
+    /// Apply thinking it is about the one picture on screen.
+    let targets: [URL]
+    let onCancel: () -> Void
+    let onApply: (BackgroundEnhancedTuning) -> Void
+
+    /// Spelled out because the implicit memberwise initialiser is private the
+    /// moment any stored property is, and every `@State` below is.
+    init(targets: [URL], onCancel: @escaping () -> Void,
+         onApply: @escaping (BackgroundEnhancedTuning) -> Void) {
+        self.targets = targets
+        self.onCancel = onCancel
+        self.onApply = onApply
+    }
+
+    @State private var tuning = BackgroundEnhancedTuning()
+    @State private var preview: NSImage?
+    @State private var stage: Stage = .preparing
+    /// The prepared work for the first photo, held between renders.
+    @State private var prepared: Prepared?
+    /// Bumped on every slider move; the renderer only keeps the newest.
+    @State private var renderToken = 0
+
+    /// ⚠️ NOT called `State`. A nested type of that name shadows SwiftUI's own
+    /// `@State` inside this struct, and the compiler's complaint — "enum 'State'
+    /// cannot be used as an attribute" — points at the property wrappers rather
+    /// than at the name that broke them.
+    enum Stage: Equatable {
+        case preparing
+        case ready
+        case noPeople
+        case failed
+    }
+
+    struct Prepared {
+        let base: PhotoBaseImage
+        let settings: PhotoEditSettings
+        let backgroundID: UUID
+        let peopleID: UUID
+    }
+
+    /// The size the preview is rendered at.
+    ///
+    /// 900 px on the long edge: big enough that Clarity and Shadows are visible
+    /// decisions rather than guesses, small enough that a render lands inside a
+    /// slider drag. Measured on this machine at ~0.1 s for a NEF at this size
+    /// (Tools/run-layer-edit-parity-test.py prints the same number for the same
+    /// pipeline at 2600 px, which is 0.07 s without layers and 0.08 s with).
+    private static let previewSide: CGFloat = 900
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+
+            previewPicture
+
+            VStack(alignment: .leading, spacing: 10) {
+                recipeSlider("Shadows", key: "card.shadows", value: $tuning.shadows)
+                recipeSlider("Saturation", key: "card.saturation", value: $tuning.saturation)
+                recipeSlider("Clarity", key: "card.clarity", value: $tuning.clarity)
+            }
+
+            footer
+        }
+        .padding(16)
+        .frame(width: 380)
+        .background(AppColors.panel)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(AppColors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .onAppear(perform: prepare)
+        // Every slider move asks for a new picture. The render itself is
+        // debounced inside `rerender` by the token, not here, so a fast drag
+        // does not queue up twenty renders it will throw away.
+        .onChange(of: tuning) { _ in rerender() }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(PortraitRecipe.backgroundEnhanced.title)
+                .font(.custom("Figtree", size: 14).weight(.semibold))
+                .foregroundColor(AppColors.ink)
+
+            Text(targets.count > 1
+                 ? "Select People, then these numbers on the Background, then Flatten — on \(targets.count) photos."
+                 : "Select People, then these numbers on the Background, then Flatten.")
+                .font(.custom("Figtree", size: 11))
+                .foregroundColor(AppColors.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var previewPicture: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(AppColors.panelAlt)
+
+            if let preview {
+                Image(nsImage: preview)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            switch stage {
+            case .preparing:
+                VStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Finding the people…")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.inkSecondary)
+                }
+            case .noPeople:
+                // A normal answer, not a failure — the same wording the grid
+                // uses when a run finds nobody.
+                Text("No people found in this photo.\nThe others in the selection are still tried.")
+                    .multilineTextAlignment(.center)
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.inkSecondary)
+            case .failed:
+                Text("This photo could not be opened.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.inkSecondary)
+            case .ready:
+                EmptyView()
+            }
+        }
+        .frame(height: 200)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            // Back to his three numbers in one press. Shown greyed rather than
+            // hidden when they are already the defaults, so the card always
+            // says what "the recipe" means.
+            Button("Reset") { tuning = BackgroundEnhancedTuning() }
+                .disabled(tuning.isDefault)
+
+            Spacer()
+
+            Button("Cancel", action: onCancel)
+                .keyboardShortcut(.cancelAction)
+
+            // ⚠️ Apply is live even when the preview says "no people": the
+            // preview is the FIRST photo only, and a selection of forty is not
+            // ruled out by the one at the front of it.
+            Button("Apply") { onApply(tuning) }
+                .keyboardShortcut(.defaultAction)
+        }
+        .font(.custom("Figtree", size: 12))
+    }
+
+    /// One row. Deliberately NOT `DevelopView.editSlider` — that one is wired
+    /// into the editor's keyboard nudge registry and its selected-slider
+    /// highlight, neither of which exists out here — but the RANGE and STEP come
+    /// from `BackgroundEnhancedTuning`, and Tools/run-slider-parity-test.py
+    /// checks them against the photo, layer and mask panels. That is the 🔴 MUST:
+    /// this is a fourth place these three controls appear, and a fourth place is
+    /// exactly how the first three drifted apart.
+    private func recipeSlider(_ title: String, key: String,
+                              value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                    .font(.custom("Figtree", size: 12).weight(.medium))
+                    .foregroundColor(AppColors.ink)
+                Spacer()
+                Text(String(format: "%+.0f", value.wrappedValue * 100))
+                    .font(.custom("Figtree", size: 11).monospacedDigit())
+                    .foregroundColor(AppColors.inkSecondary)
+            }
+
+            Slider(value: value,
+                   in: BackgroundEnhancedTuning.range,
+                   step: BackgroundEnhancedTuning.step)
+                .controlSize(.small)
+        }
+    }
+
+    // MARK: The work
+
+    /// Opens the first photo and lifts its people — once.
+    private func prepare() {
+        guard let first = targets.first else {
+            stage = .failed
+            return
+        }
+
+        developRenderQueue.async(qos: .userInitiated) {
+            guard let base = PhotoEditRenderer.loadBaseImage(from: first,
+                                                             maxPixelSize: Self.previewSide) else {
+                DispatchQueue.main.async { stage = .failed }
+                return
+            }
+
+            var settings = PhotoEditStore.settings(for: first)
+            // applyCrop: false — a layer's geometry lives in the pre-crop unit
+            // space, the same rule PortraitRecipeService follows.
+            let full = PhotoEditRenderer.render(settings, on: base, applyCrop: false)
+
+            // confinedTo: nil — no rope drawn on this photograph from here.
+            guard let made = PeopleLayerFactory.make(from: full, confinedTo: nil,
+                                                     backgroundName: "Background",
+                                                     peopleName: "People") else {
+                DispatchQueue.main.async { stage = .noPeople }
+                return
+            }
+
+            settings.layers.append(made.background)
+            settings.layers.append(made.people)
+
+            let ready = Prepared(base: base, settings: settings,
+                                 backgroundID: made.background.id,
+                                 peopleID: made.people.id)
+
+            DispatchQueue.main.async {
+                prepared = ready
+                stage = .ready
+                rerender()
+            }
+        }
+    }
+
+    /// Renders the preview at the current numbers.
+    ///
+    /// ⚠️ The token is what makes a drag cheap. A slider sends a change per
+    /// pixel of travel; each one asks for a render, and the queue is SERIAL, so
+    /// without this the client would watch the card catch up through twenty
+    /// stale pictures after letting go. Each render checks on arrival whether
+    /// it is still the newest ask and throws itself away if not.
+    private func rerender() {
+        guard let prepared, stage == .ready else { return }
+
+        renderToken += 1
+        let token = renderToken
+        let wanted = tuning
+
+        developRenderQueue.async(qos: .userInitiated) {
+            let settings = PortraitRecipe.backgroundEnhanced
+                .applied(to: prepared.settings,
+                         backgroundID: prepared.backgroundID,
+                         peopleID: prepared.peopleID,
+                         tuning: wanted)
+
+            let image = PhotoEditRenderer.render(settings, on: prepared.base, applyCrop: true)
+            guard let cgImage = briefEditsCIContext.createCGImage(image, from: image.extent) else {
+                return
+            }
+            let rendered = NSImage(cgImage: cgImage,
+                                   size: NSSize(width: image.extent.width,
+                                                height: image.extent.height))
+
+            DispatchQueue.main.async {
+                guard token == renderToken else { return }
+                preview = rendered
+            }
+        }
+    }
+}
+
+/// One step back for the one-press portrait recipes.
+///
+/// ⚠️ WHY THIS EXISTS, in the client's words, 12.09: *„When i want to undo
+/// enhanced backround i need to be able to do so. No to be forces to restart all
+/// settings from the image!"*
+///
+/// Unflatten was the only way back, and it is the wrong tool for this. It goes
+/// all the way to *before the first flatten* — one place, however many bakes
+/// happened since — and the snapshot it restores is the state the photo was
+/// baked FROM, which for a recipe means the recipe's own layers and numbers.
+/// So on a photo that had been worked on, undoing Background Enhanced through
+/// Unflatten threw away everything done after the first bake and handed the
+/// recipe back as live layers. That is the *„restart all settings"* he means.
+///
+/// This is the other thing: exactly the state from just before the recipe ran,
+/// and nothing else touched. Three pieces have to go back together, and missing
+/// any one of them leaves the photograph in a state it was never in:
+///
+///   * the settings record (the layers Select People made, and the numbers),
+///   * the flattened pixels (the recipe's copy deleted, the one underneath it —
+///     if any — moved back),
+///   * and FlattenedImageStore's own "before the first flatten" snapshot, which
+///     the recipe will have written if the photo had never been baked before.
+///
+/// ONE step, per photo. See `FlattenedImageStore.setAsideForRecipeUndo` for why
+/// it is not a stack: each step would be a 142 MB file.
+enum PortraitRecipeUndoStore {
+
+    struct Entry: Codable {
+        /// Raw values, so the menu can name what it is about to undo. Kept as
+        /// strings rather than the enum so a recipe removed from the app later
+        /// cannot make an old entry undecodable.
+        var recipes: [String]
+        /// The record as it was BEFORE the recipe ran.
+        var settings: PhotoEditSettings
+        /// Whether there was already a flattened copy under the recipe's one.
+        var hadFlattenedCopy: Bool
+        /// FlattenedImageStore's snapshot as it was before — nil when the photo
+        /// had never been flattened, which is the usual case.
+        var flattenSnapshot: PhotoEditSettings?
+        var date: Date
+
+        var title: String {
+            let titles = recipes.compactMap { PortraitRecipe(rawValue: $0)?.title }
+            switch titles.count {
+            case 0: return "Recipe"
+            case 1: return titles[0]
+            default: return titles.joined(separator: " + ")
+            }
+        }
+    }
+
+    private static let key = "com.rocketsbrief.briefshow.portraitRecipeUndo"
+
+    private static var entries: [String: Entry] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: key) else { return [:] }
+            return (try? JSONDecoder().decode([String: Entry].self, from: data)) ?? [:]
+        }
+        set {
+            UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: key)
+        }
+    }
+
+    /// Keyed like everything else that follows a photo — name plus file size.
+    private static func photoKey(for url: URL) -> String {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? -1
+        return "\(url.lastPathComponent)|\(size)"
+    }
+
+    /// Remembers where a photo stood, and moves its flattened copy aside.
+    ///
+    /// Called from inside the service, on the render queue, immediately before
+    /// the recipe's flatten — so what is recorded is what was true at that
+    /// instant and not what the main thread thought a moment earlier.
+    static func record(_ recipes: [PortraitRecipe], for photo: URL,
+                       settings: PhotoEditSettings) {
+        let hadCopy = FlattenedImageStore.setAsideForRecipeUndo(photo)
+        var all = entries
+        all[photoKey(for: photo)] = Entry(recipes: recipes.map(\.rawValue),
+                                          settings: settings,
+                                          hadFlattenedCopy: hadCopy,
+                                          flattenSnapshot: FlattenedImageStore.snapshot(for: photo),
+                                          date: Date())
+        entries = all
+    }
+
+    static func entry(for photo: URL) -> Entry? {
+        entries[photoKey(for: photo)]
+    }
+
+    static func canUndo(_ photo: URL) -> Bool {
+        entry(for: photo) != nil
+    }
+
+    /// What the menu should be called for a selection: the recipe every one of
+    /// them can take back, or nil when there is nothing to offer.
+    static func undoableTitle(for photos: [URL]) -> String? {
+        let titles = photos.compactMap { entry(for: $0)?.title }
+        guard !titles.isEmpty else { return nil }
+        return Set(titles).count == 1 ? titles[0] : "Recipe"
+    }
+
+    /// Puts one photo back, and hands the caller the record to store.
+    ///
+    /// Returns nil when there is nothing to undo, so a caller can tell "put
+    /// back" from "nothing to put back" without asking twice.
+    static func undo(_ photo: URL) -> PhotoEditSettings? {
+        guard let stored = entry(for: photo) else { return nil }
+
+        FlattenedImageStore.restoreFromRecipeUndo(photo,
+                                                 hadFlattenedCopy: stored.hadFlattenedCopy)
+        // ⚠️ Back to what it WAS, including nil. The recipe's flatten wrote this
+        // snapshot on a photo that had never been baked; leaving it behind would
+        // leave Unflatten offering to restore a state that no longer exists.
+        FlattenedImageStore.setSnapshot(stored.flattenSnapshot, for: photo)
+
+        forget(photo)
+        return stored.settings
+    }
+
+    /// Drops the undo without using it, and the set-aside pixels with it.
+    static func forget(_ photo: URL) {
+        FlattenedImageStore.discardRecipeUndoCopy(for: photo)
+        var all = entries
+        all.removeValue(forKey: photoKey(for: photo))
+        entries = all
     }
 }
 
@@ -5439,10 +5983,46 @@ enum PortraitRecipeService {
         var failed = 0
     }
 
+    /// Takes the last recipe back on each of `targets`.
+    ///
+    /// Returns how many were actually put back. A photo with no undo entry is
+    /// skipped rather than failed — a selection is allowed to be mixed, and the
+    /// menu offers this whenever ANY of them can be undone.
+    ///
+    /// ⚠️ Runs on the render queue like `run` does, even though it moves files
+    /// rather than pixels: moving a 142 MB TIFF back is not instant, and forty
+    /// of them on the main thread is a beachball. `completion` lands on the
+    /// main queue with the store written and flushed, so the grid's thumbnails
+    /// refresh themselves exactly as they do after a run.
+    static func undo(on targets: [URL], completion: @escaping (Int) -> Void) {
+        guard !targets.isEmpty else {
+            completion(0)
+            return
+        }
+
+        developRenderQueue.async(qos: .userInitiated) {
+            var restored: [URL: PhotoEditSettings] = [:]
+            for url in targets {
+                if let settings = PortraitRecipeUndoStore.undo(url) {
+                    restored[url] = settings
+                }
+            }
+
+            DispatchQueue.main.async {
+                for (url, settings) in restored {
+                    PhotoEditStore.setSettings(settings, for: url)
+                }
+                PhotoEditStore.flushNow()
+                completion(restored.count)
+            }
+        }
+    }
+
     /// `progress` reports (finished-so-far, total) on the main queue before
     /// each photo; `completion` lands on the main queue with the store already
     /// written and flushed.
     static func run(_ recipes: [PortraitRecipe], on targets: [URL],
+                    tuning: BackgroundEnhancedTuning = BackgroundEnhancedTuning(),
                     progress: @escaping (Int, Int) -> Void,
                     completion: @escaping (Outcome) -> Void) {
         guard !recipes.isEmpty, !targets.isEmpty else {
@@ -5469,6 +6049,7 @@ enum PortraitRecipeService {
                 }
 
                 var photoSettings = PhotoEditStore.settings(for: url)
+                let settingsBefore = photoSettings
                 // applyCrop: false — a layer's geometry lives in the pre-crop
                 // unit space, same as everywhere else layers are made.
                 let full = PhotoEditRenderer.render(photoSettings, on: base, applyCrop: false)
@@ -5488,14 +6069,31 @@ enum PortraitRecipeService {
                 for recipe in ordered {
                     photoSettings = recipe.applied(to: photoSettings,
                                                    backgroundID: made.background.id,
-                                                   peopleID: made.people.id)
+                                                   peopleID: made.people.id,
+                                                   tuning: tuning)
                 }
 
                 let rendered = PhotoEditRenderer.render(photoSettings, on: base, applyCrop: false)
+
+                // ⚠️ BEFORE the flatten, not after: this both remembers the
+                // record as it stands and moves any existing flattened copy
+                // aside, and `flatten` is about to write over that copy. See
+                // PortraitRecipeUndoStore.
+                //
+                // `settingsBefore` is the record as it was READ at the top of
+                // this photo's turn — before the two layers were appended and
+                // before any recipe touched them.
+                PortraitRecipeUndoStore.record(ordered, for: url, settings: settingsBefore)
+
                 do {
                     try FlattenedImageStore.flatten(rendered, settings: photoSettings,
                                                     for: url, context: briefEditsCIContext)
                 } catch {
+                    // The undo entry points at a state the photo is still in,
+                    // so it would offer to "take back" something that never
+                    // happened — and it is holding the previous flattened copy
+                    // hostage in a sidecar. Put that back and drop the entry.
+                    _ = PortraitRecipeUndoStore.undo(url)
                     outcome.failed += 1
                     continue
                 }
@@ -7121,6 +7719,14 @@ struct DevelopView: View {
     /// instead of leaving a button silent.
     @ObservedObject private var sdPipeline = SDInpaintPipeline.shared
     @State private var flattenErrorMessage: String?
+    /// The Background Enhanced card's request, or nil when it is closed.
+    ///
+    /// A value rather than a Bool plus a list: the card is about a SET of
+    /// photos, and a Bool that says "open" beside a list that says "which"
+    /// can disagree — which here would mean applying a recipe to a selection
+    /// that has since changed under it.
+    @State private var backgroundEnhancedRequest: BackgroundEnhancedRequest?
+
     @State private var showSyncDialog = false
 
     // Right-click "Delete" / ⌫ in the filmstrip, routed through a
@@ -7632,6 +8238,22 @@ struct DevelopView: View {
                 return
             }
             refreshFilmstripThumbnails(changed)
+        }
+        // ⚠️ The card, not the recipe. Asked for on 12.09 — *„before enhance to
+        // get small modul card with all slide bar setting … to show real alive
+        // result on the first chosen image"* — so pressing Background Enhanced
+        // opens this and the recipe runs when Apply is pressed. See
+        // BackgroundEnhancedCard.
+        .sheet(item: $backgroundEnhancedRequest) { request in
+            BackgroundEnhancedCard(
+                targets: request.targets,
+                onCancel: { backgroundEnhancedRequest = nil },
+                onApply: { tuning in
+                    let targets = request.targets
+                    backgroundEnhancedRequest = nil
+                    runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)
+                }
+            )
         }
         .sheet(isPresented: $showSyncDialog) {
             syncDialogView
@@ -8734,11 +9356,31 @@ struct DevelopView: View {
             // on them — it ends in a flatten like every recipe, and Unflatten
             // is what takes that back.
             Button(bwTargets.count > 1
-                   ? "\(PortraitRecipe.backgroundEnhanced.title) (\(bwTargets.count))"
-                   : PortraitRecipe.backgroundEnhanced.title) {
-                runPortraitRecipes([.backgroundEnhanced], on: bwTargets)
+                   ? "\(PortraitRecipe.backgroundEnhanced.title)… (\(bwTargets.count))"
+                   : "\(PortraitRecipe.backgroundEnhanced.title)…") {
+                backgroundEnhancedRequest = BackgroundEnhancedRequest(targets: bwTargets)
             }
             .disabled(isAIWorkingOnOpenPhoto)
+
+            // ⚠️ Asked for on 12.09: *„When i want to undo enhanced backround i
+            // need to be able to do so. No to be forces to restart all settings
+            // from the image!"* — so this is NOT Unflatten. Unflatten goes back
+            // to before the FIRST bake and discards everything since; this goes
+            // back exactly one recipe and leaves the rest of his work alone.
+            // See PortraitRecipeUndoStore.
+            //
+            // Shown only when there is something to take back, rather than
+            // greyed out permanently: the menu is long, and a recipe that has
+            // never been run on these photos has no undo to explain.
+            if let undoTitle = PortraitRecipeUndoStore.undoableTitle(for: bwTargets) {
+                let undoable = bwTargets.filter { PortraitRecipeUndoStore.canUndo($0) }
+                Button(undoable.count > 1
+                       ? "Undo \(undoTitle) (\(undoable.count))"
+                       : "Undo \(undoTitle)") {
+                    undoPortraitRecipes(on: bwTargets)
+                }
+                .disabled(isAIWorkingOnOpenPhoto)
+            }
 
             Divider()
 
@@ -11687,6 +12329,30 @@ struct DevelopView: View {
             )
     }
 
+    /// Where a drag of the crop frame puts it, as a FRACTION of the frame.
+    ///
+    /// ⚠️ THE SIGN IS INVERTED ON PURPOSE, and it is the whole content of this
+    /// function. Asked for on 12.09: *„if i move mouse to the right crop need
+    /// to move on the left, or if i move mouse holding crop and move to down
+    /// mouse whole crop need to move up"* — both axes, said twice.
+    ///
+    /// It is not a quirk. Lightroom's crop tool moves the PHOTOGRAPH under a
+    /// frame that stays where it is, so pushing the mouse right slides the
+    /// picture right, which means the part of the picture being KEPT walks
+    /// left. Our overlay is the other way round — a frame over a photograph
+    /// that does not move — so to feel like the tool the client uses all day,
+    /// the frame has to travel against the pointer. Reading it as "I am pushing
+    /// the picture, not dragging a box" is what makes it obvious rather than
+    /// backwards.
+    ///
+    /// Pure and static so Tools/run-crop-zone-test.py can pin the signs down
+    /// without a window: a drag gesture is not a thing a test can press.
+    static func cropMoveOffset(for translation: CGSize, frame: CGRect) -> (dx: Double, dy: Double) {
+        guard frame.width > 0, frame.height > 0 else { return (0, 0) }
+        return (dx: -translation.width / frame.width,
+                dy: -translation.height / frame.height)
+    }
+
     private func moveCrop(by translation: CGSize, frame: CGRect) {
         if dragStartCrop == nil {
             dragStartCrop = pendingCrop
@@ -11695,8 +12361,7 @@ struct DevelopView: View {
             return
         }
 
-        let dx = translation.width / frame.width
-        let dy = translation.height / frame.height
+        let (dx, dy) = Self.cropMoveOffset(for: translation, frame: frame)
 
         var next = start
         next.x = start.x + dx
@@ -18032,6 +18697,7 @@ struct DevelopView: View {
     /// look exactly like a recipe that did nothing, which is how it was
     /// reported. So the rule stays where it belongs and is lifted only here.
     private func runPortraitRecipes(_ recipes: [PortraitRecipe], on targets: [URL],
+                                    tuning: BackgroundEnhancedTuning = BackgroundEnhancedTuning(),
                                     openFirstWhenDone: Bool = false) {
         guard !recipes.isEmpty, !targets.isEmpty else {
             return
@@ -18043,7 +18709,7 @@ struct DevelopView: View {
         isFlattening = true
         exportStatusText = "\(label) 1 of \(targets.count)…"
 
-        PortraitRecipeService.run(recipes, on: targets) { done, total in
+        PortraitRecipeService.run(recipes, on: targets, tuning: tuning) { done, total in
             exportStatusText = "\(label) \(done + 1) of \(total)…"
         } completion: { outcome in
             isFlattening = false
@@ -18070,6 +18736,34 @@ struct DevelopView: View {
             if outcome.noPeople > 0 { message += ", \(outcome.noPeople) with no people" }
             if outcome.failed > 0 { message += ", \(outcome.failed) failed" }
             showTransientStatus(message)
+        }
+    }
+
+    /// Takes the last portrait recipe back on `targets`.
+    ///
+    /// ⚠️ Reopens the photo when it is the one on screen. The recipe baked
+    /// pixels into a flattened copy and the undo deletes that file; the editor
+    /// is holding a decode of it (see the held decode in `selectPhoto`), so
+    /// without this the client would be looking at the enhanced picture with an
+    /// un-enhanced record beside it — which reads as "undo did nothing".
+    private func undoPortraitRecipes(on targets: [URL]) {
+        let undoable = targets.filter { PortraitRecipeUndoStore.canUndo($0) }
+        guard !undoable.isEmpty else { return }
+
+        let label = PortraitRecipeUndoStore.undoableTitle(for: undoable) ?? "Recipe"
+        isFlattening = true
+        exportStatusText = "Undoing \(label)…"
+
+        let openPhoto = undoable.contains(where: { $0 == selectedURL }) ? selectedURL : nil
+
+        PortraitRecipeService.undo(on: undoable) { count in
+            isFlattening = false
+            if let openPhoto {
+                selectPhoto(openPhoto)
+            }
+            showTransientStatus(count == 1
+                                ? "\(label) undone"
+                                : "\(label) undone on \(count)")
         }
     }
 

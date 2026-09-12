@@ -22287,6 +22287,12 @@ struct PhotoShowSheet: View {
     // Which camera the import window is open on, if any. Set either by
     // clicking the camera in the sidebar or, for a camera that is newly
     // connected, by the app itself — see onReceive below.
+    /// The Background Enhanced card's request, or nil when it is closed — the
+    /// same shape the editor keeps it in, and for the same reason: the card is
+    /// about a SET of photos, and the sheet holding its own copy means a
+    /// selection that changes under it cannot become what Apply acts on.
+    @State private var backgroundEnhancedRequest: BackgroundEnhancedRequest?
+
     @State private var importingSource: ImportSource?
 
     // Cameras that have already opened the import window once in this run, so
@@ -22709,6 +22715,20 @@ struct PhotoShowSheet: View {
             guard !camerasAlreadyOffered.contains(camera.id) else { return }
             camerasAlreadyOffered.insert(camera.id)
             importingSource = .camera(camera)
+        }
+        // The same card the editor's right-click menu opens, on the same
+        // service — one implementation, so "Background Enhanced" cannot come to
+        // mean two different things depending on which window it was pressed in.
+        .sheet(item: $backgroundEnhancedRequest) { request in
+            BackgroundEnhancedCard(
+                targets: request.targets,
+                onCancel: { backgroundEnhancedRequest = nil },
+                onApply: { tuning in
+                    let targets = request.targets
+                    backgroundEnhancedRequest = nil
+                    runBackgroundEnhancedInGrid(targets, tuning: tuning)
+                }
+            )
         }
         .sheet(item: $importingSource) { source in
             CameraImportView(
@@ -23659,12 +23679,37 @@ struct PhotoShowSheet: View {
         // ⚠️ It BAKES, unlike everything else in this menu except Black &
         // White, and the name alone does not say so — the running status does,
         // and Unflatten in Create takes it back.
+        // ⚠️ Opens the CARD, not the recipe — the trailing ellipsis is the
+        // macOS convention for exactly that, and it is what tells the client
+        // this one asks before it acts. Asked for on 12.09: *„before enhance to
+        // get small modul card with all slide bar setting … to show real alive
+        // result on the first chosen image"*.
         Button(targets.count > 1
-               ? "\(PortraitRecipe.backgroundEnhanced.title) (\(targets.count))"
-               : PortraitRecipe.backgroundEnhanced.title) {
-            runBackgroundEnhancedInGrid(targets)
+               ? "\(PortraitRecipe.backgroundEnhanced.title)… (\(targets.count))"
+               : "\(PortraitRecipe.backgroundEnhanced.title)…") {
+            backgroundEnhancedRequest = BackgroundEnhancedRequest(targets: targets)
         }
         .help(PortraitRecipe.backgroundEnhanced.help)
+
+        // ⚠️ NOT Unflatten, and that is the point of it. Asked for on 12.09:
+        // *„When i want to undo enhanced backround i need to be able to do so.
+        // No to be forces to restart all settings from the image!"* — Unflatten
+        // goes back to before the first bake and throws away everything since.
+        // This goes back exactly one recipe. See PortraitRecipeUndoStore.
+        //
+        // Same item, same words, as the editor's own right-click menu: the two
+        // menus offer the recipe together and they have to offer the way back
+        // together too.
+        if let undoTitle = PortraitRecipeUndoStore.undoableTitle(for: targets) {
+            let undoable = targets.filter { PortraitRecipeUndoStore.canUndo($0) }
+            Button(undoable.count > 1
+                   ? "Undo \(undoTitle) (\(undoable.count))"
+                   : "Undo \(undoTitle)") {
+                undoBackgroundEnhancedInGrid(targets)
+            }
+            .help("Puts these photos back to just before the recipe ran — the "
+                  + "settings and the pixels. Unflatten goes further back than this.")
+        }
 
         Divider()
 
@@ -24137,7 +24182,8 @@ struct PhotoShowSheet: View {
     ///
     /// Thumbnails refresh themselves: the service writes the cleared records
     /// and flushes, and refreshEditedThumbnails is already listening for that.
-    private func runBackgroundEnhancedInGrid(_ targets: [URL]) {
+    private func runBackgroundEnhancedInGrid(_ targets: [URL],
+                                             tuning: BackgroundEnhancedTuning) {
         guard !targets.isEmpty else {
             return
         }
@@ -24145,13 +24191,30 @@ struct PhotoShowSheet: View {
         let title = PortraitRecipe.backgroundEnhanced.title
         gridActionStatus = "\(title) 1 of \(targets.count)…"
 
-        PortraitRecipeService.run([.backgroundEnhanced], on: targets) { done, total in
+        PortraitRecipeService.run([.backgroundEnhanced], on: targets, tuning: tuning) { done, total in
             gridActionStatus = "\(title) \(done + 1) of \(total)…"
         } completion: { outcome in
             var message = "\(title) on \(outcome.settingsByURL.count)"
             if outcome.noPeople > 0 { message += ", \(outcome.noPeople) with no people" }
             if outcome.failed > 0 { message += ", \(outcome.failed) failed" }
             showGridStatus(message)
+        }
+    }
+
+    /// Takes the last portrait recipe back on a grid selection.
+    ///
+    /// Thumbnails refresh themselves: the service writes the restored records
+    /// and flushes, and refreshEditedThumbnails is already listening for that —
+    /// the same mechanism that shows the recipe's own result.
+    private func undoBackgroundEnhancedInGrid(_ targets: [URL]) {
+        let undoable = targets.filter { PortraitRecipeUndoStore.canUndo($0) }
+        guard !undoable.isEmpty else { return }
+
+        let label = PortraitRecipeUndoStore.undoableTitle(for: undoable) ?? "Recipe"
+        gridActionStatus = "Undoing \(label)…"
+
+        PortraitRecipeService.undo(on: undoable) { count in
+            showGridStatus(count == 1 ? "\(label) undone" : "\(label) undone on \(count)")
         }
     }
 

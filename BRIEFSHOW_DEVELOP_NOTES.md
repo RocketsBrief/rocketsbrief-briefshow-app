@@ -18573,6 +18573,185 @@ na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
 
 ---
 
+## KORAK 185 — Shadows izlazi iz zajedničke tonske krive (13. septembar 2026)
+
+Klijentova specifikacija, 13.09: Shadows nije selektivni gain ni podizanje
+offseta nego ciljana maska tonova — radi **samo u tamnom pojasu** (L 0,05–0,40,
+vrhunac oko L≈0,15–0,20), **srednji i svetli tonovi ostaju netaknuti** (težina
+0,0 iznad L 0,50), **crna tačka ostaje usidrena** da slika ne posivi kad se
+senke otvore, nelinearno podizanje u jednu i blago zbijanje u drugu stranu, sve
+u perceptivnom prostoru, uz prilagođavanje zasićenja — vratiti ono što
+podizanje ispere, pa ga preko +50 zadržati da senka ne dođe šumovita.
+
+### ⚠️ Prvo merenje, i ono je odlučilo sve ostalo
+
+Shadows je bio **jedan red** zajedničke petočvorne krive (težine
+`[0,30, 1,00, 0,60, 0, 0]` × `toneControlStrength`). Očitano sa isporučene
+krive na rampi 0…255, na Shadows +100:
+
+| ton | šta je stara kriva radila | šta spec traži |
+|---|---|---|
+| nivo **0** — crna tačka | **+7,6** nivoa | **0,0** — usidreno |
+| nivo 16 (L 0,173) | +12,9 | tu je vrhunac kontrole |
+| nivo **128** — srednji ton | **+15,2** nivoa | **0,0** — netaknuto |
+| nivo 160 | +7,0 | netaknuto |
+
+Dakle dve od četiri klauzule nisu samo nedostajale, bile su **prekršene u
+suprotnom smeru**: najjači efekat kontrole sedeo je na nivoima 64–80 (+25), a
+jedino mesto koje ne sme da se pomeri pomeralo se najvidljivije. To je i
+objašnjenje za „isprano" — crna koja se diže na 7,6 nivoa je prljavo siva.
+
+### Oblik — `BriefShow/ShadowsCurve.swift`
+
+Prozor su **dve Hermite polovine** koje se sastaju u `peak`: kreće iz nule
+**sa nagibom nula**, pa podizanje iščezava kvadratno prema crnoj — to je
+sidrenje crne tačke, i to oblikom, a ne odsecanjem. Gornja polovina stiže u
+`ceiling` isto tako, pa nema preloma tamo gde kontrola prestaje: prelom između
+obrađenog i neobrađenog tona je upravo oreol od koga spec strahuje.
+
+| šta | vrednost | zašto |
+|---|---|---|
+| `peak` | **0,175** L | spec-ovo „vrhunac oko L≈0,15–0,20" |
+| `ceiling` | **0,50** L | spec-ovo „iznad 0,50 težina 0,0" — drži **tačno** |
+| `liftAtFullPush` | **0,058** | **nasleđeno**, v. ispod |
+| `crushScale` | **0,59** | **nasleđeno**, v. ispod |
+| `chromaFollow` | **0,5** | isto kao `ContrastCurve` |
+| `noiseRelief` | **0,75** od +0,50 | spec-ova klauzula o šumu |
+
+### ⚠️ Jačina je NASLEĐENA, i to na vrhu prozora
+
+Ista disciplina kao u KORACIMA 180 i 184. Stara kriva je **jedina** verzija ove
+kontrole koja je ikad bodovana po regionima protiv Lightroom-ovog izvoza
+(05.09), pa se od nje uzima jačina — mereno **na vrhu novog prozora** (L 0,175,
+nivo 16), jer je to ton koji obe staze zaista pomeraju:
+
+| Shadows | stara | sad |
+|---|---|---|
+| +100 | +13,08 nivoa | **+13,1** |
+| −100 | −7,17 nivoa | **−7,2** |
+
+⚠️ **Ne nasleđuje se DOMET** — stara je uz to pomerala srednji ton za 15,2 i
+crnu za 7,6 nivoa, a to je tačno ono što spec uklanja. Zato `crushScale` nije
+1,0: isti korak u OKLab svetlini košta više nivoa naniže blizu crne nego što
+donese naviše, pa je simetrična kriva na −100 davala −12,2 umesto −7,2.
+
+⚠️ **I ne sme preko 0,1167.** Najstrmije što prozor raste je 1,5/`peak` = 8,57,
+pa svako podizanje iznad toga prevrće krivu — tamniji ton bi izašao svetliji od
+svetlijeg. Na 0,058 najravnije što kriva ikad postane je nagib **0,73**.
+
+### Šta je izmereno na pravim kadrovima
+
+`C4S_8932.NEF` (jedini od četiri sa stvarno dubokim senkama), Shadows +100:
+
+| | stara | sad |
+|---|---|---|
+| pojas **ispod vrha** (nivoi 4–16), srednja vrednost | 13,7 → **25,9** | 13,7 → **26,1** |
+| razuđenost istog pojasa | 2,62 → 3,57 | 2,62 → **3,76** |
+| **najdublji tonovi** (0–3) | **+8,60** | **+3,95** |
+| **srednji tonovi** | **+13,03** | **+0,01** |
+
+Podizanje je isto, ali srednji tonovi više ne idu sa njim, a najdublji se
+pomeraju upola manje i teže nuli. Na sve četiri fotke srednji ton stoji ispod
+**0,05 nivoa** (stara: 7,7 do 13,0).
+
+### ⚠️ Merilo koje je prvo bilo POGREŠNO, i ispravilo mene
+
+Lenjir je prvo tražio da **ceo** pojas senki (nivoi 4–40) izađe razuđeniji nego
+što je ušao. Ne izlazi: 5,97 nivoa u miru, 5,21 na +100 — i to je **aritmetika,
+ne kvar**. Prozor koji ima vrhunac na L 0,175 i gasi se do L 0,50 podiže tonove
+ispod vrha više nego one iznad njega, pa se sve na povratku ka netaknutim
+srednjim tonovima zbija. Stara kriva je tu izgledala bolje samo zato što je
+**njen** vrhunac bio na L 0,37 — iznad celog pojasa, što je upravo ono što
+klijentova specifikacija uklanja.
+
+Pojas je zato presečen **na vrhu prozora** i svaka strana se meri onim što joj
+sledi: ispod vrha tonovi moraju da se **raziđu** (to jeste otvaranje senke),
+iznad njega smeju da se skupe ali ne preko nagiba 0,73 koji kriva sama drži.
+
+### ⚠️ I drugo merilo koje je bilo pogrešno: „crna" nije „sve tamno"
+
+Lenjir je pao na `C4S_8932` jer su se pikseli ispod nivoa 3,5 pomerili za 3,95
+nivoa. **Treba da se pomere.** Taj pojas seže do L 0,12, duboko unutar prozora
+koji ima vrhunac na L 0,175; kontrola koja bi ga zamrzla imala bi liticu u
+sebi. Spec sidri **L≈0** — „apsolutna crna tačka" — a od tonova iznad traži da
+se pomeraju **manje, postupno**, što je oblik a ne pravilo. Sad se meri to:
+piksel koji je bio crn ostaje crn, a pojas iznad se pomera manje nego što ga je
+stara kriva pomerala.
+
+⚠️ Na ove četiri fotke **nema nijednog piksela čista tri kanala na nuli**, pa
+je ta provera na njima prazna — sidro je dokazano nad tipom u prvoj polovini
+lenjira, gde `shapedLightness(0)` vraća tačno 0 na svakom podešavanju.
+
+### Boja — obe klauzule jednim izrazom
+
+Podizanje L uz nepromenjene `a` i `b` obara hromu **u odnosu na** svetlinu, i to
+je ono „isprano". Zato hroma prati svetlinu stepenom `chromaFollow` (isti idiom
+i ista vrednost kao `ContrastCurve`), a preko +50 se to praćenje povlači i
+prelazi u blago oduzimanje zasićenja — boja koju veliko podizanje izvuče iz
+mračnog ugla je uglavnom šum senzora. Ispod +50 drugi član je **tačno nula**.
+
+⚠️ Odnos `shaped/L` je bezbedan na crnoj **zbog oblika prozora, ne zbog
+provere**: težina iščezava kvadratno, pa odnos teži 1 umesto u beskonačno —
+boja najtamnijih piksela se ne dira, što je druga polovina sidrenja crne.
+
+### Kocka je 48³, i to je jedino mesto u familiji gde nije 32³
+
+Unosi kocke su ravnomerni po **prikaznoj** vrednosti, a ova kontrola sav posao
+radi u donjoj osmini tog opsega — gde se kriva i najviše savija. Mereno kao
+najgori razmak između tabele pročitane Core Image-ovom sopstvenom
+interpolacijom i tačne krive, na Shadows +100:
+
+| 32³ | 48³ | 64³ |
+|---|---|---|
+| **1,46 nivoa** | **0,59** | **0,54** |
+
+64³ je osmostruka gradnja za desetinku nivoa, a gradi se dok se slajder vuče.
+Izmereno: **48³ = 14,7 ms**, susedni `ContrastCube` na 32³ = **11,2 ms**.
+
+### ⚠️ Tri filtera, i spoljna dva su tu da ne urade ništa
+
+Kocka odseca na 1,0 u **oba** smera, pa bi ovaj prolaz — koji iznad L 0,50 ne
+dira ništa — usput spljoštio opseg **iznad bele** koji je KORAK 184 merio i
+sačuvao (0,04–30,6 % klijentovih kadrova). Zato se slika deli sa `headroom`
+ispred tabele i množi nazad iza nje, a tabela drži skalirane vrednosti. Ton koji
+uđe na 1,045 izađe na 1,045. `headroom` se **ne kopira** nego čita iz
+`HighlightsCurve`, da dva broja ne mogu da se raziđu.
+
+Red u lancu: **posle Highlights-a, pre Contrast-a.** Njih dvoje deluju na
+razdvojene polovine opsega pa komutiraju; redosled odlučuje headroom — Highlights
+je taj koji ga **čita**, pa ide prvi.
+
+### Čime je zaključano
+
+`Tools/run-shadows-curve-test.py` — dve polovine, i prima **više** fotografija
+odjednom (gradi jednom), jer nije svaki kadar isti: svetli nema šta da otvori,
+a samo kadar sa pravom crnom može da kaže da li sidro drži.
+
+Osobine nad pravim tipom: 0 je identitet; **ništa iznad L 0,50 se ne pomera ni
+na jednom podešavanju, tačno**; crna tačka stoji, a najdublja dvadesetina se
+pomera ispod jednog nivoa; vrhunac je tamo gde ga spec stavlja; zbijanje je
+blaže od podizanja; **jačina na vrhu je stara, bodovana** — i to računata iz
+starih težina u samom lenjiru, ne prepisana; kriva se nikad ne izravnava ni ne
+prevrće; nema preloma ni na jednom kraju; nijansa se ne pomera; klauzula o boji
+radi u oba smera i ispod +50 je tačno nula; opseg iznad bele prolazi netaknut; i
+tabela **jeste** ta kriva — i na svojim unosima **i između njih**.
+
+Uz to čita `Develop.swift`: Shadows ima **jednu** implementaciju, više nije red
+zajedničke krive, i skala ispred kocke je poništena iza nje.
+
+`Tools/run-layer-edit-parity-test.py` i dalje daje **0,00 na svih 18** — 🔴 MUST
+drži: slajder na layeru je isti slajder kao na slici, i sad zato što obe strane
+zovu `PhotoEditRenderer.applyShadows`.
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`; app sagrađena i
+instalirana. Nije objavljeno, **nema push-a**.
+
+⚠️ **NIJE VIĐENO NA EKRANU.** Sve gore je izmereno kroz isporučeni pipeline.
+Jačina prati staru, bodovanu — ali oblik je nov, i klijentovo oko je jedino koje
+kaže da li na njegovim slikama sad izgleda kako treba.
+
+---
+
 ## KORAK 184 — Highlights izlazi iz zajedničke tonske krive (13. septembar 2026)
 
 Klijentova specifikacija, 13.09: Highlights nije limiter svetlih tonova nego

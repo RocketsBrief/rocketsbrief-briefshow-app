@@ -2832,8 +2832,7 @@ enum PhotoEditRenderer {
     /// to be the other way round. Records written before that flip are migrated
     /// on decode (see PhotoEditSettings.init(from:) and `schemaVersion`), so a
     /// photo edited under an older build still renders the way it did.
-    static func toneCurvePoints(blacks: Double, shadows: Double,
-                                whites: Double) -> [CGPoint] {
+    static func toneCurvePoints(blacks: Double, whites: Double) -> [CGPoint] {
         let xs: [Double] = [0, 0.25, 0.5, 0.75, 1]
         // Rows: blacks, shadows, highlights, whites. Columns: the five knots.
         // Each control is 1.0 at home and fades outwards.
@@ -2842,6 +2841,20 @@ enum PhotoEditRenderer {
         // Whites do, and that asymmetry is measured rather than chosen: pulled
         // wide, the client's Highlights -77 dragged the whole middle of a
         // high-key frame down with it.
+        //
+        // ⚠️ SHADOWS LEFT THIS TABLE ON 13.09, THE DAY AFTER HIGHLIGHTS DID,
+        // and its row is gone with it — it is
+        // `PhotoEditRenderer.applyShadows` now, for the reason
+        // ShadowsCurve.swift opens with: as a row here it lifted the BLACK
+        // POINT by 7.6 levels and the MIDTONE by 15.2 at +100, and the client's
+        // specification of 13.09 asks for exactly zero at both. Blacks and
+        // Whites are UNCHANGED, weights and all.
+        //
+        // The measurement that set its old weights is kept below, because it is
+        // the only sweep against a Lightroom export this control has ever had
+        // and the new curve inherits its strength from it —
+        // `ShadowsCurve.liftAtFullPush` reproduces the old lift at the peak of
+        // the new window to a tenth of a level. Read it as history:
         //
         // ⚠️ SHADOWS USED TO BE PINNED THE SAME WAY (0.10), AND THAT WAS A
         // CONSEQUENCE OF A BUG, NOT A MEASUREMENT. It was set while the curve
@@ -2869,21 +2882,19 @@ enum PhotoEditRenderer {
         // it is `PhotoEditRenderer.applyHighlights` now, a pass of its own, for
         // the reason HighlightsCurve.swift opens with: a fifth of some of the
         // client's frames sits above white when this runs, and neither
-        // CIToneCurve nor a colour cube can see up there. The other three are
-        // UNCHANGED, weights and all — this is a removal, not a re-tuning, so
-        // Blacks, Shadows and Whites still mean exactly what they measured to
-        // mean on 05.09.
+        // CIToneCurve nor a colour cube can see up there. Blacks and Whites
+        // are UNCHANGED, weights and all — this is a removal, not a re-tuning,
+        // so both still mean exactly what they measured to mean on 05.09.
         let weights: [[Double]] = [
             [1.00, 0.45, 0.06, 0.00, 0.00],
-            [0.30, 1.00, 0.60, 0.00, 0.00],
             [0.00, 0.00, 0.06, 0.45, 1.00],
         ]
-        let amounts = [blacks, shadows, whites]
+        let amounts = [blacks, whites]
 
         var ys = xs
         for knot in 0..<5 {
             var delta = 0.0
-            for control in 0..<3 { delta += amounts[control] * weights[control][knot] }
+            for control in 0..<2 { delta += amounts[control] * weights[control][knot] }
             ys[knot] = xs[knot] + delta * toneControlStrength
         }
 
@@ -3176,7 +3187,7 @@ enum PhotoEditRenderer {
         // `filter.exposure = 0` above.
         output = PhotoEditRenderer.applyExposure(settings.exposure, to: output)
 
-        if settings.blacks != 0 || settings.shadows != 0 || settings.whites != 0 {
+        if settings.blacks != 0 || settings.whites != 0 {
             // Blacks/Shadows/Highlights/Whites all bend one CIToneCurve
             // instead of stacking separate filters. point2 (x = 0.5, the
             // midtone) is left fixed as the pivot, so every slider rotates
@@ -3218,8 +3229,7 @@ enum PhotoEditRenderer {
             // point1, and that is honest: both are controls over the bottom of
             // the range, and they overlap in Lightroom too.
             let points = PhotoEditRenderer.toneCurvePoints(
-                blacks: settings.blacks, shadows: settings.shadows,
-                whites: settings.whites)
+                blacks: settings.blacks, whites: settings.whites)
             output = PhotoEditRenderer.applyToneCurve(points, to: output)
         }
 
@@ -3234,6 +3244,19 @@ enum PhotoEditRenderer {
         // and Whites in particular is allowed to push tones INTO clipping —
         // which is exactly the material Highlights then has to bring back.
         output = PhotoEditRenderer.applyHighlights(settings.highlights, to: output)
+
+        // ⚠️ AFTER HIGHLIGHTS, AND THAT IS THE ORDER RATHER THAN AN ACCIDENT.
+        // The two act on disjoint halves of the range — Shadows is zero above
+        // L 0.50, Highlights is zero below it — so they commute, and what
+        // decides the order is the above-white range: Highlights is the pass
+        // that READS it, so it goes first, and Shadows is built to hand it back
+        // untouched (see applyShadows).
+        //
+        // Shadows left the shared tone curve on 13.09 for the reason
+        // ShadowsCurve.swift opens with: as one of its rows it lifted the black
+        // point by eight levels and the midtone by fifteen, and the client's
+        // specification asks for exactly zero at both.
+        output = PhotoEditRenderer.applyShadows(settings.shadows, to: output)
 
         // ⚠️ CONTRAST DOES NOT MOVE THE WHITE POINT, and that is the whole reason
         // it no longer goes through CIColorControls.
@@ -3602,6 +3625,52 @@ enum PhotoEditRenderer {
         cube.cubeData = HighlightsCube.data(for: highlights)
         cube.colorSpace = briefEditsSRGBColorSpace
         return cube.outputImage ?? image
+    }
+
+    /// Shadows, for the photo, for a layer and for a mask alike.
+    ///
+    /// ⚠️ THREE FILTERS, AND THE OUTER TWO ARE THERE TO DO NOTHING. A colour
+    /// cube clamps at 1.0 in BOTH directions, so a pass like this one — which
+    /// has no business above white, and touches nothing above L 0.50 — would
+    /// still flatten the above-white range on its way past, and that range is
+    /// exactly what KORAK 184 measured and kept (0.04%–30.6% of the client's
+    /// frames). So the picture is divided by `ShadowsCurve.headroom` in front of
+    /// the table and multiplied back out behind it, and the table holds scaled
+    /// values to match. A tone that arrives at 1.045 leaves at 1.045.
+    ///
+    /// `CIColorMatrix` is the right multiply for both because it does NOT clamp
+    /// — probed directly for `applyHighlights`, a patch scaled to 1.6 reads back
+    /// as 1.6 — and because it runs in the working colour space, display-encoded
+    /// sRGB, the same space the cube's axes are in.
+    ///
+    /// ⚠️ THE ONE PLACE, like `applyExposure`, `applyContrast` and
+    /// `applyHighlights` above it — the 🔴 MUST in BRIEFSHOW_DEVELOP_NOTES.md.
+    /// Until 13.09 Shadows was one row of `toneCurvePoints`, shared with Blacks
+    /// and Whites; it is its own pass now, and those two are unchanged.
+    static func applyShadows(_ shadows: Double, to image: CIImage) -> CIImage {
+        guard shadows != 0 else { return image }
+
+        func scaled(_ input: CIImage, by factor: CGFloat) -> CIImage? {
+            let matrix = CIFilter.colorMatrix()
+            matrix.inputImage = input
+            matrix.rVector = CIVector(x: factor, y: 0, z: 0, w: 0)
+            matrix.gVector = CIVector(x: 0, y: factor, z: 0, w: 0)
+            matrix.bVector = CIVector(x: 0, y: 0, z: factor, w: 0)
+            matrix.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            matrix.biasVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+            return matrix.outputImage
+        }
+
+        let headroom = CGFloat(ShadowsCurve.headroom)
+        guard let down = scaled(image, by: 1 / headroom) else { return image }
+
+        let cube = CIFilter.colorCubeWithColorSpace()
+        cube.inputImage = down
+        cube.cubeDimension = Float(ShadowsCube.dimension)
+        cube.cubeData = ShadowsCube.data(for: shadows)
+        cube.colorSpace = briefEditsSRGBColorSpace
+        guard let shaped = cube.outputImage, let back = scaled(shaped, by: headroom) else { return image }
+        return back
     }
 
     private static func applySharpen(_ sharpness: Double, radius: Double, to image: CIImage) -> CIImage {
@@ -4035,21 +4104,24 @@ enum PhotoEditRenderer {
 
         output = PhotoEditRenderer.applyExposure(local.exposure, to: output)
 
-        if local.blacks != 0 || local.shadows != 0 || local.whites != 0 {
+        if local.blacks != 0 || local.whites != 0 {
             // The same curve as the global one, and deliberately the same
             // FUNCTION: a mask that toned differently from the panel would be
             // a second thing to calibrate and a second thing to get wrong. It
             // carried the same non-monotonic Highlights defect until 05.09 —
             // the measurements are on toneCurvePoints.
             let points = PhotoEditRenderer.toneCurvePoints(
-                blacks: local.blacks, shadows: local.shadows,
-                whites: local.whites)
+                blacks: local.blacks, whites: local.whites)
             output = PhotoEditRenderer.applyToneCurve(points, to: output)
         }
 
         // The same one function the photo calls, in the same place in the
         // order — the 🔴 MUST. See applyHighlights.
         output = PhotoEditRenderer.applyHighlights(local.highlights, to: output)
+
+        // The same one function the photo calls, in the same place in the
+        // order — the 🔴 MUST. See applyShadows.
+        output = PhotoEditRenderer.applyShadows(local.shadows, to: output)
 
         // ⚠️ CONTRAST IS THE PHOTO'S CURVE, NOT CICOLORCONTROLS — and this was
         // measured, 12.09, after the client reported that editing the People

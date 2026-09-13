@@ -718,6 +718,21 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 13. septembar 2026 — v11.26 OBJAVLJENA, univerzalna
+
+| | |
+|---|---|
+| **180–187** | Contrast, Highlights, Shadows, Clarity i Dehaze prepravljeni po klijentovim specifikacijama, svaki sa svojim lenjirom; plus četiri prijave iz njegove probe i kartica na sva tri dugmeta |
+| **188** | **v11.26** objavljena: univerzalan paket, min macOS 13.0, LaMa unutra, SD dugmetom |
+
+- **Exposure je jedini od šest koji je stigao ranije** — ušao je u v11.20 (KORAK 178).
+- Skinuti paket proveren: isti SHA-256, 115.258.769 bajta, `codesign` ok, nula fotografija.
+- **`v11.0` se i dalje NE SME brisati** — dugme za SD u app-i ga gađa (HTTP 200 pri objavi).
+- ⚠️ **Ništa od 180–187 nije viđeno na ekranu.** Sve je mereno kroz isporučeni pipeline.
+
+---
+
+
 ### GDE SMO STALI — 12. septembar 2026 — v11.20 OBJAVLJENA, univerzalna
 
 | | |
@@ -737,7 +752,8 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 | **184** | **Highlights** izlazi iz zajedničke tonske krive — OKLab, meko koleno bez preloma, i pre-skaliranje koje vraća opseg **iznad bele** koji su i `CIToneCurve` i kocka odsecali (NIJE OBJAVLJENO) |
 | **185** | **Shadows** izlazi iz zajedničke tonske krive — Hermite prozor sa vrhuncem na L 0,175, crna tačka usidrena oblikom (stara staza ju je dizala 7,6 nivoa), srednji tonovi se pomeraju **0,01** umesto 13,03 (NIJE OBJAVLJENO) |
 | **186** | **Clarity** prestaje da bude unsharp mask — osnova koja čuva ivicu, maska srednjih tonova, oreol uz ivicu **24,04 → 1,62** nivoa; `CIGuidedFilter` koji spec traži imenom je **no-op na ovom sistemu** (NIJE OBJAVLJENO) |
-| **187** | **Dehaze** postaje model atmosferskog rasejanja — Dark Channel Prior, procena A, mapa prenosivosti; na poznatoj magli vraća sliku na **31,2** nivoa od čiste scene, gde je stara staza odvodila na **94,9** (NIJE OBJAVLJENO) |
+| **187** | **Dehaze** postaje model atmosferskog rasejanja — Dark Channel Prior, procena A, mapa prenosivosti; na poznatoj magli vraća sliku na **31,2** nivoa od čiste scene, gde je stara staza odvodila na **94,9** |
+| **188** | **v11.26 OBJAVLJENA**: univerzalan paket (arm64 + x86_64), min macOS 13.0, LaMa unutra, SD dugmetom; skinuti paket ima isti SHA-256 |
 
 - Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.048.108 bajta, `codesign` ok, nula fotografija.
 - Update lanac proveren pozivom pravog poređenja: **svaka** verzija od 11.7 do 11.17 dobija karticu za 11.20.
@@ -18573,6 +18589,68 @@ tabela paljenja gore, nad pravom fotografijom.
 
 `Tools/run-slider-parity-test.py` — novi lenjir za 🔴 MUST: isti opseg i korak
 na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
+
+---
+
+## KORAK 188 — RELEASE v11.26: pet prepravljenih kontrola, jedan paket (13. septembar 2026)
+
+Prvo objavljivanje posle v11.20. Osam koraka (180–187) je stajalo lokalno i
+nepush-ovano; sad je sve gore.
+
+| provera | rezultat |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.26 / 33** |
+| `CFBundleIdentifier` | `com.rocketsbrief.BriefShow` |
+| `LaMa.mlmodelc` | **u paketu** |
+| `SD15-Inpainting` | **nije u paketu** — namerno |
+| lične fotografije | **0** |
+| `codesign -v --strict` | ok |
+| veličina | 115.258.769 bajta |
+
+**Skinuti paket proveren, ne samo sagrađeni:** isti SHA-256
+(`3b6f7e98…13af5d`), `lipo` na raspakovanom daje `x86_64 arm64`, minimum 13.0,
+`codesign` prolazi.
+
+### Zašto SD nije u paketu
+
+Klijentova reč: *„Ne moras da uploadujes 2gb jer vec imaju u appu dugme za Ai SD
+DOwnload, a oni koji vec koji koriste App oni imaju downodowan vec SD"*. Zato
+`--small-only`: postojeće instalacije ne skidaju ponovo 2 GB koje već imaju, a
+nov klijent instalira ovo pa pritisne dugme u app-i.
+
+⚠️ **`v11.0` se i dalje NE SME brisati** — dugme za SD gađa njegov asset.
+Provereno pri objavi: HTTP 200.
+
+### Intel: deljenje posla već postoji
+
+Traženo: *„da SD Radi na intel prcesorima ali da deli rad da bi bio brzi i bolji
+jer nije M Silicon procesor"*. To je isporučeno ranije i stoji u
+`DevelopSDInpaint.swift`: na x86_64 `computeUnits = .all`, pa Core ML deli UNet
+između diskretne grafike i jezgara, dok VAE prolazi idu na GPU. Na arm64 je
+`.cpuAndNeuralEngine`. Ovde nije menjano ništa — samo potvrđeno.
+
+### Oznaka verzije u app-i
+
+Već postoji, ispod logotipa, i **čita se iz bundle-a** (`v\(short)`), pa sad
+piše `v11.26` — isto što i tag. Nije kucana rukom, iz razloga iz KORAKA 74:
+verzija upisana u UI se razilazi sa build-om čim se jedno od to dvoje promeni.
+
+⚠️ **Nije viđena na ekranu** — app je pokrenuta i traži keychain lozinku, a taj
+prozor je klijentov. Pročitana je iz `Info.plist` instaliranog paketa: 11.26.
+
+### Linkovi
+
+- stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.26`
+- direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.26/C4S-Suite-11.26.zip`
+
+### Update lanac
+
+Ide preko `app_config` reda u Supabase-u (`latest_version`, `download_url`,
+`release_notes`) — klijent ga upisuje u BriefShow Control. Poređenje je
+`compare(options: .numeric)`, pa **11.26 > 11.7 i > 11.20** kako treba; obično
+poređenje stringova bi reklo suprotno za 11.7.
 
 ---
 

@@ -160,14 +160,68 @@ for amount in [0.5, 1.0, -0.5, -1.0] {
         print("       FAIL: the clear quarter was pulled as hard as the hazy one — the map is not doing anything.")
         failed = true
     }
+
+    // ⚠️ AND A RATIO IS NOT ENOUGH — THIS IS WHAT THE RULER MISSED UNTIL 13.09.
+    // The shipping v11.26 path passed the line above at 3.0x and was still
+    // wrong, because a ratio says nothing about how hard the CLEAR part of the
+    // picture is being pulled in absolute terms. It was being pulled 0.440 —
+    // nearly half its distance from A, on content with no haze on it — and that
+    // is the crushed orange sand and the ruddy skin the client reported. The
+    // near foreground of a bright frame must be very nearly left alone, and
+    // "very nearly" needs a number.
+    //
+    // ⚠️ THE RIGHT HALF ONLY. The left half lays `DehazeAtmosphere.uniformHaze`
+    // down over the whole frame ON PURPOSE — a clear picture has no depth for
+    // the prior to grade by, so flat is what atmosphere looks like there — and
+    // measuring that against this line would be measuring a decision.
+    if amount > 0 && pulled(now, over: clearest) > 0.25 {
+        print("       FAIL: the clearest quarter of the frame was pulled more than a quarter of its distance from A — the model is acting on content it has no haze reading for.")
+        failed = true
+    }
     if amount > 0 && clipped(now) > clipped(neutral) + 2 {
         print("       FAIL: pulling the haze off crushed more than 2% of the frame onto black.")
         failed = true
     }
 }
 
+// What the map came back with, printed rather than judged.
+//
+// ⚠️ A ON THE CEILING IS NOT BY ITSELF A FAULT, and an earlier version of this
+// block called it one. A clipped sky IS white: on both beach frames the free
+// estimate is (1.000, 1.000, 1.000), so any honest ceiling is reached and no
+// check here can tell "the clamp decided" from "the sky really is that". What
+// WAS a fault is a ceiling set BELOW white — the old 0.95 put the reference for
+// the light in the air underneath most of the sky, which leaves the whole scene
+// under A and darkens all of it. That is a constant, argued where it is set,
+// not something a photograph can be asked about.
+//
+// The floor share is printed for the same reason: with the floor at 0.5 it is a
+// different quantity than it was at 0.1 — half the map is under 0.5 by
+// construction once the map is relative — so it informs and does not judge.
+if let a = PhotoEditRenderer.atmosphericLight(of: neutralImage),
+   let map = PhotoEditRenderer.transmissionMap(of: neutralImage, atmosphere: a) {
+    var buffer = [Float](repeating: 0, count: w * h * 4)
+    buffer.withUnsafeMutableBytes { raw in
+        ctx.render(map.cropped(to: extent), toBitmap: raw.baseAddress!, rowBytes: w * 16,
+                   bounds: extent, format: .RGBAf, colorSpace: srgb)
+    }
+    var values = [Float]()
+    values.reserveCapacity(w * h)
+    for i in stride(from: 0, to: w * h * 4, by: 4) { values.append(buffer[i]) }
+    values.sort()
+    func percentile(_ q: Double) -> Double {
+        Double(values[min(values.count - 1, max(0, Int(Double(values.count - 1) * q)))])
+    }
+    var onFloor = 0.0
+    for v in values where Double(v) <= DehazeAtmosphere.minimumTransmission { onFloor += 1 }
+    print(String(format: "\nthe map after it is made relative: p10 %.3f  p50 %.3f  p90 %.3f (the clear end, a no-op by construction)",
+                 percentile(0.10), percentile(0.50), percentile(0.90)))
+    print(String(format: "%.1f%% of the frame is on the gain floor, where it is multiplied by %.0fx — the most the recovery may do",
+                 onFloor / Double(w * h) * 100, 1 / DehazeAtmosphere.minimumTransmission))
+}
+
 print()
 if !failed {
-    print("The haze came off where the haze was, and nothing collapsed onto black.")
+    print("The haze came off where the haze was, the clear part of the picture was left alone, and nothing collapsed onto black.")
 }
 exit(failed ? 1 : 0)

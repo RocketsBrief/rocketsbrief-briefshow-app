@@ -724,7 +724,9 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 |---|---|
 | **180–187** | Contrast, Highlights, Shadows, Clarity i Dehaze prepravljeni po klijentovim specifikacijama, svaki sa svojim lenjirom; plus četiri prijave iz njegove probe i kartica na sva tri dugmeta |
 | **188** | **v11.26** objavljena: univerzalan paket, min macOS 13.0, LaMa unutra, SD dugmetom |
+| **189** | **Dehaze je dehazovao prvi plan** — mapa prenosivosti je bila mapa svetline, pesak pod nogama čitan kao magloviтiji od plaže 50 m dalje; mapa je sad relativna prema čistom kraju kadra, pojačanje 10× → 2×, A sme do belog (NIJE OBJAVLJENO) |
 
+- ⚠️ **KORAK 189 je našao kvar koji je 180–187 ostavio, i našao ga je PRVIM POGLEDOM na PNG.** Pouka je upisana gore: lenjir koji meri pravu stvar i dalje ne vidi sliku.
 - **Exposure je jedini od šest koji je stigao ranije** — ušao je u v11.20 (KORAK 178).
 - Skinuti paket proveren: isti SHA-256, 115.258.769 bajta, `codesign` ok, nula fotografija.
 - **`v11.0` se i dalje NE SME brisati** — dugme za SD u app-i ga gađa (HTTP 200 pri objavi).
@@ -20135,5 +20137,126 @@ ulaz (v. „ISPRAVKA — 11. septembar 2026" na vrhu).
 ⚠️ **NIŠTA OD OVOGA NIJE VIĐENO NA EKRANU ODAVDE.** App na startu traži keychain lozinku i taj
 prozor se odavde ne dira. Posebno **glatkoća vučenja nije izmerena** — ona je jedina od četiri
 stavke koja se ne može dokazati čitanjem koda, i traži klijentov prst na ekranu.
+
+---
+
+## KORAK 189 — Dehaze je dehazovao prvi plan, a daljinu ostavljao (13. septembar 2026)
+
+**Klijentova prijava, 13.09:** *„nije dobar Dehaze kod nas pokvaren je a treba
+da bude kao u lightroomu sto je to da radi da dehazuje! Popravi dehaze!"*
+
+Prijava je tačna, kvar je bio ozbiljan, i **KORAK 187 ga je uveo**.
+
+### Šta se videlo, i zašto se ranije nije
+
+Na `C4S_7792.NEF` na +100: pesak u prvom planu se zgnječi u tamno narandžasto,
+koža postane rumena — a **daljina, jedino mesto gde magle stvarno ima, ostane
+neoprana.** Tačno obrnuto od onoga što Lightroom radi.
+
+⚠️ **Nijedan lenjir to nije prijavio, i to je sad glavna pouka.** Sve od KORAKA
+180 do 187 je mereno kroz pipeline i **nijednom pogledano.** Zapis od 13.09 to i
+kaže: „Ništa od 180–187 nije viđeno na ekranu." Prvi PNG koji sam otvorio
+pokazao je kvar za tri sekunde.
+
+### Mapa prenosivosti nije bila mapa dubine — bila je mapa svetline
+
+Pročitano iz isporučene `transmissionMap`:
+
+| pojas kadra | t |
+|---|---|
+| nebo, vrh | 0,16 |
+| plaža 50 m daleko | 0,56 |
+| **pesak pod nogama** | **0,43** |
+
+Model tvrdi da je pesak **pod nogama magloviтiji** od plaže pedeset metara dalje.
+Ceo donji deo kadra je obrnut.
+
+⚠️ **I to nije podešavanje.** Radijus zakrpe je pomeren sa 7 na 160 px —
+**dvadeset tri puta** — i redosled se nikad ne vrati; mapa se samo ravnomerno
+opere ka 1. Zasićenje kao razdvajač takođe pada: pesak 0,074, nebo 0,032.
+Na ovoj fotografiji **nema signala o dubini koji bi se našao.**
+
+Uzrok je u samom prior-u: pesak je svetao u sva tri kanala i žut, pa mu je
+najmanji kanal plavi i stoji visoko — isto kao gusta magla. DCP ih ne razlikuje.
+
+### Dve brojke koje objašnjavaju baš ono što se vidi
+
+| | mereno |
+|---|---|
+| **A zalepljeno za plafon** | (0,950, 0,950, 0,950) — tačno `maximumAtmosphericLight`, dok je slobodna procena (1,000, 1,000, 1,000) |
+| **medijana t** | 0,367 → tipičan piksel se množi sa **2,7×** svog rastojanja od A |
+| **udeo kadra na podu t₀** | **14,7 %** na `C4S_7792`, **22,3 %** na `C4S_5743` — na punih **10×** |
+
+Plafon na 0,95 je komentar u kodu zvao nevidljivim. Nije: isečeno nebo **jeste**
+belo, pa plafon spušta referencu za „kako izgleda vazduh" **ispod** većine neba.
+Tada je cela scena ispod A i cela se tamni.
+
+### Tri izmene
+
+1. **Mapa je sad relativna prema čistom kraju samog kadra** — deli se p90
+   percentilom sebe same. Najčistiji sadržaj u slici postaje tačno nula umesto
+   da se tamni sa svim ostalim. Kadar sa pravom vazdušnom perspektivom zadrži
+   raspon i dalje gradira po daljini; kadar koji je prior pogrešno pročitao
+   prestane da bude ravnomerno zgnječen. Percentil a ne maksimum, jer je
+   maksimum jedna bela majica.
+2. **`minimumTransmission` 0,1 → 0,5** — pod je kapa na pojačanje, pa je
+   maksimum sad **2× umesto 10×**.
+3. **`maximumAtmosphericLight` 0,95 → 0,99** — procenjivač radi svoj posao.
+
+### Šta je time dobijeno, i šta je plaćeno
+
+| | KORAK 187 | sad |
+|---|---|---|
+| blizak kraj pomeren (sintetika) | 10,9 | **3,1** |
+| odnos daleko : blizu | 4,9× | **17,8×** |
+| na `C4S_7792`, maglovita četvrtina : čista | 3,0× | **11,7×** |
+| čista četvrtina povučena na +100 | 0,440 | **0,130** |
+| kontrast u maglovitoj četvrtini na +100 | 6,08 (stara staza) | **37,91** |
+| crni pikseli na `C4S_8932` +100 | 2,04 % (stara staza) | **0,00 %** |
+| cena na 5176×3448 | 488 ms | **167 ms** |
+| **udaljenost od čiste scene (sintetika)** | **31,2** | **55,4 ← plaćeno** |
+
+⚠️ **Ta poslednja vrsta je jedina cena i ona je namerna.** Sintetička ploča ima
+daleki kraj položen na pravom t = 0,12, pa joj treba pojačanje od osam da se
+vrati cela. Ploča **napravljena da zadovolji prior** to sme da traži;
+fotografija čiji je prior pogrešan ne sme to da dobije. Klijentovi kadrovi
+pobeđuju.
+
+### ⚠️ Lenjir je imao proveru selektivnosti i ona je bila prazna
+
+`Tools/test-dehaze-photo.swift` je od 187 proveravao da se maglovita četvrtina
+vuče jače od čiste — **prag 1,25×.** Pokvareni kod je prolazio sa **3,0×**.
+Odnos ne kaže ništa o tome koliko se čist deo vuče u apsolutnom iznosu, a vukao
+se 0,440 — skoro pola svog rastojanja od A, na sadržaju bez magle. To je bio
+narandžasti pesak.
+
+Dodata je apsolutna granica: **čista četvrtina se na desnoj polovini ne sme
+povući preko 0,25.** Samo desna polovina — leva `uniformHaze` polaže maglu
+ravnomerno namerno, i meriti to bi značilo meriti odluku.
+
+Dve provere koje sam prvo napisao pa **sklonio, da se ne ponove**:
+
+- *„A ne sme da bude na plafonu"* — isečeno nebo **jeste** belo, pa svaki pošten
+  plafon biva dostignut i nijedna provera ne razlikuje „plafon je odlučio" od
+  „nebo stvarno jeste takvo". To je argument uz konstantu, ne pitanje za
+  fotografiju.
+- *„ne sme velik deo kadra na podu pojačanja"* — sa podom na 0,5 je to druga
+  veličina nego na 0,1; pola mape je ispod 0,5 po konstrukciji čim je mapa
+  relativna. Sad se ispisuje, ne sudi.
+
+### Čime je zaključano
+
+`Tools/run-dehaze-test.py` prolazi na sve tri fotografije (`C4S_7792`,
+`C4S_5743`, `C4S_8932`), obe polovine, izlaz 0.
+
+Dodat `Tools/dehaze-look.swift` — renderuje fotografiju na 0/+50/+100/−50 u PNG,
+**da se rezultat može pogledati.** Ovaj dokument četiri puta beleži „lenjir koji
+ništa ne meri ne prijavljuje nijedan pad"; ovo je peti put i drugi oblik istog:
+**lenjir koji meri pravu stvar i dalje ne vidi sliku.**
+
+⚠️ 🔴 MUST je očuvan sam od sebe — `applyDehaze` je jedna funkcija koju zovu i
+fotografija i layer, pa se izmena ne može raziće.
+
+App je sagrađen i restartovan u `/Applications/C4S Suite.app`. **NIJE OBJAVLJENO.**
 
 ---

@@ -4071,7 +4071,70 @@ enum PhotoEditRenderer {
         refine?.setValue(small, forKey: "inputSmallImage")
         refine?.setValue(ClarityLocalContrast.spatialSigma, forKey: "inputSpatialSigma")
         refine?.setValue(ClarityLocalContrast.lumaSigma, forKey: "inputLumaSigma")
-        return refine?.outputImage?.cropped(to: extent) ?? coarse
+        let refined = refine?.outputImage?.cropped(to: extent) ?? coarse
+
+        // ⚠️ AND THEN IT IS MADE RELATIVE TO THIS FRAME'S OWN CLEAR END, because
+        // the prior reads brightness as haze whenever the picture is bright —
+        // see DehazeAtmosphere.clearEndPercentile for the three numbers that
+        // show the near foreground being called hazier than the far distance.
+        // Dividing by the frame's clear end costs nothing when the map is right
+        // (a picture with real depth has its clear end near 1 already) and is
+        // the whole difference when it is wrong.
+        guard let clearEnd = clearEnd(of: refined) else { return refined }
+
+        let relative = CIFilter.colorMatrix()
+        relative.inputImage = refined
+        let k = CGFloat(1 / clearEnd)
+        relative.rVector = CIVector(x: k, y: 0, z: 0, w: 0)
+        relative.gVector = CIVector(x: 0, y: k, z: 0, w: 0)
+        relative.bVector = CIVector(x: 0, y: 0, z: k, w: 0)
+        relative.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        guard let scaled = relative.outputImage?.cropped(to: extent) else { return refined }
+
+        // Back into [0,1] — the cubes downstream are lookup tables and read the
+        // map's own value off the red axis, so anything outside the range would
+        // simply be clamped by them without saying so.
+        let clamp = CIFilter(name: "CIColorClamp")
+        clamp?.setValue(scaled, forKey: kCIInputImageKey)
+        clamp?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputMinComponents")
+        clamp?.setValue(CIVector(x: 1, y: 1, z: 1, w: 1), forKey: "inputMaxComponents")
+        return clamp?.outputImage?.cropped(to: extent) ?? scaled
+    }
+
+    /// The transmission the CLEAREST content in this frame reads, so the map can
+    /// be made relative to it.
+    ///
+    /// Read at 256 px like A is, and for the same reason: a percentile over the
+    /// frame does not change when the frame is smaller, and rendering the native
+    /// map back costs hundreds of milliseconds where this costs a handful.
+    static func clearEnd(of map: CIImage) -> Double? {
+        let extent = map.extent
+        let longEdge = max(extent.width, extent.height)
+        guard longEdge.isFinite, longEdge > 0 else { return nil }
+
+        let scale = min(DehazeAtmosphere.clearEndSize / Double(longEdge), 1)
+        let small = map.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let smallExtent = small.extent
+        let width = Int(smallExtent.width), height = Int(smallExtent.height)
+        guard width > 1, height > 1 else { return nil }
+
+        var pixels = [Float](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            briefEditsCIContext.render(small, toBitmap: raw.baseAddress!, rowBytes: width * 16,
+                                       bounds: smallExtent, format: .RGBAf,
+                                       colorSpace: briefEditsSRGBColorSpace)
+        }
+
+        // The map is grey; the red channel carries t.
+        var values = [Float]()
+        values.reserveCapacity(width * height)
+        for index in stride(from: 0, to: width * height * 4, by: 4) { values.append(pixels[index]) }
+        guard !values.isEmpty else { return nil }
+        values.sort()
+
+        let rank = Int(Double(values.count - 1) * DehazeAtmosphere.clearEndPercentile)
+        let read = Double(values[min(max(rank, 0), values.count - 1)])
+        return max(read, DehazeAtmosphere.minimumClearEnd)
     }
 
     /// Dehaze, for the photo, for a layer and for a mask alike.

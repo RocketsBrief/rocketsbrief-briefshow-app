@@ -49,12 +49,29 @@ enum DehazeAtmosphere {
     /// the same reason — it keeps a little atmosphere at the far end.
     static let omega = 0.95
 
-    /// The floor under the transmission map.
+    /// The floor under the transmission map — and so the cap on the gain.
     ///
-    /// `J = (I − A) / t + A` divides by t, so the densest haze — where t goes to
-    /// zero — would multiply the noise there by everything. 0.1 caps the gain at
-    /// ten, which is the standard floor and is what `max(t, t₀)` in the spec is.
-    static let minimumTransmission = 0.1
+    /// `J = (I − A) / t + A` divides by t, so the floor is what the recovery is
+    /// allowed to multiply by at its hardest. The paper's 0.1 caps it at ten.
+    ///
+    /// ⚠️ TEN IS FAR TOO MUCH ON THIS CLIENT'S PHOTOGRAPHY, and it was measured
+    /// rather than felt. On `C4S_7792.NEF` — a bright beach — **14.7% of the
+    /// frame** lands on the 0.1 floor and is multiplied by the full ten; on
+    /// `C4S_5743.NEF` it is 22.3%. That is not a far corner of the picture, it
+    /// is a fifth of it, and it arrives as the crushed orange sand and the ruddy
+    /// skin the client reported on 13.09.
+    ///
+    /// The floor is a cap on the gain, so 0.5 caps it at two. Two is enough to
+    /// clear a horizon and not enough to invent one: see KORAK 189 for the pair
+    /// of renders that decided it.
+    ///
+    /// ⚠️ AND THE SYNTHETIC PLATE WANTS TEN — that is the real tension here, not
+    /// an oversight. Its far end is laid down at a true t of 0.12, so only a
+    /// gain of eight brings it all the way back. A plate BUILT to satisfy the
+    /// prior can ask for that; a photograph whose prior is wrong must not be
+    /// given it. The client's frames win, and the ruler now measures both cases
+    /// instead of only the flattering one.
+    static let minimumTransmission = 0.5
 
     /// The patch the dark channel is taken over, as a fraction of the long edge.
     ///
@@ -101,6 +118,44 @@ enum DehazeAtmosphere {
     /// never anything to fix.
     static let refineRadiusFraction = 1.0
 
+    /// Where the frame's own clear end is read off the map, and the floor under
+    /// that reading.
+    ///
+    /// ⚠️ THE PRIOR MEASURES BRIGHTNESS, NOT DISTANCE, WHENEVER THE PICTURE IS
+    /// BRIGHT — and on this client's work the picture is usually bright. The
+    /// Dark Channel Prior finds haze by noticing that the darkest channel of a
+    /// patch has been lifted. Sunlit sand lifts it too: it is bright in every
+    /// channel and warm, so its minimum channel is its blue, and the prior calls
+    /// that haze. Measured on `C4S_7792.NEF`, straight out of the shipping map:
+    ///
+    ///     sky, top of frame          t = 0.16
+    ///     beach fifty metres away    t = 0.56
+    ///     sand under the feet        t = 0.43
+    ///
+    /// The sand at the lens is read as HAZIER than the beach fifty metres off.
+    /// The whole lower half of the frame is inverted, and it is not a tuning
+    /// problem: the patch radius was swept from 7 to 160 px — twenty-three times
+    /// — and the ordering never comes back, the map just washes uniformly
+    /// toward 1. Saturation does not separate them either (sand 0.074, sky
+    /// 0.032). There is no depth signal in this photograph to find.
+    ///
+    /// So the map is not trusted as an absolute depth any more. It is made
+    /// RELATIVE to the clearest content in this frame: t is divided by a high
+    /// percentile of itself, so whatever is clearest in the picture becomes
+    /// exactly a no-op instead of being darkened along with everything else. A
+    /// frame with real aerial perspective keeps its spread and still grades by
+    /// distance; a frame the prior has misread stops being uniformly crushed.
+    ///
+    /// The percentile rather than the maximum, because the maximum is one white
+    /// shirt. The floor, because a frame that genuinely is hazy end to end must
+    /// not have its own haze taken as the reference for "clear".
+    static let clearEndPercentile = 0.90
+    static let minimumClearEnd = 0.10
+
+    /// The long edge the clear end is read at — a percentile does not need the
+    /// full frame any more than A does, and must not pay for one.
+    static let clearEndSize = 256.0
+
     /// The long edge the atmospheric light is estimated at.
     ///
     /// ⚠️ A IS A GLOBAL NUMBER, so it does not need the full frame — and it must
@@ -123,8 +178,18 @@ enum DehazeAtmosphere {
     /// ⚠️ A AT 1.0 MAKES THE RECOVERY DIVIDE BY ZERO IN SPIRIT: every tone at or
     /// above A comes back as A exactly, so a frame whose brightest haze is pure
     /// white would have its whole sky flattened onto one value. Clamping A just
-    /// under white keeps the arithmetic honest, and the difference is invisible.
-    static let maximumAtmosphericLight = 0.95
+    /// under white keeps the arithmetic honest.
+    ///
+    /// ⚠️ THE OLD 0.95 WAS NOT INVISIBLE, and the note here used to say it was.
+    /// A clipped sky IS white: on both `C4S_7792.NEF` and `C4S_5743.NEF` the
+    /// free estimate is (1.000, 1.000, 1.000) and the ceiling PINNED A at
+    /// (0.950, 0.950, 0.950) — the clamp, not the estimator, was deciding. That
+    /// puts the reference for "what the air looks like" BELOW most of the sky,
+    /// which leaves the whole scene under A and so darkens all of it, and it
+    /// inflates `min_c(I_c/A_c)` by five percent everywhere, which the map then
+    /// reads as haze that is not there. 0.99 leaves the arithmetic its headroom
+    /// and lets the estimator do its own job.
+    static let maximumAtmosphericLight = 0.99
     static let minimumAtmosphericLight = 0.05
 
     // MARK: - The post-correction

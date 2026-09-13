@@ -1,5 +1,6 @@
-// Proves that pulling Sharpen, Texture, Clarity, Dehaze, Soft Glow and
-// Vignette out of `render` into functions changed NOTHING about the photograph.
+// Proves that pulling Sharpen, Texture, Dehaze, Soft Glow and Vignette out of
+// `render` into functions changed NOTHING about the photograph. (Clarity was one
+// of the six until 13.09 — see the note where its comparison used to be.)
 //
 // Run:  python3 Tools/run-effect-extraction-test.py
 //
@@ -83,12 +84,15 @@ for v in [-1.0, -0.6, -0.25, 0.25, 0.6, 1.0] {
             oldTexture(s, to: source), PhotoEditRenderer.applyTexture(v, to: source))
 }
 
-for v in [-1.0, -0.5, 0.5, 1.0] {
-    var s = OldSettings()
-    s.clarity = v
-    compare(String(format: "clarity %+.2f", v),
-            oldClarity(s, to: source), PhotoEditRenderer.applyClarity(v, to: source))
-}
+// ⚠️ CLARITY IS NO LONGER COMPARED HERE, and that is deliberate rather than an
+// omission. This harness proves that pulling an effect out of `render` moved no
+// pixel; on 13.09 (KORAK 186) Clarity stopped being a CIUnsharpMask and became
+// an edge-preserving local-contrast pass, so the two sides are SUPPOSED to
+// differ now and a comparison would only report the intended change as a
+// failure. Its own ruler is Tools/run-clarity-test.py, which measures the thing
+// that actually changed: a 41.81-level halo beside an edge, against 3.97.
+//
+// The other five effects are untouched extractions and are still compared.
 
 for v in [-1.0, -0.4, 0.4, 1.0] {
     var s = OldSettings()

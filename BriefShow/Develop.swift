@@ -3627,6 +3627,69 @@ enum PhotoEditRenderer {
         return cube.outputImage ?? image
     }
 
+    /// Multiplies every channel by a number, and does NOT clamp.
+    ///
+    /// ⚠️ THE ONE PIECE OF SIGNED ARITHMETIC THIS PIPELINE HAS, and it is a
+    /// measurement rather than an assumption: probed on flat patches built by
+    /// scaling (the trap KORAK 184 documents — `CIColor` clamps at source),
+    /// `CIColorMatrix` returns 0.40 × −1 as −0.4000, `CIAdditionCompositing`
+    /// returns 0.20 + (−0.50) as −0.3000 and 0.90 + 0.60 as 1.5000, and
+    /// `CIBlendWithMask` mixes a −0.30 with a 0.40 at half weight as 0.0500.
+    /// Nothing in that chain clips, in either direction — which is what lets
+    /// Clarity carry a signed detail layer and Shadows walk the above-white
+    /// range through untouched, with stock filters and no custom kernel.
+    static func scalingChannels(of image: CIImage, by factor: CGFloat) -> CIImage? {
+        let matrix = CIFilter.colorMatrix()
+        matrix.inputImage = image
+        matrix.rVector = CIVector(x: factor, y: 0, z: 0, w: 0)
+        matrix.gVector = CIVector(x: 0, y: factor, z: 0, w: 0)
+        matrix.bVector = CIVector(x: 0, y: 0, z: factor, w: 0)
+        matrix.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        matrix.biasVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+        return matrix.outputImage
+    }
+
+    /// Adds two images, channel by channel, unclamped. See `scalingChannels`.
+    static func adding(_ image: CIImage, _ other: CIImage) -> CIImage? {
+        let add = CIFilter.additionCompositing()
+        add.inputImage = image
+        add.backgroundImage = other
+        return add.outputImage
+    }
+
+    /// The edge-preserving smooth Clarity separates the picture with.
+    ///
+    /// ⚠️ A JOINT BILATERAL UPSAMPLE, AND THAT IS THE WHOLE TRICK.
+    /// `CIEdgePreserveUpsampleFilter` takes a small image and a full-size guide
+    /// and lifts the small one back up while following the guide's edges. Handed
+    /// the picture as its own guide and a downscaled copy as the small image, it
+    /// smooths at the scale of the downsample but leaves every edge where it
+    /// stands — which is a large-radius edge-preserving filter, built out of a
+    /// stock one.
+    ///
+    /// ⚠️ The obvious filter for this, `CIGuidedFilter`, IS A NO-OP ON THIS
+    /// SYSTEM — measured at radii 1…40 and epsilons 0.0001…0.1, self-guided and
+    /// with a separate guide: the texture it should smooth comes back at exactly
+    /// the RMS that went in, 14.37 levels, while `CIGaussianBlur` on the same
+    /// image returns 0.08. It is written up in ClarityLocalContrast.swift so
+    /// nobody spends another afternoon on it.
+    static func edgePreservingBase(of image: CIImage, radius: Double) -> CIImage? {
+        let extent = image.extent
+        guard extent.width > 1, extent.height > 1, radius >= 1 else { return nil }
+
+        // The small image's scale IS the radius: a copy shrunk by 1/r carries
+        // detail no finer than r pixels of the original.
+        let scale = 1 / radius
+        let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+
+        let filter = CIFilter(name: "CIEdgePreserveUpsampleFilter")
+        filter?.setValue(image, forKey: "inputImage")
+        filter?.setValue(small, forKey: "inputSmallImage")
+        filter?.setValue(ClarityLocalContrast.spatialSigma, forKey: "inputSpatialSigma")
+        filter?.setValue(ClarityLocalContrast.lumaSigma, forKey: "inputLumaSigma")
+        return filter?.outputImage?.cropped(to: extent)
+    }
+
     /// Shadows, for the photo, for a layer and for a mask alike.
     ///
     /// ⚠️ THREE FILTERS, AND THE OUTER TWO ARE THERE TO DO NOTHING. A colour
@@ -3650,26 +3713,16 @@ enum PhotoEditRenderer {
     static func applyShadows(_ shadows: Double, to image: CIImage) -> CIImage {
         guard shadows != 0 else { return image }
 
-        func scaled(_ input: CIImage, by factor: CGFloat) -> CIImage? {
-            let matrix = CIFilter.colorMatrix()
-            matrix.inputImage = input
-            matrix.rVector = CIVector(x: factor, y: 0, z: 0, w: 0)
-            matrix.gVector = CIVector(x: 0, y: factor, z: 0, w: 0)
-            matrix.bVector = CIVector(x: 0, y: 0, z: factor, w: 0)
-            matrix.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
-            matrix.biasVector = CIVector(x: 0, y: 0, z: 0, w: 0)
-            return matrix.outputImage
-        }
-
         let headroom = CGFloat(ShadowsCurve.headroom)
-        guard let down = scaled(image, by: 1 / headroom) else { return image }
+        guard let down = scalingChannels(of: image, by: 1 / headroom) else { return image }
 
         let cube = CIFilter.colorCubeWithColorSpace()
         cube.inputImage = down
         cube.cubeDimension = Float(ShadowsCube.dimension)
         cube.cubeData = ShadowsCube.data(for: shadows)
         cube.colorSpace = briefEditsSRGBColorSpace
-        guard let shaped = cube.outputImage, let back = scaled(shaped, by: headroom) else { return image }
+        guard let shaped = cube.outputImage,
+              let back = scalingChannels(of: shaped, by: headroom) else { return image }
         return back
     }
 
@@ -3801,59 +3854,88 @@ enum PhotoEditRenderer {
     /// effect as the whole photo — see applyLocalToneColorDetail. The call
     /// site in `render` is unchanged in behaviour; proved pixel-for-pixel
     /// against the pre-extraction code by Tools/run-effect-extraction-test.py.
-    private static func applyClarity(_ clarity: Double, to image: CIImage) -> CIImage {
-        var output = image
+    /// Clarity, for the photo, for a layer and for a mask alike.
+    ///
+    /// ⚠️ THE ONE PLACE, like the four controls above it — the 🔴 MUST in
+    /// BRIEFSHOW_DEVELOP_NOTES.md.
+    ///
+    /// Three stock filters and a subtraction, and the whole of it is one line of
+    /// arithmetic:
+    ///
+    ///     out = picture + clarity x strength x midtoneMask x (picture - base)
+    ///
+    /// `picture - base` is everything the edge-preserving base did NOT keep —
+    /// texture, contours, the fabric of a face — while the edges themselves stay
+    /// in the base. That is what makes both halves behave: adding it back lifts
+    /// texture without touching the edges, so there is no rim, and subtracting it
+    /// softens the texture while the edges stay exactly as sharp as they were,
+    /// which is the spec's *„glatko blurujes srednje frekvencije uz očuvanje
+    /// oštrih visokih ivica"*. Measured at −100: texture 8.58 → 1.69 levels with
+    /// the step's own rise still 66.0 of 69.0, where the old path softened to
+    /// 3.43 and smeared the edge to 46.9.
+    ///
+    /// ⚠️ BOTH BASES ARE EDGE-PRESERVING, and that is the whole reason this
+    /// replaced a `CIUnsharpMask`. An unsharp mask is this same arithmetic with a
+    /// GAUSSIAN base, and a Gaussian base does not know where an edge is: it
+    /// leaves a bright rim beside every one. Measured on a synthetic step edge —
+    /// how far the brightest pixel beside the edge overshoots the level it
+    /// should settle at — 41.81 levels through the old path against 3.97 for the
+    /// untouched source. See ClarityLocalContrast.swift for that table and for
+    /// the filter that was supposed to do this and does not.
+    ///
+    /// The mask is drawn from the BASE rather than from the picture, so the mask
+    /// itself carries no texture — a mask with texture in it modulates the
+    /// detail with a copy of the detail, which is its own kind of edge artefact.
+    static func applyClarity(_ clarity: Double, to image: CIImage) -> CIImage {
+        guard clarity != 0 else { return image }
 
-    // Clarity — Lightroom's "local/midtone contrast" — is a LARGE-radius
-    // unsharp mask, as distinct from Sharpness' small-radius edge
-    // sharpening above (CISharpenLuminance has no radius knob at all;
-    // CIUnsharpMask's `radius` is what makes this read as "punch" in
-    // the midtones rather than "crisper edges"). The radius is a
-    // FRACTION of the image's long edge, not a fixed pixel count —
-    // render() runs at both preview and full-export resolution, and a
-    // radius picked for one would look wrong (too small or too smeared)
-    // at the other; the brush/patch tools above already use the same
-    // "size as a fraction of the long edge" convention for the same
-    // reason.
-    //
-    // Both directions, and NOT through the same filter: CIUnsharpMask's
-    // `intensity` is undocumented for negative values, so the softening
-    // half is what "reduce local contrast" actually means — a mix toward
-    // a blurred copy at the SAME radius, which is the exact inverse of
-    // what unsharp adds at that radius. (Positive: base + k x detail.
-    // Negative: base - k x detail, i.e. mix(base, blurred, k).) It shares
-    // the radius on purpose, so -40 undoes what +40 did rather than
-    // softening at some unrelated scale.
-    if clarity != 0 {
-        let extent = output.extent
+        let extent = image.extent
         let longEdge = max(extent.width, extent.height)
-        if longEdge.isFinite, longEdge > 0 {
-            let radius = min(max(longEdge * 0.02, 8), 100)
-            if clarity > 0 {
-                let filter = CIFilter.unsharpMask()
-                filter.inputImage = output
-                filter.radius = Float(radius)
-                filter.intensity = Float(min(clarity, 1) * 0.8)
-                output = filter.outputImage ?? output
-            } else {
-                let blurred = output
-                    .clampedToExtent()
-                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
-                    .cropped(to: extent)
+        guard longEdge.isFinite, longEdge > 0 else { return image }
 
-                // Same flat-grey-mask trick Soft Glow uses below for its
-                // own opacity dial: CIBlendWithMask reads the mask's
-                // level, so a constant colour is a constant mix.
-                let amount = CGFloat(min(-clarity, 1) * 0.6)
-                let mixMask = CIImage(color: CIColor(red: amount, green: amount, blue: amount)).cropped(to: extent)
-                let blend = CIFilter.blendWithMask()
-                blend.inputImage = blurred
-                blend.backgroundImage = output
-                blend.maskImage = mixMask
-                output = blend.outputImage ?? output
+        let radius = min(max(Double(longEdge) * ClarityLocalContrast.baseRadiusFraction,
+                             ClarityLocalContrast.minimumRadius),
+                         ClarityLocalContrast.maximumRadius)
+
+        guard let base = edgePreservingBase(of: image, radius: radius),
+              let negatedBase = scalingChannels(of: base, by: -1),
+              let detail = adding(image, negatedBase),
+              let amount = scalingChannels(of: detail,
+                                           by: CGFloat(min(max(clarity, -1), 1) * ClarityLocalContrast.strength)),
+              let boosted = adding(image, amount)
+        else { return image }
+
+        let maskCube = CIFilter.colorCubeWithColorSpace()
+        maskCube.inputImage = base
+        maskCube.cubeDimension = Float(ClarityMaskCube.dimension)
+        maskCube.cubeData = ClarityMaskCube.data()
+        maskCube.colorSpace = briefEditsSRGBColorSpace
+        guard let mask = maskCube.outputImage else { return image }
+
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = boosted
+        blend.backgroundImage = image
+        blend.maskImage = mask
+        guard var output = blend.outputImage?.cropped(to: extent) else { return image }
+
+        // The spec's colour clause, and only on the way up: pushing Clarity
+        // deepens the local shadows, and an edge that comes back darker also
+        // comes back more saturated. Weighted by the same midtone mask, so it
+        // reaches exactly where the contrast did and nowhere else.
+        if clarity > 0 {
+            let relief = CIFilter.colorControls()
+            relief.inputImage = output
+            relief.contrast = 1
+            relief.brightness = 0
+            relief.saturation = Float(1 - ClarityLocalContrast.chromaRelief * min(clarity, 1))
+            if let toned = relief.outputImage {
+                let mix = CIFilter.blendWithMask()
+                mix.inputImage = toned
+                mix.backgroundImage = output
+                mix.maskImage = mask
+                output = mix.outputImage?.cropped(to: extent) ?? output
             }
         }
-    }
 
         return output
     }

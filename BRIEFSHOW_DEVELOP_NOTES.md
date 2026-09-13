@@ -735,6 +735,8 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 | **182** | kartica posle prve probe: list joj je **delio pogled** sa drugim listovima pa se nije otvarao, **šest kontrola** umesto tri, i crna slova u dark temi (NIJE OBJAVLJENO) |
 | **183** | kartica je bila vezana za **dva dugmeta od tri** — panel „AI Portrait" ju je zaobilazio; sad **recept sam kaže** da pita pre nego što uradi (NIJE OBJAVLJENO) |
 | **184** | **Highlights** izlazi iz zajedničke tonske krive — OKLab, meko koleno bez preloma, i pre-skaliranje koje vraća opseg **iznad bele** koji su i `CIToneCurve` i kocka odsecali (NIJE OBJAVLJENO) |
+| **185** | **Shadows** izlazi iz zajedničke tonske krive — Hermite prozor sa vrhuncem na L 0,175, crna tačka usidrena oblikom (stara staza ju je dizala 7,6 nivoa), srednji tonovi se pomeraju **0,01** umesto 13,03 (NIJE OBJAVLJENO) |
+| **186** | **Clarity** prestaje da bude unsharp mask — osnova koja čuva ivicu, maska srednjih tonova, oreol uz ivicu **24,04 → 1,62** nivoa; `CIGuidedFilter` koji spec traži imenom je **no-op na ovom sistemu** (NIJE OBJAVLJENO) |
 
 - Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.048.108 bajta, `codesign` ok, nula fotografija.
 - Update lanac proveren pozivom pravog poređenja: **svaka** verzija od 11.7 do 11.17 dobija karticu za 11.20.
@@ -18570,6 +18572,164 @@ tabela paljenja gore, nad pravom fotografijom.
 
 `Tools/run-slider-parity-test.py` — novi lenjir za 🔴 MUST: isti opseg i korak
 na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
+
+---
+
+## KORAK 186 — Clarity prestaje da bude unsharp mask (13. septembar 2026)
+
+Klijentova specifikacija, 13.09: Clarity je lokalni mikrokontrast — razdvoji
+sliku **filterom koji čuva ivicu** (izričito **ne** Gaussian, jer on pravi
+oreole), težinski je maskiraj po **srednjim tonovima** (maksimum L≈0,5, nula
+ispod L 0,15 i iznad L 0,85), pojačaj **srednje frekvencije** i vrati ih na
+baznи sloj, a na negativnoj strani ih omekšaj **uz očuvanje oštrih visokih
+ivica**. Uz to lokalna korekcija hrome, da ivice ne dođu prezasićene.
+
+Ovo je **prva kontrola u familiji koja nije kriva**. Sve pre nje preslikavaju
+piksel u piksel i mogu da se dokažu na rampi; ova ne može da bude tabela uopšte,
+jer šta radi pikselu zavisi od piksela oko njega.
+
+### ⚠️ Prvo merenje: stara staza je bila oreol
+
+Clarity je bio `CIUnsharpMask` na radijusu 2 % duže ivice — to je ista
+aritmetika sa **Gaussian** osnovom. Na sintetičkoj stepenastoj ivici, sa
+teksturom **sklonjenom od ivice** da rub bude oreol i ništa drugo:
+
+| staza | tekstura | **oreol** |
+|---|---|---|
+| izvor | 8,58 | **0,00** |
+| **stari `CIUnsharpMask`** | 8,58 → 15,44 | **24,04 nivoa** |
+| nova osnova | 8,58 → 11,35 | **1,62** |
+
+Dvadeset četiri nivoa belog ruba uz ivicu. To je artefakt koji spec imenuje, i
+nijedno štimovanje intenziteta ga ne uklanja — to **jeste** Gaussian osnova.
+
+### ⚠️ A filter koji Apple isporučuje baš za ovo NE RADI NIŠTA
+
+Spec traži guided filter imenom. `CIGuidedFilter`, i sa sopstvenom slikom kao
+vodičem i sa zasebnom, na radijusima 1…40 i epsilonima 0,0001…0,1, vraća **ulaz
+nepromenjen**: tekstura koju treba da izgladi izlazi na 14,37 RMS, tačno koliko
+je ušla, dok `CIGaussianBlur` na istoj slici vrati 0,08. **No-op na macOS-u 26.**
+Zapisano da niko ne potroši još jedno popodne na njega.
+
+Radi `CIEdgePreserveUpsampleFilter` — joint bilateral upsample. Slika kao
+sopstveni vodič, umanjena kopija kao mala slika: gladi kao veliki blur, a ivicu
+ostavlja gde jeste (tekstura 10,74 → 0,03 dok širina uspona stepenika ostaje
+0 px; Gaussian iste jačine je razmaže na 15 px).
+
+### ⚠️ `lumaSigma` je cela kontrola, a podrazumevana vrednost filtera je pogrešna
+
+Osnova koja pređe **preko** ivice gura tu ivicu u sloj detalja, a vraćanje
+detalja je onda tačno onaj beli rub. Mereno na čistoj ivici, na Clarity +100:
+
+| | tekstura | oreol |
+|---|---|---|
+| stari `CIUnsharpMask` | 8,58 → 15,44 | 23,46 |
+| `lumaSigma` 0,40 | 8,58 → 15,44 | 21,83 |
+| **`lumaSigma` 0,15 (podrazumevana)** | 8,58 → 15,46 | **15,68** |
+| **`lumaSigma` 0,05** | 8,58 → 15,46 | **1,73** |
+
+Dobitak na teksturi je isti u sva četiri — njoj je svejedno — a oreol je 1,73
+prema 23,46. ⚠️ **Prva verzija je koristila podrazumevanih 0,15 i zadržala dve
+trećine oreola**, dakle baš onaj kvar zbog koga je sve i pisano.
+
+### ⚠️ Jedna osnova, ne dve — i to je takođe merenje koje me je ispravilo
+
+Prvi nacrt je delio sliku na tri dela (velika osnova, mala osnova, pojas između)
+da bi negativna strana mekšala srednje frekvencije a ostavljala fine. **Ne
+radi**, jer se ovaj filter ne ponaša kao blur sa radijusom: na istoj ploči
+obara teksturu na 0,26 / 0,06 / 0,04 / 0,01 nivoa na radijusima 2 / 4 / 8 / 32 —
+**na svakom radijusu tekstura nestane**, pa su dve osnove izašle kao ista slika
+a pojas između njih prazan. Ono što filter čuva nije „detalj finiji od r", nego
+**ivice**, na svakom r.
+
+To je ionako bolji odgovor: sa jednom osnovom sloj detalja je sve što nije
+ivica, pa spec-ovo *„očuvanje oštrih visokih ivica"* na negativnoj strani postaje
+osobina osnove, a ne druge razlike:
+
+| Clarity −100 | tekstura | uspon ivice |
+|---|---|---|
+| izvor | 8,58 | 69,0 |
+| **stara staza** (mešanje ka Gaussian-u) | 3,43 | **46,9** — razmazana |
+| **sad** | **1,69** | **66,0** |
+
+Mekša jače, a ivicu ostavlja.
+
+### Jačina je nasleđena
+
+Stara staza je `CIUnsharpMask` sa `intensity` 0,8, što je doslovno
+`osnova + 0,8 × (slika − osnova)`. Nova je **ista aritmetika sa istih 0,8** i
+drugom osnovom — dakle na tonu gde je maska srednjih tonova puna (L 0,50) nova
+kontrola je tačno jednako jaka kao isporučena, a svuda drugde je slabija za
+masku, što je ono što je klijent tražio.
+
+### Šta je izmereno na pravoj fotografiji
+
+Lokalni kontrast = RMS piksela prema proseku 5×5 oko njega, po pojasima
+(`C4S_5743.NEF`):
+
+| | u miru | +100 | −100 |
+|---|---|---|---|
+| **srednji tonovi** | 5,649 | **7,280** | **4,263** |
+
+| pojas | koliko se pomerio sad | stara staza |
+|---|---|---|
+| **svetli tonovi** | **0,019** | 0,755 |
+| senke | 2,789 | 4,833 |
+
+Maska radi: svetli tonovi se pomeraju **četrdeset puta manje** nego kroz staru,
+nemaskiranu stazu. Srednja svetlina kadra se pomera 1,28 nivoa — Clarity nije
+ekspozicija, i lenjir pada ako pređe 2.
+
+### Kako je složeno, i zašto bez custom kernela
+
+Ceo prolaz je jedan red aritmetike:
+
+```
+izlaz = slika + clarity × strength × maska × (slika − osnova)
+```
+
+Aritmetika sa **predznakom** preko stock filtera, i to je izmereno pre nego što
+je napisano (na zakrpama građenim skaliranjem — `CIColor` odseca na izvoru,
+KORAK 184): `CIColorMatrix` vrati 0,40 × −1 kao −0,4000, `CIAdditionCompositing`
+vrati 0,20 + (−0,50) kao −0,3000 i 0,90 + 0,60 kao 1,5000, a `CIBlendWithMask`
+pomeša −0,30 sa 0,40 na pola kao 0,0500. **Ništa u tom lancu ne odseca**, ni u
+jednom smeru — zato Clarity nosi sloj detalja sa predznakom bez ijednog custom
+kernela. (`CIKernel(source:)` se i dalje kompajlira, ali je deprecated od 10.14
+i u app-i nema nijednog — nije mu ni trebalo.)
+
+Maska se crta iz **osnove**, ne iz slike, da sama maska ne nosi teksturu: maska
+sa teksturom modulira detalj kopijom detalja, što je sopstvena vrsta artefakta.
+
+**Cena:** 2600 px: 8 ms neutralno, **47 ms** na Clarity +100. Native 5176×3448:
+47 ms prema **202 ms**. To je najskuplja kontrola u lancu i jedina prostorna.
+
+### Čime je zaključano
+
+`Tools/run-clarity-test.py` — dve polovine, prima više fotografija.
+
+Osobine na sintetičkim pločama (rampa ne može da dokaže prostornu operaciju):
+0 je identitet; rub uz ivicu je petina onoga što je stara staza ostavljala;
+tekstura raste; svetli tonovi i senke se pomeraju manje nego kroz staru stazu
+dok srednji rade; negativna strana mekša teksturu a **čuva uspon ivice** koji je
+stara razmazivala; `strength` ne može da izvrne teksturu; slajder je monoton;
+tabela maske jeste maska i tačno je nula van spec-ovog pojasa. Uz to čita
+`Develop.swift` za 🔴 MUST i ispisuje cenu.
+
+⚠️ **Dva merila su i ovde prvo bila POGREŠNA:** ploča je imala teksturu sve do
+ivice, pa je „rub uz ivicu" rastao prosto zato što je tekstura rasla (čitanje 32
+za stazu čiji je oreol 1,7); i provera „više nema Gaussian osnove" je tražila
+`CIUnsharpMask` u **celom fajlu** pa je padala na `applyTexture`, koji je
+unsharp namerno i druga je kontrola.
+
+`Tools/run-effect-extraction-test.py` više **ne poredi Clarity** — taj lenjir
+dokazuje da vađenje efekta iz `render` nije pomerilo nijedan piksel, a ovde je
+promena namerna, pa bi poređenje prijavljivalo baš nju kao pad. Ostalih pet
+efekata se i dalje porede.
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`; app sagrađena i
+instalirana. Nije objavljeno, **nema push-a**.
+
+⚠️ **NIJE VIĐENO NA EKRANU.** Sve gore je izmereno kroz isporučeni pipeline.
 
 ---
 

@@ -120,17 +120,18 @@ print(String(format: "bands: shadows %d (%.1f%%)  midtones %d (%.1f%%)  highligh
              midBand.count, Double(midBand.count) / Double(w * h) * 100,
              highBand.count, Double(highBand.count) / Double(w * h) * 100))
 
-print("Clarity          MIDTONES     shadows   highlights    midtone mean")
+print("Clarity          MIDTONES     shadows   highlights     whole frame")
 print(String(repeating: "-", count: 66))
 
 let restMid = rms(neutralDetail, over: midBand)
 let restShadow = rms(neutralDetail, over: shadowBand)
 let restHigh = rms(neutralDetail, over: highBand)
-let restMean = mean(neutral, over: midBand)
+let wholeFrame = Array(0..<(w * h))
+let restMean = mean(neutral, over: wholeFrame)
 var liftedMid = 0.0, softenedMid = .infinity as Double
 var worstHighDrift = 0.0, worstShadowDrift = 0.0
 var oldHighDrift = 0.0, oldShadowDrift = 0.0
-var worstMeanDrift = 0.0
+var worstMeanDrift = 0.0, oldMeanDrift = 0.0
 
 for amount in [0.0, 0.5, 1.0, -0.5, -1.0] {
     for old in [false, true] {
@@ -139,16 +140,18 @@ for amount in [0.0, 0.5, 1.0, -0.5, -1.0] {
         let m = rms(detail, over: midBand), s = rms(detail, over: shadowBand), hi = rms(detail, over: highBand)
         print(String(format: "%-15@ %9.3f %11.3f %12.3f %15.2f",
                      (old ? "      before" : String(format: "%+.2f  now", amount)) as NSString,
-                     m, s, hi, mean(luma, over: midBand)))
+                     m, s, hi, mean(luma, over: wholeFrame)))
         if amount == 0 { break }
         if old {
             oldHighDrift = max(oldHighDrift, abs(hi - restHigh))
             oldShadowDrift = max(oldShadowDrift, abs(s - restShadow))
+            oldMeanDrift = max(oldMeanDrift, abs(mean(luma, over: wholeFrame) - restMean))
         } else {
             if amount > 0 { liftedMid = max(liftedMid, m) } else { softenedMid = min(softenedMid, m) }
             worstHighDrift = max(worstHighDrift, abs(hi - restHigh))
             worstShadowDrift = max(worstShadowDrift, abs(s - restShadow))
-            worstMeanDrift = max(worstMeanDrift, abs(mean(luma, over: midBand) - restMean))
+            worstMeanDrift = max(worstMeanDrift, abs(mean(luma, over: wholeFrame) - restMean))
+            oldMeanDrift = max(oldMeanDrift, 0)
         }
     }
 }
@@ -157,7 +160,8 @@ print()
 print(String(format: "midtone local contrast: %.3f at rest, %.3f at +100, %.3f at -100", restMid, liftedMid, softenedMid))
 print(String(format: "highlights moved by at most %.3f   (the old path: %.3f)", worstHighDrift, oldHighDrift))
 print(String(format: "shadows moved by at most    %.3f   (the old path: %.3f)", worstShadowDrift, oldShadowDrift))
-print(String(format: "the midtone mean drifted by %.2f of a level", worstMeanDrift))
+print(String(format: "the whole frame's brightness drifted by %.2f of a level   (the old path: %.2f)",
+             worstMeanDrift, oldMeanDrift))
 print()
 
 var failed = false
@@ -183,8 +187,16 @@ if worstShadowDrift >= oldShadowDrift {
 }
 // Clarity changes where a pixel sits against its neighbours, not how bright the
 // picture is. A mean that walks is an exposure shift hiding in a texture control.
+//
+// ⚠️ THE WHOLE FRAME, NOT A BAND, and the first version of this harness got that
+// wrong. A band is SELECTED by brightness, so which side of its own local
+// average a pixel sits on is correlated with being in the band at all — the mean
+// of such a band moves even under an operation that moves the picture's mean by
+// nothing. Measured that way it read 3.21 levels and looked like a defect; over
+// the frame it is a fraction of that, and the old path's figure is printed
+// beside it because that one really did walk (19 levels on C4S_7891).
 if worstMeanDrift > 2.0 {
-    print("FAIL: the midtones changed brightness — Clarity is local contrast, not exposure.")
+    print("FAIL: the picture changed brightness — Clarity is local contrast, not exposure.")
     failed = true
 }
 if !failed {

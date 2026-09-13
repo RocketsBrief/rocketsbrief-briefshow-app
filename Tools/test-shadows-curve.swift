@@ -361,8 +361,8 @@ if develop.isEmpty {
           && !develop.contains("blacks: settings.blacks, shadows:")
           && !develop.contains("blacks: local.blacks, shadows:"))
     check("the scale in front of the cube is undone behind it",
-          develop.contains("scaled(image, by: 1 / headroom)")
-          && develop.contains("scaled(shaped, by: headroom)"))
+          develop.contains("scalingChannels(of: image, by: 1 / headroom)")
+          && develop.contains("scalingChannels(of: shaped, by: headroom)"))
 }
 
 print()

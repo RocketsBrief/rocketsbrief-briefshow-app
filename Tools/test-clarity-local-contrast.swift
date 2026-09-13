@@ -24,15 +24,25 @@ let ctx = CIContext(options: [.workingColorSpace: srgb])
 let W = 480, H = 120
 let rect = CGRect(x: 0, y: 0, width: W, height: H)
 
-/// A step edge with fine texture on both sides, at a chosen brightness — the two
-/// things Clarity treats differently, and the mask's business is WHERE they sit.
+/// A step edge with fine texture on both sides — the two things Clarity treats
+/// differently — and the mask's business is WHERE on the ramp they sit.
+///
+/// ⚠️ THE TEXTURE IS KEPT AWAY FROM THE EDGE, and the first version of this
+/// harness did not do that and could not measure what it claimed. With ripple
+/// running right up to the step, the brightest pixel beside the edge is a
+/// ripple peak, so "the rim beside the edge" grew simply because the texture
+/// grew — the reading came out 32 for a path whose halo is 1.7, and the control
+/// that is supposed to be the WHOLE POINT of this file measured almost nothing.
+/// A flat corridor either side of the step leaves a rim that is halo and
+/// nothing else.
 func plate(left: Double, right: Double, texture: Double = 0.05) -> CIImage {
     var bytes = [UInt8](repeating: 255, count: W * H * 4)
     for y in 0..<H {
         for x in 0..<W {
             let i = (y * W + x) * 4
             let step = x < W / 2 ? left : right
-            let ripple = texture * sin(Double(x) * 1.1) * cos(Double(y) * 0.9)
+            let awayFromTheEdge = (x < 180 || x > 300) ? 1.0 : 0.0
+            let ripple = awayFromTheEdge * texture * sin(Double(x) * 1.1) * cos(Double(y) * 0.9)
             let v = UInt8(min(max((step + ripple) * 255, 0), 255))
             bytes[i] = v; bytes[i + 1] = v; bytes[i + 2] = v; bytes[i + 3] = 255
         }
@@ -52,17 +62,17 @@ func row(_ image: CIImage, at y: Int = 60) -> [Double] {
 
 /// The texture, as levels of RMS, measured well away from the edge.
 func texture(_ p: [Double]) -> Double {
-    let slice = Array(p[300..<460])
+    let slice = Array(p[320..<460])
     let mean = slice.reduce(0, +) / Double(slice.count)
     return (slice.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(slice.count)).squareRoot() * 255
 }
 
-/// The halo: how far the brightest pixel just past the edge overshoots the flat
-/// level that side settles at.
+/// The halo: how far the brightest pixel just past the edge stands above the
+/// FLAT corridor beside it — not above the textured part, see `plate`.
 func overshoot(_ p: [Double]) -> Double {
-    let plateau = Array(p[300..<460]).reduce(0, +) / 160
-    let rim = Array(p[241..<260]).max() ?? plateau
-    return (rim - plateau) * 255
+    let flat = Array(p[270..<300]).reduce(0, +) / 30
+    let rim = Array(p[241..<268]).max() ?? flat
+    return (rim - flat) * 255
 }
 
 func clarity(_ amount: Double, on image: CIImage) -> CIImage {
@@ -107,7 +117,7 @@ let boostedBefore = row(oldClarity(1, on: midtones))
 print(String(format: "  ..    overshoot beside the edge: source %.2f, before %.2f, now %.2f levels",
              overshoot(source), overshoot(boostedBefore), overshoot(boostedNow)))
 check("the rim beside the edge is a fraction of what the old path left",
-      overshoot(boostedNow) < overshoot(boostedBefore) / 3,
+      overshoot(boostedNow) < overshoot(boostedBefore) / 5,
       String(format: "%.2f against %.2f", overshoot(boostedNow), overshoot(boostedBefore)))
 
 print("\nand the texture it is actually for does go up")
@@ -244,10 +254,20 @@ if develop.isEmpty {
 } else {
     let callSites = develop.components(separatedBy: "applyClarity(").count - 2
     check("the photo and a layer both call applyClarity", callSites >= 2, "\(callSites) call sites")
+    // ⚠️ INSIDE applyClarity, NOT IN THE WHOLE FILE — the first version of this
+    // check searched the file and failed on `applyTexture`, which is a
+    // CIUnsharpMask on purpose and is a different control.
+    let body: String = {
+        guard let start = develop.range(of: "static func applyClarity("),
+              let end = develop.range(of: "\n    }\n", range: start.upperBound..<develop.endIndex)
+        else { return "" }
+        return String(develop[start.lowerBound..<end.upperBound])
+    }()
+    check("applyClarity could be read out of the source", !body.isEmpty)
     check("and it no longer runs on a Gaussian base",
-          !develop.contains("CIFilter.unsharpMask()"))
-    check("both bases are the edge-preserving one",
-          develop.components(separatedBy: "edgePreservingBase(of:").count - 1 >= 2)
+          !body.contains("unsharpMask") && !body.contains("CIGaussianBlur"))
+    check("the base is the edge-preserving one",
+          body.contains("edgePreservingBase(of: image"))
 }
 
 print()

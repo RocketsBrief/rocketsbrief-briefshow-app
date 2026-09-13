@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs Tools/test-effect-extraction.swift with BOTH versions of six effects.
+"""Runs Tools/test-effect-extraction.swift with BOTH versions of five effects.
 
 The OLD ones come out of `git show HEAD:BriefShow/Develop.swift` — the inline
 `if settings.texture != 0 { … }` blocks as they stood inside `render` before
@@ -70,7 +70,10 @@ def decl(src, marker, what, rename):
 olds = [
     ("if settings.sharpness > 0 {", "oldSharpen"),
     ("if settings.texture != 0 {", "oldTexture"),
-    ("if settings.clarity != 0 {", "oldClarity"),
+    # ⚠️ Clarity is not here any more. It left on 13.09 (KORAK 186) — it is an
+    # edge-preserving local-contrast pass now, not a CIUnsharpMask, so the two
+    # sides are meant to differ and comparing them would report the intended
+    # change as a failure. Its ruler is Tools/run-clarity-test.py.
     ("if settings.dehaze != 0 {", "oldDehaze"),
     ("if settings.softGlow > 0 {", "oldSoftGlow"),
     ("if settings.vignette != 0 {", "oldVignette"),
@@ -112,8 +115,6 @@ for marker, rename in [
      "static func applySharpen(_ sharpness: Double, radius: Double, to image: CIImage) -> CIImage {"),
     ("    private static func applyTexture(_ texture: Double, to image: CIImage) -> CIImage {",
      "static func applyTexture(_ texture: Double, to image: CIImage) -> CIImage {"),
-    ("    private static func applyClarity(_ clarity: Double, to image: CIImage) -> CIImage {",
-     "static func applyClarity(_ clarity: Double, to image: CIImage) -> CIImage {"),
     ("    private static func applyDehaze(_ dehaze: Double, to image: CIImage) -> CIImage {",
      "static func applyDehaze(_ dehaze: Double, to image: CIImage) -> CIImage {"),
     ("    private static func applySoftGlow(_ softGlow: Double, to image: CIImage) -> CIImage {",

@@ -23161,10 +23161,16 @@ struct PhotoShowSheet: View {
                 .tracking(0.4)
                 .foregroundColor(AppColors.muted.opacity(0.55))
 
+            // ⚠️ THIS IS THE GITHUB RELEASE TAG, and saying so is the point of
+            // the tooltip. The tag is cut from MARKETING_VERSION (KORAK 74), so
+            // "v11.29" here and the tag v11.29 on the releases page are the same
+            // string by construction and cannot drift. Asked for on 13.09:
+            // *„dodaj i label u appu ispod da je taj tag version app"*.
             Text("v\(appVersion)")
                 .font(.custom("Figtree", size: 11).weight(.medium))
                 .tracking(0.4)
                 .foregroundColor(AppColors.muted.opacity(0.4))
+                .help("GitHub release tag v\(appVersion)")
 
             Spacer()
 

@@ -724,6 +724,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 |---|---|
 | **180–187** | Contrast, Highlights, Shadows, Clarity i Dehaze prepravljeni po klijentovim specifikacijama, svaki sa svojim lenjirom; plus četiri prijave iz njegove probe i kartica na sva tri dugmeta |
 | **188** | **v11.26** objavljena: univerzalan paket, min macOS 13.0, LaMa unutra, SD dugmetom |
+| **192** | **v11.29 OBJAVLJENA**: univerzalan paket (arm64 + x86_64), min macOS 13.0, LaMa unutra, SD dugmetom; samo mali paket — `v11.0` se NE SME brisati |
 | **191** | **ručica jaše crop okvir** — vučenje je vraćeno tačno na 181, a ručica se CRTA u overlay-u; warp pravog pokazivača je probao i drhtao, i to je trka a ne greška u znaku (NIJE OBJAVLJENO) |
 | **190** | **− i + pomeraju izabrani slajder, strelice pomeraju slike**; vučenje mišem više ne bira slajder — tiho je menjalo šta tasteri kontrolišu (NIJE OBJAVLJENO) |
 | **189** | **Dehaze je dehazovao prvi plan** — mapa prenosivosti je bila mapa svetline, pesak pod nogama čitan kao magloviтiji od plaže 50 m dalje; mapa je sad relativna prema čistom kraju kadra, pojačanje 10× → 2×, A sme do belog (NIJE OBJAVLJENO) |
@@ -20398,5 +20399,59 @@ ostavlja **na okviru**, ne iza njega. Ovaj dokument peti put beleži isto:
 kvara koji se video, a ne izmerio.
 
 **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 192 — RELEASE v11.29: Dehaze, tasteri i ručica, jedan paket (13. septembar 2026)
+
+**Klijentov zahtev, 13.09:** *„Zapakuj clean up app da bude univerzalan, za Intel
+i M procesore kao i minimum verziju 13 mac os do najnovije verzije... tag je
+v11.29 dodaj i label u appu ispod da je taj tag version app"*, uz PS: *„Ne moras
+da uploadujes 2gb jer vec imaju u appu dugme za Ai SD Download."*
+
+### ⚠️ Zahtev je u sebi imao prividnu protivrečnost, i PS je rešava
+
+Traženo je *„zapakuj oba ai modela i LaMa i SD"*, a PS kaže da 2 GB ne treba
+slati. To nije neodlučnost — to je **tačno postojeći raspored**: LaMa je unutra,
+SD ide dugmetom. Napravljen je samo mali paket (`--small-only`).
+
+⚠️ **Zato `v11.0` NE SME da se briše**, i sad je to jače nego ranije: nov klijent
+instalira ovaj paket i pritisne dugme, a dugme gađa `v11.0/SD15-Inpainting.aar`.
+Bez tog release-a nov klijent nema odakle da uzme SD.
+
+### ⚠️ Intel deljenje posla je VEĆ bilo urađeno
+
+Traženo *„da SD radi na intel procesorima ali da deli rad da bi bio brzi i
+bolji"* — `DevelopSDInpaint.prepare()` već pod `#if !arch(arm64)` postavlja
+`computeUnits = .all`, što je najviše posla koje se na Intelu može podeliti
+(nema Neural Engine-a). Ništa nije menjano; provereno da je u paketu.
+
+### Label sa tag verzijom
+
+Verzija se već prikazuje na **tri** mesta (Welcome ispod logotipa, ShowGrid
+footer, dno Develop panela) i sva tri je čitaju iz bundle-a, a tag se seče iz
+`MARKETING_VERSION` (KORAK 74) — pa su „v11.29" u app-i i tag `v11.29` **isti
+niz po konstrukciji i ne mogu se raziće.** Dodat je tooltip koji to i kaže
+naglas: „GitHub release tag v11.29".
+
+### Provereno pre objave
+
+| | |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.29 / 34** |
+| `LaMa.mlmodelc` | unutra |
+| `SD15-Inpainting` | **nema** — i tako treba, to je 2 GB koje niko ne preuzima ponovo |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| veličina | 115.266.012 bajta |
+
+Lanac update-a proveren **pravim poređenjem**, ne pretpostavkom: svaka verzija od
+11.0 do 11.26 dobija karticu za 11.29, a 11.29, 11.30 i 12.0 je **ne** dobijaju.
+
+### Šta je u njemu
+
+KORACI 189 (Dehaze), 190 (− / + i strelice) i 191 (ručica koja jaše crop).
 
 ---

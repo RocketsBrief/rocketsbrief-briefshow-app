@@ -15289,6 +15289,9 @@ struct DevelopView: View {
                     .foregroundColor(AppColors.muted)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .textSelection(.enabled)
+                    // The same string as the GitHub release tag, by
+                    // construction — see the ShowGrid footer for why.
+                    .help("GitHub release tag v\(short)")
             }
         }
     }

@@ -737,6 +737,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 | **184** | **Highlights** izlazi iz zajedničke tonske krive — OKLab, meko koleno bez preloma, i pre-skaliranje koje vraća opseg **iznad bele** koji su i `CIToneCurve` i kocka odsecali (NIJE OBJAVLJENO) |
 | **185** | **Shadows** izlazi iz zajedničke tonske krive — Hermite prozor sa vrhuncem na L 0,175, crna tačka usidrena oblikom (stara staza ju je dizala 7,6 nivoa), srednji tonovi se pomeraju **0,01** umesto 13,03 (NIJE OBJAVLJENO) |
 | **186** | **Clarity** prestaje da bude unsharp mask — osnova koja čuva ivicu, maska srednjih tonova, oreol uz ivicu **24,04 → 1,62** nivoa; `CIGuidedFilter` koji spec traži imenom je **no-op na ovom sistemu** (NIJE OBJAVLJENO) |
+| **187** | **Dehaze** postaje model atmosferskog rasejanja — Dark Channel Prior, procena A, mapa prenosivosti; na poznatoj magli vraća sliku na **31,2** nivoa od čiste scene, gde je stara staza odvodila na **94,9** (NIJE OBJAVLJENO) |
 
 - Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.048.108 bajta, `codesign` ok, nula fotografija.
 - Update lanac proveren pozivom pravog poređenja: **svaka** verzija od 11.7 do 11.17 dobija karticu za 11.20.
@@ -18572,6 +18573,166 @@ tabela paljenja gore, nad pravom fotografijom.
 
 `Tools/run-slider-parity-test.py` — novi lenjir za 🔴 MUST: isti opseg i korak
 na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
+
+---
+
+## KORAK 187 — Dehaze postaje model, a ne izgled (13. septembar 2026)
+
+Klijentova specifikacija, 13.09: Dehaze mora da radi po **modelu atmosferskog
+rasejanja** — proceni atmosfersko svetlo A iz najsvetlijih piksela Dark
+Channel-a, izračunaj mapu prenosivosti `t(x) = 1 − ω·min_c(I_c(x)/A_c)` iz Dark
+Channel Prior-a, izgladi je **guided filterom sa originalnom slikom kao
+vodičem**, rekonstruiši scenu sa `J = (I − A)/max(t, t₀) + A`, na negativnoj
+strani dodaj sintetičku izmaglicu po istom modelu, i na kraju adaptivno
+kompenzuj zasićenje da jako vađenje ne napravi „puknute" boje ni clipping u
+senkama.
+
+Ovaj dokument od avgusta nosi rečenicu da je to **odloženo**. Sad je urađeno.
+
+### Šta je stara staza bila
+
+`CIColorControls` na contrast 1+0,35d i saturation 1+0,25d, pa tonska kriva
+koja obara crnu tačku. Izgleda „punije" i nije ružno — ali **nema pojma gde je
+magla**. Vuče prednji plan tačno onoliko koliko i planinu pozadi, a to je jedina
+stvar zbog koje model postoji.
+
+### ⚠️ Merenje sa poznatim odgovorom — jedina kontrola u familiji koja ga ima
+
+Čista sintetička scena, **poznato** A = (0,82, 0,86, 0,94) i **poznata** rampa
+dubine (t od 1,0 blizu do 0,05 daleko), pa magla naneta modelom unapred. Onda
+jedino pitanje koje vredi: koliko se vrati.
+
+| | udaljenost od čiste scene |
+|---|---|
+| slika sa maglom | **83,0 nivoa** |
+| **stara staza** na +100 | **94,9** — *pogoršala je* |
+| **sad** na +100 | **31,2** |
+
+Stara staza sliku sa maglom udaljava od istine, jer globalni kontrast i kriva
+ne znaju šta je magla a šta scena.
+
+Mapa koju algoritam sam izračuna, prema pravoj:
+
+| | pročitano | tačno |
+|---|---|---|
+| blizu | **0,917** | 0,93 |
+| daleko | **0,129** | 0,12 |
+
+A procenjeno: **(0,799, 0,818, 0,887)** prema pravom (0,82, 0,86, 0,94) — i, što
+je važnije od nivoa, **zadržava boju vazduha** (plavo je najveće).
+
+### I zna GDE je magla — to je cela razlika između modela i izgleda
+
+| koliko je pomereno | blizu | daleko |
+|---|---|---|
+| **sad** | 10,9 | **53,3** |
+| stara staza | 23,4 | 26,1 |
+
+Na pravoj fotografiji (`C4S_7792.NEF`), mereno kao **udeo rastojanja piksela od
+A** (v. ispod zašto tako):
+
+| Dehaze | pojas koji mapa zove maglovitim | pojas koji zove čistim |
+|---|---|---|
+| **+0,50 sad** | **0,873** | 0,175 |
+| +0,50 stara | 0,452 | 0,243 |
+| **+1,00 sad** | **1,334** | 0,440 |
+
+Pet puta jače tamo gde magle ima. Stara staza jedva razlikuje.
+
+⚠️ I usput: na `C4S_8932.NEF` je stara staza na +100 slepila **2,04 % kadra u
+crno** (0,17 % već na +50). Nova ne slepi **nijedan piksel** — to je onaj toe iz
+spec-ove poslednje klauzule, i lenjir pada ako pređe 2 %.
+
+### ⚠️ Filter koji spec traži imenom — drugi put da ne radi
+
+`CIGuidedFilter` je **no-op na macOS-u 26** (izmereno u KORAKU 186, i ovo je
+druga kontrola koju je ujeo). Umesto njega ide `CIEdgePreserveUpsampleFilter`:
+gruba mapa kao mala slika, fotografija kao vodič — što je doslovno „izgladi mapu,
+prati ivice slike", dakle isti posao.
+
+### ⚠️ Zakrpa mora da bude 15×15, i to je merenje
+
+Donja granica radijusa zakrpe je dignuta sa 3 na **7** (paper-ovih 15×15). Na
+ploči čiji tamni detalj stoji svakih 17 piksela, radijus 4 daje prozore koji ga
+promaše, pa prior prijavi maglu u čistom prednjem planu: `t = 0,865` gde je
+istina 0,93. Tih 7 % se množi rastojanjem od A i stiže kao **20 nivoa korekcije
+na delu slike koji nema magle**. Sa granicom 7 svaki prozor sadrži svoj tamni
+piksel.
+
+### ⚠️ Korekcija hrome i senki mora da prati mapu
+
+Prva verzija je puštala korekciju preko **cele slike**, pa je i bliski kraj —
+koji rekonstrukcija skoro nije ni dirala — dobijao podignute senke i povučenu
+boju. Korekcija za nešto što je model uradio pripada **tačno tamo gde je model
+to uradio**, pa se sad meša kroz mapu.
+
+### ⚠️ Negativna strana ima granicu koju treba znati
+
+Fotografija **bez magle ne nosi informaciju o dubini** za Dark Channel Prior.
+Prior nalazi daljinu tako što primeti da je tamni kanal **podignut**; u vedroj
+slici nije, pa mapa izađe `t ≈ 0,96` svuda — izmereno. Model unapred po takvoj
+mapi doda 4 % izmaglice i slajder izgleda mrtav.
+
+Zato leva strana polaže **`uniformHaze` = 0,35** ravnomerno, a ostatak po mapi.
+Na vedroj slici to je ravan sloj, što izmaglica i jeste kad nema daljine da je
+gradira; na slici koja već ima nešto magle mapa i dalje nosi većinu.
+
+### ⚠️ Tri merila su bila pogrešna, i sva tri su zapisana gde su i nastala
+
+1. **Scena je kršila sam prior.** Prvi blokovi nisu imali nijedan piksel blizu
+   nule ni u jednom kanalu, a DCP se doslovno oslanja na to — algoritam je tačno
+   prijavio maglu, a lenjir je to zvao padom. Scena sad ima senku u svakoj
+   zakrpi, kao prava fotografija.
+2. **Magla nije stizala do daljine.** Stala je na t = 0,3, pa je daleki rub još
+   uvek 30 % scena, i procena A je vratila tu mešavinu — izgledalo je kao
+   pokvaren procenjivač, a bio je pokvaren test. **A se vidi samo tamo gde
+   scene više nema.**
+3. **Pomeranje u nivoima rangira po tami, ne po magli.** Model pomera piksel za
+   `(I − A)·(1/t − 1)`: mapa odlučuje **faktor**, a nivoi su taj faktor puta
+   rastojanje piksela od A — a najtamniji piksel je najdalji od A. Zato je
+   kolona u nivoima tvrdila da se „čist" pojas pomera jače od maglovitog. Kad se
+   podeli tim rastojanjem, maglovit pojas se vuče **pet puta jače**. Zbog tog
+   pogrešnog čitanja je jednom već bila promenjena i razmera refine koraka —
+   vraćena je, jer kvara nije ni bilo.
+
+### Cena, i ona je ozbiljna
+
+| | neutralno | Dehaze +100 | od toga nalaženje A |
+|---|---|---|---|
+| 2600 px | 12 ms | **83 ms** | 8 ms |
+| 5176×3448 | 54 ms | **488 ms** | 26 ms |
+
+Najskuplja kontrola u lancu. Plaća se samo kad je slajder pomeren — na 0 je
+`guard` i ništa se ne dešava.
+
+⚠️ **Ovo je jedino mesto u lancu koje čita piksele nazad.** A je **broj** koji
+matricama treba pre nego što se lanac sagradi, pa mora da se izmeri: na 256 px,
+jer je najgušća magla u kadru oblast a ne tačka, i ništa što preživi 256 px se
+ne gubi.
+
+### Čime je zaključano
+
+`Tools/run-dehaze-test.py` — dve polovine, prima više fotografija.
+
+Sintetička polovina: 0 je identitet; A se nađe u 20 nivoa i **zadrži boju
+vazduha**; rekonstrukcija je bliža čistoj sceni i od maglovite slike i od stare
+staze; daleki kraj se pomera višestruko više od bliskog; leva strana polaže
+vazduh gušće na daljem kraju, a na vedroj slici bar ravnomerno; slajder je
+monoton; hroma se vrati ali ne preko scene; senke se ne slepe u crno. Uz to čita
+`Develop.swift` za 🔴 MUST i ispisuje cenu.
+
+Polovina sa fotografijom: pojasevi se seku **po samoj mapi**, i meri se
+relativno pojačanje — jedino pitanje na koje prava slika može da odgovori bez
+poznate istine je da li korekcija **prati mapu**. Da li je mapa tačna, odgovara
+sintetička polovina.
+
+`Tools/run-effect-extraction-test.py` više ne poredi ni Dehaze — iz istog
+razloga kao Clarity u KORAKU 186.
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`; app sagrađena i
+instalirana. Nije objavljeno, **nema push-a**.
+
+⚠️ **NIJE VIĐENO NA EKRANU.**
 
 ---
 

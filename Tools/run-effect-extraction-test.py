@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs Tools/test-effect-extraction.swift with BOTH versions of five effects.
+"""Runs Tools/test-effect-extraction.swift with BOTH versions of four effects.
 
 The OLD ones come out of `git show HEAD:BriefShow/Develop.swift` — the inline
 `if settings.texture != 0 { … }` blocks as they stood inside `render` before
@@ -74,7 +74,10 @@ olds = [
     # edge-preserving local-contrast pass now, not a CIUnsharpMask, so the two
     # sides are meant to differ and comparing them would report the intended
     # change as a failure. Its ruler is Tools/run-clarity-test.py.
-    ("if settings.dehaze != 0 {", "oldDehaze"),
+    # ⚠️ And Dehaze left on the same day (KORAK 187) — it is a dark-channel
+    # atmospheric-scattering model now, not contrast plus a tone curve. Same
+    # reasoning as Clarity above: the change is deliberate, so a comparison
+    # would report it as a failure. Its ruler is Tools/run-dehaze-test.py.
     ("if settings.softGlow > 0 {", "oldSoftGlow"),
     ("if settings.vignette != 0 {", "oldVignette"),
 ]
@@ -115,8 +118,6 @@ for marker, rename in [
      "static func applySharpen(_ sharpness: Double, radius: Double, to image: CIImage) -> CIImage {"),
     ("    private static func applyTexture(_ texture: Double, to image: CIImage) -> CIImage {",
      "static func applyTexture(_ texture: Double, to image: CIImage) -> CIImage {"),
-    ("    private static func applyDehaze(_ dehaze: Double, to image: CIImage) -> CIImage {",
-     "static func applyDehaze(_ dehaze: Double, to image: CIImage) -> CIImage {"),
     ("    private static func applySoftGlow(_ softGlow: Double, to image: CIImage) -> CIImage {",
      "static func applySoftGlow(_ softGlow: Double, to image: CIImage) -> CIImage {"),
     ("    private static func applyVignette(_ vignette: Double, midpoint: Double, feather: Double, roundness: Double, to image: CIImage) -> CIImage {",

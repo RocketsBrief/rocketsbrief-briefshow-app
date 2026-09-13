@@ -1,4 +1,4 @@
-// Proves that pulling Sharpen, Texture, Dehaze, Soft Glow and Vignette out of
+// Proves that pulling Sharpen, Texture, Soft Glow and Vignette out of
 // `render` into functions changed NOTHING about the photograph. (Clarity was one
 // of the six until 13.09 — see the note where its comparison used to be.)
 //
@@ -94,12 +94,11 @@ for v in [-1.0, -0.6, -0.25, 0.25, 0.6, 1.0] {
 //
 // The other five effects are untouched extractions and are still compared.
 
-for v in [-1.0, -0.4, 0.4, 1.0] {
-    var s = OldSettings()
-    s.dehaze = v
-    compare(String(format: "dehaze %+.2f", v),
-            oldDehaze(s, to: source), PhotoEditRenderer.applyDehaze(v, to: source))
-}
+// ⚠️ AND DEHAZE IS NOT COMPARED EITHER, for the same reason and on the same day
+// (KORAK 187): it is a dark-channel atmospheric-scattering model now, so the two
+// sides are meant to differ. Tools/run-dehaze-test.py is its ruler, and it
+// measures the thing that actually changed — whether a known haze, put on a
+// picture by the forward model, comes back off it.
 
 for v in [0.3, 0.75, 1.0] {
     var s = OldSettings()

@@ -3944,51 +3944,260 @@ enum PhotoEditRenderer {
     /// effect as the whole photo — see applyLocalToneColorDetail. The call
     /// site in `render` is unchanged in behaviour; proved pixel-for-pixel
     /// against the pre-extraction code by Tools/run-effect-extraction-test.py.
-    private static func applyDehaze(_ dehaze: Double, to image: CIImage) -> CIImage {
-        var output = image
+    /// The atmospheric light — the colour of the haze itself.
+    ///
+    /// ⚠️ THE ONE PLACE IN THIS PIPELINE THAT READS PIXELS BACK, and it is worth
+    /// knowing why it has to. Every other filter here is a lazy `CIImage` that
+    /// Core Image evaluates when something asks for pixels; A is a NUMBER that
+    /// the rest of the chain needs in its matrices, so it has to be measured
+    /// before the chain can be built. It is measured on a 256 px render — the
+    /// brightest haze in a photograph is a region, not a speck, and nothing that
+    /// survives to 256 px is lost — which is milliseconds against the hundreds
+    /// the full frame would cost.
+    ///
+    /// The estimate is the paper's: take the dark channel, find its brightest
+    /// pixels, and average the PICTURE over those. Those are the pixels that are
+    /// bright in every channel and have no dark channel left, which is what haze
+    /// at its densest looks like.
+    static func atmosphericLight(of image: CIImage) -> (r: Double, g: Double, b: Double)? {
+        let extent = image.extent
+        let longEdge = max(extent.width, extent.height)
+        guard longEdge.isFinite, longEdge > 0 else { return nil }
 
-    // Dehaze — an APPROXIMATION, not Lightroom's real algorithm (which
-    // uses a dark-channel-prior atmospheric-scattering model — a much
-    // bigger undertaking, explicitly deferred, see
-    // BRIEFSHOW_DEVELOP_NOTES.md). Haze visually reads as two things:
-    // flattened contrast/color (light scattered by atmospheric
-    // particles washes everything toward gray) and a lifted black
-    // point (true blacks never quite reach black through the haze) —
-    // so this fakes the "haze removed" look by boosting contrast and
-    // saturation, THEN crushing the black point back down and pulling
-    // the lower-midtones with it via a tone curve (same point0...
-    // point4 curve-bending technique the Blacks/Shadows/Highlights/
-    // Whites sliders above use, just dehaze-specific coefficients).
-    // Reads as "punchier and clearer" on a real hazy photo without
-    // needing the full atmospheric-scattering math.
-    //
-    // Runs in both directions from the SAME coefficients, with no
-    // special-casing, because every one of them already reverses
-    // correctly under a negative d: contrast and saturation drop below
-    // 1, and the tone curve's black point lifts instead of crushing —
-    // which is exactly what haze does to a photo. So the left half of
-    // the slider ADDS atmosphere rather than being dead travel.
-    if dehaze != 0 {
-        let d = Float(min(max(dehaze, -1), 1))
+        let scale = min(DehazeAtmosphere.estimateSize / Double(longEdge), 1)
+        let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let smallExtent = small.extent
+        let width = Int(smallExtent.width), height = Int(smallExtent.height)
+        guard width > 1, height > 1 else { return nil }
 
-        let colorFilter = CIFilter.colorControls()
-        colorFilter.inputImage = output
-        colorFilter.contrast = 1 + d * 0.35
-        colorFilter.saturation = 1 + d * 0.25
-        colorFilter.brightness = 0
-        output = colorFilter.outputImage ?? output
+        let minimum = CIFilter.minimumComponent()
+        minimum.inputImage = small
+        guard let perPixel = minimum.outputImage else { return nil }
 
-        let curve = CIFilter.toneCurve()
-        curve.inputImage = output
-        curve.point0 = CGPoint(x: 0, y: CGFloat(-0.08 * d))
-        curve.point1 = CGPoint(x: 0.25, y: CGFloat(0.25 - 0.05 * d))
-        curve.point2 = CGPoint(x: 0.5, y: 0.5)
-        curve.point3 = CGPoint(x: 0.75, y: 0.75)
-        curve.point4 = CGPoint(x: 1, y: 1)
-        output = curve.outputImage ?? output
+        let patch = CIFilter.morphologyMinimum()
+        patch.inputImage = perPixel
+        patch.radius = Float(max(Double(min(width, height)) * DehazeAtmosphere.patchFraction, 2))
+        guard let dark = patch.outputImage?.cropped(to: smallExtent) else { return nil }
+
+        var darkPixels = [Float](repeating: 0, count: width * height * 4)
+        var scenePixels = [Float](repeating: 0, count: width * height * 4)
+        darkPixels.withUnsafeMutableBytes { raw in
+            briefEditsCIContext.render(dark, toBitmap: raw.baseAddress!, rowBytes: width * 16,
+                                       bounds: smallExtent, format: .RGBAf,
+                                       colorSpace: briefEditsSRGBColorSpace)
+        }
+        scenePixels.withUnsafeMutableBytes { raw in
+            briefEditsCIContext.render(small, toBitmap: raw.baseAddress!, rowBytes: width * 16,
+                                       bounds: smallExtent, format: .RGBAf,
+                                       colorSpace: briefEditsSRGBColorSpace)
+        }
+
+        let count = width * height
+        let wanted = max(Int(Double(count) * DehazeAtmosphere.brightestShare),
+                         min(DehazeAtmosphere.minimumSamples, count))
+        // Partial order is enough — the question is "which are the brightest",
+        // not "in what order".
+        let ranked = (0..<count).sorted { darkPixels[$0 * 4] > darkPixels[$1 * 4] }.prefix(wanted)
+        guard !ranked.isEmpty else { return nil }
+
+        var sum = (r: 0.0, g: 0.0, b: 0.0)
+        for index in ranked {
+            sum.r += Double(scenePixels[index * 4])
+            sum.g += Double(scenePixels[index * 4 + 1])
+            sum.b += Double(scenePixels[index * 4 + 2])
+        }
+        let n = Double(ranked.count)
+        func bounded(_ value: Double) -> Double {
+            min(max(value / n, DehazeAtmosphere.minimumAtmosphericLight),
+                DehazeAtmosphere.maximumAtmosphericLight)
+        }
+        return (bounded(sum.r), bounded(sum.g), bounded(sum.b))
     }
 
-        return output
+    /// The transmission map: how much of the scene survives the haze, per pixel.
+    ///
+    /// `t = 1 − ω · min_c(I_c / A_c)` over a patch, straight out of the spec,
+    /// and then refined with the photograph as its guide so the map follows
+    /// edges rather than blocking up in squares the size of the patch.
+    static func transmissionMap(of image: CIImage,
+                                atmosphere: (r: Double, g: Double, b: Double)) -> CIImage? {
+        let extent = image.extent
+        let longEdge = max(extent.width, extent.height)
+        guard longEdge.isFinite, longEdge > 0 else { return nil }
+
+        // I / A, channel by channel. The dark channel of THAT is what the prior
+        // is about — a haze-free patch has some channel near zero relative to
+        // the light in the air, not relative to white.
+        let normalise = CIFilter.colorMatrix()
+        normalise.inputImage = image
+        normalise.rVector = CIVector(x: CGFloat(1 / atmosphere.r), y: 0, z: 0, w: 0)
+        normalise.gVector = CIVector(x: 0, y: CGFloat(1 / atmosphere.g), z: 0, w: 0)
+        normalise.bVector = CIVector(x: 0, y: 0, z: CGFloat(1 / atmosphere.b), w: 0)
+        normalise.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        guard let normalised = normalise.outputImage else { return nil }
+
+        let minimum = CIFilter.minimumComponent()
+        minimum.inputImage = normalised
+        guard let perPixel = minimum.outputImage else { return nil }
+
+        let radius = min(max(Double(longEdge) * DehazeAtmosphere.patchFraction,
+                             DehazeAtmosphere.minimumPatchRadius),
+                         DehazeAtmosphere.maximumPatchRadius)
+        let patch = CIFilter.morphologyMinimum()
+        patch.inputImage = perPixel.clampedToExtent()
+        patch.radius = Float(radius)
+        guard let darkChannel = patch.outputImage?.cropped(to: extent) else { return nil }
+
+        // t = 1 − ω · dark
+        let toTransmission = CIFilter.colorMatrix()
+        toTransmission.inputImage = darkChannel
+        let w = CGFloat(-DehazeAtmosphere.omega)
+        toTransmission.rVector = CIVector(x: w, y: 0, z: 0, w: 0)
+        toTransmission.gVector = CIVector(x: 0, y: w, z: 0, w: 0)
+        toTransmission.bVector = CIVector(x: 0, y: 0, z: w, w: 0)
+        toTransmission.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        toTransmission.biasVector = CIVector(x: 1, y: 1, z: 1, w: 0)
+        guard let coarse = toTransmission.outputImage?.cropped(to: extent) else { return nil }
+
+        // ⚠️ THE SPEC'S GUIDED FILTER, AND NOT THE FILTER THE SPEC NAMES.
+        // `CIGuidedFilter` is a no-op on this system — measured in KORAK 186,
+        // input returned unchanged at every radius and epsilon. This is a joint
+        // bilateral upsample of the coarse map with the photograph as its guide,
+        // which is the same job: smooth the map, keep the picture's edges.
+        let scale = 1 / max(radius * DehazeAtmosphere.refineRadiusFraction, 1)
+        let small = coarse.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let refine = CIFilter(name: "CIEdgePreserveUpsampleFilter")
+        refine?.setValue(image, forKey: "inputImage")
+        refine?.setValue(small, forKey: "inputSmallImage")
+        refine?.setValue(ClarityLocalContrast.spatialSigma, forKey: "inputSpatialSigma")
+        refine?.setValue(ClarityLocalContrast.lumaSigma, forKey: "inputLumaSigma")
+        return refine?.outputImage?.cropped(to: extent) ?? coarse
+    }
+
+    /// Dehaze, for the photo, for a layer and for a mask alike.
+    ///
+    /// ⚠️ THE ONE PLACE, like the controls above it — the 🔴 MUST in
+    /// BRIEFSHOW_DEVELOP_NOTES.md.
+    ///
+    /// The atmospheric scattering model, forwards and backwards. A camera in
+    /// haze records `I = J·t + A·(1−t)`: the scene dimmed by how much light got
+    /// through, plus the light the air itself is throwing at the lens. So
+    ///
+    ///     pulling the slider right  J = (I − A) / max(t, t₀) + A
+    ///     pulling it left           I = J·t + A·(1−t)
+    ///
+    /// and both run off the SAME map, with the strength folded into it as
+    /// `t' = 1 − |dehaze| · (1 − t)`. At 0 that is t' = 1, so the right half is
+    /// the identity by construction — `(I − A)/1 + A` is `I` — and the left half
+    /// is `I·1 + A·0`, also `I`.
+    ///
+    /// ⚠️ WHY THE GAIN COMES OUT OF A CUBE AND IS THEN MULTIPLIED BACK UP: the
+    /// recovery divides by a number as small as t₀, so the gain runs to ten, and
+    /// a colour cube cannot hand back anything above 1. The table holds
+    /// `t₀/max(t,t₀)` and the matrix behind it multiplies by `1/t₀`. The signed
+    /// arithmetic either side of it is the same stock, unclamped chain
+    /// `scalingChannels` documents.
+    static func applyDehaze(_ dehaze: Double, to image: CIImage) -> CIImage {
+        guard dehaze != 0 else { return image }
+
+        let extent = image.extent
+        guard extent.width > 1, extent.height > 1 else { return image }
+
+        guard let atmosphere = atmosphericLight(of: image),
+              let transmission = transmissionMap(of: image, atmosphere: atmosphere)
+        else { return image }
+
+        let strength = min(max(abs(dehaze), 0), 1)
+
+        // A as a picture, for the two places the model needs it as one.
+        let air = CIImage(color: CIColor(red: CGFloat(atmosphere.r),
+                                         green: CGFloat(atmosphere.g),
+                                         blue: CGFloat(atmosphere.b))).cropped(to: extent)
+
+        if dehaze > 0 {
+            // I − A, with the bias doing the subtraction so nothing clamps.
+            let lessAir = CIFilter.colorMatrix()
+            lessAir.inputImage = image
+            lessAir.rVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+            lessAir.gVector = CIVector(x: 0, y: 1, z: 0, w: 0)
+            lessAir.bVector = CIVector(x: 0, y: 0, z: 1, w: 0)
+            lessAir.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            lessAir.biasVector = CIVector(x: CGFloat(-atmosphere.r),
+                                          y: CGFloat(-atmosphere.g),
+                                          z: CGFloat(-atmosphere.b), w: 0)
+            guard let difference = lessAir.outputImage else { return image }
+
+            let gainCube = CIFilter.colorCubeWithColorSpace()
+            gainCube.inputImage = transmission
+            gainCube.cubeDimension = Float(TransmissionGainCube.dimension)
+            gainCube.cubeData = TransmissionGainCube.data(for: strength)
+            gainCube.colorSpace = briefEditsSRGBColorSpace
+            guard let scaledGain = gainCube.outputImage else { return image }
+
+            let multiply = CIFilter.multiplyCompositing()
+            multiply.inputImage = difference
+            multiply.backgroundImage = scaledGain
+            guard let scaled = multiply.outputImage,
+                  let recovered = scalingChannels(of: scaled,
+                                                  by: CGFloat(1 / DehazeAtmosphere.minimumTransmission))
+            else { return image }
+
+            let addAir = CIFilter.colorMatrix()
+            addAir.inputImage = recovered
+            addAir.rVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+            addAir.gVector = CIVector(x: 0, y: 1, z: 0, w: 0)
+            addAir.bVector = CIVector(x: 0, y: 0, z: 1, w: 0)
+            addAir.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            addAir.biasVector = CIVector(x: CGFloat(atmosphere.r),
+                                         y: CGFloat(atmosphere.g),
+                                         z: CGFloat(atmosphere.b), w: 0)
+            guard let scene = addAir.outputImage?.cropped(to: extent) else { return image }
+
+            // The spec's last clause: the division grew the chroma along with
+            // everything else, and drove the darkest tones under black.
+            let relief = CIFilter.colorCubeWithColorSpace()
+            relief.inputImage = scene
+            relief.cubeDimension = Float(DehazeReliefCube.dimension)
+            relief.cubeData = DehazeReliefCube.data(for: strength)
+            relief.colorSpace = briefEditsSRGBColorSpace
+            guard let relieved = relief.outputImage?.cropped(to: extent) else { return scene }
+
+            // ⚠️ AND IT FOLLOWS THE MAP, which the first version did not — it ran
+            // the correction over the whole frame, so the near foreground, which
+            // the recovery had barely touched, still had its shadows lifted and
+            // its colour walked back. Measured on the synthetic scene: the clear
+            // end moved 20.3 levels when it should have moved almost nothing.
+            // A correction for something the model did belongs exactly where the
+            // model did it.
+            let where0 = CIFilter.colorCubeWithColorSpace()
+            where0.inputImage = transmission
+            where0.cubeDimension = Float(TransmissionMaskCube.dimension)
+            where0.cubeData = TransmissionMaskCube.data(for: strength)
+            where0.colorSpace = briefEditsSRGBColorSpace
+            guard let reliefMask = where0.outputImage else { return relieved }
+
+            let follow = CIFilter.blendWithMask()
+            follow.inputImage = scene
+            follow.backgroundImage = relieved
+            follow.maskImage = reliefMask
+            return follow.outputImage?.cropped(to: extent) ?? relieved
+        }
+
+        // The left half is the model run forwards: put the air back, thickest
+        // where the map says the scene is furthest away. `CIBlendWithMask` is
+        // exactly `I·t + A·(1−t)` when the mask is t.
+        let hazeMap = CIFilter.colorCubeWithColorSpace()
+        hazeMap.inputImage = transmission
+        hazeMap.cubeDimension = Float(HazeDepthCube.dimension)
+        hazeMap.cubeData = HazeDepthCube.data(for: strength)
+        hazeMap.colorSpace = briefEditsSRGBColorSpace
+        guard let mask = hazeMap.outputImage else { return image }
+
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = image
+        blend.backgroundImage = air
+        blend.maskImage = mask
+        return blend.outputImage?.cropped(to: extent) ?? image
     }
 
     /// Extracted verbatim from `render` so a LAYER can have the same

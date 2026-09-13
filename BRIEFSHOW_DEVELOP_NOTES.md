@@ -734,6 +734,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 | **181** | četiri prijave iz probe: crop se vuče protiv miša, **kartica sa slajderima i živim prikazom** pre Background Enhanced-a, Generative vraćen na LaMa osnovu, i **Undo Background Enhanced** (NIJE OBJAVLJENO) |
 | **182** | kartica posle prve probe: list joj je **delio pogled** sa drugim listovima pa se nije otvarao, **šest kontrola** umesto tri, i crna slova u dark temi (NIJE OBJAVLJENO) |
 | **183** | kartica je bila vezana za **dva dugmeta od tri** — panel „AI Portrait" ju je zaobilazio; sad **recept sam kaže** da pita pre nego što uradi (NIJE OBJAVLJENO) |
+| **184** | **Highlights** izlazi iz zajedničke tonske krive — OKLab, meko koleno bez preloma, i pre-skaliranje koje vraća opseg **iznad bele** koji su i `CIToneCurve` i kocka odsecali (NIJE OBJAVLJENO) |
 
 - Skinuti paket proveren, ne samo sagrađeni: **isti SHA-256**, 115.048.108 bajta, `codesign` ok, nula fotografija.
 - Update lanac proveren pozivom pravog poređenja: **svaka** verzija od 11.7 do 11.17 dobija karticu za 11.20.
@@ -18569,6 +18570,157 @@ tabela paljenja gore, nad pravom fotografijom.
 
 `Tools/run-slider-parity-test.py` — novi lenjir za 🔴 MUST: isti opseg i korak
 na sva tri panela. Ne traži fotografiju, pa radi i na mašini bez nijedne.
+
+---
+
+## KORAK 184 — Highlights izlazi iz zajedničke tonske krive (13. septembar 2026)
+
+Klijentova specifikacija, 13.09: Highlights nije limiter svetlih tonova nego
+ciljano zbijanje sa mekim kolenom — radi **samo iznad srednje sive** (težina 0,0
+ispod L 0,50), bez oštrog reza, rekonstruiše kanal koji je pregoreo iz onih koji
+nisu, i na kraju hoda blago oduzima zasićenje najsvetlijim tonovima.
+
+### ⚠️ Prvo merenje, i ono je odlučilo sve ostalo
+
+Highlights je bio **jedan red** zajedničke petočvorne krive, uz Blacks, Shadows
+i Whites. Dva merenja (`Tools/run-highlights-headroom.py` i direktna proba
+filtera):
+
+| | |
+|---|---|
+| koliko kadra je **iznad bele** kad Highlights dobije sliku | **0,04 % – 30,6 %** (15 RAW-ova) |
+| najsvetliji kanal | **1,074** (`C4S_5741`) |
+| šta `CIToneCurve` vidi iznad 1,0 | **ništa** — 1,00 / 1,05 / 1,20 izlaze isti |
+| šta `CIColorCubeWithColorSpace` vidi iznad 1,0 | **ništa** — 1,00 / 1,05 / 1,20 / 1,60 padaju na isti unos |
+
+⚠️ **Proba je prvo bila POGREŠNA i to je zapisano da se ne ponovi:** zakrpe su
+pravljene preko `CIImage(color:)`, a `CIColor` **sam odseca** na 1,0 — pa je
+izgledalo da ništa iznad bele ni ne postoji. Zakrpa mora da se napravi
+**skaliranjem** srednje sive; tek tada 1,6 pročita nazad kao 1,6.
+
+Dakle isporučeni Highlights je već tretirao do trećine nekih kadrova kao jednu
+jedinu vrednost. Prelazak na kocku ne gubi ništa — oba filtera odsecaju isto.
+
+### Šta vraća taj opseg: pre-skaliranje ispred tabele
+
+`applyHighlights` su **dva filtera**, i prvi je cela stvar: slika se pomnoži sa
+**1/1,10** (`CIColorMatrix`, koji ne odseca — provereno), pa tek onda ide u
+kocku, a kocka je građena znajući to. Tako ton koji je sedeo na 1,045 dobija
+svoj red u tabeli. Izlaz je običan prikazni broj u 0…1 — tabela poništi skalu
+usput, pa nizvodno niko ne zna da se ovo desilo.
+
+⚠️ **1,10 je mereno, ne birano:** najsvetliji kanal na 15 RAW-ova je 1,074.
+Fiksan je namerno — merenje maksimuma po slici znači redukcioni prolaz
+(`CIAreaMaximum`) na svakom renderu i kocku po fotografiji, zarad nekoliko
+stotinki na samom vrhu.
+
+### Oblik — `BriefShow/HighlightsCurve.swift`
+
+`kneeMapTo` je ista racionalna kriva koju `ExposureCurve.kneeMap` već koristi, sa
+oslobođenom tačkom doskoka: `x/(1+c·x)` je jedini oblik koji ima nagib **tačno
+1** tamo gde preuzima — dakle **nema preloma**, što je spec-ovo *„Kriva ne pravi
+oštar rez"* — i pritom pogađa izabranu tačku. `c` ispada iz ta dva uslova.
+
+Jedan izraz za obe strane slajdera (`landing`), pa je monotonost po slajderu
+posledica konstrukcije, a ne nade.
+
+| šta | vrednost | zašto |
+|---|---|---|
+| `knee` | **0,50** L | spec-ovo „ispod 0,50 težina 0,0" — i drži **tačno**, ne približno |
+| `headroom` | **1,10** | mereno, v. gore |
+| `floorAtFullPull` | **1,046** | **nasleđeno**, v. ispod |
+| `extremeDesaturation` | **0,15** iznad L 0,90 | spec-ova poslednja klauzula |
+
+### ⚠️ Jačina je NASLEĐENA od stare krive, i to je merenje koje me je ispravilo
+
+Prva verzija je imala `floorAtFullPull = 0,90` — broj koji sam **procenio**.
+Poređenje sa starom stazom (stara kriva se računa **pored** nove u lenjiru:
+neutralan render plus onaj isti petočvorni `CIToneCurve` sa njegovim težinama):
+
+| Highlights −100 | stara | moja prva verzija |
+|---|---|---|
+| srednja vrednost pregorelih piksela | 239,1 → **232,8** | 239,1 → **200,8** |
+
+Šest puta jača. Stara jačina je **jedina** koja je ikad bodovana protiv
+Lightroom-a (po regionima, 05.09, otud `highlightControlScale = 0,50`), pa je
+ona ta koja se nasleđuje — ista disciplina kao kod kontrasta u KORAKU 180.
+Sa 1,046 nova staza prati staru skoro u nivo:
+
+| Highlights | stara | sad |
+|---|---|---|
+| −0,25 | 241,1 | 241,5 |
+| −0,50 | 239,7 | 239,7 |
+| −1,00 | 236,8 | 236,3 |
+
+Menja se **oblik i informacija**, ne jačina.
+
+### Šta je zaista dobijeno — i šta NIJE
+
+⚠️ **Nema nijednog piksela sa sva tri kanala iznad bele.** Provereno na
+klijentovim kadrovima: iznad bele je uvek **jedan** kanal, ili dva, dok su
+ostali ispod. Zato nebo koje se vidi kao ravno belo **nije** opseg tonova
+zbijen uz plafon — nema tamo opsega da se raširi. To je skup **boja** kojima je
+najsvetliji kanal pretekao belo.
+
+Merilo je zato: koliko razlike **preživi** među tonovima koji su bili iznad
+bele (standardna devijacija najsvetlijeg kanala na izlazu):
+
+| Highlights | stara | sad |
+|---|---|---|
+| −0,25 | **0,00** | 0,39 |
+| −0,50 | **0,00** | 0,90 |
+| −1,00 | **0,00** | 1,73 |
+
+Stara ih je spljoštavala na jednu vrednost na **svakom** podešavanju. Dobitak
+je skroman — 1,73 nivoa — jer je rezerva svega 7 %, i to je fizika, ne mana.
+
+⚠️ **Dva merila su usput bila POGREŠNA i oba su zapisana u lenjiru:**
+`max − min` po kanalima **nagrađuje odsecanje** (kanal prikovan na 255 stoji
+dalje od suseda nego isti kanal pošteno vraćen na 250, pa staza koja gubi
+najviše informacije dobija najbolju ocenu); a razuđenost **svetline** ne kaže
+ništa, jer ravno belih piksela u sva tri kanala nema.
+
+### Šta je ostalo isto
+
+Blacks, Shadows i Whites u `toneCurvePoints` su **netaknuti**, težine i sve —
+ovo je vađenje reda, ne preštimavanje. `highlightControlScale` ostaje u kodu
+iako ga niko ne čita, iz istog razloga kao `contrastMidtoneBend`: tabela iznad
+njega je jedino bodovanje po regionima koje je ova kontrola ikad imala.
+
+### Čime je zaključano
+
+`Tools/run-highlights-curve-test.py` — dve polovine.
+
+Osobine nad pravim tipom: 0 je identitet; **ništa ispod L 0,50 se ne pomera ni
+na jednom podešavanju, tačno** (ne „skoro"); slajder ide na pravu stranu; pet
+tonova od bele do 1,074 ostaju **pet tonova**; nema preloma na kolenu; ugao
+nijanse se ne pomera; kanal iznad bele se vraća kao **boja**, ne kao siva mrlja;
+chroma pada na samom vrhu i **tačno nula** ispod njega; i tabela **jeste** ta
+kriva u svojim skaliranim osama.
+
+Uz to čita `Develop.swift`: Highlights ima **jednu** implementaciju, više nije
+red zajedničke krive, i pre-skaliranje stoji **ispred** kocke.
+
+Druga polovina je rampa nad pravom fotografijom, sa **starom krivom izračunatom
+pored nove**, i ona ima dve kontrole: „SURVIVING" (kolona gore) i pomeranje
+senki, koje mora da ostane **ispod jednog nivoa** — izmereno **0,26**.
+
+⚠️ Lenjir **ne tvrdi oporavak tamo gde ga fizika ne dozvoljava**: ispod 0,5 %
+kadra iznad bele (npr. `C4S_8932`, 0,04 %, rezerva 1,011) ispiše da nema šta da
+se vrati i ne pada. Provereno da baš to i radi.
+
+`Tools/run-highlights-headroom.py` — novi alat koji je ovo merenje i napravio.
+
+`Tools/run-tone-search.py` — ručica `S_HI` je prebačena sa mrtvog
+`highlightControlScale` na `HighlightsCurve.floorAtFullPull`.
+
+**Stanje:** `xcodebuild … Release` → `BUILD SUCCEEDED`; app sagrađena i
+instalirana. Nije objavljeno, **nema push-a**.
+
+⚠️ **NIJE VIĐENO NA EKRANU.** Sve gore je izmereno kroz isporučeni pipeline.
+`floorAtFullPull` sad prati staru, bodovanu jačinu — ali oblik je nov, i
+klijentovo oko je jedino koje kaže da li na njegovim slikama sad izgleda kako
+treba.
 
 ---
 

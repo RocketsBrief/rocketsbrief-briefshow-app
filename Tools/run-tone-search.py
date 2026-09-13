@@ -15,7 +15,8 @@ Both are measurable, and the ablation that came first says where they live:
 
 So the two tone controls are mis-scaled in opposite directions on this frame.
 This tool sweeps the three constants that govern that — `toneControlStrength`,
-`highlightControlScale`, and the leak Shadows is allowed into the midtone knot —
+`HighlightsCurve.floorAtFullPull`, and the leak Shadows is allowed into the
+midtone knot —
 and prints what each combination does to every region at once, because moving
 one of them always moves the sky, the deck and the white point too.
 
@@ -42,9 +43,14 @@ KNOBS = [
     ("static let toneControlStrength = 0.10",
      'static let toneControlStrength = ProcessInfo.processInfo.environment["S_TONE"].flatMap(Double.init) ?? 0.10',
      "S_TONE", 0.10),
-    ("static let highlightControlScale = 0.50",
-     'static let highlightControlScale = ProcessInfo.processInfo.environment["S_HI"].flatMap(Double.init) ?? 0.50',
-     "S_HI", 0.50),
+    # ⚠️ WAS `highlightControlScale`, THE TONE CURVE'S HIGHLIGHTS ROW. Highlights
+    # left that curve on 13.09 (see HighlightsCurve.swift) and nothing reads that
+    # constant any more, so sweeping it swept nothing. The knob now points at the
+    # judgement number in the new curve: where the very top of the range lands at
+    # Highlights -100. Lower means a harder pull.
+    ("static let floorAtFullPull = 0.90",
+     'static let floorAtFullPull = ProcessInfo.processInfo.environment["S_HI"].flatMap(Double.init) ?? 0.90',
+     "S_HI", 0.90),
     ("            [0.30, 1.00, 0.60, 0.00, 0.00],",
      '            [0.30, 1.00, ProcessInfo.processInfo.environment["S_MID"].flatMap(Double.init) ?? 0.60, 0.00, 0.00],',
      "S_MID", 0.60),

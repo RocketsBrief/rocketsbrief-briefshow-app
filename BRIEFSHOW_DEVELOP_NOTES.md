@@ -724,6 +724,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 |---|---|
 | **180–187** | Contrast, Highlights, Shadows, Clarity i Dehaze prepravljeni po klijentovim specifikacijama, svaki sa svojim lenjirom; plus četiri prijave iz njegove probe i kartica na sva tri dugmeta |
 | **188** | **v11.26** objavljena: univerzalan paket, min macOS 13.0, LaMa unutra, SD dugmetom |
+| **190** | **− i + pomeraju izabrani slajder, strelice pomeraju slike**; vučenje mišem više ne bira slajder — tiho je menjalo šta tasteri kontrolišu (NIJE OBJAVLJENO) |
 | **189** | **Dehaze je dehazovao prvi plan** — mapa prenosivosti je bila mapa svetline, pesak pod nogama čitan kao magloviтiji od plaže 50 m dalje; mapa je sad relativna prema čistom kraju kadra, pojačanje 10× → 2×, A sme do belog (NIJE OBJAVLJENO) |
 
 - ⚠️ **KORAK 189 je našao kvar koji je 180–187 ostavio, i našao ga je PRVIM POGLEDOM na PNG.** Pouka je upisana gore: lenjir koji meri pravu stvar i dalje ne vidi sliku.
@@ -20258,5 +20259,75 @@ ništa ne meri ne prijavljuje nijedan pad"; ovo je peti put i drugi oblik istog:
 fotografija i layer, pa se izmena ne može raziće.
 
 App je sagrađen i restartovan u `/Applications/C4S Suite.app`. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 190 — − i + pomeraju slajder, strelice pomeraju slike, a vučenje ne bira (13. septembar 2026)
+
+**Klijentova prijava, 13.09:** *„bitno je da promenimo da na minus i plus
+pomeramo selektovan side bar a na strelice da se pomeraju slike, isto, kada ja
+misem pomerim slidebar recimo kontrast to ne znaci da sam ja oznacio kontrast da
+ga posle plusem i minusem pomera.. recimo exposure je kliknut, i ja posle misem
+dragujem u clarity (to je primer) ne treba clarity da je selektovan posle mog
+draga jer nisam kliknuo na njega.. ako me razumes neka ostane gde je bio vec"*
+
+Tri izmene, i druga je bila prava greška a ne samo preraspodela tastera.
+
+### 1. Strelice su skinute sa slajdera i date filmstrip-u
+
+Bile su ← / → na izabranom slajderu od KORAKA gde je uveden `SliderNudgeRegistry`.
+Sad ← / → koraca kroz fotografije. **Q/E i dalje rade isto** — to je podesiv
+prečac i niko nije tražio da se oduzme.
+
+### 2. ⚠️ Vučenje mišem je TIHO menjalo šta tasteri kontrolišu
+
+Ovo je pravi kvar, ne ukus. `editSlider` je oba svoja track view-a gradio sa
+`onEditingChanged` koji je pri **svakom početku vučenja** upisivao
+`selectedSliderKey = sliderKey`. Klijentov primer je tačan opis posledice:
+klikneš Exposure, pa mišem povučeš Clarity — i od tog trenutka − i + pomeraju
+Clarity, a **ništa na ekranu to nije reklo**, jer je taj put namerno bio nem
+(kartica se pali samo na klik). Dva ulaza u isto stanje, jedan od njih nevidljiv.
+
+Oba track view-a se sad grade **bez ikakvog `onEditingChanged`** — ne sa praznim,
+nego bez — pa nema drugog puta koji bi se razišao sa klikom. Klik na ime je
+jedini način da se slajder naoruža.
+
+### 3. ⚠️ Shift više ne može da znači „krupnije", i to nije bio izbor
+
+„+" je na skoro svakom rasporedu **Shift + „="**, pa je Shift potrošen na kucanje
+znaka. Krupniji korak (5×) je prešao na **⌥**. Kartica i tooltip to sad i pišu —
+ranije su pisali „Press ← to lower, → to raise · hold ⇧".
+
+Usput, dve stvari koje su morale da se poklope:
+
+- **Cmd +/− je zum** i hvata se iznad; nudge se hvata samo go ili sa ⇧/⌥, pa se
+  ta dva nikad ne sretnu.
+- **Čita se znak, ne kod tastera**, na brojčanom redu: „=" i „+" su jedan
+  fizički taster (24) čiji prijavljeni znak zavisi od Shift-a, isto „-" i „_"
+  (27). Numerička tastatura se hvata i po kodu (69/78), pa čudan raspored i dalje
+  radi.
+
+### Čime je zaključano
+
+`Tools/run-slider-keys-test.py`, dve polovine:
+
+- Prva vadi **pravi `SliderNudgeKey`** iz `Develop.swift` po tekstu — isto kao
+  `run-delete-key-test.py` sa `DeleteKeyAction` — i pušta ga: +, =, −, _,
+  numerički +/−, i da **strelice nisu nudge**.
+- ⚠️ Druga **ne trči i ne tvrdi da trči**. „Vučenje ne sme da naoruža slajder"
+  živi u SwiftUI closure-u. Ovaj dokument već nosi pravilo da lenjir koji ništa
+  ne meri ne prijavljuje nijedan pad, pa ova polovina **kaže da čita izvor** i
+  čita baš odsustvo koje je bitno: da nijedan track view nije dobio
+  `onEditingChanged`, da klik na ime i dalje naoružava, i da kartica ne pominje
+  tastere koji više ne rade.
+
+`run-slider-parity-test.py` (🔴 MUST), `run-slider-drag-test.py` i
+`run-delete-key-test.py` i dalje prolaze.
+
+⚠️ **Nije viđeno na ekranu** — app je sagrađen i restartovan, ali sam pritisak
+tastera traži klijentov prst. Prva stvar za probu: klikni Exposure, povuci
+Clarity mišem, pa pritisni +.
+
+**NIJE OBJAVLJENO.**
 
 ---

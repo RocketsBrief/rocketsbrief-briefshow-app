@@ -8020,6 +8020,33 @@ struct LayerDropDelegate: DropDelegate {
 ///
 /// A pure function so the truth table can be run instead of argued about —
 /// Tools/run-delete-key-test.py.
+/// Which way a key press moves the armed slider, decided in one place so a
+/// ruler can ask it without a window — the same arrangement as DeleteKeyAction
+/// below, and for the same reason.
+///
+/// ⚠️ THE CHARACTER DECIDES, NOT THE KEY CODE, on the number row. "=" and "+"
+/// are one physical key (24) whose reported character depends on Shift, as are
+/// "-" and "_" (27), and people press them either way. The keypad's own keys
+/// (69 and 78) report "+" and "-" already but are matched by code as well, so a
+/// layout that reports something else there still works.
+enum SliderNudgeKey: Equatable {
+    case increase
+    case decrease
+
+    static func forKeyPress(keyCode: UInt16, characters: String?) -> SliderNudgeKey? {
+        switch keyCode {
+        case 69: return .increase          // keypad +
+        case 78: return .decrease          // keypad −
+        default: break
+        }
+        switch characters {
+        case "+", "=": return .increase
+        case "-", "_": return .decrease
+        default: return nil
+        }
+    }
+}
+
 enum DeleteKeyAction: Equatable {
     /// Let the event through to whatever has focus. Typing lands here.
     case ignore
@@ -9164,29 +9191,62 @@ struct DevelopView: View {
                     adjustActiveToolSize(increase: true); return nil
                 }
             }
-            // ← / → step whichever slider is currently armed (clicking a
-            // slider's name arms it, see selectSlider), Shift+arrow steps it
-            // 5x — Lightroom's own fine/coarse pairing. Repeat is allowed on
-            // purpose: holding an arrow to ramp a value up is the whole
-            // point, and each press is one clamped add on a single Double,
-            // nothing that can pile up the way the Cmd+V bug above did.
+            // − / + step whichever slider is currently armed (clicking a
+            // slider's NAME arms it, see selectSlider), ⌥ steps it 5x.
+            // Repeat is allowed on purpose: holding the key to ramp a value
+            // up is the whole point, and each press is one clamped add on a
+            // single Double, nothing that can pile up the way the Cmd+V bug
+            // above did.
+            //
+            // ⚠️ THIS USED TO BE ← / →, AND THE ARROWS ARE NOW THE FILMSTRIP.
+            // The client's instruction of 13.09: "na minus i plus pomeramo
+            // selektovan side bar a na strelice da se pomeraju slike". Two
+            // knock-on details that are not free:
+            //
+            //   · "+" is Shift+"=" on nearly every layout, so SHIFT CANNOT
+            //     MEAN COARSE any more — it is spent typing the character.
+            //     Coarse moved to ⌥, and the toast says so.
+            //   · Cmd +/− is the zoom and is matched further up; these are
+            //     matched only bare or with ⇧/⌥, so the two never meet.
+            //
+            // Both the number row and the keypad are taken, and the
+            // character is read rather than the key code, because "=" and
+            // "+" are one physical key whose reported character depends on
+            // Shift and people press it either way — the same reason the
+            // zoom shortcut above matches both.
             //
             // Guarded three ways so these keys stay untouched everywhere
             // else in Develop: nothing armed → fall through; a field editor
-            // (the preset-name text field) has focus → fall through, so
-            // arrows still move the caret; and nudgeSelectedSlider itself
-            // returns false when the armed slider isn't on screen right now
-            // (e.g. its mask got deselected) rather than swallowing the key
-            // for nothing. Escape disarms.
+            // (the preset-name text field) has focus → fall through, so the
+            // keys still type; and nudgeSelectedSlider itself returns false
+            // when the armed slider isn't on screen right now (e.g. its mask
+            // got deselected) rather than swallowing the key for nothing.
+            // Escape disarms.
             if flags.isEmpty, event.keyCode == 53, selectedSliderKey != nil {
                 clearSelectedSlider()
                 return nil
             }
-            if flags.isEmpty || flags == .shift,
-               event.keyCode == 123 || event.keyCode == 124,
+            if flags.isEmpty || flags == .shift || flags == .option,
+               let nudge = SliderNudgeKey.forKeyPress(keyCode: event.keyCode,
+                                                      characters: event.charactersIgnoringModifiers),
                selectedSliderKey != nil,
                !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false),
-               nudgeSelectedSlider(increase: event.keyCode == 124, coarse: flags == .shift) {
+               nudgeSelectedSlider(increase: nudge == .increase, coarse: flags == .option) {
+                return nil
+            }
+
+            // ← / → walk the filmstrip, which is what the client asked the
+            // arrows to be. Q/E keep doing it too — they are the configurable
+            // shortcut handled above, and taking them away was not asked for.
+            //
+            // Deliberately AFTER the nudge block and behind !isTyping and the
+            // field-editor guard, so an arrow still moves the caret in the
+            // preset-name field instead of jumping the photo out from under
+            // whoever is typing.
+            if !isTyping, flags.isEmpty,
+               event.keyCode == 123 || event.keyCode == 124,
+               !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false),
+               stepPhoto(by: event.keyCode == 124 ? 1 : -1) {
                 return nil
             }
             // Delete: the mask, or the photograph, or the text being typed —
@@ -17781,10 +17841,15 @@ struct DevelopView: View {
     // displays (value * 100); the two that don't display that way
     // (Exposure in EV, Straighten in degrees) pass their own.
     //
-    // Clicking the NAME arms the slider and shows the card; starting a
-    // normal drag arms it too but stays silent (onEditingChanged) — the
-    // card is an answer to "what did I just click", and firing it on every
-    // drag would make it noise.
+    // ⚠️ CLICKING THE NAME IS THE ONLY THING THAT ARMS A SLIDER, and dragging
+    // one with the mouse deliberately does NOT. The client's instruction of
+    // 13.09: "kada ja misem pomerim slidebar recimo kontrast to ne znaci da sam
+    // ja oznacio kontrast... ako me razumes neka ostane gde je bio vec" — arm
+    // Exposure, then drag Clarity's track, and Exposure must still be what − / +
+    // moves. Dragging used to arm silently through onEditingChanged, which
+    // meant the keys quietly changed what they controlled without anything on
+    // screen saying so. Both track views now take no onEditingChanged at all,
+    // so there is no second way in to get out of step with this one.
     // `trackGradient` — when a slider's direction has a COLOR meaning
     // (the whole Color section: blue↔amber, green↔magenta, gray↔saturated),
     // pass the gradient and the row draws a Lightroom-style colored track
@@ -17846,7 +17911,7 @@ struct DevelopView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Click to control \(title) with the ← / → keys")
+                .help("Click to control \(title) with the − / + keys")
 
                 Spacer()
 
@@ -17857,17 +17922,9 @@ struct DevelopView: View {
             }
 
             if let trackGradient {
-                GradientTrackSlider(value: value, range: range, step: step, gradient: trackGradient) { editing in
-                    if editing, selectedSliderKey != sliderKey {
-                        selectedSliderKey = sliderKey
-                    }
-                }
+                GradientTrackSlider(value: value, range: range, step: step, gradient: trackGradient)
             } else {
-                EditTrackSlider(value: value, range: range, step: step, accent: accentColor) { editing in
-                    if editing, selectedSliderKey != sliderKey {
-                        selectedSliderKey = sliderKey
-                    }
-                }
+                EditTrackSlider(value: value, range: range, step: step, accent: accentColor)
             }
         }
         // padding(6) → highlight → padding(-6): the selected row's tint/
@@ -17981,7 +18038,7 @@ struct DevelopView: View {
                 .font(.custom("Figtree", size: 12.5).weight(.semibold))
                 .foregroundColor(AppColors.ink)
 
-            Text("Press ← to lower, → to raise  ·  hold ⇧ for bigger steps")
+            Text("Press − to lower, + to raise  ·  hold ⌥ for bigger steps")
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.muted)
         }

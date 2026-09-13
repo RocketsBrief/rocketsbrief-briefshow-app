@@ -25,6 +25,10 @@ WANTED = [
     # The sign of the frame's own drag — inverted on 12.09 at the client's
     # request, and the kind of thing a later "tidy-up" removes a minus from.
     ("func", "cropMoveOffset"),
+    # And the warp that keeps the pointer on the frame while the frame travels
+    # against it — a function that feeds its own input, whose signs are exactly
+    # what a later tidy-up gets wrong.
+    ("func", "cropCursorFollow"),
 ]
 
 

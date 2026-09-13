@@ -8199,6 +8199,10 @@ struct DevelopView: View {
     /// Read by the cursor so a resize keeps its own arrows all the way through
     /// — see cropCursor.
     @State private var activeCropHandle: CropHandle?
+    /// How far this crop-move drag has moved the POINTER itself, measured from
+    /// the press point. Subtracted back out of the gesture's translation so the
+    /// warp does not feed itself — see cropCursorFollow.
+    @State private var cropCursorWarp: CGSize = .zero
     // Where the rotation drag began: the pointer's angle around the crop's
     // centre, and the whole crop at that moment. Both nil between drags, which
     // is also how the cursor knows a turn is in progress (see cropCursor).
@@ -12711,10 +12715,18 @@ struct DevelopView: View {
                     // in the open — see cropFrameTranslation.
                     DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.cropOverlaySpace))
                         .onChanged { value in
-                            moveCrop(by: value.translation, frame: frame)
+                            // ⚠️ THE POINTER IS WARPED TO RIDE THE FRAME, so the
+                            // hand and the crop do not walk away from each other
+                            // — see cropCursorFollow for the whole of it.
+                            let step = Self.cropCursorFollow(translation: value.translation,
+                                                             warpAlreadyApplied: cropCursorWarp)
+                            moveCrop(by: step.realTranslation, frame: frame)
+                            warpCropCursor(by: step.warpToApply)
+                            cropCursorWarp = step.warpAfter
                         }
                         .onEnded { _ in
                             dragStartCrop = nil
+                            cropCursorWarp = .zero
                         }
                 )
 
@@ -13096,6 +13108,66 @@ struct DevelopView: View {
         guard frame.width > 0, frame.height > 0 else { return (0, 0) }
         return (dx: -translation.width / frame.width,
                 dy: -translation.height / frame.height)
+    }
+
+    /// Keeping the pointer on the piece of the frame it grabbed, while the frame
+    /// travels AGAINST the pointer.
+    ///
+    /// ⚠️ THE TWO REQUESTS LOOK CONTRADICTORY AND ARE NOT. `cropMoveOffset`
+    /// above moves the frame against the pointer, which the client confirmed on
+    /// 13.09 as right — *„kada vucem krop u desno on ide u levo... to je super
+    /// tako treba"*. The cost is that the pointer and the frame separate, and
+    /// the same message asks for that too: *„ruka koja draguje krop da prati
+    /// krop... vec da bude lockovana za krop tu gde je"*. So the frame keeps
+    /// going against the hand, and the POINTER is moved to follow the frame.
+    /// The hand pushes right, the frame goes left, and the arrow on screen goes
+    /// left with it, still over the same spot on the frame.
+    ///
+    /// ⚠️ AND THAT MEANS THE GESTURE'S OWN TRANSLATION IS NO LONGER THE USER'S.
+    /// SwiftUI measures translation from the press point to where the pointer
+    /// IS, and we have been moving the pointer ourselves, so what arrives is the
+    /// user's movement plus every warp already applied. Feeding that back into
+    /// `moveCrop` would send the frame off at speed. Hence:
+    ///
+    ///     real  = translation − warpAlreadyApplied
+    ///     warp' = −real                         (where the pointer should sit)
+    ///
+    /// Every quantity is measured from the press point rather than accumulated
+    /// per event, so a dropped or coalesced event costs nothing and there is no
+    /// drift to build up: substituting gives `warp' = warpAlreadyApplied −
+    /// translation`, exact at every step.
+    ///
+    /// Pure and static for the same reason `cropMoveOffset` is: a drag gesture
+    /// is not a thing a test can press, and the sign of a warp that feeds its
+    /// own input is exactly what someone later "tidies up".
+    static func cropCursorFollow(translation: CGSize, warpAlreadyApplied: CGSize)
+        -> (realTranslation: CGSize, warpToApply: CGSize, warpAfter: CGSize) {
+        let real = CGSize(width: translation.width - warpAlreadyApplied.width,
+                          height: translation.height - warpAlreadyApplied.height)
+        let after = CGSize(width: -real.width, height: -real.height)
+        let toApply = CGSize(width: after.width - warpAlreadyApplied.width,
+                             height: after.height - warpAlreadyApplied.height)
+        return (real, toApply, after)
+    }
+
+    /// Moves the pointer itself. View coordinates in (y down), Cocoa screen
+    /// coordinates out (y up), then CoreGraphics global (y down again) — the
+    /// two flips are why this is one function and not three lines at the call
+    /// site.
+    ///
+    /// ⚠️ `CGAssociateMouseAndMouseCursorPosition` IS NOT DECORATION. A
+    /// warp on its own opens a quarter-second window in which the system
+    /// ignores real mouse movement so the pointer does not fight the warp —
+    /// which here is every event of the drag, so the drag would stutter and
+    /// then stop. Re-associating closes that window immediately.
+    private func warpCropCursor(by delta: CGSize) {
+        guard delta != .zero, delta.width.isFinite, delta.height.isFinite else { return }
+        guard let mainScreen = NSScreen.screens.first else { return }
+
+        let current = NSEvent.mouseLocation
+        let target = CGPoint(x: current.x + delta.width, y: current.y - delta.height)
+        CGWarpMouseCursorPosition(CGPoint(x: target.x, y: mainScreen.frame.height - target.y))
+        CGAssociateMouseAndMouseCursorPosition(1)
     }
 
     private func moveCrop(by translation: CGSize, frame: CGRect) {

@@ -122,6 +122,53 @@ check("a frame with no area cannot divide by zero",
       cropMoveOffset(for: CGSize(width: 10, height: 10),
                      frame: CGRect(x: 0, y: 0, width: 0, height: 0)) == (0, 0))
 
+// ---- the pointer rides the frame -----------------------------------------
+//
+// ⚠️ THE GESTURE'S TRANSLATION IS NOT THE USER'S MOVEMENT once the pointer is
+// being warped: SwiftUI measures to where the pointer IS, and we have been
+// moving it. Everything below is the drag of a hand that pushes steadily right
+// in 10 pt steps, with the contaminated translation fed back in exactly as
+// SwiftUI would report it — which is the one thing a reasoned argument gets
+// wrong and a run does not.
+
+print("\nthe pointer rides the frame")
+
+var warp = CGSize.zero
+var handMoved = 0.0
+var frameMoved = 0.0
+var ok = true
+for _ in 0..<12 {
+    handMoved += 10
+    // What SwiftUI reports: the hand's total travel PLUS every warp so far.
+    let reported = CGSize(width: handMoved + warp.width, height: warp.height)
+    let step = cropCursorFollow(translation: reported, warpAlreadyApplied: warp)
+
+    // The real translation recovered must be the hand's own travel, always.
+    if abs(step.realTranslation.width - handMoved) > 1e-9 { ok = false }
+    frameMoved = cropMoveOffset(for: step.realTranslation, frame: moveFrame).dx
+    warp = step.warpAfter
+}
+check("the hand's own movement is recovered from a translation it has polluted",
+      ok, "after \(Int(handMoved)) pt of hand")
+check("so the frame still moves exactly as far as it did before the warp",
+      abs(abs(frameMoved) - handMoved / moveFrame.width) < 1e-12,
+      "got \(frameMoved)")
+check("and the frame still goes the other way from the hand", frameMoved < 0)
+check("the pointer is put where the frame went, not where the hand is",
+      warp.width < 0 && abs(warp.width + handMoved) < 1e-9,
+      "warp \(warp.width), hand +\(handMoved)")
+
+// A drag that starts is a drag that has moved nothing yet.
+let atRest = cropCursorFollow(translation: .zero, warpAlreadyApplied: .zero)
+check("pressing without moving warps nothing",
+      atRest.warpToApply == .zero && atRest.realTranslation == .zero)
+
+// Both axes, and the vertical one is the axis the client named second.
+let downward = cropCursorFollow(translation: CGSize(width: 0, height: 30),
+                                warpAlreadyApplied: .zero)
+check("pushing down sends the pointer up after the frame",
+      downward.warpAfter.height == -30 && downward.realTranslation.height == 30)
+
 print("")
 if failures == 0 {
     print("all checks passed")

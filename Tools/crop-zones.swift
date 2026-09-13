@@ -122,52 +122,46 @@ check("a frame with no area cannot divide by zero",
       cropMoveOffset(for: CGSize(width: 10, height: 10),
                      frame: CGRect(x: 0, y: 0, width: 0, height: 0)) == (0, 0))
 
-// ---- the pointer rides the frame -----------------------------------------
+// ---- the hand rides the frame --------------------------------------------
 //
-// ⚠️ THE GESTURE'S TRANSLATION IS NOT THE USER'S MOVEMENT once the pointer is
-// being warped: SwiftUI measures to where the pointer IS, and we have been
-// moving it. Everything below is the drag of a hand that pushes steadily right
-// in 10 pt steps, with the contaminated translation fed back in exactly as
-// SwiftUI would report it — which is the one thing a reasoned argument gets
-// wrong and a run does not.
+// ⚠️ THE HAND IS DRAWN, NOT WARPED. Moving the real pointer during the drag was
+// tried for one build and shook — a warp lands on the hardware cursor at once
+// while the translation comes off the event queue, so the correction gets
+// subtracted from a translation that never carried it. What is left to check is
+// that the drawn hand sits on the same piece of the frame it grabbed, however
+// the frame moves, and that the frame's own drag is untouched.
 
-print("\nthe pointer rides the frame")
+print("\nthe hand rides the frame")
 
-var warp = CGSize.zero
-var handMoved = 0.0
-var frameMoved = 0.0
-var ok = true
-for _ in 0..<12 {
-    handMoved += 10
-    // What SwiftUI reports: the hand's total travel PLUS every warp so far.
-    let reported = CGSize(width: handMoved + warp.width, height: warp.height)
-    let step = cropCursorFollow(translation: reported, warpAlreadyApplied: warp)
+// Grabbed 60 pt right and 40 pt down from the frame's own corner.
+let grab = CGSize(width: 60, height: 40)
+let atRest = cropHandPosition(frameOrigin: moveFrame.origin, grab: grab)
+check("the hand starts where the hand took hold",
+      atRest == CGPoint(x: moveFrame.minX + 60, y: moveFrame.minY + 40))
 
-    // The real translation recovered must be the hand's own travel, always.
-    if abs(step.realTranslation.width - handMoved) > 1e-9 { ok = false }
-    frameMoved = cropMoveOffset(for: step.realTranslation, frame: moveFrame).dx
-    warp = step.warpAfter
-}
-check("the hand's own movement is recovered from a translation it has polluted",
-      ok, "after \(Int(handMoved)) pt of hand")
-check("so the frame still moves exactly as far as it did before the warp",
-      abs(abs(frameMoved) - handMoved / moveFrame.width) < 1e-12,
-      "got \(frameMoved)")
-check("and the frame still goes the other way from the hand", frameMoved < 0)
-check("the pointer is put where the frame went, not where the hand is",
-      warp.width < 0 && abs(warp.width + handMoved) < 1e-9,
-      "warp \(warp.width), hand +\(handMoved)")
+// The frame travels against the pointer; the hand goes WITH the frame.
+let pushedRight = cropMoveOffset(for: CGSize(width: 50, height: 0), frame: moveFrame)
+let movedOrigin = CGPoint(x: moveFrame.minX + pushedRight.dx * moveFrame.width,
+                          y: moveFrame.minY + pushedRight.dy * moveFrame.height)
+let moved = cropHandPosition(frameOrigin: movedOrigin, grab: grab)
+check("pushing the mouse right sends the hand LEFT, with the frame",
+      moved.x < atRest.x, "hand went \(moved.x - atRest.x)")
+check("and by exactly what the frame moved, so it stays on the same spot of it",
+      abs((moved.x - atRest.x) - (movedOrigin.x - moveFrame.minX)) < 1e-12)
+check("and not vertically", moved.y == atRest.y)
 
-// A drag that starts is a drag that has moved nothing yet.
-let atRest = cropCursorFollow(translation: .zero, warpAlreadyApplied: .zero)
-check("pressing without moving warps nothing",
-      atRest.warpToApply == .zero && atRest.realTranslation == .zero)
-
-// Both axes, and the vertical one is the axis the client named second.
-let downward = cropCursorFollow(translation: CGSize(width: 0, height: 30),
-                                warpAlreadyApplied: .zero)
-check("pushing down sends the pointer up after the frame",
-      downward.warpAfter.height == -30 && downward.realTranslation.height == 30)
+// ⚠️ AND IT STOPS WHEN THE FRAME STOPS. This is why the hand is taken from the
+// frame's ORIGIN and not from the drag's translation: push twice as far, but
+// let the frame be clamped at the edge of the picture so its origin does not
+// move any further, and the hand must not slide on over nothing.
+let pushedTwiceAsFar = cropMoveOffset(for: CGSize(width: 100, height: 0), frame: moveFrame)
+let whereItWouldHaveGone = atRest.x + pushedTwiceAsFar.dx * moveFrame.width
+let clampedHand = cropHandPosition(frameOrigin: movedOrigin, grab: grab)
+check("a bigger push would have taken the hand further still",
+      whereItWouldHaveGone < moved.x, "would have been \(whereItWouldHaveGone)")
+check("but a frame clamped at the edge leaves the hand ON the frame, not past it",
+      clampedHand.x == moved.x && clampedHand.x > whereItWouldHaveGone,
+      "hand \(clampedHand.x), unclamped would be \(whereItWouldHaveGone)")
 
 print("")
 if failures == 0 {

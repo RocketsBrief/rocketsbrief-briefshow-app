@@ -8199,10 +8199,11 @@ struct DevelopView: View {
     /// Read by the cursor so a resize keeps its own arrows all the way through
     /// — see cropCursor.
     @State private var activeCropHandle: CropHandle?
-    /// How far this crop-move drag has moved the POINTER itself, measured from
-    /// the press point. Subtracted back out of the gesture's translation so the
-    /// warp does not feed itself — see cropCursorFollow.
-    @State private var cropCursorWarp: CGSize = .zero
+    /// Where inside the crop frame the hand took hold, as an offset from the
+    /// frame's own origin — nil when no move drag is running. The drawn hand
+    /// rides this; see cropHandPosition.
+    @State private var cropMoveGrab: CGSize?
+    @State private var isCropCursorHidden = false
     // Where the rotation drag began: the pointer's angle around the crop's
     // centre, and the whole crop at that moment. Both nil between drags, which
     // is also how the cursor knows a turn is in progress (see cropCursor).
@@ -12715,18 +12716,22 @@ struct DevelopView: View {
                     // in the open — see cropFrameTranslation.
                     DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.cropOverlaySpace))
                         .onChanged { value in
-                            // ⚠️ THE POINTER IS WARPED TO RIDE THE FRAME, so the
-                            // hand and the crop do not walk away from each other
-                            // — see cropCursorFollow for the whole of it.
-                            let step = Self.cropCursorFollow(translation: value.translation,
-                                                             warpAlreadyApplied: cropCursorWarp)
-                            moveCrop(by: step.realTranslation, frame: frame)
-                            warpCropCursor(by: step.warpToApply)
-                            cropCursorWarp = step.warpAfter
+                            // ⚠️ THE TRANSLATION GOES STRAIGHT IN, exactly as it
+                            // did in KORAK 181. An attempt to keep the pointer on
+                            // the frame by WARPING it lived here for one build and
+                            // shook: see cropHandPosition for why moving the real
+                            // cursor mid-drag cannot be made smooth, and what
+                            // replaced it.
+                            if cropMoveGrab == nil {
+                                cropMoveGrab = CGSize(width: value.startLocation.x - rect.minX,
+                                                      height: value.startLocation.y - rect.minY)
+                                hideSystemCursorForCropMove()
+                            }
+                            moveCrop(by: value.translation, frame: frame)
                         }
                         .onEnded { _ in
                             dragStartCrop = nil
-                            cropCursorWarp = .zero
+                            endCropMove()
                         }
                 )
 
@@ -12758,8 +12763,31 @@ struct DevelopView: View {
             ForEach(CropHandle.cornerCases, id: \.self) { handle in
                 cropHandleView(handle, rect: rect, angle: angle, centre: centre, frame: frame)
             }
+
+            // The hand, while the frame is being moved — drawn here rather than
+            // the real pointer being moved. See cropHandPosition.
+            //
+            // Last in the ZStack so it is over the frame and the handles, and
+            // hit-testing off so it can never take the drag it is drawn for.
+            // It is the SYSTEM's own closed hand, asked for by name, so it is
+            // the same picture the pointer was showing a moment ago and the
+            // swap is invisible.
+            if let grab = cropMoveGrab {
+                let hand = NSCursor.closedHand
+                let size = hand.image.size
+                let spot = hand.hotSpot
+                let at = Self.cropHandPosition(frameOrigin: rect.origin, grab: grab)
+                Image(nsImage: hand.image)
+                    .position(x: at.x - spot.x + size.width / 2,
+                              y: at.y - spot.y + size.height / 2)
+                    .allowsHitTesting(false)
+            }
         }
         .coordinateSpace(name: Self.cropOverlaySpace)
+        // ⚠️ AND THE POINTER COMES BACK EVEN IF THE DRAG NEVER ENDED. hide() is
+        // a counter, and an overlay torn down mid-drag — the tool switched, the
+        // photograph changed — would otherwise leave it invisible for good.
+        .onDisappear { endCropMove() }
         // ⚠️ ONE place decides the cursor for the whole crop tool, and it SETS
         // rather than pushes.
         //
@@ -13110,64 +13138,54 @@ struct DevelopView: View {
                 dy: -translation.height / frame.height)
     }
 
-    /// Keeping the pointer on the piece of the frame it grabbed, while the frame
-    /// travels AGAINST the pointer.
+    /// Where the hand is drawn while the frame is being moved.
     ///
-    /// ⚠️ THE TWO REQUESTS LOOK CONTRADICTORY AND ARE NOT. `cropMoveOffset`
-    /// above moves the frame against the pointer, which the client confirmed on
-    /// 13.09 as right — *„kada vucem krop u desno on ide u levo... to je super
-    /// tako treba"*. The cost is that the pointer and the frame separate, and
-    /// the same message asks for that too: *„ruka koja draguje krop da prati
-    /// krop... vec da bude lockovana za krop tu gde je"*. So the frame keeps
-    /// going against the hand, and the POINTER is moved to follow the frame.
-    /// The hand pushes right, the frame goes left, and the arrow on screen goes
-    /// left with it, still over the same spot on the frame.
+    /// ⚠️ THE HAND IS DRAWN, NOT WARPED, AND THAT IS THE WHOLE POINT. The
+    /// client asked on 13.09 for the pointer to stay locked to the crop while
+    /// the frame travels against it, and the first answer was to move the real
+    /// cursor with `CGWarpMouseCursorPosition` on every event of the drag. It
+    /// shook, and the client said so: *„drhti i rucica i crop... treba da bude
+    /// smooth kao sto je bio"*.
     ///
-    /// ⚠️ AND THAT MEANS THE GESTURE'S OWN TRANSLATION IS NO LONGER THE USER'S.
-    /// SwiftUI measures translation from the press point to where the pointer
-    /// IS, and we have been moving the pointer ourselves, so what arrives is the
-    /// user's movement plus every warp already applied. Feeding that back into
-    /// `moveCrop` would send the frame off at speed. Hence:
+    /// ⚠️ AND NO ARITHMETIC WOULD HAVE FIXED IT. A warp lands on the hardware
+    /// cursor immediately, while SwiftUI's translation comes off the event
+    /// QUEUE — so events generated before the warp arrive after it, carrying a
+    /// position that does not include it. The correction for the warp is then
+    /// subtracted from a translation that never had it, and the recovered
+    /// movement swings by twice the step, every time the timing slips. That is
+    /// an oscillation at mouse-event frequency, and it is a race, not a sign
+    /// error: it cannot be taken out of the maths.
     ///
-    ///     real  = translation − warpAlreadyApplied
-    ///     warp' = −real                         (where the pointer should sit)
+    /// So the real cursor is hidden for the length of the drag and the hand is
+    /// drawn into the overlay instead. A drawn view has no feedback path — it
+    /// is placed, not moved — so it is exactly as smooth as the frame it rides,
+    /// and the frame's own drag is byte-for-byte what KORAK 181 left behind.
     ///
-    /// Every quantity is measured from the press point rather than accumulated
-    /// per event, so a dropped or coalesced event costs nothing and there is no
-    /// drift to build up: substituting gives `warp' = warpAlreadyApplied −
-    /// translation`, exact at every step.
+    /// Taken from the frame's CURRENT origin rather than from the translation,
+    /// so when the crop runs into the edge of the picture and stops, the hand
+    /// stops with it instead of sliding on over nothing.
     ///
-    /// Pure and static for the same reason `cropMoveOffset` is: a drag gesture
-    /// is not a thing a test can press, and the sign of a warp that feeds its
-    /// own input is exactly what someone later "tidies up".
-    static func cropCursorFollow(translation: CGSize, warpAlreadyApplied: CGSize)
-        -> (realTranslation: CGSize, warpToApply: CGSize, warpAfter: CGSize) {
-        let real = CGSize(width: translation.width - warpAlreadyApplied.width,
-                          height: translation.height - warpAlreadyApplied.height)
-        let after = CGSize(width: -real.width, height: -real.height)
-        let toApply = CGSize(width: after.width - warpAlreadyApplied.width,
-                             height: after.height - warpAlreadyApplied.height)
-        return (real, toApply, after)
+    /// Pure and static so Tools/run-crop-zone-test.py can pin it down without a
+    /// window, like `cropMoveOffset` beside it.
+    static func cropHandPosition(frameOrigin: CGPoint, grab: CGSize) -> CGPoint {
+        CGPoint(x: frameOrigin.x + grab.width, y: frameOrigin.y + grab.height)
     }
 
-    /// Moves the pointer itself. View coordinates in (y down), Cocoa screen
-    /// coordinates out (y up), then CoreGraphics global (y down again) — the
-    /// two flips are why this is one function and not three lines at the call
-    /// site.
-    ///
-    /// ⚠️ `CGAssociateMouseAndMouseCursorPosition` IS NOT DECORATION. A
-    /// warp on its own opens a quarter-second window in which the system
-    /// ignores real mouse movement so the pointer does not fight the warp —
-    /// which here is every event of the drag, so the drag would stutter and
-    /// then stop. Re-associating closes that window immediately.
-    private func warpCropCursor(by delta: CGSize) {
-        guard delta != .zero, delta.width.isFinite, delta.height.isFinite else { return }
-        guard let mainScreen = NSScreen.screens.first else { return }
+    private func hideSystemCursorForCropMove() {
+        guard !isCropCursorHidden else { return }
+        isCropCursorHidden = true
+        NSCursor.hide()
+    }
 
-        let current = NSEvent.mouseLocation
-        let target = CGPoint(x: current.x + delta.width, y: current.y - delta.height)
-        CGWarpMouseCursorPosition(CGPoint(x: target.x, y: mainScreen.frame.height - target.y))
-        CGAssociateMouseAndMouseCursorPosition(1)
+    /// ⚠️ hide/unhide IS A COUNTER, so this is guarded and is called from the
+    /// gesture's end AND from the overlay going away. A drag that ended without
+    /// its onEnded — the tool switched, the photograph changed under it — would
+    /// otherwise leave the pointer invisible for the rest of the session.
+    private func endCropMove() {
+        cropMoveGrab = nil
+        guard isCropCursorHidden else { return }
+        isCropCursorHidden = false
+        NSCursor.unhide()
     }
 
     private func moveCrop(by translation: CGSize, frame: CGRect) {

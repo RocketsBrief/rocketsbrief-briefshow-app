@@ -724,7 +724,7 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 |---|---|
 | **180–187** | Contrast, Highlights, Shadows, Clarity i Dehaze prepravljeni po klijentovim specifikacijama, svaki sa svojim lenjirom; plus četiri prijave iz njegove probe i kartica na sva tri dugmeta |
 | **188** | **v11.26** objavljena: univerzalan paket, min macOS 13.0, LaMa unutra, SD dugmetom |
-| **191** | **pokazivač jaše crop okvir** — okvir i dalje ide protiv ruke (181 očuvan do 1e-12), a strelica se pomera za okvirom; gestov `translation` se čisti od sopstvenog warp-a (NIJE OBJAVLJENO) |
+| **191** | **ručica jaše crop okvir** — vučenje je vraćeno tačno na 181, a ručica se CRTA u overlay-u; warp pravog pokazivača je probao i drhtao, i to je trka a ne greška u znaku (NIJE OBJAVLJENO) |
 | **190** | **− i + pomeraju izabrani slajder, strelice pomeraju slike**; vučenje mišem više ne bira slajder — tiho je menjalo šta tasteri kontrolišu (NIJE OBJAVLJENO) |
 | **189** | **Dehaze je dehazovao prvi plan** — mapa prenosivosti je bila mapa svetline, pesak pod nogama čitan kao magloviтiji od plaže 50 m dalje; mapa je sad relativna prema čistom kraju kadra, pojačanje 10× → 2×, A sme do belog (NIJE OBJAVLJENO) |
 
@@ -20333,67 +20333,69 @@ Clarity mišem, pa pritisni +.
 
 ---
 
-## KORAK 191 — pokazivač jaše okvir dok okvir ide protiv ruke (13. septembar 2026)
+## KORAK 191 — ručica jaše crop okvir, ali se CRTA (13. septembar 2026)
 
 **Klijentova prijava, 13.09:** *„kada vucem krop u desno on ide u levo i kada
 vucem na gore on ide na dole, to je super tako treba ali onda i ruka koja
 draguje krop da prati krop a ne ruka (cursor) da ide u kontra stranu vec da bude
 lockovana za krop tu gde je!"*
 
-### Dva zahteva koja izgledaju protivrečno, a nisu
+Prvi deo je **potvrda KORAKA 181**, ne nova prijava: okvir ide protiv pokazivača
+i tako treba. Cena je da se pokazivač i okvir razilaze, i druga rečenica traži
+da se to reši.
 
-Prvi deo je **potvrda KORAKA 181**, ne nova prijava: okvir ide protiv
-pokazivača i tako treba. Cena toga je da se pokazivač i okvir razilaze — što
-dalje vučeš, to je strelica dalje od crop-a. Druga rečenica traži baš to da se
-reši.
+### ⚠️ Prvi pokušaj je bio warp pravog pokazivača, i PAO je
 
-Rešenje je da okvir i dalje ide **protiv ruke**, a da se **pokazivač pomera za
-okvirom**. Ruka gura desno, okvir ide levo, i strelica na ekranu ide levo sa
-njim — i dalje iznad iste tačke okvira.
+`CGWarpMouseCursorPosition` na svakom događaju vučenja, uz oduzimanje warp-a iz
+gestovog `translation`-a da se ne hrani sam. Matematika je bila tačna i lenjir
+ju je odigrao kroz dvanaest koraka. **Na ekranu je drhtalo.** Klijent, odmah:
+*„drhti i rucica i crop .. nije dobro treba da bude smooth kao sto je bio!"* pa
+*„znaci kao i pre sto je bio smooth to vrati samo fixiraj rucicu"*.
 
-⚠️ **Ručke za veličinu i dalje NISU dirane**, kao ni u 181. One hvataju određeni
-ugao i moraju da idu za mišem.
+**I nijedna popravka matematike to ne bi rešila.** Warp stiže na hardverski
+pokazivač **odmah**, a SwiftUI-jev `translation` dolazi iz **reda događaja** — pa
+događaji napravljeni pre warp-a stižu posle njega, noseći poziciju koja ga ne
+sadrži. Ispravka za warp se tada oduzima od prevoda koji ga nikad nije ni imao,
+i oporavljeni pomeraj skoči za **dvostruki korak** svaki put kad tajming
+promaši. To je oscilacija na frekvenciji događaja miša — **trka, ne greška u
+znaku**, i iz matematike se ne može izvaditi.
 
-### ⚠️ Zamka: prevod geste više nije korisnikov pokret
+Zapisano jer je ovo opšte pravilo, ne detalj o crop-u: **pomeranje pravog
+pokazivača unutar geste koja se meri po poziciji tog pokazivača je povratna
+sprega.** Svaki sledeći put kad zatreba „kursor da prati nešto" — crta se.
 
-SwiftUI meri `translation` od tačke pritiska do mesta **gde pokazivač jeste**, a
-mi smo taj pokazivač sami pomerali. Ono što stigne je korisnikov pokret **plus
-svaki warp do sad**. Da se to vrati u `moveCrop` kao ranije, okvir bi odjurio.
+### Šta sad radi
 
-    stvarno = translation − warp koji je već primenjen
-    warp'   = −stvarno
+- **Vučenje okvira je vraćeno na 181, doslovno** — `moveCrop(by: value.translation)`.
+  Nema više ni oduzimanja ni warp-a na toj stazi, pa je glatko koliko je i bilo.
+- **Pravi pokazivač se sakrije** za vreme vučenja, a u overlay se **crta**
+  sistemska `NSCursor.closedHand` — ista slika koju je pokazivač do maločas i
+  pokazivao, pa je zamena nevidljiva.
+- Ručica se postavlja iz **trenutnog ugla okvira**, ne iz prevoda: kad crop udari
+  u ivicu slike i stane, ručica stane sa njim umesto da klizi dalje preko ničega.
+- Nacrtana ručica ne hvata klikove, pa ne može da otme vučenje zbog kog je tu.
 
-Sve se meri **od tačke pritiska**, ne sabira po događaju, pa izgubljen ili
-sjedinjen događaj ništa ne košta i nema nakupljanja: zamenom se dobija
-`warp' = warp − translation`, tačno u svakom koraku.
+⚠️ `NSCursor.hide()` je **brojač**, pa se vraća i iz kraja geste i iz
+`.onDisappear` overlay-a. Vučenje koje se prekine jer je promenjen alat ili
+fotografija bi inače ostavilo pokazivač nevidljiv do kraja sesije.
 
-⚠️ `CGAssociateMouseAndMouseCursorPosition` posle warp-a **nije ukras.** Warp sam
-za sebe otvara prozor od oko četvrt sekunde u kom sistem ignoriše pravo kretanje
-miša da se pokazivač ne bi otimao — a to je ovde **svaki događaj vučenja**, pa bi
-vučenje zastajkivalo pa stalo. Ponovno povezivanje ga zatvara odmah.
-
-(Usput: `CGAssociateMouseAndMouseCursorPosition` uzima `boolean_t`, ne `Bool` —
-`1`, ne `true`.)
+⚠️ **Ručke za veličinu i dalje NISU dirane**, kao ni u 181.
 
 ### Čime je zaključano
 
-`Tools/run-crop-zone-test.py` — `cropCursorFollow` je izdvojena, čista i statična
-iz istog razloga iz kog je i `cropMoveOffset`: **funkcija koja hrani sopstveni
-ulaz je tačno ono čemu neko kasnije „popravi" znak.** Šest novih provera nad
-odigranim vučenjem od dvanaest koraka po 10 pt, sa zaprljanim prevodom koji se
-ubacuje baš onako kako bi ga SwiftUI prijavio:
+`Tools/run-crop-zone-test.py` — `cropHandPosition` je čista i statična, iz istog
+razloga iz kog je i `cropMoveOffset`. Šest provera: ručica kreće tamo gde je
+uhvatila, gura se miš desno a ručica ide **levo sa okvirom**, i to **tačno
+onoliko koliko se okvir pomerio**, pa ostaje na istoj tački okvira.
 
-- korisnikov pokret se **vraća** iz prevoda koji je sam zaprljao
-- **okvir se pomera tačno koliko i pre warp-a** — 181 je očuvan do 1e-12
-- okvir i dalje ide na suprotnu stranu od ruke
-- pokazivač završi **tamo gde je otišao okvir**, ne gde je ruka
-- pritisak bez pomeranja ne warp-uje ništa
-- i vertikalna osa, koju je klijent naveo drugu
+⚠️ I jedna provera je prvo bila napisana kao **tautologija** — poredila je dva
+identična poziva i, naravno, prolazila. Prepravljena je da stvarno meri ono zbog
+čega postoji: jači gurni bi ručicu odveo dalje, ali okvir zaglavljen na ivici je
+ostavlja **na okviru**, ne iza njega. Ovaj dokument peti put beleži isto:
+**lenjir koji ništa ne meri ne prijavljuje nijedan pad.**
 
-⚠️ **NIJE VIĐENO NA EKRANU.** Warp pokazivača je jedina stvar u ovoj sesiji koju
-lenjir ne može da odigra do kraja — osećaj pod prstom presuđuje klijentovo oko.
-Prva proba: uhvati sredinu crop-a i vuci desno; strelica treba da ostane na
-sredini okvira dok okvir klizi ulevo.
+⚠️ **Osećaj pod prstom i dalje presuđuje klijentovo oko** — ovo je ispravka
+kvara koji se video, a ne izmerio.
 
 **NIJE OBJAVLJENO.**
 

@@ -549,7 +549,7 @@ struct UpdateRequiredOverlay: View {
                 // the client with neither a download nor an app. That
                 // callback lands in milliseconds when it lands at all, so
                 // it is always well inside the four seconds.
-                let quit = DispatchWorkItem { NSApplication.shared.terminate(nil) }
+                let quit = DispatchWorkItem { UpdateQuit.quitNow() }
                 DispatchQueue.main.asyncAfter(
                     deadline: .now() + Self.quitDelay, execute: quit
                 )
@@ -944,5 +944,33 @@ struct LockedAccessOverlay: View {
                 await accountManager.signIn(email: email, password: password)
             }
         }
+    }
+}
+
+
+/// Quits for an update, and does not take no for an answer.
+///
+/// Reported 17.09: with a camera on the cable ready for import, pressing
+/// "Download Update" left C4S open — *„C4S need to be quit doesnt matter any
+/// SD card is connected or camera connected"*. A plain `terminate` is only a
+/// request: AppKit postpones it while a modal panel runs, and a window with a
+/// sheet up (the import window is one) can hold it back. So everything that
+/// can hold it is taken down first, then terminate is asked, and if the app
+/// is still here after two seconds it saves its preferences and exits.
+enum UpdateQuit {
+    static func quitNow() {
+        if NSApp.modalWindow != nil {
+            NSApp.abortModal()
+        }
+        for window in NSApp.windows {
+            if let sheet = window.attachedSheet {
+                window.endSheet(sheet)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            UserDefaults.standard.synchronize()
+            exit(0)
+        }
+        NSApp.terminate(nil)
     }
 }

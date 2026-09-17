@@ -39,7 +39,7 @@ rešenje, ili se prvo pita korisnik.
 | `LaMaInpaintPipeline.imageSide` | **512** | 1024 je rekonvertovan DVAPUT i oba puta gori; 2048 je OOM na 9 GB. KORAK 19. |
 | `SDInpaintPipeline.imageSide` | **512** | isto radno platno |
 | `SDInpaintPipeline.defaultSteps` | **12** | manje koraka = manje detalja u izmišljenom delu |
-| `SDInpaintPipeline.defaultRefineStrength` | **0,3** | 0,65 izmišlja objekte na zdravim kadrovima, mereno |
+| `SDInpaintPipeline.defaultRefineStrength` | **0,5** | 17.09. klijentov izbor (0,4 je razmazivao); 0,55 je izmislio palmu, 0,65 objekte — KORAK 194 |
 
 ### Odluke koje ostaju kakve jesu
 
@@ -717,6 +717,18 @@ mogu videti na ekranu**: da prozor ostaje 834 posle promene teme, i hover
 animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 17. septembar 2026 — v11.35 OBJAVLJENA, univerzalna
+
+| | |
+|---|---|
+| **193** | deset prijava iz probe: Shift niz u gridu i importu, layer ne drhti, strelice pomeraju layer, **Eraser** (Size/Opacity/Feather), Export broji selekciju, New Folder pita ime, podfolderi i video u gridu, Enter potvrđuje Trash, update gasi app i sa kamerom |
+| **194** | SD Generative jačina **0,4 → 0,5** (klijentov izbor); **v11.35 OBJAVLJENA**, samo mali paket — `v11.0` se NE SME brisati |
+
+- ⚠️ **Ništa od 193 nije viđeno na ekranu** — keychain lozinka pri startu.
+
+---
+
 
 ### GDE SMO STALI — 13. septembar 2026 — v11.26 OBJAVLJENA, univerzalna
 
@@ -20455,3 +20467,87 @@ Lanac update-a proveren **pravim poređenjem**, ne pretpostavkom: svaka verzija 
 KORACI 189 (Dehaze), 190 (− / + i strelice) i 191 (ručica koja jaše crop).
 
 ---
+
+---
+
+## KORAK 193 — deset prijava iz probe, jedna ostavljena za odluku (17. septembar 2026)
+
+Klijentove prijave od 17.09, redom kako su stizale, i šta je urađeno.
+
+| # | prijava | šta je urađeno | gde |
+|---|---|---|---|
+| 1 | Shift-klik posle importa da izabere sve između | **ShowGrid**: Shift-klik bira niz od sidra (poslednji običan/⌘ klik) do kliknute slike, redom u gridu. **Import prozor**: Shift-klik postavlja ceo niz na stanje poslednjeg kliknutog kvadratića | `ContentView.handleSelectTap`, `gridSelectionAnchor`; `CameraImportView.toggle`, `CameraImportSession.setChecked(_:from:to:)` |
+| 2 | SD Generative razmazuje umesto da skloni | **NIJE DIRANO** — v. ispod | — |
+| 3 | nalepljen layer drhti pri vučenju | `DragGesture` na okviru i ručkama merio je u `.local` prostoru view-a koji se pomera sa layerom → povratna sprega. Sad meri u `layerCanvasSpace` (isti koji ručka za rotaciju već koristi) | `layerOverlay`, `layerHandleView` |
+| 4 | strelice pomeraju izabrani layer | ← → ↑ ↓ 1 px fotografije, ⇧ 10 px, samo dok je izabran **pomerljiv** layer; inače ← → i dalje menjaju slike (KORAK 190) | `nudgeLayer` |
+| 5 | eraser sa jačinom, opacity i feather/tvrdom ivicom | **Eraser** u panelu izabranog layera: Size, Opacity, Feather (0 tvrda, 100 meka). Na nalepljenom komadu briše piksele (uz rotaciju), na People/Background briše masku. Peče se na pušten miš, van glavne niti; ⌘Z vraća potez | `LayerEraser.swift`, `layerEraserOverlay`, `commitLayerErase` |
+| 6 | „Export All Edited (119)" broji ceo folder dok je izabrano 53 | Sa selekcijom: **„Export Edited in Selection (N Edited · M Rejected of K)…"** i izvozi samo iz selekcije. Bez nje: „Export All Edited in Folder (N Edited · M Rejected)…". Broj „Edited" je sada broj fajlova koji stvarno izlaze (odbijeni isključeni) | `editedExportBreakdown`, `exportAllScope` |
+| 7 | New Folder da pita za ime; podfolderi u gridu | New Folder otvara prozor sa „untitled folder", Cancel ne pravi ništa. Grid prikazuje podfoldere (dvoklik otvara) | `createNewFolder`/`commitNewFolder`, `folderCell` |
+| 8 | Enter posle Delete da potvrdi Move to Trash | `.keyboardShortcut(.defaultAction)` na sva tri „Move to Trash" (slike u gridu, folder, Develop) | |
+| 9 | video fajl u folderu da se otvori | video pločice u gridu sa sličicom; dvoklik pušta u `AVPlayerView` sheet-u | `videoCell`, `GridVideoPlayerSheet` |
+| 10 | Download Update ne gasi C4S kad je kamera/SD povezana | `UpdateQuit.quitNow()`: prekida modal, skida sheet-ove, `terminate`, a posle 2 s `UserDefaults.synchronize()` + `exit(0)` | `AccountUI.swift` |
+
+⚠️ **Folderi i video su namerno VAN `photoURLs`.** Svaka putanja selekcije,
+oznaka, izvoza i brisanja čita tu listu kao „fotografije".
+
+⚠️ **#10 nije ponovljen** — na mašini nema kamere. Popravka ne zavisi od uzroka
+(zato gasi i silom), ali je prvi pravi dokaz klijentova proba sa kamerom na kablu.
+
+### #2 — SD razmazuje: to je zaključana postavka, i tražena je odluka
+
+`generativeUsesLaMaBase = true` (KORAK 181): SD kreće od LaMine popune i na
+jačini 0,3 samo dodaje teksturu. Rezultat je **mek/razmazan**, ali ne izmišlja.
+Sa `false` kreće od šuma i **izmišlja** — što je bila prijava od 12.09. Prekidač
+je postavljan tri puta u oba smera. Odeljak je 🟢 ZAKLJUČAN; ništa nije menjano
+dok klijent ne izabere smer (jačina 0,4–0,5 sa LaMom, merenja za 0,3/0,4/0,5/0,55
+su već u KORACIMA 150/151).
+
+### Čime je zaključano
+
+- `Tools/run-layer-eraser-test.py` — tvrda ivica, meka ivica, opacity 50 %,
+  rotiran layer; bez fotografije. **ALL PASS.**
+- `run-slider-parity-test.py`, `run-slider-keys-test.py`, `run-delete-key-test.py` — izlaz 0.
+
+⚠️ **Ništa od ovoga nije viđeno na ekranu.** App je sagrađen, instaliran
+(`/Applications/C4S Suite.app` je sada **11.29** — bila je 11.26) i pokrenut, ali
+stoji na keychain lozinci koja se odavde ne dira.
+
+**NIJE OBJAVLJENO. NIJE COMMIT-OVANO.**
+
+---
+
+## KORAK 194 — SD jačina 0,5 i RELEASE v11.35 (17. septembar 2026)
+
+**Klijentov izbor, 17.09:** *„jaca tekstura preko lame 0.5"* — između dve ponuđene
+strane (jača tekstura preko LaMe, ili SD od šuma koji izmišlja).
+
+`SDInpaintPipeline.defaultRefineStrength` **0,4 → 0,5**; `generativeUsesLaMaBase`
+ostaje `true`. ⚠️ Kod je bio na **0,4**, a zaključana tabela na vrhu je pisala 0,3
+— bila je zastarela, sad je ispravljena. 0,55 je granica na kojoj se pojavila
+palma (KORAK 150/151): **ako se izmišljanje vrati, ide se nazad ka 0,4, nikad na
+šum.** Nije mereno na fotografiji u ovoj sesiji — presuđuje klijentova proba.
+
+### Paket
+
+`python3 Tools/make-release.py 11.35 --small-only`
+
+| | |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.35 / 35** |
+| `LaMa.mlmodelc` | unutra |
+| `SD15-Inpainting` | **nema** — dugme u app-i, `v11.0/SD15-Inpainting.aar` HTTP 200 |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| veličina | 115.133.386 bajta |
+
+Intel: `computeUnits = .all` pod `#if !arch(arm64)` već postoji — nije menjano.
+Oznaka verzije u app-i se čita iz bundle-a, pa piše `v11.35` samo od sebe.
+
+### Linkovi
+
+- stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.35`
+- direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.35/C4S-Suite-11.35.zip`
+
+Šta je u njemu: KORACI 193 i 194.

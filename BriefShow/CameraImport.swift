@@ -268,6 +268,17 @@ final class CameraImportSession: NSObject, ObservableObject {
         items[index].isChecked = isChecked
     }
 
+    /// Shift-click: every item from `anchorID` to `id`, inclusive and in
+    /// grid order, is set to `isChecked`. Nothing happens if either end has
+    /// gone from the list, so a stale anchor can never check the wrong run.
+    func setChecked(_ isChecked: Bool, from anchorID: String, to id: String) {
+        guard let a = items.firstIndex(where: { $0.id == anchorID }),
+              let b = items.firstIndex(where: { $0.id == id }) else { return }
+        for index in min(a, b)...max(a, b) {
+            items[index].isChecked = isChecked
+        }
+    }
+
     func setAllChecked(_ isChecked: Bool) {
         for index in items.indices {
             items[index].isChecked = isChecked

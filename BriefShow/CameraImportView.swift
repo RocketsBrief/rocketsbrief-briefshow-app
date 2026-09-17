@@ -113,6 +113,12 @@ struct CameraImportView: View {
     private let intoDatedSubfolder = true
     @State private var deleteFromCameraAfterwards = false
     @State private var thumbnailSize: CGFloat = 132
+    /// The last tile clicked without Shift, and the state that click left it
+    /// in. A Shift-click copies that state onto every tile between the two —
+    /// so "uncheck all, click one in the middle, Shift-click a later one"
+    /// checks exactly that run, and the same move after unchecking one
+    /// unchecks the run. Asked for 17.09.
+    @State private var checkAnchor: (id: String, isChecked: Bool)?
 
     init(
         source: ImportSource,
@@ -398,7 +404,7 @@ struct CameraImportView: View {
                     CameraImportTile(
                         item: item,
                         side: thumbnailSize,
-                        onToggle: { session.setChecked(!item.isChecked, for: item.id) })
+                        onToggle: { toggle(item) })
                 }
             }
             .padding(16)
@@ -537,6 +543,18 @@ struct CameraImportView: View {
     }
 
     // MARK: Actions
+
+    private func toggle(_ item: CameraImportSession.Item) {
+        let isShift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+        if isShift, let anchor = checkAnchor,
+           session.items.contains(where: { $0.id == anchor.id }) {
+            session.setChecked(anchor.isChecked, from: anchor.id, to: item.id)
+            return
+        }
+        let newState = !item.isChecked
+        session.setChecked(newState, for: item.id)
+        checkAnchor = (item.id, newState)
+    }
 
     private func startImport() {
         guard let destination else { return }

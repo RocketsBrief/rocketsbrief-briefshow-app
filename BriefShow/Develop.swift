@@ -8426,6 +8426,10 @@ struct DevelopView: View {
     // file they want out, and the panel's own picker is far from the button
     // that starts the job.
     @State private var showExportAllOptions = false
+    /// What Export Edited works on: nil is the whole folder, a list is the
+    /// multi-selection it was right-clicked from. Set together with
+    /// `showExportAllOptions` so the card and the job read the same scope.
+    @State private var exportAllScope: [URL]?
     // Kept across openings of the dialog on purpose: syncing one control onto
     // a run of photos is done in batches, and re-ticking the same single box
     // for every batch is the kind of work a checklist is supposed to remove.
@@ -8529,6 +8533,13 @@ struct DevelopView: View {
     // selection tracking as selectedLocalAdjustmentID, same reasoning
     // (the array can shrink/reorder out from under a cached index).
     @State private var selectedLayerID: UUID?
+
+    // The layer Eraser — see LayerEraser.swift.
+    @State private var layerEraserActive = false
+    @State private var layerEraserSize: Double = 0.05
+    @State private var layerEraserOpacity: Double = 1
+    @State private var layerEraserFeather: Double = 0.5
+    @StateObject private var layerEraserCursor = ToolCursor()
     @State private var layerDragStart: ImageLayer?
     // Which panel tab is showing.
     @State private var panelTab: DevelopPanelTab = .edit
@@ -8966,6 +8977,11 @@ struct DevelopView: View {
         .sheet(isPresented: $showExportAllOptions) {
             exportAllOptionsView
         }
+        // The Eraser belongs to ONE layer; picking another, or none, puts it
+        // down so a drag is never an erase the client forgot was armed.
+        .onChange(of: selectedLayerID) { _ in
+            layerEraserActive = false
+        }
         .confirmationDialog(
             pendingTrashPhotoURLs?.count == 1
                 ? "Move this photo to the Trash?"
@@ -8979,6 +8995,9 @@ struct DevelopView: View {
                 }
                 pendingTrashPhotoURLs = nil
             }
+            // Return / Enter confirms, the way Finder's own Move to Trash
+            // prompt does. Asked for 17.09: Backspace on a photo, then Enter.
+            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {
                 pendingTrashPhotoURLs = nil
             }
@@ -9237,6 +9256,29 @@ struct DevelopView: View {
                selectedSliderKey != nil,
                !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false),
                nudgeSelectedSlider(increase: nudge == .increase, coarse: flags == .option) {
+                return nil
+            }
+
+            // A selected pasted layer takes the arrows: ← → ↑ ↓ move it one
+            // photo pixel, ⇧ ten. Asked for 17.09: *„Da taj layer koji je
+            // selektovan mogu da pomeram strelicama na tastaturi gore dole
+            // levo desno"*. Only while a MOVABLE layer is selected — a derived
+            // layer is a matte and has nothing to move (see layerOverlay), and
+            // with no layer selected ← / → go back to walking the filmstrip
+            // just below. Undo takes a whole run of presses back in one step,
+            // through the same debounce every other settings change uses.
+            if !isTyping, flags.isEmpty || flags == .shift,
+               [123, 124, 125, 126].contains(event.keyCode),
+               !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false),
+               !isCropping,
+               let index = selectedLayerIndex, !settings.layers[index].isDerived {
+                let pixels: Double = flags == .shift ? 10 : 1
+                switch event.keyCode {
+                case 123: nudgeLayer(at: index, dxPixels: -pixels, dyPixels: 0)
+                case 124: nudgeLayer(at: index, dxPixels: pixels, dyPixels: 0)
+                case 125: nudgeLayer(at: index, dxPixels: 0, dyPixels: pixels)
+                default:  nudgeLayer(at: index, dxPixels: 0, dyPixels: -pixels)
+                }
                 return nil
             }
 
@@ -10130,15 +10172,20 @@ struct DevelopView: View {
 
             Divider()
 
-            // Folder-wide, not selection-wide — it exports every EDITED photo
-            // in the folder regardless of what is selected, which is why it
-            // keeps its own count and sits below a divider rather than among
-            // the selection commands.
-            let editedCount = photoURLs.filter { PhotoEditStore.hasEdits($0) }.count
-            Button("Export All Edited (\(editedCount))…") {
+            // With a multi-selection this works on THAT selection and says so,
+            // with how many of it are edited and how many rejected. Asked for
+            // 17.09. with a screenshot of "Export 53 Selected…" above "Export
+            // All Edited (119)…": the 119 was the whole folder, rejected
+            // photos included, while everything else in the menu counted the
+            // 53 — *„i ovo je malo zbunjujuce"*. Without a selection it is
+            // still the whole folder, and now says that too.
+            let exportScope: [URL]? = bwTargets.count > 1 ? bwTargets : nil
+            let breakdown = editedExportBreakdown(exportScope ?? photoURLs)
+            Button(exportEditedMenuTitle(breakdown, selectedCount: exportScope?.count)) {
+                exportAllScope = exportScope
                 showExportAllOptions = true
             }
-            .disabled(editedCount == 0)
+            .disabled(breakdown.edited.isEmpty)
         }
     }
 
@@ -11938,6 +11985,8 @@ struct DevelopView: View {
                             // matte moves a hole, not what is under it. It
                             // still has to LOOK selected, which is what
                             // derivedLayerOutlineOverlay is for.
+                            } else if layerEraserActive, selectedLayerIndex != nil {
+                                layerEraserOverlay(frame: fullImageFrame(from: fitted))
                             } else if let index = selectedLayerIndex, !settings.layers[index].isDerived {
                                 layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
                             } else if let index = selectedLayerIndex {
@@ -14533,7 +14582,14 @@ struct DevelopView: View {
                     .stroke(layerSelectionColor, lineWidth: 1.4)
                     .contentShape(Rectangle())
                     .gesture(
-                        DragGesture()
+                        // ⚠️ Measured in the canvas space, NOT the default
+                        // .local. This rectangle is positioned from the
+                        // layer's own x/y, so it moves with every onChanged —
+                        // and a translation measured in a view that moves
+                        // under the cursor feeds back on itself. That was the
+                        // shaking reported 17.09. on a pasted piece: *„hocu
+                        // da dragujem po slici to dragovanje drhti"*.
+                        DragGesture(coordinateSpace: .named(Self.layerCanvasSpace))
                             .onChanged { value in moveLayer(by: value.translation, frame: frame) }
                             .onEnded { _ in endLayerDrag() }
                     )
@@ -14593,7 +14649,9 @@ struct DevelopView: View {
             .shadow(radius: 1)
             .position(position)
             .gesture(
-                DragGesture()
+                // Canvas space for the same reason as the move drag: the
+                // handle moves as the layer resizes.
+                DragGesture(coordinateSpace: .named(Self.layerCanvasSpace))
                     .onChanged { value in
                         resizeLayer(corner, by: unrotated(value.translation, by: angle), frame: frame)
                     }
@@ -14648,6 +14706,96 @@ struct DevelopView: View {
     /// that isDrawingStroke held back for the length of it can run now.
     private func endLayerDrag() {
         layerDragStart = nil
+        scheduleRefinedRender()
+    }
+
+    /// The Eraser's hit area. Same shape as brushPaintOverlay: a live vector
+    /// stroke while dragging, and the real work once, on mouse-up.
+    private func layerEraserOverlay(frame: CGRect) -> some View {
+        let diameter = max(layerEraserSize * max(frame.width, frame.height), 2)
+        return ZStack {
+            BrushStrokeLayer(
+                cursor: layerEraserCursor, frame: frame, diameter: diameter,
+                color: .red, eraseColor: .red, isErasing: true)
+                .opacity(0.35 + 0.65 * layerEraserOpacity)
+
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location): layerEraserCursor.brushHover = location
+                    case .ended: layerEraserCursor.brushHover = nil
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            layerEraserCursor.brushHover = value.location
+                            guard let unit = unitPoint(from: value.location, frame: frame) else { return }
+                            if let last = layerEraserCursor.stroke.last {
+                                let dx = unit.x - last.x, dy = unit.y - last.y
+                                if dx * dx + dy * dy < 0.000004 { return }
+                            }
+                            layerEraserCursor.stroke.append(unit)
+                        }
+                        .onEnded { _ in commitLayerErase() }
+                )
+        }
+    }
+
+    /// Bakes the stroke into the selected layer, off the main thread. The
+    /// result is dropped if the layer changed while it was being worked out
+    /// — a second stroke landing first, a paste, an undo — rather than
+    /// written over a layer it was not computed from.
+    private func commitLayerErase() {
+        let stroke = layerEraserCursor.stroke
+        guard let index = selectedLayerIndex, !stroke.isEmpty,
+              let extent = fullBaseImage?.extent, extent.width > 0 else {
+            layerEraserCursor.stroke = []
+            return
+        }
+        let before = settings.layers[index]
+        let brush = LayerEraseBrush(size: layerEraserSize, opacity: layerEraserOpacity,
+                                    feather: layerEraserFeather)
+        let photoSize = extent.size
+
+        developRenderQueue.async(qos: .userInitiated) {
+            var after = before
+            if let mask = before.maskData {
+                guard let erased = LayerEraser.eraseMatte(
+                    maskData: mask, stroke: stroke, brush: brush, photoPixelSize: photoSize) else { return }
+                after.maskData = erased
+            } else {
+                guard let erased = LayerEraser.erasePixels(
+                    imageData: before.imageData,
+                    layerRect: CGRect(x: before.x, y: before.y, width: before.width, height: before.height),
+                    rotationDegrees: before.rotationDegrees,
+                    stroke: stroke, brush: brush, photoPixelSize: photoSize) else { return }
+                after.imageData = erased
+            }
+            DispatchQueue.main.async {
+                layerEraserCursor.stroke = []
+                guard let i = settings.layers.firstIndex(where: { $0.id == before.id }),
+                      settings.layers[i] == before else { return }
+                settings.layers[i] = after
+                scheduleRefinedRender()
+            }
+        }
+    }
+
+    /// Moves a layer by whole PHOTO pixels, so one press is the same step on
+    /// a 24 MP frame at fit as zoomed to 100 %. Kept inside the photo the
+    /// same way a mouse drag is.
+    private func nudgeLayer(at index: Int, dxPixels: Double, dyPixels: Double) {
+        let extent = fullBaseImage?.extent ?? .zero
+        let pixelWidth = extent.width > 0 ? Double(extent.width) : 4000
+        let pixelHeight = extent.height > 0 ? Double(extent.height) : 3000
+        var next = settings.layers[index]
+        next.x = min(max(0, next.x + dxPixels / pixelWidth), max(0, 1 - next.width))
+        next.y = min(max(0, next.y + dyPixels / pixelHeight), max(0, 1 - next.height))
+        settings.layers[index] = next
         scheduleRefinedRender()
     }
 
@@ -17481,6 +17629,31 @@ struct DevelopView: View {
                 }
             }
 
+            // The Eraser. On a pasted piece it takes pixels away; on a
+            // derived layer (People / Background) it takes the matte away,
+            // so the adjustment stops reaching that part of the photo.
+            HStack(spacing: 6) {
+                layerToggleButton("Eraser", systemImage: "eraser", isOn: layerEraserActive) {
+                    layerEraserActive.toggle()
+                    layerEraserCursor.stroke = []
+                }
+            }
+            if layerEraserActive {
+                editSlider("Eraser Size", key: "layerEraser.size", value: $layerEraserSize, range: 0.005...0.3) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                editSlider("Eraser Opacity", key: "layerEraser.opacity", value: $layerEraserOpacity, range: 0.05...1) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                editSlider("Eraser Feather", key: "layerEraser.feather", value: $layerEraserFeather, range: 0...1) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                Text("Drag over the photo to erase this layer. Feather 0 is a hard edge, 100 a soft one. ⌘Z takes a stroke back.")
+                    .font(.custom("Figtree", size: 10))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             // Our own row, not `.pickerStyle(.segmented)`.
             //
             // The native segmented control draws its labels with the SYSTEM
@@ -18913,7 +19086,7 @@ struct DevelopView: View {
     private var exportActionsSection: some View {
         // Read fresh on every body re-render (not cached), so it stays
         // accurate as edits are made/reset while this panel is open.
-        let editedCount = photoURLs.filter { PhotoEditStore.hasEdits($0) }.count
+        let editedCount = editedExportBreakdown(photoURLs).edited.count
 
         return VStack(alignment: .leading, spacing: 8) {
             // Above the buttons rather than behind a gear, unlike the AI
@@ -18947,6 +19120,7 @@ struct DevelopView: View {
             // entry points behave identically rather than one asking and the
             // other silently using whatever the picker above happens to say.
             panelActionButton("Export All Edited (\(editedCount))", systemImage: "square.and.arrow.up.on.square", isProminent: true) {
+                exportAllScope = nil
                 showExportAllOptions = true
             }
             .opacity(editedCount == 0 ? 0.4 : 1)
@@ -18960,10 +19134,12 @@ struct DevelopView: View {
     // panel shows afterwards — one setting, two places to reach it, never
     // two settings that disagree.
     private var exportAllOptionsView: some View {
-        let editedCount = photoURLs.filter { PhotoEditStore.hasEdits($0) }.count
+        let breakdown = editedExportBreakdown(exportAllScope ?? photoURLs)
+        let editedCount = breakdown.edited.count
 
         return VStack(alignment: .leading, spacing: 14) {
-            Text("Export \(editedCount) edited photo\(editedCount == 1 ? "" : "s")")
+            Text("Export \(editedCount) edited photo\(editedCount == 1 ? "" : "s")"
+                 + (exportAllScope == nil ? " from this folder" : " from \(exportAllScope!.count) selected"))
                 .font(.custom("Figtree", size: 15).weight(.semibold))
                 .foregroundColor(AppColors.ink)
 
@@ -18993,7 +19169,9 @@ struct DevelopView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text("Photos with no edits are skipped. You pick one destination folder next.")
+            Text("Photos with no edits are skipped"
+                 + (breakdown.rejected > 0 ? ", and so are the \(breakdown.rejected) rejected" : "")
+                 + ". You pick one destination folder next.")
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -20450,6 +20628,25 @@ struct DevelopView: View {
         return (kept, urls.count - kept.count)
     }
 
+    /// What Export Edited will actually write out of `urls`, and how many of
+    /// them it leaves out because they are rejected. `edited` is edited AND
+    /// not rejected — the number that ends up in the destination folder, so
+    /// the count in the menu is the count of files the client will get.
+    private func editedExportBreakdown(_ urls: [URL]) -> (edited: [URL], rejected: Int) {
+        let rejected = urls.filter { PhotoLabelStore.isRejected($0) }.count
+        let edited = urls.filter { !PhotoLabelStore.isRejected($0) && PhotoEditStore.hasEdits($0) }
+        return (edited, rejected)
+    }
+
+    private func exportEditedMenuTitle(_ breakdown: (edited: [URL], rejected: Int),
+                                       selectedCount: Int?) -> String {
+        let rejected = "\(breakdown.rejected) Rejected"
+        if let selectedCount {
+            return "Export Edited in Selection (\(breakdown.edited.count) Edited · \(rejected) of \(selectedCount))…"
+        }
+        return "Export All Edited in Folder (\(breakdown.edited.count) Edited · \(rejected))…"
+    }
+
     /// The one line the export panel adds when photos are being left out.
     private func rejectedSkipNotice(_ skipped: Int) -> String {
         skipped == 0
@@ -20545,7 +20742,7 @@ struct DevelopView: View {
         let format = exportFormat
         let quality = exportQuality
         let (editedURLs, skippedRejected) =
-            withoutRejected(photoURLs.filter { PhotoEditStore.hasEdits($0) })
+            withoutRejected((exportAllScope ?? photoURLs).filter { PhotoEditStore.hasEdits($0) })
         guard !editedURLs.isEmpty else {
             return
         }

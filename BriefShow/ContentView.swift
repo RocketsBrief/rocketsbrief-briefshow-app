@@ -22268,6 +22268,26 @@ struct PhotoShowSheet: View {
     // The last thumbnail click, so the next one can tell whether it is the
     // second half of a double click — see handleSelectTap.
     @State private var lastPhotoClick: (url: URL, at: Date)?
+    // Where a Shift-click range starts: the photo of the last plain or
+    // Cmd-click. A Shift-click extends FROM here and does not move it, so
+    // Shift-clicking a second time re-draws the run from the same start —
+    // the way Finder and Develop's filmstrip (selectionAnchor) both behave.
+    @State private var gridSelectionAnchor: URL?
+
+    // What else sits in the open folder besides photographs. Asked for
+    // 17.09: *„ako udjem u folder neki a u njemu folderi treba grid da pokaze
+    // to"* and *„if there is video file to able to open video file"*. Kept
+    // OUT of `photoURLs` on purpose — every selection, label, export and
+    // delete path reads that list as "photographs", and a folder or a movie
+    // walking into it would reach all of them at once.
+    @State private var gridFolderURLs: [URL] = []
+    @State private var gridVideoURLs: [URL] = []
+    @State private var gridVideoThumbnails: [URL: NSImage] = [:]
+    @State private var playingVideo: GridVideoItem?
+    // New Folder asks for a name first, the way Finder does — asked for
+    // 17.09: *„treba da mi izbaci untitled i da mu dam ime"*.
+    @State private var newFolderParentURL: URL?
+    @State private var newFolderName: String = "untitled folder"
 
     // Left-hand folder tree, rooted at the client's Desktop — this is
     // ShowGrid's now-primary way of loading photos (picking a folder loads
@@ -22412,7 +22432,7 @@ struct PhotoShowSheet: View {
                 VStack(spacing: 0) {
                     header
 
-                    if photoURLs.isEmpty {
+                    if photoURLs.isEmpty && gridFolderURLs.isEmpty && gridVideoURLs.isEmpty {
                         emptyState
                     } else {
                         thumbnailGrid
@@ -22551,6 +22571,9 @@ struct PhotoShowSheet: View {
                 }
                 pendingTrashPhotoURLs = nil
             }
+            // Return / Enter confirms, the way Finder's own Move to Trash
+            // prompt does. Asked for 17.09: Backspace on a photo, then Enter.
+            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {
                 pendingTrashPhotoURLs = nil
             }
@@ -22568,6 +22591,9 @@ struct PhotoShowSheet: View {
                 }
                 pendingTrashFolderNode = nil
             }
+            // Return / Enter confirms, the way Finder's own Move to Trash
+            // prompt does. Asked for 17.09: Backspace on a photo, then Enter.
+            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {
                 pendingTrashFolderNode = nil
             }
@@ -22654,8 +22680,26 @@ struct PhotoShowSheet: View {
             }
         }
         .onChange(of: selectedFolderURL) { newValue in
-            guard let newValue else { return }
+            guard let newValue else {
+                gridFolderURLs = []
+                gridVideoURLs = []
+                return
+            }
             loadImages(inFolder: newValue)
+        }
+        .alert("New Folder", isPresented: Binding(
+            get: { newFolderParentURL != nil },
+            set: { if !$0 { newFolderParentURL = nil } }
+        )) {
+            TextField("Name", text: $newFolderName)
+            Button("Create") { commitNewFolder() }
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { newFolderParentURL = nil }
+        } message: {
+            Text("Name the new folder in \(newFolderParentURL?.lastPathComponent ?? "this folder").")
+        }
+        .sheet(item: $playingVideo) { item in
+            GridVideoPlayerSheet(url: item.url)
         }
         // The card that says Create is opening. An overlay rather than a
         // sheet: a sheet animates in over about a third of a second, which on
@@ -23426,6 +23470,15 @@ struct PhotoShowSheet: View {
         ScrollViewReader { proxy in
             ScrollView {
                 FlowLayout(spacing: 16, lineSpacing: 26) {
+                    // Folders first, then videos, then photographs — Finder's
+                    // "folders on top" order, so a subfolder is never buried
+                    // at the end of a few hundred frames.
+                    ForEach(gridFolderURLs, id: \.self) { url in
+                        folderCell(for: url)
+                    }
+                    ForEach(gridVideoURLs, id: \.self) { url in
+                        videoCell(for: url)
+                    }
                     ForEach(photoURLs, id: \.self) { url in
                         thumbnailCell(for: url)
                             .id(url)
@@ -23455,6 +23508,102 @@ struct PhotoShowSheet: View {
                 guard let newValue else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(newValue, anchor: .center)
+                }
+            }
+        }
+    }
+
+    // A subfolder of the open folder. Double-click opens it, exactly as
+    // clicking it in the sidebar would — same `selectedFolderURL`, so the
+    // tree expands down to it and the grid reloads through the one path.
+    private func folderCell(for url: URL) -> some View {
+        let cellWidth = thumbnailSize * (4.0 / 3.0)
+        return VStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(AppColors.panel)
+                Image(systemName: "folder.fill")
+                    .font(.system(size: max(28, thumbnailSize * 0.38)))
+                    .foregroundColor(accentColor.opacity(0.85))
+            }
+            .frame(width: cellWidth, height: thumbnailSize)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(AppColors.border.opacity(0.6), lineWidth: 1))
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                selectedFolderURL = url
+            }
+            .help("Double-click to open \(url.lastPathComponent)")
+
+            Text(url.lastPathComponent)
+                .font(.custom("Figtree", size: 11).weight(.medium))
+                .foregroundColor(AppColors.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: cellWidth)
+        }
+    }
+
+    // A video in the open folder. Double-click plays it in a window of its
+    // own; it is not a photograph, so it takes no part in selection.
+    private func videoCell(for url: URL) -> some View {
+        let image = gridVideoThumbnails[url]
+        let aspectRatio = image.map { max(0.2, $0.size.width / max(1, $0.size.height)) } ?? (16.0 / 9.0)
+        let cellWidth = thumbnailSize * aspectRatio
+        return VStack(spacing: 10) {
+            ZStack {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    Rectangle().fill(AppColors.panel)
+                }
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: max(22, thumbnailSize * 0.22)))
+                    .foregroundColor(.white.opacity(0.9))
+                    .shadow(color: .black.opacity(0.45), radius: 4)
+            }
+            .frame(width: cellWidth, height: thumbnailSize)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(AppColors.border.opacity(0.6), lineWidth: 1))
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                playingVideo = GridVideoItem(url: url)
+            }
+            .contextMenu {
+                Button("Play") { playingVideo = GridVideoItem(url: url) }
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }
+            .help("Double-click to play \(url.lastPathComponent)")
+
+            Text(url.lastPathComponent)
+                .font(.custom("Figtree", size: 11).weight(.medium))
+                .foregroundColor(AppColors.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: cellWidth)
+        }
+    }
+
+    private func loadGridVideoThumbnails(for urls: [URL]) {
+        for url in urls where gridVideoThumbnails[url] == nil {
+            DispatchQueue.global(qos: .utility).async {
+                let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 480, height: 480)
+                let time = CMTime(seconds: 1, preferredTimescale: 600)
+                guard let cgImage = (try? generator.copyCGImage(at: time, actualTime: nil))
+                        ?? (try? generator.copyCGImage(at: .zero, actualTime: nil)) else { return }
+                let image = NSImage(cgImage: cgImage,
+                                    size: NSSize(width: cgImage.width, height: cgImage.height))
+                DispatchQueue.main.async {
+                    gridVideoThumbnails[url] = image
                 }
             }
         }
@@ -24026,7 +24175,26 @@ struct PhotoShowSheet: View {
     // the Cmd-click (toggle-out) branch instead of replacing the selection.
     private func handleSelectTap(_ url: URL) {
         let now = Date()
-        let isCommandDown = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
+        let flags = NSApp.currentEvent?.modifierFlags ?? []
+        let isCommandDown = flags.contains(.command)
+
+        // Shift-click selects the whole run from the anchor to this photo,
+        // in grid order, inclusive. Asked for 17.09. after importing: pick
+        // one photo in the middle, Shift-click a later one, and everything
+        // between is selected. Checked before Cmd so ⇧ alone decides; a
+        // Shift-click is never a double click and never opens Develop.
+        if flags.contains(.shift), !isCommandDown,
+           let anchor = gridSelectionAnchor,
+           let anchorIndex = photoURLs.firstIndex(of: anchor),
+           let clickedIndex = photoURLs.firstIndex(of: url) {
+            let run = anchorIndex <= clickedIndex
+                ? Array(photoURLs[anchorIndex...clickedIndex])
+                : Array(photoURLs[clickedIndex...anchorIndex].reversed())
+            replaceSelection(with: run)
+            lastPhotoClick = nil
+            return
+        }
+        gridSelectionAnchor = url
 
         // Cmd-click is never a double click. It is how a multi-selection is
         // built up, and two Cmd-clicks on one photo mean "add it, then take it
@@ -24339,6 +24507,8 @@ struct PhotoShowSheet: View {
         if selectedFolderURL == node.url {
             selectedFolderURL = nil
             photoURLs = []
+            gridFolderURLs = []
+            gridVideoURLs = []
             likedURLs = []
             ratings = [:]
         }
@@ -24356,12 +24526,27 @@ struct PhotoShowSheet: View {
     // expandPathToSelection) and opens it in the grid, so it shows up
     // right where the client right-clicked, the same instant feedback
     // Finder gives.
+    // ⚠️ Since 17.09. this only ASKS — the folder is made by
+    // `commitNewFolder` once the client has typed a name, and Cancel makes
+    // nothing. The name box starts on "untitled folder", Finder's own word.
     private func createNewFolder(in parentFolder: URL) {
+        newFolderName = "untitled folder"
+        newFolderParentURL = parentFolder
+    }
+
+    private func commitNewFolder() {
+        guard let parentFolder = newFolderParentURL else { return }
+        newFolderParentURL = nil
         let fileManager = FileManager.default
-        var candidateURL = parentFolder.appendingPathComponent("New Folder")
+        let typed = newFolderName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        let baseName = (typed.isEmpty || typed.hasPrefix(".")) ? "untitled folder" : typed
+        var candidateURL = parentFolder.appendingPathComponent(baseName)
         var suffix = 2
         while fileManager.fileExists(atPath: candidateURL.path) {
-            candidateURL = parentFolder.appendingPathComponent("New Folder \(suffix)")
+            candidateURL = parentFolder.appendingPathComponent("\(baseName) \(suffix)")
             suffix += 1
         }
 
@@ -24576,6 +24761,8 @@ struct PhotoShowSheet: View {
             // under it — nothing left at that path to show.
             selectedFolderURL = nil
             photoURLs = []
+            gridFolderURLs = []
+            gridVideoURLs = []
             likedURLs = []
             ratings = [:]
         } else if selectedFolderURL == destinationFolder {
@@ -25106,15 +25293,32 @@ struct PhotoShowSheet: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let contents = (try? FileManager.default.contentsOfDirectory(
                 at: folderURL,
-                includingPropertiesForKeys: nil,
+                includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
                 options: [.skipsHiddenFiles]
             )) ?? []
 
             let imageURLs = contents.filter { url in
                 UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
             }
+            let byName: (URL, URL) -> Bool = {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
+            let folderURLs = contents.filter { url in
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+                return values?.isDirectory == true && values?.isPackage != true
+            }.sorted(by: byName)
+            let videoURLs = contents.filter { url in
+                UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true
+            }.sorted(by: byName)
 
             DispatchQueue.main.async {
+                // A slower scan of a folder the client has already left must
+                // not paint its subfolders over the one now open.
+                if selectedFolderURL == nil || selectedFolderURL == folderURL {
+                    gridFolderURLs = folderURLs
+                    gridVideoURLs = videoURLs
+                    loadGridVideoThumbnails(for: videoURLs)
+                }
                 guard !imageURLs.isEmpty else {
                     photoURLs = []
                     likedURLs = []
@@ -26419,3 +26623,66 @@ private struct ShowHeaderButtonLabel: View {
     ContentView()
 }
 
+
+
+// MARK: - Video in the grid
+
+struct GridVideoItem: Identifiable {
+    let url: URL
+    var id: URL { url }
+}
+
+/// Plays a video from the open folder. AVPlayerView rather than SwiftUI's
+/// VideoPlayer so the client gets the standard macOS controls — scrubbing,
+/// volume, full screen — that QuickTime would have given them.
+struct GridVideoPlayerSheet: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(url.lastPathComponent)
+                    .font(.custom("Figtree", size: 13).weight(.semibold))
+                    .foregroundColor(AppColors.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(12)
+
+            GridAVPlayerView(player: player)
+                .frame(minWidth: 720, minHeight: 405)
+        }
+        .onAppear {
+            let newPlayer = AVPlayer(url: url)
+            player = newPlayer
+            newPlayer.play()
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
+    }
+}
+
+private struct GridAVPlayerView: NSViewRepresentable {
+    let player: AVPlayer?
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .floating
+        view.showsFullScreenToggleButton = true
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        if nsView.player !== player {
+            nsView.player = player
+        }
+    }
+}

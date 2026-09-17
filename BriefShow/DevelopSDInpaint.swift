@@ -756,10 +756,18 @@ final class SDInpaintPipeline: ObservableObject {
     /// feeding the very failure being answered.
     static let generativeUsesLaMaBase = true
 
-    /// nil hands SD an empty hole and the full schedule; 0.4 hands it LaMa's
-    /// fill and only the last part of the schedule. The 0.4 below is the
-    /// shipped, measured value and is NOT changed by the switch — only bypassed.
-    static let defaultRefineStrength: Float? = generativeUsesLaMaBase ? 0.4 : nil
+    /// nil hands SD an empty hole and the full schedule; 0.5 hands it LaMa's
+    /// fill and the last half of the schedule. NOT changed by the switch —
+    /// only bypassed.
+    ///
+    /// ⚠️ 0.4 → 0.5 on 17.09, the client's own choice between two named
+    /// options. Reported: *„Generative ai SD umesto da makne objekat ga
+    /// razmaze u vecini slucajeva"* — at 0.4 the hole was LaMa's soft fill
+    /// with a little texture. Asked which way, he picked *„jaca tekstura preko
+    /// lame 0.5"* over going back to noise. 0.55 is where a whole palm
+    /// appeared (KORAK 150/151); 0.5 is the last step below it. If invention
+    /// comes back, the answer is down toward 0.4, never to noise.
+    static let defaultRefineStrength: Float? = generativeUsesLaMaBase ? 0.5 : nil
 
     // Loading the 1.6 GB UNet is ~18 seconds of Neural Engine compilation, so
     // the models are loaded once and kept. `warmUp()` moves that cost to the

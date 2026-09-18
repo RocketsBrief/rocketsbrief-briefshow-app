@@ -20551,3 +20551,100 @@ Oznaka verzije u app-i se čita iz bundle-a, pa piše `v11.35` samo od sebe.
 - direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.35/C4S-Suite-11.35.zip`
 
 Šta je u njemu: KORACI 193 i 194.
+
+---
+
+## KORAK 195 — boja foldera u gridu, Tools tab, Dodge & Burn, Cut (18. septembar 2026)
+
+Klijentove prijave od 18.09:
+
+| # | prijava | šta je urađeno | gde |
+|---|---|---|---|
+| 1 | folder obeležen bojom u sidebar-u da i u gridu bude te boje | ikonica foldera u gridu se crta bojom labela; bez labela ostaje stara boja. `FolderColorStore.setColor` sada šalje `didChange`, grid osvežava svoj `gridFolderColors` | `ContentView.folderCell`, `FolderColorStore.didChange` |
+| 2 | bez Masks sekcije (Radial, Graduated, Brush) | naslov i tri dugmeta sklonjeni iz taba. ⚠️ **Lista i editor maski OSTAJU** (`appliedMasksList`), samo kad postoji maska: Patch i Dodge & Burn se uređuju baš tu. Stare radial/graduated maske na starim fotografijama se i dalje vide i uređuju | `Develop.swift`, `case .retouch` |
+| 3 | Retouch tab → **Tools**, nova ikonica | `wrench.and.screwdriver`, tooltip „Tools - …". ⚠️ `rawValue` ostaje `"Retouch"`: to je id ćelije u header-u, a ne tekst koji se čita | `DevelopPanelTab` |
+| 4 | Select People → **Select Subjects** (prvo „Subject/s“, klijent ispravio isti dan) | dugme, tooltip na header ikonici, prečica (`Shortcuts.swift`), tekst Background Enhanced | |
+| 5 | Selection sekcija → **Cut** | naslov | `selectionSection` |
+| 6 | **Dodge & Burn** dugme pored Select Subject/s | otvara dva dugmeta: **Dodge** (brush maska, Exposure +0,3) i **Burn** (−0,3). Drugi klik nastavlja istu masku umesto da pravi novu. Jačina je Exposure slajder u editoru | `startDodgeBurn` |
+| 7 | **Cut** dugme koje otvara Cut sekciju | sekcija se vidi samo kad je otvorena dugmetom ili kad postoji aktivna selekcija. Pojavljuje se odmah ispod reda sa alatima. Drugi klik zatvara i deselektuje | `isCutSectionOpen` |
+
+Četiri dugmeta ne staju u jedan red panela, pa je drugi red: Dodge & Burn, Cut.
+
+**Stanje:** Debug build → `BUILD SUCCEEDED`, `run-slider-parity-test.py` → all good (slajderi nisu dirani).
+App je pokrenut, ali stoji na keychain lozinci. ⚠️ Delimično viđeno kod klijenta tokom probe; objavljeno u v11.40 (KORAK 196).
+
+### Ispravka istog dana — Dodge & Burn se nije pojačavao
+
+Klijent: *„burn i dodge rade do jedne granice! ne rade kada vise puta kliknem da dopunjuju"*.
+
+**Uzrok:** brush maska spaja poteze sa `CIMaximumCompositing`, pa je maska na istom mestu
+stajala na 1 posle prvog poteza, i drugi potez nije dodavao ništa.
+
+**Popravka:** Dodge/Burn maska (`LocalAdjustment.isDodgeBurn`, **izračunato iz imena**, jer
+dekoder te strukture je sintetizovan i nov sačuvan ključ bi oborio svaku staru fotografiju)
+ide kroz `applyStackedBrushPasses`: **svaki potez je zaseban prolaz** preko rezultata
+prethodnih. Gumica vraća prolaze nacrtane pre nje. Obična Brush maska i AI Clean Up (koji deli
+`brushMask`) **nisu dirani**.
+
+`Tools/run-dodge-burn-test.py` (bez fotografije, pravi renderer): Dodge 102 → 113 → 124 → 137,
+Burn 102 → 93 → 85, obična Brush 113 = 113, gumica → 102. **ALL PASS.**
+
+⚠️ Svaki potez je jedan prolaz renderera. Sa mnogo poteza na jednoj maski render može da uspori.
+
+### Drugi krug istog dana — pet prijava
+
+| # | prijava | šta je urađeno |
+|---|---|---|
+| 1 | Dodge/Burn radi samo na prevlačenje | `commitBrushStroke` je odbacivao potez od jedne tačke (`count > 1`). Sada je klik jedan dab, a `brushMaskCanvas` ga crta kao tačku. Test: klik 102 → 113, drugi klik → 124 |
+| 2 | „Looking for people…" | → „Looking for subjects…" (oba mesta) |
+| 3 | druga ikonica za Tools | `hammer` (bila je `wrench.and.screwdriver`) |
+| 4 | Erase dugme u Tools-u, sa podešavanjima | `toggleEraseTool` + `eraseToolSettings`: isti layer Eraser (KORAK 193), isti ključevi slajdera, meni „Erasing: <layer>". Bez izabranog layera uzima gornji. `layerEraserActive` se pali tek u sledećem potezu (`armLayerEraserAfterSelection`), jer promena layera gasi Eraser |
+| 5 | promena imena layera | dupli klik na ime ili desni klik → „Rename…". Enter potvrđuje, Esc odustaje, prazno ime zadržava staro |
+
+Build prolazi, paritet slajdera zelen, `run-dodge-burn-test.py` ALL PASS. ⚠️ Nije viđeno na ekranu.
+
+### Treći krug — Erase nije pokazivao krug, meni je bio crnim slovima
+
+- **Krug:** Eraser uopšte nije bio uključen. `onChange(of: selectedLayerID)` gasi Eraser, a
+  `DispatchQueue.main.async` koji ga je palio izvršavao se **pre** tog onChange-a. Sada onChange
+  sam kaže `layerEraserActive = isEraseToolOpen && newID != nil` (van Tools ▸ Erase isto kao pre:
+  false). Napuštanje Tools taba zatvara Erase.
+- **Crna slova:** sistemski `Menu` crta natpis sistemskim izgledom (ista zamka kao segmented
+  picker). Zamenjen našim `layerToggleButton` dugmićima u `FlowLayout`-u, po jedan za svaki layer.
+
+- Layer ljudi se zove **Subjects** (bio „People"): Select Subjects, oba Background Enhanced puta, oznaka recepta „on Subjects". Ime je samo prikaz, nigde se layer ne traži po imenu. Već napravljeni „People" layeri na starim fotografijama zadržavaju staro ime.
+
+### Četvrti krug — layer se nije mogao izabrati
+
+- **Klik na ime u listi nije birao layer.** Uveo sam ga ja u drugom krugu: `Button` je zamenjen sa
+  `onTapGesture(count: 2)` + `onTapGesture`, a red nosi `.onDrag` za redosled, koji na macOS-u
+  guta obične tapove. Vraćen `Button`; dupli klik se čita iz `NSApp.currentEvent?.clickCount`.
+- **Klik na layer NA SLICI** nikad nije birao layer. Dodato `layerPickTargets`: nevidljiva meta
+  preko svakog nalepljenog layera (rotirana s njim), samo gde layer jeste. Derived layeri
+  (Subjects / Background) su maske preko celog kadra i progutali bi svaki klik, pa se oni biraju iz
+  liste.
+
+---
+
+## KORAK 196 — RELEASE v11.40 (18. septembar 2026)
+
+`python3 Tools/make-release.py 11.40 --small-only` — sadrži sve iz KORAKA 195.
+
+| | |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.40 / 40** |
+| `LaMa.mlmodelc` | unutra |
+| `SD15-Inpainting` | **nema** — dugme u app-i, `v11.0/SD15-Inpainting.aar` HTTP 200 |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| veličina | 115.247.153 bajta |
+| SHA-256 | `43eb0b37bc4b42e80bd081766d98742dd650ef8e228caa293a4ff208c20de35b` |
+
+Intel: `computeUnits = .all` pod `#if !arch(arm64)` već postoji — nije menjano. Oznaka verzije
+u app-i se čita iz bundle-a (`CFBundleShortVersionString`), pa piše `v11.40` sama od sebe.
+Ko već ima SD zadržava ga; nov klijent ga skida dugmetom. **`v11.0` se i dalje NE SME brisati.**
+
+- stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.40`
+- direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.40/C4S-Suite-11.40.zip`

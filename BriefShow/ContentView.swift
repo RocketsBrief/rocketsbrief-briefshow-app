@@ -22281,6 +22281,7 @@ struct PhotoShowSheet: View {
     // delete path reads that list as "photographs", and a folder or a movie
     // walking into it would reach all of them at once.
     @State private var gridFolderURLs: [URL] = []
+    @State private var gridFolderColors: [String: FolderColorLabel] = FolderColorStore.loadAll()
     @State private var gridVideoURLs: [URL] = []
     @State private var gridVideoThumbnails: [URL: NSImage] = [:]
     @State private var playingVideo: GridVideoItem?
@@ -23504,6 +23505,10 @@ struct PhotoShowSheet: View {
             }
             // Keeps arrow-key navigation's new selection on screen even
             // when it lands outside the currently scrolled area.
+            // A colour picked in the sidebar reaches the folder icons here.
+            .onReceive(NotificationCenter.default.publisher(for: FolderColorStore.didChange)) { _ in
+                gridFolderColors = FolderColorStore.loadAll()
+            }
             .onChange(of: scrollToPhotoURL) { newValue in
                 guard let newValue else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
@@ -23522,9 +23527,11 @@ struct PhotoShowSheet: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(AppColors.panel)
+                // A folder labelled in the sidebar is drawn in that colour
+                // here too (client, 18.09); unlabelled keeps the old colour.
                 Image(systemName: "folder.fill")
                     .font(.system(size: max(28, thumbnailSize * 0.38)))
-                    .foregroundColor(accentColor.opacity(0.85))
+                    .foregroundColor(gridFolderColors[url.standardizedFileURL.path]?.color ?? accentColor.opacity(0.85))
             }
             .frame(width: cellWidth, height: thumbnailSize)
             .overlay(
@@ -25932,7 +25939,12 @@ enum FolderColorStore {
         }
 
         UserDefaults.standard.set(stored, forKey: defaultsKey)
+        // The grid draws a labelled folder in its colour too, and it does
+        // not share the sidebar's @State - so the change is announced.
+        NotificationCenter.default.post(name: FolderColorStore.didChange, object: nil)
     }
+
+    static let didChange = Notification.Name("com.rocketsbrief.briefshow.folderColorLabelsDidChange")
 
     // Loaded once by FolderTreeSidebar on appear into its own @State, so
     // the tree can react to color changes the same way it reacts to

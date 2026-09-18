@@ -953,6 +953,14 @@ struct LocalAdjustment: Codable, Equatable, Identifiable {
         LocalAdjustment(name: name, type: .brush, brush: BrushMaskGeometry())
     }
 
+    /// A brush made by the Dodge & Burn button. COMPUTED from the name on
+    /// purpose, not a stored flag: this struct's decoder is synthesized, and
+    /// a new stored key would make every photo saved before it fail to
+    /// decode - and a failed decode drops the whole photo's edit.
+    var isDodgeBurn: Bool {
+        type == .brush && (name.hasPrefix("Dodge") || name.hasPrefix("Burn"))
+    }
+
     static func patch(name: String, shape: PatchShape) -> LocalAdjustment {
         LocalAdjustment(name: name, type: .patch, patch: PatchGeometry(shape: shape))
     }
@@ -3408,6 +3416,17 @@ enum PhotoEditRenderer {
                 continue
             }
 
+            // Client, 18.09: *„burn i dodge rade do jedne granice! ne rade kada
+            // vise puta kliknem"*. A brush mask unions its strokes with MAXIMUM,
+            // so a second pass over the same spot added nothing. Dodge & Burn
+            // builds up instead: every stroke is its own pass on top of the
+            // result of the ones before it. Plain Brush masks and AI Clean Up
+            // (which shares the stroke renderer) are untouched.
+            if adjustment.isDodgeBurn, let brush = adjustment.brush {
+                output = applyStackedBrushPasses(brush, settings: adjustment.settings, to: output, extent: extent)
+                continue
+            }
+
             guard let mask = maskImage(for: adjustment, extent: extent) else {
                 continue
             }
@@ -3430,6 +3449,39 @@ enum PhotoEditRenderer {
             output = blend.outputImage ?? output
         }
 
+        return output
+    }
+
+    // One pass per paint stroke, each applied to the running output, so two
+    // strokes over the same spot give twice the change. An erase stroke takes
+    // back every pass painted BEFORE it where it touches; strokes painted
+    // after it are not affected - same order rule as the ordinary brush.
+    private static func applyStackedBrushPasses(_ geo: BrushMaskGeometry, settings: LocalAdjustmentSettings,
+                                                to image: CIImage, extent: CGRect) -> CIImage {
+        var output = image
+        let strokes = geo.strokes
+        for (index, stroke) in strokes.enumerated() where !stroke.isErase {
+            guard var mask = brushStrokeDabs(stroke, extent: extent) else {
+                continue
+            }
+            for later in strokes[(index + 1)...] where later.isErase {
+                guard let eraseDabs = brushStrokeDabs(later, extent: extent) else {
+                    continue
+                }
+                let invert = CIFilter.colorInvert()
+                invert.inputImage = eraseDabs
+                let multiply = CIFilter.multiplyCompositing()
+                multiply.inputImage = mask
+                multiply.backgroundImage = invert.outputImage ?? eraseDabs
+                mask = multiply.outputImage ?? mask
+            }
+
+            let blend = CIFilter.blendWithMask()
+            blend.inputImage = applyLocalToneColorDetail(settings, to: output)
+            blend.backgroundImage = output
+            blend.maskImage = mask.cropped(to: extent)
+            output = blend.outputImage ?? output
+        }
         return output
     }
 
@@ -6094,7 +6146,7 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
     /// Which of the two layers this recipe writes on — shown in the UI, and
     /// the reason Subject Mono and Mono Background can be run together.
     var targetLayerName: String {
-        writesOnBackground ? "Background" : "People"
+        writesOnBackground ? "Background" : "Subjects"
     }
 
     /// Which of the two layers this recipe writes on, as a fact rather than a
@@ -6302,7 +6354,7 @@ struct BackgroundEnhancedCard: View {
 
             Text(targets.count > 1
                  ? "Select People, then these numbers on the Background, then Flatten — on \(targets.count) photos."
-                 : "Select People, then these numbers on the Background, then Flatten.")
+                 : "Select Subjects, then these numbers on the Background, then Flatten.")
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -6431,7 +6483,7 @@ struct BackgroundEnhancedCard: View {
             // confinedTo: nil — no rope drawn on this photograph from here.
             guard let made = PeopleLayerFactory.make(from: full, confinedTo: nil,
                                                      backgroundName: "Background",
-                                                     peopleName: "People") else {
+                                                     peopleName: "Subjects") else {
                 DispatchQueue.main.async { stage = .noPeople }
                 return
             }
@@ -6713,7 +6765,7 @@ enum PortraitRecipeService {
                 // nothing here.
                 guard let made = PeopleLayerFactory.make(from: full, confinedTo: nil,
                                                          backgroundName: "Background",
-                                                         peopleName: "People") else {
+                                                         peopleName: "Subjects") else {
                     outcome.noPeople += 1
                     continue
                 }
@@ -7935,7 +7987,7 @@ enum DevelopPanelTab: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .edit: return "slider.horizontal.3"
-        case .retouch: return "wand.and.stars"
+        case .retouch: return "hammer"
         case .layers: return "square.2.layers.3d"
         }
     }
@@ -7945,7 +7997,9 @@ enum DevelopPanelTab: String, CaseIterable, Identifiable {
     var helpText: String {
         switch self {
         case .edit: return "Edit - light, colour, curves and detail."
-        case .retouch: return "Retouch - tools, masks, selections and removal."
+        // Client, 18.09: the tab is called Tools. rawValue stays "Retouch" -
+        // it is the header cell's id, not a label anyone reads.
+        case .retouch: return "Tools - Patch, Select Subjects, Dodge & Burn, Cut, Erase and removal."
         case .layers: return "Layers - the layers on this photo."
         }
     }
@@ -8543,6 +8597,15 @@ struct DevelopView: View {
     @State private var layerDragStart: ImageLayer?
     // Which panel tab is showing.
     @State private var panelTab: DevelopPanelTab = .edit
+    // Client, 18.09: the Cut section opens from its button in the Tools row,
+    // and Dodge & Burn offers its two brushes only once it is pressed.
+    @State private var isCutSectionOpen = false
+    @State private var isDodgeBurnOpen = false
+    // Client, 18.09: Erase in the Tools row, opening the layer Eraser's settings.
+    @State private var isEraseToolOpen = false
+    // Client, 18.09: a layer is renamed by double-click or right-click.
+    @State private var renamingLayerID: UUID?
+    @State private var layerNameDraft = ""
     // Bumped to ask the panel to scroll the crop section into view. A counter
     // rather than a Bool or an optional id: pressing Crop twice in a row has to
     // scroll twice, and a value that is already equal to itself fires no
@@ -8979,8 +9042,18 @@ struct DevelopView: View {
         }
         // The Eraser belongs to ONE layer; picking another, or none, puts it
         // down so a drag is never an erase the client forgot was armed.
-        .onChange(of: selectedLayerID) { _ in
-            layerEraserActive = false
+        // Except while Tools ▸ Erase is open: there, picking a layer is
+        // picking what to erase, so the Eraser stays armed on the new one.
+        .onChange(of: selectedLayerID) { newID in
+            layerEraserActive = isEraseToolOpen && newID != nil
+        }
+        // Leaving the Tools tab puts its Erase down, so picking a layer in
+        // Layers afterwards never arms an eraser nobody can see the settings of.
+        .onChange(of: panelTab) { tab in
+            if tab != .retouch, isEraseToolOpen {
+                isEraseToolOpen = false
+                layerEraserActive = false
+            }
         }
         .confirmationDialog(
             pendingTrashPhotoURLs?.count == 1
@@ -10459,7 +10532,7 @@ struct DevelopView: View {
             // an honest spinner.
             if isFindingPeople {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Looking for people…")
+                    Text("Looking for subjects…")
                         .font(.custom("Figtree", size: 11))
                         .foregroundColor(AppColors.muted)
 
@@ -10583,7 +10656,7 @@ struct DevelopView: View {
                 // changed: it no longer finds people to ERASE, it lifts them
                 // onto a layer of their own so they can be graded apart from
                 // the rest of the frame. That is a tool, not a removal.
-                toolButton("Select People", systemImage: "person.crop.rectangle",
+                toolButton("Select Subjects", systemImage: "person.crop.rectangle",
                            isActive: isFindingPeople) {
                     selectPeopleAsLayer()
                 }
@@ -10593,6 +10666,54 @@ struct DevelopView: View {
                 Spacer(minLength: 0)
             }
 
+            // Client, 18.09: Dodge & Burn beside Select Subject/s, and a Cut
+            // button that opens the Cut section. A second row because four
+            // buttons do not fit across a panel this narrow.
+            HStack(spacing: 6) {
+                toolButton("Dodge & Burn", systemImage: "circle.lefthalf.filled",
+                           isActive: isDodgeBurnOpen || isDodgeBurnMaskSelected) {
+                    isDodgeBurnOpen.toggle()
+                    if !isDodgeBurnOpen, isDodgeBurnMaskSelected {
+                        selectedLocalAdjustmentID = nil
+                    }
+                }
+
+                toolButton("Erase", systemImage: "eraser",
+                           isActive: isEraseToolOpen) {
+                    toggleEraseTool()
+                }
+
+                toolButton("Cut", systemImage: "scissors",
+                           isActive: isCutSectionOpen || activeSelection != nil) {
+                    if isCutSectionOpen || activeSelection != nil {
+                        isCutSectionOpen = false
+                        deselectSelection()
+                    } else {
+                        isCutSectionOpen = true
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            // Dodge and Burn are brush masks with the exposure already set,
+            // one each way. Painting is the Brush tool's; the Exposure slider
+            // in the editor below is the strength.
+            if isEraseToolOpen {
+                eraseToolSettings
+            }
+
+            if isDodgeBurnOpen {
+                HStack(spacing: 8) {
+                    maskAddButton("Dodge", systemImage: "sun.max") {
+                        startDodgeBurn(dodge: true)
+                    }
+                    maskAddButton("Burn", systemImage: "flame") {
+                        startDodgeBurn(dodge: false)
+                    }
+                }
+            }
+
             // Vision reports no progress, so this is an INDETERMINATE bar
             // and not a percentage. A percentage here would be invented,
             // and the one thing this has to do is be believed: the search
@@ -10600,7 +10721,7 @@ struct DevelopView: View {
             // a button that did nothing.
             if isFindingPeople {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Looking for people…")
+                    Text("Looking for subjects…")
                         .font(.custom("Figtree", size: 11))
                         .foregroundColor(AppColors.muted)
 
@@ -10693,7 +10814,7 @@ struct DevelopView: View {
         let photoAtActionTime = selectedURL
         let confineTo = activeSelection
         let backgroundName = nextLayerName("Background")
-        let peopleName = nextLayerName("People")
+        let peopleName = nextLayerName("Subjects")
         // Read confineTo FIRST, then fold AI Clean Up away. Turning the brush
         // off does not clear an active Selection today — only turning it ON
         // does — but this ordering means a later change to that cannot quietly
@@ -11624,7 +11745,7 @@ struct DevelopView: View {
 
             HeaderBarItem(id: "people",
                           glyph: .symbol("person.crop.rectangle"),
-                          help: "Select People - lift the people in this photo onto their own layer, with the background on a second one.",
+                          help: "Select Subjects - lift the people in this photo onto their own layer, with the background on a second one.",
                           isDisabled: isFindingPeople || isRemoving || noPhoto,
                           behaviour: .tap { selectPeopleAsLayer() }),
 
@@ -11988,9 +12109,19 @@ struct DevelopView: View {
                             } else if layerEraserActive, selectedLayerIndex != nil {
                                 layerEraserOverlay(frame: fullImageFrame(from: fitted))
                             } else if let index = selectedLayerIndex, !settings.layers[index].isDerived {
-                                layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
+                                ZStack {
+                                    layerPickTargets(frame: fullImageFrame(from: fitted))
+                                    layerOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
+                                }
                             } else if let index = selectedLayerIndex {
-                                derivedLayerOutlineOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
+                                ZStack {
+                                    layerPickTargets(frame: fullImageFrame(from: fitted))
+                                    derivedLayerOutlineOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
+                                }
+                            } else {
+                                // Client, 18.09: back on a photo with a layer,
+                                // clicking the layer ON THE PHOTO has to select it.
+                                layerPickTargets(frame: fullImageFrame(from: fitted))
                             }
                         }
                         .frame(width: proxy.size.width, height: proxy.size.height)
@@ -14565,6 +14696,31 @@ struct DevelopView: View {
         return image
     }
 
+    /// One invisible click target over every PASTED layer that is not
+    /// already selected - rotated with it, topmost last so it wins. Only where
+    /// a layer is, so a click anywhere else still reaches the photo. Derived
+    /// layers (Subjects / Background) are mattes over the whole frame and would
+    /// swallow every click, so they are picked from the Layers list instead.
+    private func layerPickTargets(frame: CGRect) -> some View {
+        ZStack {
+            ForEach(settings.layers) { layer in
+                if layer.isEnabled, !layer.isDerived, layer.id != selectedLayerID {
+                    let rect = CGRect(x: frame.minX + layer.x * frame.width,
+                                      y: frame.minY + layer.y * frame.height,
+                                      width: layer.width * frame.width,
+                                      height: layer.height * frame.height)
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .frame(width: max(rect.width, 1), height: max(rect.height, 1))
+                        .rotationEffect(.degrees(layer.rotationDegrees))
+                        .position(x: rect.midX, y: rect.midY)
+                        .onTapGesture { selectLayer(layer.id) }
+                        .help(layer.name)
+                }
+            }
+        }
+    }
+
     private func layerOverlay(_ layer: ImageLayer, frame: CGRect) -> some View {
         let rect = CGRect(
             x: frame.minX + layer.x * frame.width,
@@ -14992,6 +15148,15 @@ struct DevelopView: View {
     private func brushMaskCanvas(_ brush: BrushMaskGeometry, frame: CGRect) -> some View {
         Canvas { context, size in
             for stroke in brush.strokes {
+                // A clicked dab has one point - drawn as a dot, not skipped.
+                if stroke.points.count == 1 {
+                    let d = max(stroke.size * size.width, 2)
+                    let c = CGPoint(x: stroke.points[0].x * size.width, y: stroke.points[0].y * size.height)
+                    let dot = Path(ellipseIn: CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d))
+                    context.blendMode = stroke.isErase ? .destinationOut : .normal
+                    context.fill(dot, with: .color(stroke.isErase ? .white : accentColor.opacity(0.4)))
+                    continue
+                }
                 guard stroke.points.count > 1 else {
                     continue
                 }
@@ -15204,7 +15369,10 @@ struct DevelopView: View {
 
     private func commitBrushStroke() {
         defer { brushCursor.stroke = [] }
-        guard let index = selectedAdjustmentIndex, brushCursor.stroke.count > 1 else {
+        // A click with no drag is ONE point, and it paints a dab (client,
+        // 18.09: Dodge & Burn had to be dragged to do anything). The renderer
+        // already draws a one-point stroke as a single dab.
+        guard let index = selectedAdjustmentIndex, !brushCursor.stroke.isEmpty else {
             return
         }
         let stroke = BrushStroke(points: brushCursor.stroke, size: brushSize, hardness: brushHardness, isErase: brushIsErasing)
@@ -15347,13 +15515,23 @@ struct DevelopView: View {
 
                         Divider()
 
-                        masksSection
+                        // Client, 18.09: Cut opens from its button, right
+                        // under the row, so it arrives where the eye is.
+                        if isCutSectionOpen || activeSelection != nil {
+                            selectionSection
 
-                        Divider()
+                            Divider()
+                        }
 
-                        selectionSection
+                        // No Masks section any more (client, 18.09) - no
+                        // Radial, Graduated or Brush buttons. What Patch and
+                        // Dodge & Burn made still needs its list and editor,
+                        // so those stay, and only when there is something.
+                        if !settings.localAdjustments.isEmpty {
+                            appliedMasksList
 
-                        Divider()
+                            Divider()
+                        }
 
                         removeSection
 
@@ -16182,6 +16360,18 @@ struct DevelopView: View {
         }
     }
 
+    private var appliedMasksList: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(settings.localAdjustments) { adjustment in
+                maskRow(adjustment)
+            }
+
+            if let index = selectedAdjustmentIndex {
+                selectedMaskEditor(index: index)
+            }
+        }
+    }
+
     private func maskAddButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 4) {
@@ -16436,7 +16626,7 @@ struct DevelopView: View {
 
     private var selectionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Selection")
+            sectionTitle("Cut")
 
             HStack(spacing: 8) {
                 maskAddButton("Circle", systemImage: "circle") {
@@ -17515,17 +17705,39 @@ struct DevelopView: View {
             }
             .buttonStyle(.plain)
 
-            Button {
-                selectLayer(layer.id)
-            } label: {
-                Text(layer.name)
-                    .font(.custom("Figtree", size: 12).weight(.medium))
-                    .foregroundColor(layer.isEnabled ? AppColors.ink : AppColors.muted)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+            if renamingLayerID == layer.id {
+                TextField("Layer name", text: $layerNameDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.custom("Figtree", size: 12))
+                    .onSubmit { commitLayerRename() }
+                    .onExitCommand { renamingLayerID = nil }
+                    .frame(maxWidth: .infinity)
+            } else {
+                // Client, 18.09: double-click renames. A single click still
+                // selects, as the Button here always did.
+                // ⚠️ A Button, not onTapGesture: the row carries .onDrag for
+                // reordering, and on macOS that swallows plain tap gestures -
+                // the name stopped selecting the layer (client, 18.09). The
+                // double-click is read off the click itself; its first click
+                // has already selected the layer, so the second does not
+                // toggle it off again.
+                Button {
+                    if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+                        if selectedLayerID != layer.id { selectLayer(layer.id) }
+                        beginLayerRename(layer)
+                    } else {
+                        selectLayer(layer.id)
+                    }
+                } label: {
+                    Text(layer.name)
+                        .font(.custom("Figtree", size: 12).weight(.medium))
+                        .foregroundColor(layer.isEnabled ? AppColors.ink : AppColors.muted)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             Button {
                 deleteLayer(layer.id)
@@ -17544,6 +17756,25 @@ struct DevelopView: View {
                 .stroke(isSelected ? layerSelectionColor : Color.clear, lineWidth: 1.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contextMenu {
+            Button("Rename…") { beginLayerRename(layer) }
+        }
+    }
+
+    private func beginLayerRename(_ layer: ImageLayer) {
+        layerNameDraft = layer.name
+        renamingLayerID = layer.id
+    }
+
+    // An empty name is not a name - it keeps the old one.
+    private func commitLayerRename() {
+        defer { renamingLayerID = nil }
+        let name = layerNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let id = renamingLayerID,
+              let index = settings.layers.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        settings.layers[index].name = name
     }
 
     /// The Layers panel's own selection colour.
@@ -19788,6 +20019,94 @@ struct DevelopView: View {
     private func nextMaskName(_ base: String) -> String {
         let existingCount = settings.localAdjustments.filter { $0.name.hasPrefix(base) }.count
         return "\(base) \(existingCount + 1)"
+    }
+
+    // The layer Eraser (LayerEraser.swift), reached from the Tools row. It
+    // erases a LAYER - pixels of a pasted piece, the matte of People /
+    // Background - so the settings carry which layer it is working on.
+    private func toggleEraseTool() {
+        isEraseToolOpen.toggle()
+        layerEraserCursor.stroke = []
+        guard isEraseToolOpen else {
+            layerEraserActive = false
+            return
+        }
+        // Anything that sits ahead of the Eraser on the canvas is put down,
+        // or the drag would go to it instead.
+        selectedLocalAdjustmentID = nil
+        deselectSelection()
+        isCropping = false
+        closeAICleanUp()
+        isCutSectionOpen = false
+        if selectedLayerIndex == nil, let first = settings.layers.last {
+            // Armed by the onChange of selectedLayerID, once it has run.
+            selectedLayerID = first.id
+        } else if selectedLayerIndex != nil {
+            layerEraserActive = true
+        }
+    }
+
+    private var eraseToolSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if settings.layers.isEmpty {
+                Text("Erase works on a layer. Paste a piece or use Select Subjects first.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                // Our own buttons, not a Menu: the native menu label draws in
+                // the SYSTEM appearance and came out black on this dark panel
+                // (client, 18.09) - the same trap the segmented picker was.
+                Text("Erasing:")
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .foregroundColor(AppColors.muted)
+                FlowLayout(spacing: 6, lineSpacing: 6) {
+                    ForEach(settings.layers.reversed()) { layer in
+                        layerToggleButton(layer.name, systemImage: "square.2.layers.3d",
+                                          isOn: selectedLayerID == layer.id) {
+                            if selectedLayerID != layer.id {
+                                selectedLayerID = layer.id
+                            }
+                        }
+                    }
+                }
+
+                editSlider("Eraser Size", key: "layerEraser.size", value: $layerEraserSize, range: 0.005...0.3) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                editSlider("Eraser Opacity", key: "layerEraser.opacity", value: $layerEraserOpacity, range: 0.05...1) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                editSlider("Eraser Feather", key: "layerEraser.feather", value: $layerEraserFeather, range: 0...1) {
+                    String(format: "%.0f", $0 * 100)
+                }
+                Text("Drag over the photo to erase the layer. Feather 0 is a hard edge, 100 a soft one. ⌘Z takes a stroke back.")
+                    .font(.custom("Figtree", size: 10))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var isDodgeBurnMaskSelected: Bool {
+        guard let index = selectedAdjustmentIndex else { return false }
+        return settings.localAdjustments[index].isDodgeBurn
+    }
+
+    // Picks up the photo's existing Dodge (or Burn) brush if there is one, so
+    // pressing it twice keeps painting into the same mask instead of stacking
+    // a new one each time.
+    private func startDodgeBurn(dodge: Bool) {
+        let base = dodge ? "Dodge" : "Burn"
+        if let existing = settings.localAdjustments.last(where: { $0.type == .brush && $0.name.hasPrefix(base) }) {
+            if selectedLocalAdjustmentID != existing.id {
+                selectLocalAdjustment(existing.id)
+            }
+            return
+        }
+        var adjustment = LocalAdjustment.brush(name: nextMaskName(base))
+        adjustment.settings.exposure = dodge ? 0.3 : -0.3
+        addLocalAdjustment(adjustment)
     }
 
     private func addLocalAdjustment(_ adjustment: LocalAdjustment) {

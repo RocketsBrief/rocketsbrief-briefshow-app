@@ -240,7 +240,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .openCleanUp: return "AI Clean Up (open, brush in hand)"
         case .quickCleanUp: return "Quick Clean Up (LaMa)"
         case .generativeCleanUp: return "Generative Clean Up"
-        case .selectPeople: return "Select People"
+        case .selectPeople: return "Select Subjects"
         case .flattenPhoto: return "Flatten Photo"
         case .showOriginal: return "See Original (hold)"
         case .backToGrid: return "Back to Grid"

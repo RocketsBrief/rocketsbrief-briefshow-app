@@ -20772,6 +20772,35 @@ dovoljan da se kaže „ovo nije prazno", a to je ceo posao upozorenja.
 selekciju fotografija: taster oduvek znači „obriši izabrane slike", i sjaj foldera od nekog
 ranijeg klika ne sme to da preuzme. Dok se kuca ime, taster je — taster.
 
+### Šesti krug — obrisan folder nestaje ODMAH, ne kad se izađe pa vrati
+
+Klijent: *„ja kad sam obrisao folder on je pokazivao da je jos tu znaci nije odradio refresh kad
+sam izasao iz tog foldera gde sam obrisao folder i dosao opet tu video sam da nema tog foldera
+sto sam obrisao.. znaci mora kad se obrise folder odma da se ne vidi vise"*.
+
+**Uzrok, ne utisak:** `trashFolder` je zvao `refreshFolderTree()` — a to crta **listu sa leve
+strane**. Grid drži **svoju** listu (`gridFolderURLs`), pročitanu kad je folder otvoren, i njoj
+niko nije rekao da je jedan od njih otišao. Zato je pločica stajala do sledećeg otvaranja foldera.
+
+Isti propust je postojao i za **premeštanje**: `transferItems` je fotografije izbacivao iz
+`photoURLs` istog trenutka, a folder ili video povučen iz otvorenog foldera je ostajao na ekranu.
+
+**Popravka:** `removeFromGridListings` — folderi i video zapisi izlaze iz onoga što grid crta
+odmah, i za brisanje i za premeštanje. Uz njih izlazi i sve što je pokazivalo na njih: sjaj
+selekcije, ime koje se kucalo i klik koji je čekao da postane preimenovanje.
+
+⚠️ **Sa ekrana ne sklanja ništa što Trash nije uzeo.** `trashItem` se sada proverava; ako odbije,
+folder ostaje i na disku i na ekranu, a osvežava se samo stablo — grid koji se ne slaže sa diskom
+gori je od foldera koji je ostao sekund duže.
+
+⚠️ **Otvoren folder se prazni i kad je obrisan onaj koji ga je DRŽAO**, ne samo kad je obrisan on
+sam — inače bi grid nastavio da pokazuje fotografije sa putanje koje više nema.
+
+⚠️ **Druga ispravka merne sprave u ovom koraku:** provera „briše iz grida pre nego što osveži
+stablo" je gledala **prvi** `refreshFolderTree()` u funkciji — a to je onaj u grani kad brisanje
+ne uspe. Poredila je uspešnu putanju sa neuspešnom i proglasila redosled pogrešnim. Sada gleda
+poslednji.
+
 ### Čime je zaključano
 
 `Tools/run-folder-rename-test.py`, dve polovine:
@@ -20789,8 +20818,9 @@ ranijeg klika ne sme to da preuzme. Dok se kuca ime, taster je — taster.
    a ne zatvara, da red dok se kuca spusti drag i tap, da klik/meni/drop stoje na **celoj** ćeliji
    (a ne na ikonici), da selekcija foldera ne ulazi u `selectedURLs`, da sva četiri klika gase
    kucanje, da Esc i dalje **baca** ime umesto da ga upiše, i da brisanje foldera iz oba menija i
-   sa tastera vodi u isto pitanje. **41 provera**, sve zelene; kompajlirana polovina je sa
-   `BriefShowFolderContents` narasla na **25**.
+   sa tastera vodi u isto pitanje, i da obrisan ili premešten folder izlazi iz grida odmah.
+   **48 provera**, sve zelene; kompajlirana polovina je sa `BriefShowFolderContents` narasla na
+   **25**.
 
 ⚠️ **Druga polovina kaže šta je SPOJENO, nikad da je prevlačenje viđeno kako radi.** Prevlačenje
 se protiv ovog prozora ne može skriptovati (osascript je na tome već jednom pao, zapisano ranije
@@ -20801,12 +20831,13 @@ signaturi (`-> some View`), pa je promena povratnog tipa u `AnyView` ispraznila 
 oborila deset provera odjednom — što liči na nalaz, a bio je pokvaren merač. Sada se funkcija
 traži po imenu.
 
-**Negativna kontrola puštena, šest puta:** nad kodom od pre izmene test staje odmah („enum
+**Negativna kontrola puštena, sedam puta:** nad kodom od pre izmene test staje odmah („enum
 BriefShowFolderClick not found"); nad kopijom iz koje su skinuti `.onDrop` i „Rename…" pada tačno
 na te četiri provere; nad stanjem u kom je spor klik postojao **samo u gridu** pada tačno na
 sedam provera koje se tiču liste; nad stanjem pre trećeg kruga pada tačno na sedam provera o
 imenu i vidljivoj selekciji; nad stanjem pre četvrtog na pet provera o klikovima koji gase
-kucanje; i nad kopijom bez Delete-a u gridu i bez grane za taster na četiri provere o brisanju.
+kucanje; nad kopijom bez Delete-a u gridu i bez grane za taster na četiri provere o brisanju; i nad
+stanjem pre šestog kruga na šest provera o osvežavanju grida.
 
 **Stanje:** `xcodebuild … Debug` i `… Release` → **BUILD SUCCEEDED**, universal (`arm64 x86_64`),
 verzija 11.40. App instaliran u `/Applications/C4S Suite.app` (bio je **11.35**, iako je izdanje

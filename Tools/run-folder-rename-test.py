@@ -315,6 +315,51 @@ check("and the dialog says exactly that",
       "Text(pendingTrashFolderContents.warning)" in source,
       "the client is told 'everything inside it' and no number")
 
+print("\nand it is gone from the grid at once")
+
+# *„ja kad sam obrisao folder on je pokazivao da je jos tu… mora kad se obrise
+# folder odma da se ne vidi vise a ne da ja izadjem da bi on refreshovao folder"*
+# — refreshFolderTree redraws the LIST; the grid keeps its own gridFolderURLs,
+# read when the folder was opened, and nobody was telling it.
+trash_start = source.find("private func trashFolder(")
+trash = source[trash_start:source.find("private func removeFromGridListings(", trash_start)] if trash_start != -1 else ""
+check("trashing a folder takes it out of what the grid is drawing",
+      "removeFromGridListings([node.url])" in trash,
+      "the tile stays on screen until the folder is left and entered again")
+
+# ⚠️ The LAST refreshFolderTree, not the first: the guard above it redraws the
+# tree too, on the path where the Trash refused. Reading the first one compares
+# the success path against the failure path and calls the order wrong.
+check("and it does that before the tree is redrawn, not instead of it",
+      trash.find("removeFromGridListings") < trash.rfind("refreshFolderTree()"),
+      "the list on the left would go stale instead")
+
+# A folder that did not actually go to the Trash must not disappear from the
+# screen: that would be a grid that disagrees with the disk.
+check("nothing is taken off screen unless the Trash took it",
+      "guard (try? FileManager.default.trashItem(at: node.url, resultingItemURL: nil)) != nil else {" in trash,
+      "a failed trash would still empty the tile")
+
+check("the open folder is cleared when the trashed one HELD it, not only when it was it",
+      'openPath?.hasPrefix(trashedPath + "/")' in trash,
+      "the grid would keep showing photographs from a path that no longer exists")
+
+helper_start = source.find("private func removeFromGridListings(")
+helper = source[helper_start:source.find("// MARK: New Folder", helper_start)] if helper_start != -1 else ""
+check("folders and films both leave the grid",
+      "gridFolderURLs.removeAll" in helper and "gridVideoURLs.removeAll" in helper)
+
+check("and nothing goes on pointing at what is gone",
+      "selectedGridFolderURL = nil" in helper and "gridRenamingFolderURL = nil" in helper
+      and "gridRenameArmedURL = nil" in helper,
+      "a highlight or a half-typed name would outlive the folder it belonged to")
+
+move_start = source.find("private func transferItems(")
+move = source[move_start:source.find("// MARK: Keyboard", move_start)] if move_start != -1 else ""
+check("a folder dragged out of the open folder leaves the grid too",
+      "removeFromGridListings(movedAwayURLs)" in move,
+      "photographs left the grid on a move and folders did not - the same staleness")
+
 # Esc is not a second way of committing: it throws the typed name away, and that
 # difference is the whole reason it is still there.
 cancel_start = source.find("private func cancelGridRename() {")

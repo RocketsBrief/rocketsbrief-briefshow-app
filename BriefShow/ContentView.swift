@@ -24812,12 +24812,29 @@ struct PhotoShowSheet: View {
     }
 
     private func trashFolder(_ node: FolderNode) {
-        try? FileManager.default.trashItem(at: node.url, resultingItemURL: nil)
+        guard (try? FileManager.default.trashItem(at: node.url, resultingItemURL: nil)) != nil else {
+            // It is still there. Say nothing new, but let the tree redraw from
+            // what is actually on disk rather than from what was expected.
+            refreshFolderTree()
+            return
+        }
+
+        // ⛔ GONE FROM THE GRID AT ONCE. Client, 20.09: *„ja kad sam obrisao
+        // folder on je pokazivao da je jos tu… mora kad se obrise folder odma da
+        // se ne vidi vise a ne da ja izadjem da bi on refreshovao folder"*.
+        //
+        // refreshFolderTree() below redraws the LIST on the left. The grid keeps
+        // its own `gridFolderURLs`, read when the folder was opened, and nothing
+        // was telling it that one of them had just left - so the tile sat there
+        // until the folder was reopened and the list read again.
+        removeFromGridListings([node.url])
 
         // The trashed folder can't be browsed anymore, so if it was the one
-        // open in the grid, clear the grid rather than leave it showing
-        // photos that no longer exist at that path.
-        if selectedFolderURL == node.url {
+        // open in the grid — or held the one that was — clear the grid rather
+        // than leave it showing photos that no longer exist at that path.
+        let trashedPath = node.url.standardizedFileURL.path
+        let openPath = selectedFolderURL?.standardizedFileURL.path
+        if openPath == trashedPath || (openPath?.hasPrefix(trashedPath + "/") ?? false) {
             selectedFolderURL = nil
             photoURLs = []
             gridFolderURLs = []
@@ -24827,6 +24844,36 @@ struct PhotoShowSheet: View {
         }
 
         refreshFolderTree()
+    }
+
+    /// Takes folders and videos out of what the grid is drawing, right now.
+    ///
+    /// The grid holds its own lists, filled when a folder is opened. Photographs
+    /// already had this — `transferItems` drops them out of `photoURLs` the
+    /// moment they move — and folders and films did not, which is why a trashed
+    /// folder stayed on screen until the folder was left and entered again.
+    private func removeFromGridListings(_ urls: [URL]) {
+        let gone = Set(urls.map { $0.standardizedFileURL.path })
+        guard !gone.isEmpty else { return }
+
+        gridFolderURLs.removeAll { gone.contains($0.standardizedFileURL.path) }
+        gridVideoURLs.removeAll { gone.contains($0.standardizedFileURL.path) }
+        for url in urls {
+            gridVideoThumbnails.removeValue(forKey: url)
+        }
+
+        // Nothing may go on pointing at it: not the highlight, not a name that
+        // was being typed into it, not the click that was waiting to become a
+        // rename.
+        if let picked = selectedGridFolderURL, gone.contains(picked.standardizedFileURL.path) {
+            selectedGridFolderURL = nil
+        }
+        if let renaming = gridRenamingFolderURL, gone.contains(renaming.standardizedFileURL.path) {
+            gridRenamingFolderURL = nil
+        }
+        if let armed = gridRenameArmedURL, gone.contains(armed.standardizedFileURL.path) {
+            gridRenameArmedURL = nil
+        }
     }
 
     // MARK: New Folder (right-click "New Folder" on a sidebar folder,
@@ -25168,6 +25215,10 @@ struct PhotoShowSheet: View {
             let movedSet = Set(movedAwayURLs)
             photoURLs.removeAll { movedSet.contains($0) }
             removeFromSelection(movedSet)
+            // A folder or a film dragged out of the open folder leaves the grid
+            // now, for the same reason a trashed one does - photographs already
+            // did, one line above, and the other two did not.
+            removeFromGridListings(movedAwayURLs)
             for url in movedAwayURLs {
                 gridThumbnails.removeValue(forKey: url)
                 loupeImages.removeValue(forKey: url)

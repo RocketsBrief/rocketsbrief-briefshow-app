@@ -118,5 +118,43 @@ check("the folder stays where it is",
       briefShowRenameDestination(for: URL(fileURLWithPath: "/a/b/c/Trip"), to: "Summer",
                                  exists: { _ in false })?.path == "/a/b/c/Summer")
 
+print("\nwhat a folder is said to hold before it goes to the Trash")
+
+func summary(_ entries: [(name: String, isDirectory: Bool)]) -> BriefShowFolderContents {
+    briefShowFolderContentsSummary(of: URL(fileURLWithPath: "/photos/Trip")) { _ in entries }
+}
+
+let empty = summary([])
+check("an empty folder says so", empty.isEmpty && empty.warning.hasPrefix("This folder is empty."),
+      empty.warning)
+
+// ⚠️ The one that makes the warning worth reading: a folder the client sees as
+// empty almost always has a .DS_Store in it. Counting it would say "1 file
+// inside" about a file they cannot see.
+let dotOnly = summary([(".DS_Store", false), (".hidden", true)])
+check("dotfiles are not counted", dotOnly.isEmpty, dotOnly.warning)
+
+let one = summary([("a.jpg", false), (".DS_Store", false)])
+check("one file is counted, and read in the singular",
+      one.files == 1 && one.warning.contains("There is 1 file inside") && one.warning.contains("it goes to the Trash with the folder"),
+      one.warning)
+
+let many = summary([("a.jpg", false), ("b.jpg", false), ("raw", true)])
+check("files and folders are both named, in the plural",
+      many.files == 2 && many.folders == 1
+      && many.warning.contains("There are 2 files and 1 folder inside")
+      && many.warning.contains("they go to the Trash with the folder"),
+      many.warning)
+
+let foldersOnly = summary([("raw", true), ("jpg", true)])
+check("a folder of folders says folders, not files",
+      foldersOnly.files == 0 && foldersOnly.folders == 2
+      && foldersOnly.warning.contains("2 folders inside")
+      && !foldersOnly.warning.contains("file"),
+      foldersOnly.warning)
+
+check("every warning says the Trash can be undone",
+      [empty, one, many, foldersOnly].allSatisfy { $0.warning.contains("restore it from the Trash") })
+
 print(failures == 0 ? "\nall passed" : "\n\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

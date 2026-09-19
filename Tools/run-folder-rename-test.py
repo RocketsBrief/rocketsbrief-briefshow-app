@@ -70,9 +70,29 @@ click_fn = extract("func briefShowFolderClickAction(", ") -> BriefShowFolderClic
 double_fn = extract("func briefShowIsDoubleClick(", ") -> Bool")
 name_fn = extract("func briefShowRenameDestination(", ") -> URL?")
 
+# What a folder is said to hold before it is trashed: the struct and the counter
+# that takes its listing as an argument (the FileManager overload stays behind —
+# a test has no disk to read).
+contents_start = source.find("struct BriefShowFolderContents: Equatable {")
+if contents_start == -1:
+    sys.exit("struct BriefShowFolderContents not found in ContentView.swift")
+depth, i = 0, source.index("{", contents_start)
+while i < len(source):
+    if source[i] == "{":
+        depth += 1
+    elif source[i] == "}":
+        depth -= 1
+        if depth == 0:
+            break
+    i += 1
+contents_src = source[contents_start:i + 1]
+count_fn = extract("func briefShowFolderContentsSummary(\n    of url: URL,\n    listing:",
+                   ") -> BriefShowFolderContents")
+
 test = (ROOT / "Tools" / "test-folder-rename.swift").read_text(encoding="utf-8")
 bundle = ("import Foundation\n\n" + enum_src + "\n\n" + double_fn + "\n\n" + click_fn +
-          "\n\n" + name_fn + "\n\n" + test.replace("import Foundation\n", "", 1))
+          "\n\n" + name_fn + "\n\n" + contents_src + "\n\n" + count_fn +
+          "\n\n" + test.replace("import Foundation\n", "", 1))
 
 print(f"extracted from ContentView.swift: BriefShowFolderClick, briefShowIsDoubleClick, "
       f"briefShowFolderClickAction, briefShowRenameDestination")
@@ -257,6 +277,43 @@ grid = source[grid_start:source.find("private func folderCell(", grid_start)] if
 check("a click on empty space in the grid ends it",
       ".onTapGesture {" in grid and "commitGridRename()" in grid,
       "the one place left where a click did nothing")
+
+print("\ndeleting a folder")
+
+# *„na desnom kliku da mogu da brisem folder isto kao fajl ako ima unutra nesto
+# (neke fajlove da upozori klijenta) isto na backspace da moze da se izbrise
+# folder"* — one question and one trash, reached from three places.
+check("the grid's right-click can trash a folder",
+      'Button("Move to Trash", role: .destructive)' in cell and "requestTrashFolder(FolderNode(url: url))" in cell,
+      "a folder could be deleted only from the list on the left")
+
+check("the list's right-click still can",
+      'Button("Delete", role: .destructive)' in source[source.find("private func folderContextMenuItems("):])
+
+key_start = source.find("let deleteKeyCode: UInt16 = 51")
+keys = source[key_start:key_start + 3000] if key_start != -1 else ""
+check("Backspace on a picked folder asks the same question",
+      "selectedGridFolderURL" in keys and "requestTrashFolder(FolderNode(url: folderURL))" in keys,
+      "the key would do nothing on a folder")
+
+# A photo selection is what the key has always meant; a leftover folder highlight
+# must not take that away.
+check("photographs still answer the key first",
+      keys.find("pendingTrashPhotoURLs = photoURLs.filter") < keys.find("requestTrashFolder(FolderNode(url: folderURL))"),
+      "a folder clicked earlier would swallow Backspace meant for the photos")
+
+check("and never while a name is being typed",
+      "gridRenamingFolderURL == nil," in keys,
+      "Backspace would delete the folder instead of a letter")
+
+# The count is read when the question is asked, not while the dialog is up.
+req = source[source.find("private func requestTrashFolder("):][:1400]
+check("what is inside is counted when the question is asked",
+      "pendingTrashFolderContents = briefShowFolderContentsSummary(of: node.url)" in req)
+
+check("and the dialog says exactly that",
+      "Text(pendingTrashFolderContents.warning)" in source,
+      "the client is told 'everything inside it' and no number")
 
 # Esc is not a second way of committing: it throws the typed name away, and that
 # difference is the whole reason it is still there.

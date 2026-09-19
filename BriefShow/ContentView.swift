@@ -22148,6 +22148,80 @@ func briefShowIsDoubleClick(
 /// The three answers never overlap: a second click inside the system's
 /// double-click interval opens, one that comes after `renameDelay` renames, and
 /// anything in between (or on another folder) is just remembered.
+/// What a folder holds, as the client would count it.
+///
+/// ⚠️ Dotfiles are NOT counted. A folder the client sees as empty usually has a
+/// `.DS_Store` in it, and a warning that says "1 file inside" about a file they
+/// cannot see is a warning that teaches them to ignore warnings.
+struct BriefShowFolderContents: Equatable {
+    var files: Int = 0
+    var folders: Int = 0
+
+    static let empty = BriefShowFolderContents()
+
+    var isEmpty: Bool { files == 0 && folders == 0 }
+
+    /// What the confirmation says under "Move … to the Trash?".
+    ///
+    /// The number is the point. Client, 20.09: *„ako ima unutra nesto (neke
+    /// fajlove da upozori klijenta)"* — a folder is one click and can carry a
+    /// day's work, and "everything inside it" is not something anyone stops for.
+    var warning: String {
+        let restore = "You can restore it from the Trash."
+        if isEmpty {
+            return "This folder is empty. \(restore)"
+        }
+        var parts: [String] = []
+        if files > 0 {
+            parts.append("\(files) \(files == 1 ? "file" : "files")")
+        }
+        if folders > 0 {
+            parts.append("\(folders) \(folders == 1 ? "folder" : "folders")")
+        }
+        let inside = parts.joined(separator: " and ")
+        let goes = (files + folders == 1) ? "it goes" : "they go"
+        return "There \(files + folders == 1 ? "is" : "are") \(inside) inside, and \(goes) to the Trash with the folder. \(restore)"
+    }
+}
+
+/// Counts what is directly inside a folder.
+///
+/// One level down, not the whole tree: this is read at the moment the question is
+/// asked, and walking a deep folder would leave the client looking at nothing
+/// while it counted. One level is enough to say "this is not empty", which is
+/// what the warning is for.
+///
+/// `listing` is passed in so the rule can be proved without a disk — see
+/// Tools/run-folder-rename-test.py.
+func briefShowFolderContentsSummary(
+    of url: URL,
+    listing: (URL) -> [(name: String, isDirectory: Bool)]
+) -> BriefShowFolderContents {
+    var contents = BriefShowFolderContents()
+    for entry in listing(url) where !entry.name.hasPrefix(".") {
+        if entry.isDirectory {
+            contents.folders += 1
+        } else {
+            contents.files += 1
+        }
+    }
+    return contents
+}
+
+func briefShowFolderContentsSummary(of url: URL) -> BriefShowFolderContents {
+    briefShowFolderContentsSummary(of: url) { folder in
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return entries.map { entry in
+            (name: entry.lastPathComponent,
+             isDirectory: (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true)
+        }
+    }
+}
+
 /// How long after a click a second one on the same folder means "rename" rather
 /// than "open". The client's own measure, 20.09: *„sackam jednu sekundu"*.
 ///
@@ -22393,6 +22467,8 @@ struct PhotoShowSheet: View {
     // reach all of them at once. This one is for drawing, and nothing else reads
     // it.
     @State private var selectedGridFolderURL: URL?
+    // What the folder being trashed holds, counted when the question is asked.
+    @State private var pendingTrashFolderContents: BriefShowFolderContents = .empty
 
     // Left-hand folder tree, rooted at the client's Desktop — this is
     // ShowGrid's now-primary way of loading photos (picking a folder loads
@@ -22706,7 +22782,7 @@ struct PhotoShowSheet: View {
                 pendingTrashFolderNode = nil
             }
         } message: {
-            Text("This moves the whole folder, with everything inside it, to the Trash. You can restore it from there.")
+            Text(pendingTrashFolderContents.warning)
         }
         .onAppear {
             installKeyMonitor()
@@ -23749,6 +23825,14 @@ struct PhotoShowSheet: View {
             .contextMenu {
                 Button("Open") { openGridFolder(url) }
                 Button("Rename…") { beginGridRename(url) }
+
+                Divider()
+
+                // The same question and the same trash the sidebar's Delete
+                // reaches - asked for 20.09, "isto kao fajl".
+                Button("Move to Trash", role: .destructive) {
+                    requestTrashFolder(FolderNode(url: url))
+                }
             }
             .help("Double-click to open \(url.lastPathComponent)"))
     }
@@ -24712,6 +24796,17 @@ struct PhotoShowSheet: View {
     // folder can hold a lot more than a single accidental click should be
     // able to remove.
     private func requestTrashFolder(_ node: FolderNode) {
+        // ⛔ WHAT IS INSIDE IS SAID BEFORE IT GOES. Client, 20.09: *„na desnom
+        // kliku da mogu da brisem folder isto kao fajl ako ima unutra nesto (neke
+        // fajlove da upozori klijenta)"*. A folder is one click and can carry a
+        // day's shoot; "everything inside it" is not a number, and a number is
+        // what makes someone stop.
+        //
+        // Counted one level down, not through the whole tree: it is read at the
+        // moment the question is asked, and walking a deep folder would make the
+        // dialog wait. One level is what Finder's own Get Info counts first, and
+        // it is enough to say "this is not empty".
+        pendingTrashFolderContents = briefShowFolderContentsSummary(of: node.url)
         pendingTrashFolderNode = node
         isTrashFolderConfirmationPresented = true
     }
@@ -25338,6 +25433,24 @@ struct PhotoShowSheet: View {
                    !selectedURLs.isEmpty {
                     pendingTrashPhotoURLs = photoURLs.filter { selectedURLs.contains($0) }
                     isTrashPhotoConfirmationPresented = true
+                    return nil
+                }
+
+                // ⌫ / ⌦ on a folder picked in the grid - asked for 20.09,
+                // *„isto na backspace da moze da se izbrise folder"*. Checked
+                // AFTER the photos: a photo selection is what the key has always
+                // meant, and a folder highlight left over from a click before it
+                // must not take that away. It reaches the same question and the
+                // same trash as both Delete menus.
+                //
+                // ⚠️ Never while a name is being typed: the guard at the top of
+                // this monitor keeps the key out of real text fields, and the
+                // folder being renamed is exactly where Backspace means backspace.
+                if event.keyCode == deleteKeyCode || event.keyCode == forwardDeleteKeyCode,
+                   heldModifiers.isEmpty || heldModifiers == [.command],
+                   gridRenamingFolderURL == nil,
+                   let folderURL = selectedGridFolderURL {
+                    requestTrashFolder(FolderNode(url: folderURL))
                     return nil
                 }
 

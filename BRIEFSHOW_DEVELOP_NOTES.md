@@ -20749,6 +20749,29 @@ isto, jedno od njih bi bilo suvišno; ovako klik završava, a Esc odustaje.
 drže, pa svaki sledeći poziv prolazi kroz `guard` i ništa ne radi. Esc ide kroz `cancel…`, koji
 isto to stanje obriše pre nego što fokus padne — pa `onChange` posle njega nema šta da upiše.
 
+### Peti krug — folder se briše kao i fajl, i Backspace-om, uz upozorenje sa brojem
+
+Klijent: *„na desnom kliku da mogu da brisem folder isto kao fajl ako ima unutra nesto (neke
+fajlove da upozori klijenta) isto na backspace da moze da se izbrise folder"*.
+
+- **Move to Trash** u desnom kliku na folder **u gridu** (u listi je već postojalo), i **⌫ / ⌦**
+  na folderu izabranom u gridu. Sva tri puta vode u **isto pitanje** i **isti** `trashFolder`.
+- **Upozorenje sada ima broj:** *„There are 2 files and 1 folder inside, and they go to the Trash
+  with the folder."* Dosadašnji tekst je govorio „sa svime unutra" — a to nije broj, i niko ne
+  stane zbog toga. Prazan folder to i kaže.
+
+⚠️ **Tačkice se ne broje.** Folder koji klijent vidi kao prazan skoro uvek ima `.DS_Store` u
+sebi; upozorenje koje kaže „1 file inside" za fajl koji se ne vidi uči klijenta da ignoriše
+upozorenja.
+
+⚠️ **Broji se jedan nivo, ne celo stablo.** Čita se u trenutku kad se pitanje postavlja, a
+prolazak kroz duboku strukturu bi ostavio klijenta da gleda u prazno dok se broji. Jedan nivo je
+dovoljan da se kaže „ovo nije prazno", a to je ceo posao upozorenja.
+
+⚠️ **Fotografije i dalje prve odgovaraju na taster.** Grana za folder je **posle** grane za
+selekciju fotografija: taster oduvek znači „obriši izabrane slike", i sjaj foldera od nekog
+ranijeg klika ne sme to da preuzme. Dok se kuca ime, taster je — taster.
+
 ### Čime je zaključano
 
 `Tools/run-folder-rename-test.py`, dve polovine:
@@ -20765,7 +20788,9 @@ isto to stanje obriše pre nego što fokus padne — pa `onChange` posle njega n
    **red u listi odlučuje klik istom funkcijom i istim brojem**, da brz drugi klik na red otvara
    a ne zatvara, da red dok se kuca spusti drag i tap, da klik/meni/drop stoje na **celoj** ćeliji
    (a ne na ikonici), da selekcija foldera ne ulazi u `selectedURLs`, da sva četiri klika gase
-   kucanje i da Esc i dalje **baca** ime umesto da ga upiše. **34 provere**, sve zelene.
+   kucanje, da Esc i dalje **baca** ime umesto da ga upiše, i da brisanje foldera iz oba menija i
+   sa tastera vodi u isto pitanje. **41 provera**, sve zelene; kompajlirana polovina je sa
+   `BriefShowFolderContents` narasla na **25**.
 
 ⚠️ **Druga polovina kaže šta je SPOJENO, nikad da je prevlačenje viđeno kako radi.** Prevlačenje
 se protiv ovog prozora ne može skriptovati (osascript je na tome već jednom pao, zapisano ranije
@@ -20776,21 +20801,27 @@ signaturi (`-> some View`), pa je promena povratnog tipa u `AnyView` ispraznila 
 oborila deset provera odjednom — što liči na nalaz, a bio je pokvaren merač. Sada se funkcija
 traži po imenu.
 
-**Negativna kontrola puštena, pet puta:** nad kodom od pre izmene test staje odmah („enum
+**Negativna kontrola puštena, šest puta:** nad kodom od pre izmene test staje odmah („enum
 BriefShowFolderClick not found"); nad kopijom iz koje su skinuti `.onDrop` i „Rename…" pada tačno
 na te četiri provere; nad stanjem u kom je spor klik postojao **samo u gridu** pada tačno na
 sedam provera koje se tiču liste; nad stanjem pre trećeg kruga pada tačno na sedam provera o
-imenu i vidljivoj selekciji; i nad stanjem pre četvrtog na pet provera o klikovima koji gase
-kucanje.
+imenu i vidljivoj selekciji; nad stanjem pre četvrtog na pet provera o klikovima koji gase
+kucanje; i nad kopijom bez Delete-a u gridu i bez grane za taster na četiri provere o brisanju.
 
 **Stanje:** `xcodebuild … Debug` i `… Release` → **BUILD SUCCEEDED**, universal (`arm64 x86_64`),
 verzija 11.40. App instaliran u `/Applications/C4S Suite.app` (bio je **11.35**, iako je izdanje
 11.40 objavljeno 18.09 — mašina je zaostajala za onim što klijent ima) i pokrenut.
 
-⚠️ **Nije viđeno na ekranu:** app stoji na keychain lozinci za
+✅ **Viđeno na ekranu (klijentov snimak, 20.09):** izabran folder u gridu stoji sa akcentnom
+ivicom, sjajem i podebljanim imenom, a folder se zove „New Folder Wow" — dakle i selekcija i
+preimenovanje rade uživo. Na istom snimku se vidi i da u meniju tada nije bilo brisanja, što je
+ovaj peti krug i rešio.
+
+⚠️ **Ostalo nije viđeno na ekranu:** app stoji na keychain lozinci za
 `com.rocketsbrief.briefshow.session`, koja se odavde ne dira. Prvi pravi dokaz je proba:
 desni klik na folder → **Rename…**, spor drugi klik na ime **u gridu i u listi**, brz dvoklik
 koji otvara, klik na **ime** foldera i videa, vidljiva selekcija foldera, klik sa strane koji
-završava kucanje (i Esc koji ga baca), i povlačenje selekcije na folder **u gridu**.
+završava kucanje (i Esc koji ga baca), brisanje foldera desnim klikom i Backspace-om uz
+upozorenje sa brojem, i povlačenje selekcije na folder **u gridu**.
 
 **NIJE OBJAVLJENO** — ide u sledeće izdanje.

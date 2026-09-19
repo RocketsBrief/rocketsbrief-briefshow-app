@@ -20953,3 +20953,61 @@ slučaja jednim mehanizmom umesto dva.
 Korak 1 i 2 zajedno (model + dugme + izbor + ispod/iznad) → klijent vidi prvi template na svojoj
 slici → tek onda 3 i 4 (rad u slotu i sync), pa 5 i 6 (tekst i fontovi), pa 7 (izvoz). Push **tek
 kad sve bude složeno**, kako je dogovoreno.
+
+### ✅ ODGOVORI KLIJENTA (20.09) — pet pitanja zatvoreno, plan doteran
+
+| # | pitanje | odgovor | šta to menja |
+|---|---|---|---|
+| 1 | dpi | **300** | 8×6 → 2400×1800, 8×10 → 3000×2400. Broj stoji na jednom mestu, ne prepisuje se po fajlovima |
+| 2 | crtež | **klijent ubacuje svoje PNG-ove**, uz **dugme Import Template** | generisani okviri **otpadaju**; posao se pomera na uvoz i na nalaženje rupe |
+| 3 | broj slotova | **jedan slot, jedna slika** | *(pitanje je bilo o template-u sa više rupa — kolaž; to se odlaže, ne pravi se sada)* |
+| 4 | gde dugme | **svoje dugme**, ne u Tools-u | nov tab/dugme u panelu, ne red unutar postojećeg alata |
+| 5 | fontovi | **katalog se vidi ceo**, sa stilovima; **font se koristi tek kad se skine**, a jednom skinut radi na tom računaru zauvek | ide preuzimanje na zahtev + trajan keš |
+
+#### Šta uvoz template-a povlači, a plan pre odgovora nije imao
+
+- **Rupa se NALAZI, ne crta se ručno.** Uvezen PNG ima providno mesto; slot je **pravougaonik
+  oko najveće providne oblasti**. Traži se iz alfa kanala, jednom, u trenutku uvoza, i pamti se uz
+  template — da se ne računa na svakom crtanju.
+- **Šta ako PNG nema providnost** (ili je providno svuda po ivici): tada se ne pogađa. Template se
+  uveze, a klijent **sam povuče pravougaonik** preko mesta gde slika treba da legne. Nalaženje je
+  pomoć, ne uslov.
+- **Orijentacija se čita iz samog PNG-a** (šire nego više = horizontalan). To je ono što korak 4
+  koristi za pravilo „vertikalna slika → vertikalan template", pa klijent ne mora ništa da
+  označava — ali **sme da ispravi**, jer kvadratni template niko ne može da svrsta umesto njega.
+- **Gde se čuva:** uvezeni PNG-ovi idu u Application Support (svoj folder), a u zapisu slike stoji
+  **ID template-a**, nikad njegovi pikseli — isto pravilo kao za slojeve (`PhotoEditStore` je jedan
+  JSON blob u UserDefaults i prepisuje se posle svake izmene).
+- **Par se pamti:** klijent obično uveze horizontalan i vertikalan crtež istog formata. Uvoz nudi
+  da ih spoji u **jedan par (8×6 H + 8×6 V)**, i tek taj par čini sync iz koraka 4 mogućim bez
+  pitanja. Ako par nije spojen, sync radi samo za slike te orijentacije i **kaže zašto**.
+
+#### Fontovi — kako se „vidi sve, koristi tek kad se skine" radi u praksi
+
+| nivo | šta klijent vidi | treba li mreža |
+|---|---|---|
+| katalog | ime porodice, kategorija (serif/sans/handwriting/display/mono) i **koji stilovi postoje** (regular, bold, italic…) | ne — lista se isporučuje uz app i osvežava kad ima mreže |
+| **preuzimanje** | dugme **Download** na redu; posle toga red se crta **tim** fontom | da, jednom |
+| korišćenje | font stoji u Application Support i radi **zauvek na tom računaru**, i van mreže, uključujući izvoz | ne |
+
+⚠️ **Ovde postoji granica koju treba reći naglas, jer izgleda kao propust a nije:** ime fonta se
+ne može prikazati **tim** fontom pre nego što se font skine — to je isti fajl. Zato red pre
+preuzimanja nosi ime, kategoriju i listu stilova, a pravi izgled dolazi posle jednog klika. Svaka
+druga varijanta znači skidanje celog kataloga (oko 1,5 GB), što ne ide u app.
+
+⚠️ **Licenca putuje sa fontom.** Uz svaki skinut font upisuje se i njegova licenca (OFL/Apache),
+jer izvoz ide klijentima na štampu.
+
+#### Doterani redosled za sutra
+
+1. **Model + uvoz.** `PrintTemplate` (ID, inči, orijentacija, slot, `artOverPhoto`), **Import
+   Template** dugme, nalaženje rupe iz alfa kanala, ručna ispravka pravougaonika, par H/V.
+2. **Svoje dugme u Create-u** + izbornik uvezenih template-a; izbor primeni na otvorenu sliku;
+   prekidač **ispod/iznad**. → **ovde klijent prvi put vidi svoju sliku u svom template-u**
+3. Rad u slotu (pomeranje, zum, fit/fill), uz sve postojeće Develop izmene.
+4. Sync na izbor, sa pravilom orijentacije iz para H/V.
+5. Tekst na template-u.
+6. Fontovi: katalog → Download → trajan keš.
+7. Izvoz na 300 dpi kroz postojeći `exportPhotos`.
+
+**Push tek kad sve stoji**, kako je dogovoreno.

@@ -21015,6 +21015,10 @@ klijentov disk, ne isporuka. Zato veličina izdanja **ostaje ista** kakva je dan
 Za poređenje, druga strana iste odluke: skinuti sve što tih 1946 porodica nosi je red veličine
 1,5 GB. To je razlog zašto se skida na zahtev, a ne zato da bi klijent morao da klikće.
 
+✅ **Klijentova odluka, 20.09: katalog OSTAJE u app-u** (onih ~14 KB), umesto da se povlači sa
+mreže pri prvom pokretanju. Znači: lista fontova se vidi i bez mreže, od prvog pokretanja, a
+veličina izdanja ostaje ista kao danas.
+
 #### Doterani redosled za sutra
 
 1. **Model + uvoz.** `PrintTemplate` (ID, inči, orijentacija, slot, `artOverPhoto`), **Import

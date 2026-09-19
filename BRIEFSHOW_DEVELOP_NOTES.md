@@ -20706,6 +20706,28 @@ ručno; komentar u store-u je dopunjen da to kaže.
 
 Otvoren folder prati svoje novo ime, i onaj koji je preimenovan **iznad** otvorenog isto.
 
+### Treći krug istog dana — ime je deo stvari, i izabran folder se vidi
+
+Klijent: *„ali isto kad se klikne na ime da odreaguje ne samo na fajl kao fajl vec da odreaguje
+isto kad se klikne na ime fajla da gleda kao da si kliknuo na taj fajl… isto kada je folder u
+gridu i kada kliknem na njega da se vidi da je selektovan"*.
+
+- **Ime je bilo mrtvo.** Klik, meni i drop stajali su na **ikonici**, a ime ispod nje je bilo van
+  svega toga. Sada su na **celoj ćeliji**, pa ime radi isto što i sličica — i na folderu i na
+  videu. (Fotografije u gridu ne ispisuju ime, tamo nema šta da se pomeri.)
+- **Izabran folder se vidi:** ivica u akcentnoj boji, blag sjaj i podebljano ime. Redosled na
+  ivici je namerno ovakav: **meta za drop** pobeđuje **izabrano**, a izabrano pobeđuje obično —
+  dok vučeš, važnije je gde će slike sleteti nego šta je pre toga bilo izabrano.
+- Folder se označi **kakav god ispao klik** — i kad samo pamti, i kad otvara, i kad kreće
+  preimenovanje. Klik posle kog se ništa ne promeni čita se kao klik koji nije ni registrovan.
+- Otvaranje foldera gasi njegov sjaj (grid je sad njegov sadržaj), a klik na fotografiju ga isto
+  gasi — dve stvari označene u isto vreme govorile bi da sledeći taster važi za obe.
+
+⛔ **Selekcija foldera ima SVOJ `selectedGridFolderURL`, ne ulazi u `selectedURLs`.** Folderi su
+namerno van `photoURLs` i van selekcije fotografija — svaka putanja za oznake, izvoz, brisanje i
+loupe čita te liste kao „fotografije", pa bi folder u njima odjednom stigao do svih njih. Ova
+promenljiva služi samo za crtanje i ništa je drugo ne čita; test to izričito drži.
+
 ### Čime je zaključano
 
 `Tools/run-folder-rename-test.py`, dve polovine:
@@ -20720,16 +20742,23 @@ Otvoren folder prati svoje novo ime, i onaj koji je preimenovan **iznad** otvore
    da obe putanje čitaju drop kroz **jedan** čitač (`briefShowLoadDroppedURLs`, sad na nivou
    fajla — sidebar-ova privatna kopija zove njega), da Rename… postoji na oba desna klika, da
    **red u listi odlučuje klik istom funkcijom i istim brojem**, da brz drugi klik na red otvara
-   a ne zatvara, i da red dok se kuca spusti drag i tap. **21 provera**, sve zelene.
+   a ne zatvara, da red dok se kuca spusti drag i tap, da klik/meni/drop stoje na **celoj** ćeliji
+   (a ne na ikonici), i da selekcija foldera ne ulazi u `selectedURLs`. **28 provera**, sve zelene.
 
 ⚠️ **Druga polovina kaže šta je SPOJENO, nikad da je prevlačenje viđeno kako radi.** Prevlačenje
 se protiv ovog prozora ne može skriptovati (osascript je na tome već jednom pao, zapisano ranije
 u dokumentu). To ostaje za oči.
 
-**Negativna kontrola puštena, tri puta:** nad kodom od pre izmene test staje odmah („enum
+⚠️ **Ispravka merne sprave, upisana da se ne ponovi:** test je `folderCell` tražio po celoj
+signaturi (`-> some View`), pa je promena povratnog tipa u `AnyView` ispraznila ceo isečak i
+oborila deset provera odjednom — što liči na nalaz, a bio je pokvaren merač. Sada se funkcija
+traži po imenu.
+
+**Negativna kontrola puštena, četiri puta:** nad kodom od pre izmene test staje odmah („enum
 BriefShowFolderClick not found"); nad kopijom iz koje su skinuti `.onDrop` i „Rename…" pada tačno
 na te četiri provere; nad stanjem u kom je spor klik postojao **samo u gridu** pada tačno na
-sedam provera koje se tiču liste.
+sedam provera koje se tiču liste; i nad stanjem pre trećeg kruga pada tačno na sedam provera o
+imenu i vidljivoj selekciji.
 
 **Stanje:** `xcodebuild … Debug` i `… Release` → **BUILD SUCCEEDED**, universal (`arm64 x86_64`),
 verzija 11.40. App instaliran u `/Applications/C4S Suite.app` (bio je **11.35**, iako je izdanje
@@ -20738,6 +20767,7 @@ verzija 11.40. App instaliran u `/Applications/C4S Suite.app` (bio je **11.35**,
 ⚠️ **Nije viđeno na ekranu:** app stoji na keychain lozinci za
 `com.rocketsbrief.briefshow.session`, koja se odavde ne dira. Prvi pravi dokaz je proba:
 desni klik na folder → **Rename…**, spor drugi klik na ime **u gridu i u listi**, brz dvoklik
-koji otvara, i povlačenje selekcije na folder **u gridu**.
+koji otvara, klik na **ime** foldera i videa, vidljiva selekcija foldera, i povlačenje selekcije
+na folder **u gridu**.
 
 **NIJE OBJAVLJENO** — ide u sledeće izdanje.

@@ -22384,6 +22384,15 @@ struct PhotoShowSheet: View {
     // u folder ne radi, samo bi mogao da privucem u listu foldera sa desne strane!
     // Mora da radi i kada provucem u gridu na folder"*.
     @State private var gridDropTargetFolderURL: URL?
+    // Which folder in the grid is picked. Client, 20.09: *„kada je folder u gridu
+    // i kada kliknem na njega da se vidi da je selektovan"*.
+    //
+    // ⚠️ ITS OWN VAR, NOT selectedURLs. Folders are kept out of photoURLs and out
+    // of the photo selection on purpose - every label, export, delete and preview
+    // path reads those as "photographs", and a folder walking into them would
+    // reach all of them at once. This one is for drawing, and nothing else reads
+    // it.
+    @State private var selectedGridFolderURL: URL?
 
     // Left-hand folder tree, rooted at the client's Desktop — this is
     // ShowGrid's now-primary way of loading photos (picking a folder loads
@@ -23619,9 +23628,13 @@ struct PhotoShowSheet: View {
     // A subfolder of the open folder. Double-click opens it, exactly as
     // clicking it in the sidebar would — same `selectedFolderURL`, so the
     // tree expands down to it and the grid reloads through the one path.
-    private func folderCell(for url: URL) -> some View {
+    private func folderCell(for url: URL) -> AnyView {
         let cellWidth = thumbnailSize * (4.0 / 3.0)
-        return VStack(spacing: 10) {
+        let isSelected = selectedGridFolderURL == url
+        let isDropTarget = gridDropTargetFolderURL == url
+        let isRenaming = gridRenamingFolderURL == url
+
+        let content = VStack(spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(AppColors.panel)
@@ -23632,10 +23645,55 @@ struct PhotoShowSheet: View {
                     .foregroundColor(gridFolderColors[url.standardizedFileURL.path]?.color ?? accentColor.opacity(0.85))
             }
             .frame(width: cellWidth, height: thumbnailSize)
+            // Three states on one border, in the order that matters: what a drop
+            // would land in beats what is merely picked, and picked beats plain.
+            // Client, 20.09: *„kada je folder u gridu i kada kliknem na njega da
+            // se vidi da je selektovan"* — a click that changed nothing visible
+            // reads as a click that did not register.
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(gridDropTargetFolderURL == url ? AppColors.hoverInk : AppColors.border.opacity(0.6),
-                            lineWidth: gridDropTargetFolderURL == url ? 2 : 1))
+                    .stroke(isDropTarget ? AppColors.hoverInk
+                                         : (isSelected ? accentColor : AppColors.border.opacity(0.6)),
+                            lineWidth: (isDropTarget || isSelected) ? 2 : 1))
+            .shadow(color: isSelected ? accentColor.opacity(0.35) : .clear, radius: isSelected ? 10 : 0)
+
+            if isRenaming {
+                // Renaming in place, the way Finder does it. Enter commits, Esc
+                // leaves the folder as it was; clicking away also commits, which
+                // is what the client will do most of the time.
+                TextField("", text: $gridRenameText, onCommit: { commitGridRename() })
+                    .textFieldStyle(.roundedBorder)
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .frame(width: cellWidth)
+                    .focused($gridRenameFieldFocused)
+                    .onExitCommand { cancelGridRename() }
+                    // Typing starts where the client is looking, without a click
+                    // into the field first.
+                    .onAppear { gridRenameFieldFocused = true }
+            } else {
+                Text(url.lastPathComponent)
+                    .font(.custom("Figtree", size: 11).weight(isSelected ? .semibold : .medium))
+                    .foregroundColor(AppColors.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(width: cellWidth)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: isSelected)
+
+        // ⚠️ While the name is being typed, nothing else on the cell listens —
+        // same reason the sidebar row stands its gestures down: a click meant for
+        // the text field would otherwise be taken by the cell around it.
+        if isRenaming {
+            return AnyView(content)
+        }
+
+        // ⛔ THE WHOLE CELL, NAME INCLUDED. Client, 20.09: *„kad se klikne na ime
+        // da odreaguje ne samo na fajl kao fajl vec da odreaguje isto kad se
+        // klikne na ime fajla da gleda kao da si kliknuo na taj fajl"*. The
+        // gestures used to sit on the icon alone, so the name under it was dead
+        // to the click, the menu and the drop alike.
+        return AnyView(content
             .contentShape(Rectangle())
             // ONE tap gesture — open, rename or remember is decided from the
             // timing, never by SwiftUI holding the click back. See
@@ -23670,33 +23728,10 @@ struct PhotoShowSheet: View {
                 return true
             }
             .contextMenu {
-                Button("Open") { selectedFolderURL = url }
+                Button("Open") { openGridFolder(url) }
                 Button("Rename…") { beginGridRename(url) }
             }
-            .help("Double-click to open \(url.lastPathComponent)")
-
-            if gridRenamingFolderURL == url {
-                // Renaming in place, the way Finder does it. Enter commits, Esc
-                // leaves the folder as it was; clicking away also commits, which
-                // is what the client will do most of the time.
-                TextField("", text: $gridRenameText, onCommit: { commitGridRename() })
-                    .textFieldStyle(.roundedBorder)
-                    .font(.custom("Figtree", size: 11).weight(.medium))
-                    .frame(width: cellWidth)
-                    .focused($gridRenameFieldFocused)
-                    .onExitCommand { cancelGridRename() }
-                    // Typing starts where the client is looking, without a click
-                    // into the field first.
-                    .onAppear { gridRenameFieldFocused = true }
-            } else {
-                Text(url.lastPathComponent)
-                    .font(.custom("Figtree", size: 11).weight(.medium))
-                    .foregroundColor(AppColors.ink)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(width: cellWidth)
-            }
-        }
+            .help("Double-click to open \(url.lastPathComponent)"))
     }
 
     // A video in the open folder. Double-click plays it in a window of its
@@ -23724,17 +23759,6 @@ struct PhotoShowSheet: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1))
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                playingVideo = GridVideoItem(url: url)
-            }
-            .contextMenu {
-                Button("Play") { playingVideo = GridVideoItem(url: url) }
-                Button("Show in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                }
-            }
-            .help("Double-click to play \(url.lastPathComponent)")
 
             Text(url.lastPathComponent)
                 .font(.custom("Figtree", size: 11).weight(.medium))
@@ -23743,6 +23767,20 @@ struct PhotoShowSheet: View {
                 .truncationMode(.middle)
                 .frame(width: cellWidth)
         }
+        // The name belongs to the film as much as its frame does - same client
+        // note, 20.09, and the same fix the folder cell got: the gestures sit on
+        // the whole cell rather than on the picture alone.
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            playingVideo = GridVideoItem(url: url)
+        }
+        .contextMenu {
+            Button("Play") { playingVideo = GridVideoItem(url: url) }
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+        }
+        .help("Double-click to play \(url.lastPathComponent)")
     }
 
     private func loadGridVideoThumbnails(for urls: [URL]) {
@@ -24332,6 +24370,11 @@ struct PhotoShowSheet: View {
         let flags = NSApp.currentEvent?.modifierFlags ?? []
         let isCommandDown = flags.contains(.command)
 
+        // A photograph is picked now, so the folder is not - two things drawn as
+        // picked at once would say the next key or menu applies to both.
+        selectedGridFolderURL = nil
+        gridRenameArmedURL = nil
+
         // Shift-click selects the whole run from the anchor to this photo,
         // in grid order, inclusive. Asked for 17.09. after importing: pick
         // one photo in the middle, Shift-click a later one, and everything
@@ -24729,16 +24772,27 @@ struct PhotoShowSheet: View {
             doubleClickInterval: NSEvent.doubleClickInterval,
             renameDelay: briefShowFolderRenameClickDelay
         )
+        // Picked, whatever the click turns out to mean - that is what the client
+        // is looking for when they click a folder and nothing changes.
+        selectedGridFolderURL = url
+
         switch action {
         case .open:
             gridRenameArmedURL = nil
-            selectedFolderURL = url
+            openGridFolder(url)
         case .beginRename:
             beginGridRename(url)
         case .remember:
             gridRenameArmedURL = url
             gridRenameArmedAt = now
         }
+    }
+
+    // Opening a folder makes its own highlight pointless - the grid is now that
+    // folder's contents, so nothing in it is the folder itself.
+    private func openGridFolder(_ url: URL) {
+        selectedGridFolderURL = nil
+        selectedFolderURL = url
     }
 
     private func beginGridRename(_ url: URL) {

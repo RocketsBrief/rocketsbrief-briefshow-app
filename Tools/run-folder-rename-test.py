@@ -92,7 +92,7 @@ def check(label: str, passed: bool, detail: str = "") -> None:
 
 print("\nwhat is wired to what")
 
-cell_start = source.find("private func folderCell(for url: URL) -> some View {")
+cell_start = source.find("private func folderCell(for url: URL)")
 cell = source[cell_start:source.find("private func videoCell(", cell_start)] if cell_start != -1 else ""
 check("folderCell is still there to read", bool(cell))
 
@@ -184,6 +184,49 @@ check("the typing field takes focus by itself, in both places",
 check("what the row typed is renamed by the one renameFolder on disk",
       "onCommitRename(node, renameText)" in source and "onCommitRename: { node, newName in" in source,
       "a second rename path would drift from the grid's")
+
+print("\nthe name is part of the thing, and a picked folder looks picked")
+
+# *„kad se klikne na ime da odreaguje ne samo na fajl kao fajl vec da odreaguje
+# isto kad se klikne na ime fajla da gleda kao da si kliknuo na taj fajl"* — the
+# gestures used to sit on the icon alone, leaving the name under it dead.
+icon_block = cell[cell.find("ZStack {"):cell.find("if isRenaming {")] if "ZStack {" in cell else ""
+check("the folder's click, menu and drop sit on the whole cell, not on the icon",
+      ".onTapGesture" not in icon_block and ".contextMenu" not in icon_block and ".onDrop(" not in icon_block,
+      "clicking the folder's name would do nothing")
+
+check("and they are attached after the name is in the cell",
+      cell.find("Text(url.lastPathComponent)") < cell.find(".onTapGesture"),
+      "the name is outside whatever the gestures cover")
+
+video_start = source.find("private func videoCell(for url: URL)")
+video = source[video_start:source.find("private func loadGridVideoThumbnails(", video_start)] if video_start != -1 else ""
+check("a video's name plays it too",
+      video.find("Text(url.lastPathComponent)") < video.find(".onTapGesture"),
+      "the same dead name, on the video cell")
+
+# *„kada je folder u gridu i kada kliknem na njega da se vidi da je selektovan"*
+check("a folder picked in the grid is drawn as picked",
+      "selectedGridFolderURL == url" in cell and "isSelected ? accentColor" in cell,
+      "a click that changes nothing visible reads as a click that did not register")
+
+# ⚠️ Folders are deliberately kept out of photoURLs and of the photo selection —
+# every label, export, delete and preview path reads those as "photographs".
+check("the folder's highlight has its own var, and never enters the photo selection",
+      "@State private var selectedGridFolderURL: URL?" in source
+      and "selectedURLs.insert(url)" not in cell and "selectedGridFolderURL" not in handler,
+      "a folder in selectedURLs would reach export, delete and the loupe at once")
+
+tap_start = source.find("private func handleFolderCellTap(")
+tap = source[tap_start:source.find("private func openGridFolder(", tap_start)] if tap_start != -1 else ""
+check("the folder is picked whatever the click turns out to mean",
+      "selectedGridFolderURL = url" in tap,
+      "a click that only armed a rename would leave nothing on screen")
+
+select_tap = source[source.find("private func handleSelectTap("):][:1200]
+check("picking a photograph puts the folder's highlight out",
+      "selectedGridFolderURL = nil" in select_tap,
+      "two things drawn as picked at once")
 
 # FolderColorStore is keyed by path and says so itself: a colour does not follow
 # a folder that is renamed. The grid now DRAWS the folder in that colour, so

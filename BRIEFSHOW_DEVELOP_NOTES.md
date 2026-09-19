@@ -21019,6 +21019,13 @@ Za poređenje, druga strana iste odluke: skinuti sve što tih 1946 porodica nosi
 mreže pri prvom pokretanju. Znači: lista fontova se vidi i bez mreže, od prvog pokretanja, a
 veličina izdanja ostaje ista kao danas.
 
+⛔ **I u njemu su SAMO tri polja: ime, kategorija, stilovi.** Klijentova izričita reč, 20.09:
+*„neka bude ono sto nam treba za fontove, ime, kategorija i stilovi"*. Ceo Google katalog (2,6 MB)
+ima još desetine polja — datume, popularnost, podržana pisma, URL-ove fajlova — i ništa od toga
+ovde ne crta nijedan red. Sve što bi neka sledeća sesija poželela da doda uz katalog (uzorke,
+slike pregleda, same fajlove fontova) **menja veličinu isporuke** i traži klijentovu reč, jer je
+ceo smisao ove odluke da izdanje ostane iste veličine kao danas.
+
 #### Doterani redosled za sutra
 
 1. **Model + uvoz.** `PrintTemplate` (ID, inči, orijentacija, slot, `artOverPhoto`), **Import

@@ -20648,3 +20648,79 @@ Ko već ima SD zadržava ga; nov klijent ga skida dugmetom. **`v11.0` se i dalje
 
 - stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.40`
 - direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.40/C4S-Suite-11.40.zip`
+
+---
+
+## KORAK 197 — folder se preimenuje, i prima slike u gridu (20. septembar 2026)
+
+Dve prijave iz klijentove probe, obe o folderu:
+
+| # | prijava | šta je urađeno | gde |
+|---|---|---|---|
+| 1 | *„Right click on the folder should show rename button. Or click once and wait for a bit click another one to enable renaming, like usually"* | **Rename…** u desnom kliku — i u gridu i u sidebar-u. U gridu se ime menja **na mestu** (TextField u ćeliji), sporim drugim klikom kao u Finder-u | `folderCell`, `folderContextMenuItems`, `renameFolder` |
+| 2 | *„kada napravim folder i pored njega su slike i ja selektiram sve slike i hocu da ih privucem u folder ne radi, samo bi mogao da privucem u listu foldera sa desne strane! Mora da radi i kada provucem u gridu na folder"* | folder u gridu je sada meta za prevlačenje, kroz **isti** `handleDropOnFolder` koji sidebar već koristi | `folderCell.onDrop` |
+
+### Klik koji bira između tri stvari
+
+⚠️ **Jedan gest, ne dva.** Iznad ćelije fotografije već stoji zapisano zašto: `count: 2`
+iznad `count: 1` tera SwiftUI da **zadrži prvi klik** dok ne vidi da li stiže drugi, a klijent
+je baš to prijavio kao lag. Zato klik odgovara odmah, a **šta je značio** računa se iz vremena
+od prethodnog:
+
+| razmak od prethodnog klika na isti folder | šta se dešava |
+|---|---|
+| ≤ `NSEvent.doubleClickInterval` | **otvara** folder |
+| ≥ 0,6 s | **počinje preimenovanje** u mestu |
+| između | samo se pamti |
+
+`briefShowFolderClickAction` je funkcija na nivou fajla, pored `briefShowIsDoubleClick`, baš da
+bi mogla da se testira bez prozora. Sat koji ide unazad (NTP, sleep/wake) ne preimenuje ništa.
+
+### Ime na koje preimenovanje sleti
+
+`briefShowRenameDestination` — `/` i `:` postaju `-` (inače bi ime bilo putanja i folder bi
+otišao drugde), prazno ime i ime sa tačkom na početku se odbijaju (folder bi nestao iz prikaza),
+isto ime nije preimenovanje, a **zauzeto ime dobija sledeći slobodan broj** — istu konvenciju
+koju New Folder i Paste već koriste. Preimenovanje koje bi tiho ništa ne uradilo izgleda isto
+kao preimenovanje koje je palo.
+
+⚠️ **Boja labele se prenosi na novo ime.** `FolderColorStore` je ključan po putanji i u
+sopstvenom komentaru piše da boja ne prati preimenovan folder — a grid od 18.09 **crta** folder
+tom bojom, pa bi klijent posle preimenovanja gledao kako boja spada. `renameFolder` je prenosi
+ručno; komentar u store-u je dopunjen da to kaže.
+
+Otvoren folder prati svoje novo ime, i onaj koji je preimenovan **iznad** otvorenog isto.
+
+### Čime je zaključano
+
+`Tools/run-folder-rename-test.py`, dve polovine:
+
+1. **Kompajlirano** — `test-folder-rename.swift` vozi **prave** funkcije izvučene iz
+   `ContentView.swift` (isti izvlakač kao `run-double-click-test.py`, pa test kompajlira ono što
+   se isporučuje): 19 provera, **all passed**. Među njima i ona koja najviše znači — razmak
+   između dva klika jednog dvoklika **nikad** ne sme da preimenuje, inače bi svako otvaranje
+   foldera završilo u polju za ime.
+2. **Pročitano iz izvora** — da je žica spojena: da ćelija u gridu uopšte prima drop, da sleti u
+   **isti** `handleDropOnFolder` (koji je i mesto gde jedna povučena slika povuče celu selekciju),
+   da obe putanje čitaju drop kroz **jedan** čitač (`briefShowLoadDroppedURLs`, sad na nivou
+   fajla — sidebar-ova privatna kopija zove njega), i da Rename… postoji na oba desna klika.
+   13 provera, sve zelene.
+
+⚠️ **Druga polovina kaže šta je SPOJENO, nikad da je prevlačenje viđeno kako radi.** Prevlačenje
+se protiv ovog prozora ne može skriptovati (osascript je na tome već jednom pao, zapisano ranije
+u dokumentu). To ostaje za oči.
+
+**Negativna kontrola puštena, u oba smera:** nad kodom od pre izmene test staje odmah („enum
+BriefShowFolderClick not found"), a nad kopijom iz koje su skinuti `.onDrop` i „Rename…" pada
+tačno na te četiri provere.
+
+**Stanje:** `xcodebuild … Debug` i `… Release` → **BUILD SUCCEEDED**, universal (`arm64 x86_64`),
+verzija 11.40. App instaliran u `/Applications/C4S Suite.app` (bio je **11.35**, iako je izdanje
+11.40 objavljeno 18.09 — mašina je zaostajala za onim što klijent ima) i pokrenut.
+
+⚠️ **Nije viđeno na ekranu:** app stoji na keychain lozinci za
+`com.rocketsbrief.briefshow.session`, koja se odavde ne dira. Prvi pravi dokaz je klijentova
+proba: desni klik na folder u gridu → **Rename…**, spor drugi klik na ime, i povlačenje
+selekcije na folder **u gridu**.
+
+**NIJE OBJAVLJENO** — ide u sledeće izdanje.

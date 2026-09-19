@@ -22133,6 +22133,74 @@ func briefShowIsDoubleClick(
     return gap >= 0 && gap <= interval
 }
 
+/// What a single click on a folder in the grid means.
+///
+/// Client, 20.09: *„Right click on the folder should show rename button. Or click
+/// once and wait for a bit click another one to enable renaming, like usually"* —
+/// Finder's slow second click.
+///
+/// ⚠️ ONE gesture decides all three, for the reason written above the photo
+/// cell's own tap: a count-2 gesture stacked on a count-1 gesture makes SwiftUI
+/// hold the first click back to see whether a second follows, and the client felt
+/// exactly that as lag once already. So the click is answered immediately and what
+/// it MEANT is worked out from the time since the previous one.
+///
+/// The three answers never overlap: a second click inside the system's
+/// double-click interval opens, one that comes after `renameDelay` renames, and
+/// anything in between (or on another folder) is just remembered.
+enum BriefShowFolderClick: String {
+    case open
+    case beginRename
+    case remember
+}
+
+func briefShowFolderClickAction(
+    previous: (url: URL, at: Date)?,
+    url: URL,
+    at now: Date,
+    doubleClickInterval: TimeInterval,
+    renameDelay: TimeInterval
+) -> BriefShowFolderClick {
+    if briefShowIsDoubleClick(previous: previous, url: url, at: now, interval: doubleClickInterval) {
+        return .open
+    }
+    guard let previous, previous.url == url else { return .remember }
+    let gap = now.timeIntervalSince(previous.at)
+    // A clock that stepped backwards is not a rename, the same way it is not a
+    // double click.
+    return gap >= renameDelay ? .beginRename : .remember
+}
+
+/// Where a folder being renamed should end up, or nil when the typed name is not
+/// a rename at all.
+///
+/// Sanitised the way commitNewFolder sanitises a typed name, and a name already
+/// taken gets the numbered suffix the rest of the app uses for a collision — a
+/// rename that silently did nothing would look exactly like one that failed.
+///
+/// `exists` is passed in rather than read from FileManager here so the rule can be
+/// proved without a disk: Tools/run-folder-rename-test.py drives this function.
+func briefShowRenameDestination(
+    for url: URL,
+    to rawName: String,
+    exists: (URL) -> Bool
+) -> URL? {
+    let typed = rawName
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: "/", with: "-")
+        .replacingOccurrences(of: ":", with: "-")
+    guard !typed.isEmpty, !typed.hasPrefix("."), typed != url.lastPathComponent else { return nil }
+
+    let parent = url.deletingLastPathComponent()
+    var destination = parent.appendingPathComponent(typed)
+    var suffix = 2
+    while exists(destination) {
+        destination = parent.appendingPathComponent("\(typed) \(suffix)")
+        suffix += 1
+    }
+    return destination
+}
+
 struct PhotoShowSheet: View {
     let onClose: () -> Void
     let initialPhotoURLs: [URL]
@@ -22290,6 +22358,28 @@ struct PhotoShowSheet: View {
     @State private var newFolderParentURL: URL?
     @State private var newFolderName: String = "untitled folder"
 
+    // Renaming a folder, asked for 20.09: *„Right click on the folder should show
+    // rename button. Or click once and wait for a bit click another one to enable
+    // renaming, like usually"*. Two ways in, one rename: the grid renames in place
+    // (Finder's slow second click, and its right-click menu), the sidebar asks in a
+    // box, because its row already carries a drag, a drop, a hover and a tap and a
+    // text field inside it would have to win against all four.
+    @State private var renameFolderURL: URL?
+    @State private var renameFolderName: String = ""
+    // The grid cell currently being typed into, and the click that armed it. A
+    // single click only ARMS: the rename starts on the NEXT single click, and only
+    // after `folderRenameArmDelay` - so a double-click to open never turns into a
+    // rename on its way through.
+    @State private var gridRenamingFolderURL: URL?
+    @State private var gridRenameText: String = ""
+    @State private var gridRenameArmedURL: URL?
+    @State private var gridRenameArmedAt: Date = .distantPast
+    // Which folder cell a drag is currently over. Client, 20.09: *„kada napravim
+    // folder i pored njega su slike i ja selektiram sve slike i hocu da ih privucem
+    // u folder ne radi, samo bi mogao da privucem u listu foldera sa desne strane!
+    // Mora da radi i kada provucem u gridu na folder"*.
+    @State private var gridDropTargetFolderURL: URL?
+
     // Left-hand folder tree, rooted at the client's Desktop — this is
     // ShowGrid's now-primary way of loading photos (picking a folder loads
     // whatever's inside it automatically), alongside the older manual
@@ -22418,6 +22508,10 @@ struct PhotoShowSheet: View {
                             },
                             onNewFolder: { node in
                                 createNewFolder(in: node.url)
+                            },
+                            onRenameFolder: { node in
+                                renameFolderName = node.url.lastPathComponent
+                                renameFolderURL = node.url
                             },
                             onTrashFolder: requestTrashFolder,
                             onDropItems: { urls, destination in
@@ -22698,6 +22792,17 @@ struct PhotoShowSheet: View {
             Button("Cancel", role: .cancel) { newFolderParentURL = nil }
         } message: {
             Text("Name the new folder in \(newFolderParentURL?.lastPathComponent ?? "this folder").")
+        }
+        .alert("Rename Folder", isPresented: Binding(
+            get: { renameFolderURL != nil },
+            set: { if !$0 { renameFolderURL = nil } }
+        )) {
+            TextField("Name", text: $renameFolderName)
+            Button("Rename") { commitRenameFolderDialog() }
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { renameFolderURL = nil }
+        } message: {
+            Text("New name for \(renameFolderURL?.lastPathComponent ?? "this folder").")
         }
         .sheet(item: $playingVideo) { item in
             GridVideoPlayerSheet(url: item.url)
@@ -23536,19 +23641,64 @@ struct PhotoShowSheet: View {
             .frame(width: cellWidth, height: thumbnailSize)
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(AppColors.border.opacity(0.6), lineWidth: 1))
+                    .stroke(gridDropTargetFolderURL == url ? AppColors.hoverInk : AppColors.border.opacity(0.6),
+                            lineWidth: gridDropTargetFolderURL == url ? 2 : 1))
             .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                selectedFolderURL = url
+            // ONE tap gesture — open, rename or remember is decided from the
+            // timing, never by SwiftUI holding the click back. See
+            // briefShowFolderClickAction.
+            .onTapGesture {
+                handleFolderCellTap(url)
+            }
+            // The same drop the sidebar row takes, on the folder as it is drawn in
+            // the grid - client, 20.09: dragging a selection onto a folder worked
+            // only in the list on the left. handleDropOnFolder is what makes one
+            // dragged photo carry the whole selection with it.
+            .onDrop(
+                of: [UTType.fileURL],
+                isTargeted: Binding(
+                    get: { gridDropTargetFolderURL == url },
+                    set: { targeted in
+                        if targeted {
+                            gridDropTargetFolderURL = url
+                        } else if gridDropTargetFolderURL == url {
+                            gridDropTargetFolderURL = nil
+                        }
+                    }
+                )
+            ) { providers in
+                gridDropTargetFolderURL = nil
+                // Reading a provider is asynchronous, so this answer cannot wait
+                // for the move - `true` is what makes the drag animate INTO the
+                // folder instead of springing back. Same reasoning as the sidebar.
+                briefShowLoadDroppedURLs(from: providers) { urls in
+                    _ = handleDropOnFolder(urls, destination: url)
+                }
+                return true
+            }
+            .contextMenu {
+                Button("Open") { selectedFolderURL = url }
+                Button("Rename…") { beginGridRename(url) }
             }
             .help("Double-click to open \(url.lastPathComponent)")
 
-            Text(url.lastPathComponent)
-                .font(.custom("Figtree", size: 11).weight(.medium))
-                .foregroundColor(AppColors.ink)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(width: cellWidth)
+            if gridRenamingFolderURL == url {
+                // Renaming in place, the way Finder does it. Enter commits, Esc
+                // leaves the folder as it was; clicking away also commits, which
+                // is what the client will do most of the time.
+                TextField("", text: $gridRenameText, onCommit: { commitGridRename() })
+                    .textFieldStyle(.roundedBorder)
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .frame(width: cellWidth)
+                    .onExitCommand { cancelGridRename() }
+            } else {
+                Text(url.lastPathComponent)
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .foregroundColor(AppColors.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(width: cellWidth)
+            }
         }
     }
 
@@ -24564,6 +24714,108 @@ struct PhotoShowSheet: View {
         refreshFolderTree()
         selectedFolderURL = candidateURL
         loadImages(inFolder: candidateURL)
+    }
+
+    // MARK: Rename a folder (20.09)
+
+    // How long after the arming click a second single click counts as "rename"
+    // rather than as the first half of a double-click. Finder's own feel: long
+    // enough that a deliberate double-click can never reach it.
+    private static let folderRenameArmDelay: TimeInterval = 0.6
+
+    // A single click on a folder in the grid: open it, start renaming it, or just
+    // remember the click. The decision is briefShowFolderClickAction's, and the
+    // system's own double-click setting is what it is measured against.
+    private func handleFolderCellTap(_ url: URL) {
+        guard gridRenamingFolderURL == nil else { return }
+        let now = Date()
+        let previous = gridRenameArmedURL.map { (url: $0, at: gridRenameArmedAt) }
+        let action = briefShowFolderClickAction(
+            previous: previous,
+            url: url,
+            at: now,
+            doubleClickInterval: NSEvent.doubleClickInterval,
+            renameDelay: Self.folderRenameArmDelay
+        )
+        switch action {
+        case .open:
+            gridRenameArmedURL = nil
+            selectedFolderURL = url
+        case .beginRename:
+            beginGridRename(url)
+        case .remember:
+            gridRenameArmedURL = url
+            gridRenameArmedAt = now
+        }
+    }
+
+    private func beginGridRename(_ url: URL) {
+        gridRenameArmedURL = nil
+        gridRenameText = url.lastPathComponent
+        gridRenamingFolderURL = url
+    }
+
+    // Esc while typing, and anything that moves on. Nothing that OPENS a folder
+    // has to call it: the click that opens is told apart from the click that
+    // renames before either happens (briefShowFolderClickAction), rather than one
+    // undoing the other afterwards.
+    private func cancelGridRename() {
+        gridRenamingFolderURL = nil
+        gridRenameArmedURL = nil
+    }
+
+    private func commitGridRename() {
+        guard let url = gridRenamingFolderURL else { return }
+        gridRenamingFolderURL = nil
+        renameFolder(at: url, to: gridRenameText)
+    }
+
+    private func commitRenameFolderDialog() {
+        guard let url = renameFolderURL else { return }
+        renameFolderURL = nil
+        renameFolder(at: url, to: renameFolderName)
+    }
+
+    // The one rename both ways end in. The name itself is decided by
+    // briefShowRenameDestination (sanitising and collisions, proved by
+    // Tools/run-folder-rename-test.py); what is left here is the move, and what
+    // has to follow the folder to its new name.
+    //
+    // ⚠️ THE COLOUR LABEL IS CARRIED OVER. FolderColorStore is keyed by path (its
+    // own comment says a colour will not follow a folder that is renamed), so
+    // without this the client's colour would fall off the folder the moment it got
+    // a new name - and the colour is what the grid now draws it with.
+    private func renameFolder(at url: URL, to rawName: String) {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        guard let destination = briefShowRenameDestination(for: url, to: rawName, exists: {
+            fileManager.fileExists(atPath: $0.path)
+        }) else { return }
+
+        guard (try? fileManager.moveItem(at: url, to: destination)) != nil else { return }
+
+        let label = FolderColorStore.color(for: url)
+        if label != .none {
+            FolderColorStore.setColor(.none, for: url)
+            FolderColorStore.setColor(label, for: destination)
+        }
+
+        // The open folder follows its own new name, and so does one that was
+        // renamed from under the folder currently open.
+        let oldPath = url.standardizedFileURL.path
+        if let current = selectedFolderURL?.standardizedFileURL.path {
+            if current == oldPath {
+                selectedFolderURL = destination
+            } else if current.hasPrefix(oldPath + "/") {
+                let tail = String(current.dropFirst(oldPath.count))
+                selectedFolderURL = URL(fileURLWithPath: destination.standardizedFileURL.path + tail)
+            }
+        }
+
+        refreshFolderTree()
+        if let open = selectedFolderURL {
+            loadImages(inFolder: open)
+        }
     }
 
     // MARK: Paste (right-click "Paste" on a sidebar folder or empty grid space)
@@ -25917,6 +26169,11 @@ enum FolderColorLabel: String, CaseIterable {
 // a folder that's later renamed or moved (including via BriefShow's own
 // Cut/Paste) the way PhotoLabelStore's name+size key lets a liked photo's
 // label follow it through an export.
+//
+// ⚠️ One exception, added 20.09 with Rename: renameFolder carries the label
+// across by hand, because the grid now DRAWS a labelled folder in its colour and
+// losing it on rename would be visible the moment the client renamed one. Moving
+// a folder in Finder still drops it — the key is still the path.
 enum FolderColorStore {
     private static let defaultsKey = "com.rocketsbrief.briefshow.folderColorLabels"
 
@@ -25968,6 +26225,35 @@ enum FolderColorStore {
         }
 
         return result
+    }
+}
+
+/// Pulls the file URLs out of a drop's providers.
+///
+/// Each provider answers on its own queue, so the collected list is guarded by a
+/// serial queue rather than appended to from wherever each callback lands -
+/// several photos dropped at once is exactly the case where an unguarded array
+/// quietly loses one.
+///
+/// At file scope because two places take the same drop: the sidebar row, and the
+/// folder as the grid draws it (20.09).
+func briefShowLoadDroppedURLs(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
+    var urls: [URL] = []
+    let lock = DispatchQueue(label: "briefshow.folderdrop.collect")
+    let group = DispatchGroup()
+
+    for provider in providers {
+        group.enter()
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            if let url {
+                lock.sync { urls.append(url) }
+            }
+            group.leave()
+        }
+    }
+
+    group.notify(queue: .main) {
+        completion(urls)
     }
 }
 
@@ -26039,6 +26325,10 @@ private struct FolderTreeSidebar: View {
     let onSetClipboard: (_ urls: [URL], _ isCut: Bool) -> Void
     let onPasteIntoFolder: (FolderNode) -> Void
     let onNewFolder: (FolderNode) -> Void
+    /// Asked for 20.09: a folder's right-click menu offers to rename it. The
+    /// sidebar asks in a box rather than editing in the row - see the note on
+    /// renameFolderURL.
+    let onRenameFolder: (FolderNode) -> Void
     let onTrashFolder: (FolderNode) -> Void
     /// Photos or folders dropped onto one of these rows. Returns whether the
     /// drop was taken, which is what tells AppKit to draw the "accepted"
@@ -26433,23 +26723,10 @@ private struct OpenFolderShape: Shape {
     /// lands — several photos dropped at once is exactly the case where an
     /// unguarded array quietly loses one.
     private func loadDroppedURLs(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
-        var urls: [URL] = []
-        let lock = DispatchQueue(label: "briefshow.folderdrop.collect")
-        let group = DispatchGroup()
-
-        for provider in providers {
-            group.enter()
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let url {
-                    lock.sync { urls.append(url) }
-                }
-                group.leave()
-            }
-        }
-
-        group.notify(queue: .main) {
-            completion(urls)
-        }
+        // The grid's folder cells take the same drop since 20.09, and both read
+        // it through the one function below rather than through two copies that
+        // can drift.
+        briefShowLoadDroppedURLs(from: providers, completion: completion)
     }
 
     private func setFolderColor(_ label: FolderColorLabel, for node: FolderNode) {
@@ -26471,6 +26748,10 @@ private struct OpenFolderShape: Shape {
         Divider()
 
         if !isRoot {
+            Button("Rename…") {
+                onRenameFolder(node)
+            }
+
             Button("Copy") {
                 writeURLsToPasteboard([node.url])
                 onSetClipboard([node.url], false)

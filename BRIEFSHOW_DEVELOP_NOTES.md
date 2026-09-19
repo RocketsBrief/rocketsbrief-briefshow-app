@@ -20856,3 +20856,100 @@ završava kucanje (i Esc koji ga baca), brisanje foldera desnim klikom i Backspa
 upozorenje sa brojem, i povlačenje selekcije na folder **u gridu**.
 
 **NIJE OBJAVLJENO** — ide u sledeće izdanje.
+
+---
+
+## 📋 PLAN — KORAK 198: TEMPLATES u Create-u (napisano 20.09.2026, RADI SE SUTRA)
+
+⚠️ **Ovo je plan, ne urađen posao.** Ništa od ovoga još nije u kodu. Dogovor od 20.09: plan se
+piše danas, radi se sutra, i **push ide tek kad sve bude složeno** (klijentova izričita reč:
+*„sutra kad sredimo sve tada kad pushujemo ovo da radi"*).
+
+### Šta je traženo, klijentovim rečima
+
+*„da u create dodamo Dugme Templates, da moze klijent da izabere template 8x6 incha vertikal i
+horizontal kao i 8x10 incha vertical i horizontal… ti templates imaju rupu u sebi znaci mesto gde
+slika treba da legne… i kad se izabere template da klijent moze da izabere sliku koju je slikao i
+podesi dal ce da slika ode ispod layera templat-a ili da bude iznad layera template-a… i posle da
+klijent moze da syncuje to na sve slike, ali da se pazi ako je neka slika vertikalna da se
+automatski doda vertikalan template za tu sliku, isto za slike koje ulaze u taj template da mogu
+da se edituju pre tako reci batch-a (synca), isto da moze da se doda Text na templateu, i da
+koristi sva free google fonta"*
+
+### Šta već postoji i na čemu se gradi (izmereno u kodu, ne pretpostavljeno)
+
+| postoji | gde | šta znači za ovaj posao |
+|---|---|---|
+| `ImageLayer` — pikseli ili maska, x/y/w/h, opacity, blend, rotacija, **svoja** podešavanja, gumica | `Develop.swift:1163` | template je sloj kakav app već ume da crta; ne izmišlja se nov sistem slojeva |
+| `SyncItem` — sync po **jednoj kontroli**, ne po grupama | `Develop.swift:330` | „syncuj na sve slike" ima gde da se zakači, kao nov bit |
+| `CropAspectRatioOption` — 1:1, 4:3, 3:4, 16:9, 9:16, string raw values | `Develop.swift:631` | 8x6 = **4:3 / 3:4 već postoji**; za 8x10 fale **4:5 i 5:4** |
+| `PhotoEditRenderer` + izvoz kroz `exportPhotos` | `Develop.swift`, `ContentView.swift:25670` | template mora kroz **isti** renderer, da izvoz bude ono što se vidi |
+| „Create" **jeste** LumenoLab (editor) | `Shortcuts.swift:207` | dugme Templates ide u editor, ne u grid |
+
+⛔ **Dva zaključana pravila koja ovaj posao NE SME da prekrši:**
+
+1. **Rezolucija.** Slika u LumenoLab-u radi u punoj rezoluciji fajla (zaključan odeljak na vrhu).
+   Template je platno **fiksne** veličine za štampu — slika u njemu se i dalje uzima iz
+   `fullBaseImage`, nikad iz preview-a. Izvoz na 300 dpi je odredište, ne radna rezolucija.
+2. **Gde se čuva.** Sve izmene žive u **jednom JSON blobu u UserDefaults** (`PhotoEditStore`,
+   `Develop.swift:1417`), koji se prepisuje posle svake promene. Zato se u zapis slike upisuje
+   **ID template-a i transformacija slota**, nikad pikseli template-a. Crtež template-a stoji u
+   bundle-u; ako zatreba blob, ide kroz `LayerPixelStore`, kao i pikseli slojeva.
+
+### Ključna odluka: template je PLATNO, ne samo sloj iznad slike
+
+Klijent traži da slika može **ispod** i **iznad** template-a. To dvoje nije isti mehanizam:
+
+- **slika ISPOD** — template je PNG sa **rupom** (providan pravougaonik), crta se **preko** slike;
+  kroz rupu se vidi fotografija. To je današnji sloj iznad pozadine.
+- **slika IZNAD** — template je podloga (okvir, paspartu, boja), a fotografija stoji **na** njemu.
+  To današnji model ne ume: pozadina je uvek fotografija.
+
+Zato dokument uvodi **`PrintTemplate` kao platno**: kadar fiksnih proporcija (8×6 ili 8×10), sa
+jednim ili više **slotova**, crtežom template-a i **jednim prekidačem: crtež ispod ili iznad
+slotova**. Fotografija tada nije pozadina nego sadržaj slota — i tek to čini oba klijentova
+slučaja jednim mehanizmom umesto dva.
+
+### Koraci, redom. Svaki je zasebna izmena koja se može videti i vratiti
+
+| # | šta | gde | čime se zaključava |
+|---|---|---|---|
+| 1 | **Model i platno.** `PrintTemplate` (id, inči, orijentacija, slotovi, `artOverPhoto: Bool`), `TemplateSlot` (okvir u procentima platna + fit/fill + pomeraj/zum/rotacija slike u slotu). Četiri isporučena: 8×6 H/V, 8×10 H/V. Bez UI-a. | nov `Templates.swift` | čist test: pravougaonik slota se u oba smera preslikava isto (bez kod), slika koja je šira/uža od slota se seče po pravilu, a ne razvlači |
+| 2 | **Dugme Templates u Create-u** + izbornik sa četiri pločice i pregledom. Izbor primeni template na otvorenu sliku; slika legne u slot; prekidač **ispod/iznad**. | `Develop.swift` (nov tab ili red u Tools-u) | test čita da dugme postoji, da izbor upisuje ID u zapis slike, i da se render menja |
+| 3 | **Rad u slotu.** Pomeranje, zum i rotacija slike unutar slota; „fit" i „fill"; izbor **koje** slike ide u koji slot (ako ih template ima više). Slika zadržava **sve svoje Develop izmene** — template ih ne gazi. | `Develop.swift` | test: izmena ekspozicije posle postavljanja template-a menja piksele u slotu, a ne van njega |
+| 4 | **Sync na sve slike**, sa **pravilom orijentacije**: vertikalna slika dobija **vertikalan** template iste porodice (8×6 → 8×6 V), horizontalna horizontalan. Nov bit u `SyncItem`. | `Develop.swift:330` | test: sync preko mešanog izbora (5 horizontalnih, 3 vertikalne) daje 5 H i 3 V template-a, i **nijedna slika ne dobije template pogrešne orijentacije** |
+| 5 | **Tekst na template-u.** Tekstualni sloj: sadržaj, font, veličina, boja, poravnanje, pozicija; ide uz template i putuje sa njim kroz sync. | `Templates.swift` + `Develop.swift` | test: tekst se renderuje u istim koordinatama na ekranu i u izvozu |
+| 6 | **Fontovi.** Sistemski odmah; Google fontovi se skidaju **na zahtev** i keširaju u Application Support, sa licencom uz svaki. | nov `Fonts.swift` | test: izabran font preživi restart app-a i izvoz bez mreže |
+| 7 | **Izvoz.** Template se izvozi na punoj veličini za štampu (v. pitanje o dpi ispod), kroz isti `exportPhotos`; imenovanje i brojač izvoza nedirani. | `ContentView.swift:25670` | test: 8×10 na 300 dpi daje tačno 3000×2400 px, i slika u slotu je iz `fullBaseImage` |
+
+### ⚠️ Rizici, i gde će zaboleti ako se ne odluči unapred
+
+- **Crtež template-a — odakle?** Ako klijent ima svoje PNG-ove sa rupom, ide njegovo. Ako nema,
+  koraci 1-2 isporučuju **generisane** okvire (bela ivica + pravougaona rupa), pa se crtež zameni
+  kad stigne. Ovo je jedina stavka koja može da zaustavi korak 2.
+- **Fontovi su najveći nepoznati deo.** Ceo Google katalog je oko 1,5 GB i **ne** ide u app.
+  Skidanje na zahtev znači mrežu u trenutku izbora i keš na disku; bez mreže radi ono što je već
+  skinuto plus sistemski fontovi. Ovo je razlog što su fontovi **korak 6**, a ne deo koraka 5.
+- **Memorija.** Mašina ima 8 GB. 8×10 na 300 dpi je 7,2 MP po slici — sitno; ali batch izvoz koji
+  drži više punih fotografija i platno u isto vreme nije. Izvoz ide **jedna po jedna**, kao i sad.
+- **Sync i slojevi.** `SyncItem` namerno **ne** sinhronizuje `layers`, i razlog je zapisan: sloj
+  je komad iseckan iz jedne određene fotografije. Template **nije** to — on je izbor izgleda — pa
+  dobija svoj bit i svoje pravilo. Taj razlog mora da stoji uz kod, da neka sledeća sesija ne
+  „pojednostavi" jedno u drugo.
+- **Undo.** Svaki potez sa template-om mora da ide kroz isti undo kao i ostalo (⌘Z), inače je
+  klijent zaglavljen sa template-om koji ne ume da skine.
+
+### ❓ Pitanja za klijenta — odgovor menja posao, pa se pita PRE koraka 1
+
+1. **dpi za izvoz:** 300 (standard za štampu, 8×10 → 3000×2400) ili 240? Utiče na sve veličine.
+2. **Crtež template-a:** šalje svoje PNG-ove sa rupom, ili pravimo generisane okvire za početak?
+3. **Koliko slotova:** jedan po template-u za sada, ili odmah i template sa više otvora (kolaž)?
+4. **Gde ide dugme:** u Tools tab pored ostalih alata, ili svoj tab u desnom panelu?
+5. **Fontovi:** da li app sme da skida font sa interneta kad se izabere (jednom, pa keš), ili sve
+   mora da radi bez mreže — u tom slučaju ide kurirani set koji se isporučuje sa app-om?
+
+### Redosled za sutra
+
+Korak 1 i 2 zajedno (model + dugme + izbor + ispod/iznad) → klijent vidi prvi template na svojoj
+slici → tek onda 3 i 4 (rad u slotu i sync), pa 5 i 6 (tekst i fontovi), pa 7 (izvoz). Push **tek
+kad sve bude složeno**, kako je dogovoreno.

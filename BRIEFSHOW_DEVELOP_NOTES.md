@@ -20728,6 +20728,27 @@ namerno van `photoURLs` i van selekcije fotografija — svaka putanja za oznake,
 loupe čita te liste kao „fotografije", pa bi folder u njima odjednom stigao do svih njih. Ova
 promenljiva služi samo za crtanje i ništa je drugo ne čita; test to izričito drži.
 
+### Četvrti krug — klik sa strane gasi preimenovanje, ne čeka se Esc
+
+Klijent: *„kada je ovako selektirano da se renamuje ne mora da ceka moj esc key da prekine
+renameing, ako ja kliknem negde sastrane da gasi renaming"*.
+
+**Otkucano se ČUVA**, kao u Finder-u — Esc ostaje, i on je taj koji ime **baca**. Da oboje radi
+isto, jedno od njih bi bilo suvišno; ovako klik završava, a Esc odustaje.
+
+Četiri mesta na koja klik može da sleti, i sva četiri završavaju kucanje:
+
+| gde se klikne | čime je pokriveno |
+|---|---|
+| bilo šta što uzme fokus (sidebar, dugme, meni) | `onChange(of:)` na fokusu polja, u oba prikaza |
+| drugi folder | `handleFolderCellTap` / `handleRowTap` prvo upišu, pa klik znači ono što bi inače značio |
+| fotografija | `handleSelectTap` |
+| prazan prostor u gridu | `onTapGesture` na **ScrollView-u** — sloj ispod njega nikad ne vidi klik, što je u ovom dokumentu već zapisano kod desnog klika na pozadinu |
+
+⚠️ Dvostruko upisivanje nije moguće: `commitGridRename` i `commitRename` prvo obrišu stanje koje
+drže, pa svaki sledeći poziv prolazi kroz `guard` i ništa ne radi. Esc ide kroz `cancel…`, koji
+isto to stanje obriše pre nego što fokus padne — pa `onChange` posle njega nema šta da upiše.
+
 ### Čime je zaključano
 
 `Tools/run-folder-rename-test.py`, dve polovine:
@@ -20743,7 +20764,8 @@ promenljiva služi samo za crtanje i ništa je drugo ne čita; test to izričito
    fajla — sidebar-ova privatna kopija zove njega), da Rename… postoji na oba desna klika, da
    **red u listi odlučuje klik istom funkcijom i istim brojem**, da brz drugi klik na red otvara
    a ne zatvara, da red dok se kuca spusti drag i tap, da klik/meni/drop stoje na **celoj** ćeliji
-   (a ne na ikonici), i da selekcija foldera ne ulazi u `selectedURLs`. **28 provera**, sve zelene.
+   (a ne na ikonici), da selekcija foldera ne ulazi u `selectedURLs`, da sva četiri klika gase
+   kucanje i da Esc i dalje **baca** ime umesto da ga upiše. **34 provere**, sve zelene.
 
 ⚠️ **Druga polovina kaže šta je SPOJENO, nikad da je prevlačenje viđeno kako radi.** Prevlačenje
 se protiv ovog prozora ne može skriptovati (osascript je na tome već jednom pao, zapisano ranije
@@ -20754,11 +20776,12 @@ signaturi (`-> some View`), pa je promena povratnog tipa u `AnyView` ispraznila 
 oborila deset provera odjednom — što liči na nalaz, a bio je pokvaren merač. Sada se funkcija
 traži po imenu.
 
-**Negativna kontrola puštena, četiri puta:** nad kodom od pre izmene test staje odmah („enum
+**Negativna kontrola puštena, pet puta:** nad kodom od pre izmene test staje odmah („enum
 BriefShowFolderClick not found"); nad kopijom iz koje su skinuti `.onDrop` i „Rename…" pada tačno
 na te četiri provere; nad stanjem u kom je spor klik postojao **samo u gridu** pada tačno na
-sedam provera koje se tiču liste; i nad stanjem pre trećeg kruga pada tačno na sedam provera o
-imenu i vidljivoj selekciji.
+sedam provera koje se tiču liste; nad stanjem pre trećeg kruga pada tačno na sedam provera o
+imenu i vidljivoj selekciji; i nad stanjem pre četvrtog na pet provera o klikovima koji gase
+kucanje.
 
 **Stanje:** `xcodebuild … Debug` i `… Release` → **BUILD SUCCEEDED**, universal (`arm64 x86_64`),
 verzija 11.40. App instaliran u `/Applications/C4S Suite.app` (bio je **11.35**, iako je izdanje
@@ -20767,7 +20790,7 @@ verzija 11.40. App instaliran u `/Applications/C4S Suite.app` (bio je **11.35**,
 ⚠️ **Nije viđeno na ekranu:** app stoji na keychain lozinci za
 `com.rocketsbrief.briefshow.session`, koja se odavde ne dira. Prvi pravi dokaz je proba:
 desni klik na folder → **Rename…**, spor drugi klik na ime **u gridu i u listi**, brz dvoklik
-koji otvara, klik na **ime** foldera i videa, vidljiva selekcija foldera, i povlačenje selekcije
-na folder **u gridu**.
+koji otvara, klik na **ime** foldera i videa, vidljiva selekcija foldera, klik sa strane koji
+završava kucanje (i Esc koji ga baca), i povlačenje selekcije na folder **u gridu**.
 
 **NIJE OBJAVLJENO** — ide u sledeće izdanje.

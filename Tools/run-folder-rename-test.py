@@ -228,6 +228,46 @@ check("picking a photograph puts the folder's highlight out",
       "selectedGridFolderURL = nil" in select_tap,
       "two things drawn as picked at once")
 
+print("\nand a click anywhere else ends the typing")
+
+# *„kada je ovako selektirano da se renamuje ne mora da ceka moj esc key da
+# prekine renameing, ako ja kliknem negde sastrane da gasi renaming"* — four
+# places a click can land, and all four end it. What was typed is KEPT: Esc is
+# what throws a name away, which is why it stays.
+check("losing the focus ends it and keeps the name, in both places",
+      ".onChange(of: gridRenameFieldFocused) { focused in" in source
+      and ".onChange(of: renameFieldFocused) { focused in" in source
+      and source.count("if !focused { commitGridRename() }") == 1
+      and source.count("if !focused { commitRename(node) }") == 1,
+      "the field would sit there until Esc")
+
+check("a click on another folder ends it first, then means what it means",
+      "if let renaming = gridRenamingFolderURL {" in tap and "commitGridRename()" in tap,
+      "clicking a second folder while typing would do nothing at all")
+
+check("a click on another row in the list does the same",
+      "if let renaming = renamingURL {" in row_tap and "commitRenameInProgress()" in row_tap)
+
+check("a click on a photograph ends it",
+      "commitGridRename()" in select_tap,
+      "typing would survive a click onto a photo")
+
+grid_start = source.find("private var thumbnailGrid: some View {")
+grid = source[grid_start:source.find("private func folderCell(", grid_start)] if grid_start != -1 else ""
+check("a click on empty space in the grid ends it",
+      ".onTapGesture {" in grid and "commitGridRename()" in grid,
+      "the one place left where a click did nothing")
+
+# Esc is not a second way of committing: it throws the typed name away, and that
+# difference is the whole reason it is still there.
+cancel_start = source.find("private func cancelGridRename() {")
+cancel = source[cancel_start:source.find("private func commitGridRename(", cancel_start)] if cancel_start != -1 else ""
+check("Esc still throws the typed name away rather than keeping it",
+      "renameFolder" not in cancel and "gridRenamingFolderURL = nil" in cancel
+      and ".onExitCommand { cancelGridRename() }" in source
+      and ".onExitCommand { cancelRename() }" in source,
+      "Esc and clicking away would do the same thing, and one of them has to undo")
+
 # FolderColorStore is keyed by path and says so itself: a colour does not follow
 # a folder that is renamed. The grid now DRAWS the folder in that colour, so
 # losing it on rename would be visible immediately.

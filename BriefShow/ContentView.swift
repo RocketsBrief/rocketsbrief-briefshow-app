@@ -23610,6 +23610,15 @@ struct PhotoShowSheet: View {
             .contextMenu {
                 gridBackgroundContextMenuItems
             }
+            // Empty space in the grid ends a name being typed, keeping it - the
+            // last of the places the client meant by *„ako ja kliknem negde
+            // sastrane da gasi renaming"*. On the ScrollView for the same reason
+            // the menu above is: a layer behind it never sees the click. A cell's
+            // own tap is more specific and still wins, so this only ever runs for
+            // a click that landed on nothing.
+            .onTapGesture {
+                commitGridRename()
+            }
             // Keeps arrow-key navigation's new selection on screen even
             // when it lands outside the currently scrolled area.
             // A colour picked in the sidebar reaches the folder icons here.
@@ -23670,6 +23679,16 @@ struct PhotoShowSheet: View {
                     // Typing starts where the client is looking, without a click
                     // into the field first.
                     .onAppear { gridRenameFieldFocused = true }
+                    // ⛔ A CLICK ANYWHERE ELSE ENDS IT. Client, 20.09: *„kada je
+                    // ovako selektirano da se renamuje ne mora da ceka moj esc
+                    // key da prekine renameing, ako ja kliknem negde sastrane da
+                    // gasi renaming"*. Whatever took the focus away ends the
+                    // typing, and what was typed is KEPT — Finder's own answer to
+                    // clicking away, and the reason Esc still exists is that it
+                    // is the way to throw a name away.
+                    .onChange(of: gridRenameFieldFocused) { focused in
+                        if !focused { commitGridRename() }
+                    }
             } else {
                 Text(url.lastPathComponent)
                     .font(.custom("Figtree", size: 11).weight(isSelected ? .semibold : .medium))
@@ -24371,7 +24390,9 @@ struct PhotoShowSheet: View {
         let isCommandDown = flags.contains(.command)
 
         // A photograph is picked now, so the folder is not - two things drawn as
-        // picked at once would say the next key or menu applies to both.
+        // picked at once would say the next key or menu applies to both. A name
+        // being typed ends here as well, keeping what was typed.
+        commitGridRename()
         selectedGridFolderURL = nil
         gridRenameArmedURL = nil
 
@@ -24762,7 +24783,13 @@ struct PhotoShowSheet: View {
     // remember the click. The decision is briefShowFolderClickAction's, and the
     // system's own double-click setting is what it is measured against.
     private func handleFolderCellTap(_ url: URL) {
-        guard gridRenamingFolderURL == nil else { return }
+        // A click on ANOTHER folder while one is being renamed ends the typing
+        // and keeps the name, then goes on to mean what it would have meant. A
+        // click on the one being renamed belongs to its text field.
+        if let renaming = gridRenamingFolderURL {
+            if renaming == url { return }
+            commitGridRename()
+        }
         let now = Date()
         let previous = gridRenameArmedURL.map { (url: $0, at: gridRenameArmedAt) }
         let action = briefShowFolderClickAction(
@@ -26680,6 +26707,11 @@ private struct OpenFolderShape: Shape {
                     .focused($renameFieldFocused)
                     .onExitCommand { cancelRename() }
                     .onAppear { renameFieldFocused = true }
+                    // A click anywhere else ends the typing and keeps the name -
+                    // the same rule as the grid, asked for on 20.09.
+                    .onChange(of: renameFieldFocused) { focused in
+                        if !focused { commitRename(node) }
+                    }
             } else {
                 Text(node.name)
                     .font(.custom("Figtree", size: 13).weight(isSelected ? .semibold : .regular))
@@ -26788,7 +26820,12 @@ private struct OpenFolderShape: Shape {
     // keeps that behaviour, and only a FAST second click is treated as "open",
     // which is why it opens rather than toggling back shut.
     private func handleRowTap(_ node: FolderNode) {
-        guard renamingURL == nil else { return }
+        // Another row, while one is being renamed: end the typing, keep the name,
+        // and let this click mean what it would have meant.
+        if let renaming = renamingURL {
+            if renaming == node.url { return }
+            commitRenameInProgress()
+        }
         let now = Date()
         let previous = lastClickURL.map { (url: $0, at: lastClickAt) }
         let action = briefShowFolderClickAction(
@@ -26837,6 +26874,15 @@ private struct OpenFolderShape: Shape {
         renamingURL = nil
         renameFieldFocused = false
         onCommitRename(node, renameText)
+    }
+
+    // The same commit, for a click that landed on a different row - which has the
+    // URL being renamed but not the node it belongs to.
+    private func commitRenameInProgress() {
+        guard let url = renamingURL else { return }
+        renamingURL = nil
+        renameFieldFocused = false
+        onCommitRename(FolderNode(url: url), renameText)
     }
 
     /// Pulls the file URLs out of a drop's providers.

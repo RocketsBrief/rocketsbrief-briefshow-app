@@ -20998,6 +20998,23 @@ druga varijanta znači skidanje celog kataloga (oko 1,5 GB), što ne ide u app.
 ⚠️ **Licenca putuje sa fontom.** Uz svaki skinut font upisuje se i njegova licenca (OFL/Apache),
 jer izvoz ide klijentima na štampu.
 
+##### Koliko ovo diže veličinu app-a — IZMERENO 20.09, ne procenjeno
+
+Skinut je pravi katalog sa `fonts.google.com/metadata/fonts` i prebrojan:
+
+| šta | veličina |
+|---|---|
+| ceo sirov katalog, kako ga Google daje | 2.701.937 bajta (2,6 MB) |
+| **ono što nama treba** — ime + kategorija + stilovi, za svih **1946** porodica | **128,6 KB** |
+| isto, gzip (kako i ide u bundle) | **14,4 KB** |
+
+Paket je na **115.247.153 bajta**. Katalog je dakle **oko 0,1 %** — praktično ništa, i to je ceo
+trošak u app-u. **Sami fontovi ne idu u paket**: skidaju se u Application Support, što je
+klijentov disk, ne isporuka. Zato veličina izdanja **ostaje ista** kakva je danas.
+
+Za poređenje, druga strana iste odluke: skinuti sve što tih 1946 porodica nosi je red veličine
+1,5 GB. To je razlog zašto se skida na zahtev, a ne zato da bi klijent morao da klikće.
+
 #### Doterani redosled za sutra
 
 1. **Model + uvoz.** `PrintTemplate` (ID, inči, orijentacija, slot, `artOverPhoto`), **Import

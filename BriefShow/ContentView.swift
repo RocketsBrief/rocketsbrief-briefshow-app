@@ -22148,6 +22148,13 @@ func briefShowIsDoubleClick(
 /// The three answers never overlap: a second click inside the system's
 /// double-click interval opens, one that comes after `renameDelay` renames, and
 /// anything in between (or on another folder) is just remembered.
+/// How long after a click a second one on the same folder means "rename" rather
+/// than "open". The client's own measure, 20.09: *„sackam jednu sekundu"*.
+///
+/// One number for the grid and the list both — they were asked for as one
+/// behaviour, and two constants would drift into two feels.
+let briefShowFolderRenameClickDelay: TimeInterval = 0.6
+
 enum BriefShowFolderClick: String {
     case open
     case beginRename
@@ -22360,12 +22367,9 @@ struct PhotoShowSheet: View {
 
     // Renaming a folder, asked for 20.09: *„Right click on the folder should show
     // rename button. Or click once and wait for a bit click another one to enable
-    // renaming, like usually"*. Two ways in, one rename: the grid renames in place
-    // (Finder's slow second click, and its right-click menu), the sidebar asks in a
-    // box, because its row already carries a drag, a drop, a hover and a tap and a
-    // text field inside it would have to win against all four.
-    @State private var renameFolderURL: URL?
-    @State private var renameFolderName: String = ""
+    // renaming, like usually"*, and then: *„kada kliknem na folder ili na listi ili
+    // u gridu"*. Both places rename IN PLACE, by the same rule and the same
+    // function; the list keeps its own typing state, this is the grid's.
     // The grid cell currently being typed into, and the click that armed it. A
     // single click only ARMS: the rename starts on the NEXT single click, and only
     // after `folderRenameArmDelay` - so a double-click to open never turns into a
@@ -22374,6 +22378,7 @@ struct PhotoShowSheet: View {
     @State private var gridRenameText: String = ""
     @State private var gridRenameArmedURL: URL?
     @State private var gridRenameArmedAt: Date = .distantPast
+    @FocusState private var gridRenameFieldFocused: Bool
     // Which folder cell a drag is currently over. Client, 20.09: *„kada napravim
     // folder i pored njega su slike i ja selektiram sve slike i hocu da ih privucem
     // u folder ne radi, samo bi mogao da privucem u listu foldera sa desne strane!
@@ -22509,9 +22514,8 @@ struct PhotoShowSheet: View {
                             onNewFolder: { node in
                                 createNewFolder(in: node.url)
                             },
-                            onRenameFolder: { node in
-                                renameFolderName = node.url.lastPathComponent
-                                renameFolderURL = node.url
+                            onCommitRename: { node, newName in
+                                renameFolder(at: node.url, to: newName)
                             },
                             onTrashFolder: requestTrashFolder,
                             onDropItems: { urls, destination in
@@ -22792,17 +22796,6 @@ struct PhotoShowSheet: View {
             Button("Cancel", role: .cancel) { newFolderParentURL = nil }
         } message: {
             Text("Name the new folder in \(newFolderParentURL?.lastPathComponent ?? "this folder").")
-        }
-        .alert("Rename Folder", isPresented: Binding(
-            get: { renameFolderURL != nil },
-            set: { if !$0 { renameFolderURL = nil } }
-        )) {
-            TextField("Name", text: $renameFolderName)
-            Button("Rename") { commitRenameFolderDialog() }
-                .keyboardShortcut(.defaultAction)
-            Button("Cancel", role: .cancel) { renameFolderURL = nil }
-        } message: {
-            Text("New name for \(renameFolderURL?.lastPathComponent ?? "this folder").")
         }
         .sheet(item: $playingVideo) { item in
             GridVideoPlayerSheet(url: item.url)
@@ -23690,7 +23683,11 @@ struct PhotoShowSheet: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.custom("Figtree", size: 11).weight(.medium))
                     .frame(width: cellWidth)
+                    .focused($gridRenameFieldFocused)
                     .onExitCommand { cancelGridRename() }
+                    // Typing starts where the client is looking, without a click
+                    // into the field first.
+                    .onAppear { gridRenameFieldFocused = true }
             } else {
                 Text(url.lastPathComponent)
                     .font(.custom("Figtree", size: 11).weight(.medium))
@@ -24718,11 +24715,6 @@ struct PhotoShowSheet: View {
 
     // MARK: Rename a folder (20.09)
 
-    // How long after the arming click a second single click counts as "rename"
-    // rather than as the first half of a double-click. Finder's own feel: long
-    // enough that a deliberate double-click can never reach it.
-    private static let folderRenameArmDelay: TimeInterval = 0.6
-
     // A single click on a folder in the grid: open it, start renaming it, or just
     // remember the click. The decision is briefShowFolderClickAction's, and the
     // system's own double-click setting is what it is measured against.
@@ -24735,7 +24727,7 @@ struct PhotoShowSheet: View {
             url: url,
             at: now,
             doubleClickInterval: NSEvent.doubleClickInterval,
-            renameDelay: Self.folderRenameArmDelay
+            renameDelay: briefShowFolderRenameClickDelay
         )
         switch action {
         case .open:
@@ -24768,12 +24760,6 @@ struct PhotoShowSheet: View {
         guard let url = gridRenamingFolderURL else { return }
         gridRenamingFolderURL = nil
         renameFolder(at: url, to: gridRenameText)
-    }
-
-    private func commitRenameFolderDialog() {
-        guard let url = renameFolderURL else { return }
-        renameFolderURL = nil
-        renameFolder(at: url, to: renameFolderName)
     }
 
     // The one rename both ways end in. The name itself is decided by
@@ -26325,10 +26311,10 @@ private struct FolderTreeSidebar: View {
     let onSetClipboard: (_ urls: [URL], _ isCut: Bool) -> Void
     let onPasteIntoFolder: (FolderNode) -> Void
     let onNewFolder: (FolderNode) -> Void
-    /// Asked for 20.09: a folder's right-click menu offers to rename it. The
-    /// sidebar asks in a box rather than editing in the row - see the note on
-    /// renameFolderURL.
-    let onRenameFolder: (FolderNode) -> Void
+    /// The new name a row was renamed to. Asked for 20.09, in the list as well as
+    /// in the grid; the row does the typing, ContentView does the move, so there
+    /// is one rename on disk and not two.
+    let onCommitRename: (FolderNode, String) -> Void
     let onTrashFolder: (FolderNode) -> Void
     /// Photos or folders dropped onto one of these rows. Returns whether the
     /// drop was taken, which is what tells AppKit to draw the "accepted"
@@ -26356,6 +26342,16 @@ private struct FolderTreeSidebar: View {
     // from here, so the row it would land in has to be unmistakable rather
     // than merely emphasised.
     @State private var dropTargetURL: URL?
+
+    // Renaming a row in place. Client, 20.09: *„ali kada kliknem na folder ili na
+    // listi ili u gridu jednom i sackam jednu sekundu sledeci klik treba da
+    // aktivira renameing… a ako kliknem brzo dva puta onda otvara folder"* — the
+    // same rule the grid follows, decided by the same briefShowFolderClickAction.
+    @State private var renamingURL: URL?
+    @State private var renameText: String = ""
+    @State private var lastClickURL: URL?
+    @State private var lastClickAt: Date = .distantPast
+    @FocusState private var renameFieldFocused: Bool
 
     // Which color (if any) each folder is tagged with, keyed by the
     // folder's standardized path (see the doc comment on
@@ -26557,7 +26553,7 @@ private struct OpenFolderShape: Shape {
     // the same left edge, which is what made an expanded folder's
     // contents unreadable against its own siblings) is what actually
     // shows the nesting.
-    private func row(for node: FolderNode, depth: Int) -> some View {
+    private func row(for node: FolderNode, depth: Int) -> AnyView {
         let isSelected = selectedURL == node.url
         let isHovered = hoveredURL == node.url
         let isDropTarget = dropTargetURL == node.url
@@ -26567,7 +26563,7 @@ private struct OpenFolderShape: Shape {
         let isExpanded = node.children != nil && expandedURLs.contains(node.url)
         let colorLabel = folderColors[node.url.standardizedFileURL.path] ?? .none
 
-        return HStack(spacing: 8) {
+        let base = HStack(spacing: 8) {
             // An inline spacer (rather than extra .padding(.leading) on the
             // whole row) so only the icon/name/dot shift right — the
             // selection/hover background below stays full-width, the same
@@ -26621,14 +26617,25 @@ private struct OpenFolderShape: Shape {
             .frame(width: 14, alignment: .leading)
             .foregroundColor(isSelected ? AppColors.hoverInk : AppColors.muted.opacity(0.8))
 
-            Text(node.name)
-                .font(.custom("Figtree", size: 13).weight(isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
-                .lineLimit(1)
-                // Left edge anchored so it grows rightward into the row's
-                // empty space instead of pushing into the folder icon.
-                .scaleEffect(isHovered ? 1.1 : 1, anchor: .leading)
-                .animation(.easeOut(duration: 0.12), value: isHovered)
+            if renamingURL == node.url {
+                // Enter commits, Esc leaves the folder as it was, and clicking
+                // away commits too - which is what the client will do most often.
+                TextField("", text: $renameText, onCommit: { commitRename(node) })
+                    .textFieldStyle(.roundedBorder)
+                    .font(.custom("Figtree", size: 13))
+                    .focused($renameFieldFocused)
+                    .onExitCommand { cancelRename() }
+                    .onAppear { renameFieldFocused = true }
+            } else {
+                Text(node.name)
+                    .font(.custom("Figtree", size: 13).weight(isSelected ? .semibold : .regular))
+                    .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
+                    .lineLimit(1)
+                    // Left edge anchored so it grows rightward into the row's
+                    // empty space instead of pushing into the folder icon.
+                    .scaleEffect(isHovered ? 1.1 : 1, anchor: .leading)
+                    .animation(.easeOut(duration: 0.12), value: isHovered)
+            }
 
             Spacer(minLength: 0)
 
@@ -26650,6 +26657,18 @@ private struct OpenFolderShape: Shape {
                 .strokeBorder(AppColors.hoverInk, lineWidth: isDropTarget ? 2 : 0)
         )
         .contentShape(Rectangle())
+
+        // ⚠️ WHILE THE NAME IS BEING TYPED, NOTHING ELSE ON THE ROW LISTENS.
+        // The row carries a drag, a drop, a hover, a tap and a menu, and on macOS
+        // a drag on the same view will take a click away from a text field inside
+        // it - the client would press into the field and start dragging the folder
+        // instead. So the row is assembled without them for as long as it is being
+        // renamed, and gets them all back the moment it is not.
+        if renamingURL == node.url {
+            return AnyView(base)
+        }
+
+        return AnyView(base
         // A folder can be picked up and dropped on another folder, which is
         // the second half of "and everything else in C4S Suite" — the tree
         // was already a drop target for photos by the time this was added,
@@ -26696,13 +26715,49 @@ private struct OpenFolderShape: Shape {
             }
         }
         .onTapGesture {
-            selectedURL = node.url
+            handleRowTap(node)
+        }
+        .contextMenu {
+            folderContextMenuItems(for: node, isRoot: node.url == rootNode.url)
+        })
+    }
 
-            // A single click on the folder's row now opens/closes it the
-            // same way clicking its disclosure triangle does — previously
-            // the triangle was the only hit target that expanded a folder,
-            // so clicking the name only selected it without revealing its
-            // subfolders.
+    // A click on a row: open it, start renaming it, or just remember the click.
+    //
+    // Client, 20.09: *„kada kliknem na folder ili na listi ili u gridu jednom i
+    // sackam jednu sekundu sledeci klik treba da aktivira renameing… a ako kliknem
+    // brzo dva puta onda otvara folder"*. The same rule and the same function the
+    // grid uses, so the two cannot come to feel different.
+    //
+    // ⚠️ A row is not a grid cell: a plain click here also SELECTS, and a folder
+    // with children opens or closes as it does in Finder's sidebar. So "remember"
+    // keeps that behaviour, and only a FAST second click is treated as "open",
+    // which is why it opens rather than toggling back shut.
+    private func handleRowTap(_ node: FolderNode) {
+        guard renamingURL == nil else { return }
+        let now = Date()
+        let previous = lastClickURL.map { (url: $0, at: lastClickAt) }
+        let action = briefShowFolderClickAction(
+            previous: previous,
+            url: node.url,
+            at: now,
+            doubleClickInterval: NSEvent.doubleClickInterval,
+            renameDelay: briefShowFolderRenameClickDelay
+        )
+        lastClickURL = node.url
+        lastClickAt = now
+
+        switch action {
+        case .beginRename:
+            lastClickURL = nil
+            beginRename(node)
+        case .open:
+            selectedURL = node.url
+            if node.children != nil {
+                expandedURLs.insert(node.url)
+            }
+        case .remember:
+            selectedURL = node.url
             if node.children != nil {
                 if expandedURLs.contains(node.url) {
                     expandedURLs.remove(node.url)
@@ -26711,9 +26766,23 @@ private struct OpenFolderShape: Shape {
                 }
             }
         }
-        .contextMenu {
-            folderContextMenuItems(for: node, isRoot: node.url == rootNode.url)
-        }
+    }
+
+    private func beginRename(_ node: FolderNode) {
+        renameText = node.url.lastPathComponent
+        renamingURL = node.url
+    }
+
+    private func cancelRename() {
+        renamingURL = nil
+        renameFieldFocused = false
+    }
+
+    private func commitRename(_ node: FolderNode) {
+        guard renamingURL == node.url else { return }
+        renamingURL = nil
+        renameFieldFocused = false
+        onCommitRename(node, renameText)
     }
 
     /// Pulls the file URLs out of a drop's providers.
@@ -26749,7 +26818,8 @@ private struct OpenFolderShape: Shape {
 
         if !isRoot {
             Button("Rename…") {
-                onRenameFolder(node)
+                selectedURL = node.url
+                beginRename(node)
             }
 
             Button("Copy") {

@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Folders in the grid: renaming them, and dropping photographs onto them.
+"""Folders: renaming them in both places, and dropping photographs onto them.
 
     python3 Tools/run-folder-rename-test.py
 
-Two reports from the client, 20.09:
+Reports from the client, 20.09:
 
     *„Right click on the folder should show rename button. Or click once and
     wait for a bit click another one to enable renaming, like usually"*
 
+    *„ali kada kliknem na folder ili na listi ili u gridu jednom i sackam jednu
+    sekundu sledeci klik treba da aktivira renameing… a ako kliknem brzo dva
+    puta onda otvara folder"*
+
     *„I kada napravim folder i pored njega su slike i ja selektiram sve slike i
     hocu da ih privucem u folder ne radi, samo bi mogao da privucem u listu
     foldera sa desne strane! Mora da radi i kada provucem u gridu na folder"*
+
+The middle one is the one that decides the shape of this file: the list and the
+grid are not two similar behaviours to keep in step, they are ONE, so the checks
+below insist on one function and one number rather than on two that match today.
 
 Two halves, because the two reports are different kinds of thing:
 
@@ -135,6 +143,47 @@ check("ONE tap gesture decides open / rename / remember",
 check("the system's own double-click setting is what it measures against",
       "NSEvent.doubleClickInterval" in source[source.find("private func handleFolderCellTap("):][:900],
       "a number chosen here would feel wrong on a Mac set up differently")
+
+# The clarification the same day: *„ali kada kliknem na folder ili na listi ili u
+# gridu jednom i sackam jednu sekundu sledeci klik treba da aktivira renameing"* —
+# the list is not a second, similar behaviour, it is the same one.
+row_start = source.find("private func handleRowTap(")
+row_tap = source[row_start:source.find("private func beginRename(", row_start)] if row_start != -1 else ""
+check("a row in the list decides a click the same way the grid does",
+      "briefShowFolderClickAction(" in row_tap and "NSEvent.doubleClickInterval" in row_tap,
+      "the list would feel different from the grid, which is what the client asked against")
+
+check("both wait the same number, defined once",
+      source.count("let briefShowFolderRenameClickDelay: TimeInterval") == 1
+      and source.count("renameDelay: briefShowFolderRenameClickDelay") == 2,
+      "two delays drift into two feels")
+
+# A row is not a grid cell: a plain click there also selects and toggles the
+# folder open. A FAST second click has to OPEN, not toggle back shut.
+open_branch = row_tap[row_tap.find("case .open:"):row_tap.find("case .remember:")] if "case .open:" in row_tap else ""
+check("a fast second click on a row opens it rather than closing it again",
+      "expandedURLs.insert(node.url)" in open_branch and "expandedURLs.remove" not in open_branch,
+      "double-clicking a folder in the list would shut it")
+
+sidebar_row_start = source.find("private func row(for node: FolderNode, depth: Int)")
+sidebar_row = source[sidebar_row_start:source.find("private func handleRowTap(", sidebar_row_start)] if sidebar_row_start != -1 else ""
+check("the row renames in place, like the grid cell",
+      "renamingURL == node.url" in sidebar_row and "TextField(" in sidebar_row)
+
+# On macOS a drag on the same view takes clicks away from a text field inside it:
+# pressing into the name would start dragging the folder.
+check("while the name is being typed, the row's drag and tap stand down",
+      "if renamingURL == node.url {" in sidebar_row and "return AnyView(base)" in sidebar_row,
+      "clicking into the field would pick the folder up instead")
+
+check("the typing field takes focus by itself, in both places",
+      source.count(".onAppear { gridRenameFieldFocused = true }") == 1
+      and source.count(".onAppear { renameFieldFocused = true }") == 1,
+      "the client would have to click into the field before typing")
+
+check("what the row typed is renamed by the one renameFolder on disk",
+      "onCommitRename(node, renameText)" in source and "onCommitRename: { node, newName in" in source,
+      "a second rename path would drift from the grid's")
 
 # FolderColorStore is keyed by path and says so itself: a colour does not follow
 # a folder that is renamed. The grid now DRAWS the folder in that colour, so

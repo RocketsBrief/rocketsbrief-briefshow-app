@@ -38,6 +38,7 @@ import Foundation
 import Combine
 import CoreGraphics
 import CoreImage
+import CoreText
 import ImageIO
 
 // MARK: - The one place the print resolution is written
@@ -1035,12 +1036,14 @@ func briefShowComposeTemplate(photo: CIImage,
                               template: PrintTemplate,
                               placement: SlotPlacement,
                               artOverPhoto: Bool,
+                              texts: [TemplateText] = [],
                               canvasScale: Double = 1) -> CIImage {
     briefShowComposeTemplate(photo: photo,
                              template: template,
                              art: TemplateArtCache.image(for: template.artRef),
                              placement: placement,
                              artOverPhoto: artOverPhoto,
+                             texts: texts,
                              canvasScale: canvasScale)
 }
 
@@ -1054,6 +1057,7 @@ func briefShowComposeTemplate(photo: CIImage,
                               art: CIImage?,
                               placement: SlotPlacement,
                               artOverPhoto: Bool,
+                              texts: [TemplateText] = [],
                               canvasScale: Double = 1) -> CIImage {
     let printed = template.canvasPixels
     let canvas = CGRect(x: 0, y: 0,
@@ -1108,12 +1112,20 @@ func briefShowComposeTemplate(photo: CIImage,
     // now sit anywhere on the print. Either way nothing spills off the paper.
     placed = placed.cropped(to: canvas)
 
+    // ⚠️ ONE way out, and the texts are laid on it. Three separate `return`s
+    // here would be three places a later change could forget the text — and
+    // the two short ones are exactly the paths a template without art takes.
+    func finished(_ print: CIImage) -> CIImage {
+        texts.isEmpty ? print
+            : briefShowComposeTemplateTexts(texts, over: print, template: template, canvas: canvas)
+    }
+
     guard let art else {
-        return placed.composited(over: paper)
+        return finished(placed.composited(over: paper))
     }
     let artExtent = art.extent
     guard artExtent.width > 0, artExtent.height > 0 else {
-        return placed.composited(over: paper)
+        return finished(placed.composited(over: paper))
     }
     let drawn = art
         .transformed(by: CGAffineTransform(translationX: -artExtent.minX, y: -artExtent.minY))
@@ -1122,7 +1134,331 @@ func briefShowComposeTemplate(photo: CIImage,
 
     // The client's switch, and the whole reason the template is a canvas: one
     // order of two images, not two different mechanisms.
-    return artOverPhoto
+    return finished(artOverPhoto
         ? drawn.composited(over: placed.composited(over: paper))
-        : placed.composited(over: drawn.composited(over: paper))
+        : placed.composited(over: drawn.composited(over: paper)))
+}
+
+// MARK: - Text on the print
+//
+// KORAK 198, step 5. The client's words, 20.09: *„isto da moze da se doda Text
+// na templateu, i da koristi sva free google fonta"*. The fonts themselves are
+// step 6; this is the text, and it is drawn with whatever fonts the machine
+// already has.
+
+/// Which way a line sits inside its own box.
+enum TemplateTextAlignment: String, Codable, Equatable, CaseIterable {
+    case left, center, right
+
+    var label: String {
+        switch self {
+        case .left: return "Left"
+        case .center: return "Centre"
+        case .right: return "Right"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .left: return "text.alignleft"
+        case .center: return "text.aligncenter"
+        case .right: return "text.alignright"
+        }
+    }
+}
+
+/// A colour that survives a trip through JSON.
+///
+/// ⚠️ NOT `NSColor`. The whole record is one JSON blob (see the locked rule at
+/// the top of this file); an archived `NSColor` in it is a blob inside a blob
+/// that a later macOS is free to stop unarchiving. Four numbers cannot rot.
+struct TemplateTextColor: Codable, Equatable {
+    var red: Double = 0
+    var green: Double = 0
+    var blue: Double = 0
+    var alpha: Double = 1
+
+    static let black = TemplateTextColor()
+    static let white = TemplateTextColor(red: 1, green: 1, blue: 1)
+
+    var ciColor: CIColor {
+        CIColor(red: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: CGFloat(alpha))
+    }
+}
+
+/// A piece of text laid on the print.
+///
+/// ⚠️ EVERYTHING HERE IS MEASURED AGAINST THE PAPER, NOT AGAINST PIXELS, and
+/// that is the one rule this type exists to keep. The size is in INCHES of
+/// print and the box is a fraction of the canvas, so the same record draws the
+/// same text in the same place on the 900 px preview and on the 3000 px
+/// export. A size in pixels would have been a size that means one thing on
+/// screen and another on paper — which is the class of fault KORAK 198.4 had
+/// to unpick once already with the selection outline.
+struct TemplateText: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var text: String = "Text"
+
+    /// The font FAMILY as the system names it ("Helvetica Neue"), and the FACE
+    /// within it ("Regular", "Bold", "Italic"). Two fields rather than one
+    /// PostScript name because that is the shape step 6 needs: the Google
+    /// catalogue is a list of families, each with the styles it has.
+    var fontFamily: String = "Helvetica Neue"
+    var fontFace: String = "Regular"
+
+    /// Cap-to-descender size in INCHES OF PRINT. 0.25 in is about 18 pt.
+    var sizeInches: Double = 0.25
+
+    var color: TemplateTextColor = .black
+    var alignment: TemplateTextAlignment = .center
+    var opacity: Double = 1
+
+    /// The box the text is laid out in, as a fraction of the canvas, measured
+    /// from the TOP left — the same convention `TemplateSlot.rect` uses, and
+    /// turned over in exactly one place (see `briefShowSlotPixelRect`).
+    ///
+    /// The width is the wrapping width. The height is what the box is drawn
+    /// as on screen and what the text is centred in vertically; text taller
+    /// than its box overflows it rather than being cut, because a client who
+    /// has typed a third line should see the third line.
+    var box: NormalizedRect = NormalizedRect(x: 0.1, y: 0.82, width: 0.8, height: 0.1)
+
+    static let minimumSizeInches = 0.05
+    static let maximumSizeInches = 3.0
+}
+
+/// How many pixels of this canvas one inch of print is.
+///
+/// ⚠️ Read off the CANVAS, not off `PrintOutput.dpi`, and that is what makes a
+/// text the same size on the preview as on the export: the preview canvas is
+/// the same paper drawn smaller, so an inch there is simply fewer pixels.
+func briefShowPixelsPerInch(template: PrintTemplate, canvasWidth: Double) -> Double {
+    let printed = template.canvasPixels
+    guard printed.width > 0, canvasWidth > 0 else { return PrintOutput.dpi }
+    return PrintOutput.dpi * canvasWidth / Double(printed.width)
+}
+
+/// The box in pixels of the canvas, top-left measured — the screen's way up.
+func briefShowTextPixelRect(_ text: TemplateText,
+                            canvasWidth: Double,
+                            canvasHeight: Double) -> CGRect {
+    briefShowSlotPixelRect(text.box, canvasWidth: canvasWidth, canvasHeight: canvasHeight)
+}
+
+/// The box moved by a drag, kept on the paper.
+///
+/// ⚠️ Clamped to the CANVAS, not to the mat: text belongs wherever the client
+/// puts it, including over the photograph — the same answer KORAK 198.6 gave
+/// for the photograph itself. What it may not do is walk off the paper, where
+/// it would be a text nobody can find and nobody can print.
+func briefShowTextBoxAfterDrag(_ start: NormalizedRect,
+                               translation: CGSize,
+                               canvasWidth: Double,
+                               canvasHeight: Double) -> NormalizedRect {
+    guard canvasWidth > 0, canvasHeight > 0 else { return start }
+    var moved = start
+    moved.x += Double(translation.width) / canvasWidth
+    moved.y += Double(translation.height) / canvasHeight
+    // Half the box may hang off, never all of it.
+    moved.x = min(max(moved.x, -moved.width / 2), 1 - moved.width / 2)
+    moved.y = min(max(moved.y, -moved.height / 2), 1 - moved.height / 2)
+    return moved
+}
+
+/// The font a record asks for, or the nearest thing this machine has.
+///
+/// ⚠️ It never returns nil, and that is deliberate. A print that silently
+/// loses its text because a font was uninstalled is worse than a print in
+/// another face — and step 6 hands this exactly the same two strings for a
+/// downloaded Google family, so nothing here changes when they arrive.
+func briefShowTemplateTextFont(family: String, face: String, sizePixels: Double) -> CTFont {
+    let descriptor = CTFontDescriptorCreateWithAttributes([
+        kCTFontFamilyNameAttribute: family as CFString,
+        kCTFontStyleNameAttribute: face as CFString
+    ] as CFDictionary)
+    return CTFontCreateWithFontDescriptor(descriptor, CGFloat(max(1, sizePixels)), nil)
+}
+
+/// One piece of text, drawn at the size the canvas makes it.
+///
+/// Returns the text as a CIImage already placed in canvas coordinates — Core
+/// Image's way up, counted from the bottom — so the caller only composites.
+///
+/// ⚠️ The surface is the BOX, grown downward to hold as many lines as there
+/// are. Text taller than its box overflows rather than being clipped: a client
+/// who has typed a third line must see the third line, on screen and on paper
+/// alike.
+func briefShowDrawTemplateText(_ text: TemplateText,
+                               template: PrintTemplate,
+                               canvas: CGRect) -> CIImage? {
+    let content = text.text
+    guard !content.isEmpty, text.opacity > 0, canvas.width > 1, canvas.height > 1 else {
+        return nil
+    }
+
+    let box = briefShowTextPixelRect(text, canvasWidth: Double(canvas.width),
+                                     canvasHeight: Double(canvas.height))
+    guard box.width >= 1 else { return nil }
+
+    let pixelsPerInch = briefShowPixelsPerInch(template: template, canvasWidth: Double(canvas.width))
+    let font = briefShowTemplateTextFont(family: text.fontFamily,
+                                         face: text.fontFace,
+                                         sizePixels: text.sizeInches * pixelsPerInch)
+
+    // ⚠️ CoreText's own paragraph style, not AppKit's. This file draws the
+    // print and knows nothing about views, and it stays that way — the batch
+    // flatten and the export run it with no window anywhere.
+    var alignment: CTTextAlignment
+    switch text.alignment {
+    case .left: alignment = .left
+    case .center: alignment = .center
+    case .right: alignment = .right
+    }
+    // Wrapping, not truncation: the box is a width to wrap at, not a cage.
+    var lineBreak = CTLineBreakMode.byWordWrapping
+    let paragraph: CTParagraphStyle = withUnsafeBytes(of: &alignment) { alignBytes in
+        withUnsafeBytes(of: &lineBreak) { breakBytes in
+            var settings = [
+                CTParagraphStyleSetting(spec: .alignment,
+                                        valueSize: MemoryLayout<CTTextAlignment>.size,
+                                        value: alignBytes.baseAddress!),
+                CTParagraphStyleSetting(spec: .lineBreakMode,
+                                        valueSize: MemoryLayout<CTLineBreakMode>.size,
+                                        value: breakBytes.baseAddress!)
+            ]
+            return CTParagraphStyleCreate(&settings, settings.count)
+        }
+    }
+
+    let colour = CGColor(colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                         components: [CGFloat(text.color.red), CGFloat(text.color.green),
+                                      CGFloat(text.color.blue), CGFloat(text.color.alpha)])
+    let attributed = NSAttributedString(string: content, attributes: [
+        NSAttributedString.Key(kCTFontAttributeName as String): font,
+        NSAttributedString.Key(kCTParagraphStyleAttributeName as String): paragraph,
+        NSAttributedString.Key(kCTForegroundColorAttributeName as String): colour as Any
+    ])
+
+    let framesetter = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
+    let constraint = CGSize(width: box.width, height: .greatestFiniteMagnitude)
+    let suggested = CTFramesetterSuggestFrameSizeWithConstraints(
+        framesetter, CFRange(location: 0, length: 0), nil, constraint, nil)
+
+    let surfaceWidth = Int(box.width.rounded(.up))
+    let surfaceHeight = Int(max(suggested.height, box.height).rounded(.up))
+    guard surfaceWidth >= 1, surfaceHeight >= 1,
+          let context = CGContext(data: nil,
+                                  width: surfaceWidth,
+                                  height: surfaceHeight,
+                                  bitsPerComponent: 8,
+                                  bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+        return nil
+    }
+
+    let surface = CGRect(x: 0, y: 0, width: CGFloat(surfaceWidth), height: CGFloat(surfaceHeight))
+    let path = CGPath(rect: surface, transform: nil)
+    let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
+    CTFrameDraw(frame, context)
+
+    guard let drawn = context.makeImage() else { return nil }
+    var image = CIImage(cgImage: drawn)
+
+    if text.opacity < 1 {
+        let filter = CIFilter(name: "CIColorMatrix")
+        filter?.setValue(image, forKey: kCIInputImageKey)
+        filter?.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(text.opacity)), forKey: "inputAVector")
+        if let faded = filter?.outputImage {
+            image = faded
+        }
+    }
+
+    // The surface is centred on the box vertically, so growing a second line
+    // pushes the text outward from where the client placed it rather than
+    // dropping it downward from the top edge.
+    let topY = box.midY - CGFloat(surfaceHeight) / 2
+    // ⚠️ Turned over HERE, and only here: the box is stored from the top and
+    // Core Image counts its rows from the bottom.
+    let originY = canvas.height - (topY + CGFloat(surfaceHeight))
+    return image.transformed(by: CGAffineTransform(translationX: box.minX, y: originY))
+}
+
+/// Every piece of text on the print, over whatever is already there.
+///
+/// ⚠️ TEXT IS ALWAYS TOPMOST, above the art AND above the photograph, and it
+/// is not a switch. With the photograph on top of the art (the client's
+/// „Photo Over"), text under it would be a text that vanishes with nothing on
+/// screen to say why — and the thing being typed is a name or a studio mark,
+/// which is written ON a print, not inside it.
+func briefShowComposeTemplateTexts(_ texts: [TemplateText],
+                                   over base: CIImage,
+                                   template: PrintTemplate,
+                                   canvas: CGRect) -> CIImage {
+    var output = base
+    for text in texts {
+        guard let drawn = briefShowDrawTemplateText(text, template: template, canvas: canvas) else {
+            continue
+        }
+        output = drawn.composited(over: output)
+    }
+    return output
+}
+
+// MARK: - The fonts this machine has
+//
+// ⚠️ THIS IS NOT STEP 6. The Google catalogue, the Download button and the
+// permanent cache are their own step; these two read what is already
+// installed, which is what the text can be set in today. When step 6 registers
+// a downloaded family with CoreText it appears here with no change to either
+// of these — which is the reason the record carries a FAMILY and a FACE rather
+// than a PostScript name.
+
+/// Every font family on the machine, named the way a human names them.
+///
+/// Computed once: the list does not change while the app runs (a font
+/// installed mid-session is a restart away from mattering), and it is read on
+/// every rebuild of the panel.
+let briefShowInstalledFontFamilies: [String] = {
+    let names = (CTFontManagerCopyAvailableFontFamilyNames() as? [String]) ?? []
+    // The dot-prefixed ones are the system's own private faces (".SF NS" and
+    // friends). They are not the client's to choose and they do not survive a
+    // trip through a font name.
+    return names.filter { !$0.hasPrefix(".") }.sorted()
+}()
+
+private let briefShowFontFaceCache = NSCache<NSString, NSArray>()
+
+/// The styles a family has — "Regular", "Bold", "Italic"…
+///
+/// ⚠️ Cached, because this is asked on every rebuild of the panel and a font
+/// match walks the whole registry.
+func briefShowFontFaces(in family: String) -> [String] {
+    if let held = briefShowFontFaceCache.object(forKey: family as NSString) as? [String] {
+        return held
+    }
+    let descriptor = CTFontDescriptorCreateWithAttributes(
+        [kCTFontFamilyNameAttribute: family as CFString] as CFDictionary)
+    // nil: nothing is mandatory beyond the family already in the descriptor.
+    let matched = CTFontDescriptorCreateMatchingFontDescriptors(descriptor, nil)
+        as? [CTFontDescriptor] ?? []
+
+    var seen = Set<String>()
+    var faces: [String] = []
+    for candidate in matched {
+        guard let face = CTFontDescriptorCopyAttribute(candidate, kCTFontStyleNameAttribute) as? String,
+              !seen.contains(face) else { continue }
+        seen.insert(face)
+        faces.append(face)
+    }
+    if faces.isEmpty {
+        faces = ["Regular"]
+    } else if let plain = faces.firstIndex(of: "Regular"), plain != 0 {
+        // Regular first, whatever order the registry hands them back in: it is
+        // what a new piece of text is set in, and a list that opens on
+        // "Condensed Black" reads as the wrong font having been chosen.
+        faces.insert(faces.remove(at: plain), at: 0)
+    }
+    briefShowFontFaceCache.setObject(faces as NSArray, forKey: family as NSString)
+    return faces
 }

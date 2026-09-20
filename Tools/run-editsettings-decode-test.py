@@ -34,6 +34,11 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "BriefShow" / "Develop.swift"
+# ⚠️ A record has carried the print template since KORAK 198.1, and the text on
+# it since step 5 — and those types live in their own file. Without them this
+# harness does not compile, which means it measures NOTHING: exactly the state
+# it was found in on 20.09,failing silently, days after the template landed.
+TEMPLATES_SRC = ROOT / "BriefShow" / "Templates.swift"
 BUNDLE_ID = "com.rocketsbrief.BriefShow"
 DEFAULTS_KEY = "com.rocketsbrief.briefshow.photoEditSettings"
 
@@ -68,12 +73,22 @@ DECLARATIONS = [
     "struct PhotoEditSettings:",
 ]
 
+# The same, out of Templates.swift: what a record carries of the print.
+TEMPLATE_DECLARATIONS = [
+    "struct NormalizedRect:",
+    "enum SlotFitMode:",
+    "struct SlotPlacement:",
+    "enum TemplateTextAlignment:",
+    "struct TemplateTextColor:",
+    "struct TemplateText:",
+]
 
-def extract(src: str, header: str) -> str:
+
+def extract(src: str, header: str, where: str = "Develop.swift") -> str:
     """The whole declaration, bounded by brace balance from its opening brace."""
     start = src.find("\n" + header)
     if start == -1:
-        sys.exit(f"{header!r} not found in Develop.swift — was it renamed or moved?")
+        sys.exit(f"{header!r} not found in {where} — was it renamed or moved?")
     start += 1
     depth = 0
     i = src.index("{", start)
@@ -126,7 +141,10 @@ def main() -> int:
     scratch = pathlib.Path(sys.argv[0]).resolve().parent / ".editsettings-test.json"
     scratch.write_bytes(blob)
 
-    types = "\n\n".join(extract(src, header) for header in DECLARATIONS)
+    template_src = TEMPLATES_SRC.read_text(encoding="utf-8")
+    types = "\n\n".join(
+        [extract(template_src, header, "Templates.swift") for header in TEMPLATE_DECLARATIONS]
+        + [extract(src, header) for header in DECLARATIONS])
     harness = f'''
 import Foundation
 import CoreGraphics
@@ -218,7 +236,8 @@ if flippedTwice > 0 {{
 print("RESULT: OK — every record survives; \\(migrated) Highlights migrated exactly once")
 '''
 
-    print(f"extracted {len(DECLARATIONS)} declarations from Develop.swift, compiling…")
+    print(f"extracted {len(DECLARATIONS)} declarations from Develop.swift "
+          f"and {len(TEMPLATE_DECLARATIONS)} from Templates.swift, compiling…")
     result = subprocess.run(["swift", "-"], input=harness, text=True)
     scratch.unlink(missing_ok=True)
     return result.returncode

@@ -22140,3 +22140,89 @@ je onom koja meri suprotan smer, i tek ona pada. Lenjir koji ne meri ne prijavlj
 **Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; `run-zoom-original-test.py`
 **all passed / all good**; app instaliran u `/Applications/C4S Suite.app` i
 pokrenut. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.16 — tekst na template-u (20. septembar 2026)
+
+Korak **5** iz plana. Klijentova reč: *„isto da moze da se doda Text na
+templateu, i da koristi sva free google fonta"* — Google katalog je korak 6,
+ovo je tekst, u fontovima koje mašina već ima.
+
+### Ono na čemu ceo korak stoji: inč, ne piksel
+
+Klijent postavlja tekst na platnu od par stotina piksela; iz štampača izlazi
+platno od 3000. Zato u zapisu **nema nijednog piksela**:
+
+| šta | u čemu se čuva |
+|---|---|
+| veličina slova | **inčima štampe** (`sizeInches`, 0,25 in ≈ 18 pt) |
+| kutija u kojoj tekst leži | **delovima platna** (`NormalizedRect`, kao i slot) |
+| boja | **četiri broja**, nikad arhiviran `NSColor` — ceo zapis je jedan JSON |
+
+`briefShowPixelsPerInch` čita inč **sa platna koje se crta**, ne iz konstante
+dpi: preview je isti papir nacrtan manji, pa je tamo inč prosto manje piksela.
+
+⚠️ **Izmereno, a ne pretpostavljeno** — isti tekst na preview platnu (600 px) i
+na štampi (3000 px), mereno po ispisanim pikselima: ista pozicija, ista širina,
+ista visina, u delovima papira.
+
+### Odluke koje nisu očigledne
+
+- ⛔ **Tekst je UVEK najgornji — i to nije prekidač.** Sa slikom iznad crteža
+  („Photo Over"), tekst ispod nje bio bi tekst koji nestane bez ijednog traga na
+  ekranu; a ono što se kuca je ime ili potpis studija, što se piše **na** otisak.
+- **Tekst živi u zapisu FOTOGRAFIJE**, ne u template-u — kao i `templatePlacement`.
+  Template je oblik koji je klijent jednom uvezao; ime i datum pripadaju slici.
+  Sync ga nosi **zajedno sa template-om**, pod istom kvačicom, i to je ono što je
+  klijent od synca i tražio. Nosi ga i sync sa **pečene** slike (198.12), iz istog
+  snimka iz kog vadi i okvir.
+- **Skidanje template-a nosi i tekst.** Ostavljen, bio bi zapis sa tekstom koji
+  niko ne crta i koji panel nema gde da pokaže — pa bi iskočio na sledećem
+  template-u.
+- **Jedne strelice, jedna stvar koju pomeraju.** Podizanje teksta spušta sliku i
+  obrnuto; obe selekcije nikad nisu upaljene istovremeno.
+- **Kutija se vuče po celom papiru, i preko slike** — isti odgovor koji je 198.6
+  dao za samu fotografiju. Sme da visi pola napolje, nikad cela.
+- `Templates.swift` i dalje **ne zna za AppKit ni SwiftUI**: tekst se crta
+  CoreText-om, jer batch flatten i izvoz crtaju otiske bez ijednog prozora.
+- **Font je porodica + rez** (`fontFamily`, `fontFace`), a ne PostScript ime —
+  to je tačno oblik koji korak 6 traži. Kad se promeni porodica, rez koji ta
+  porodica nema se **zamenjuje**, ne prenosi (inače tiho pada na sistemski font).
+  Porodica koje nema i dalje **crta**: otisak koji tiho izgubi tekst je gori od
+  otiska u drugom rezu.
+
+### Čime je zaključano
+
+`Tools/run-template-text-test.py` + `test-template-text.swift` — kompajlira
+**pravi** `Templates.swift`, renderuje kroz njegov `briefShowComposeTemplate` i
+**broji piksele**: ista pozicija i veličina na preview-u i na štampi, veličina u
+inčima (0,5 in naspram 1,0 in = dvostruko mastila), tri poravnanja, tekst gore u
+oba slaganja otiska, prazan tekst ne crta ništa, vučenje ostaje na papiru, font
+kog nema i dalje štampa.
+
+**Negativne kontrole, ODVOŽENE:**
+
+| šta je pokvareno | šta padne |
+|---|---|
+| veličina uzeta kao **poeni** (`sizeInches * 72`) umesto inča papira | **4** provere; red širok 0,36 papira na preview-u štampa se 0,072 — petina |
+| tekst kompozitovan **ispod** onoga što je već na platnu | **6** provera, 0 upaljenih piksela u oba slaganja |
+
+### ⚠️ NAĐENO usput: `run-editsettings-decode-test.py` nije merio ništa od 198.1
+
+Taj test dekodira **klijentovih 131 pravih zapisa** — i tu nema drugog pokušaja,
+jer `PhotoEditStore` dekodira ceo rečnik odjednom: jedan zapis koji ne prođe
+znači `[:]`, pa sledeći flush prepiše sav njegov rad. Test vadi tipove iz
+`Develop.swift` po tekstu, a `SlotPlacement` je od 198.1 u `Templates.swift` —
+harness od tada **nije mogao da se kompajlira**, i izlazio je sa 1 koji niko nije
+pogledao.
+
+Sada vadi i šest tipova iz `Templates.swift`. Stanje: **131 zapis, svi prežive**
+round trip sa novim poljem.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; `run-template-text-test.py`
+**all passed / all good**, `run-templates-test.py` **all green**,
+`run-template-edge-test.py` **all passed**, `run-editsettings-decode-test.py`
+**OK (131/131)**; app instaliran u `/Applications/C4S Suite.app` i pokrenut.
+
+**NIJE OBJAVLJENO.** Ostaju koraci **6** (Google fontovi) i **7** (izvoz na 300 dpi).

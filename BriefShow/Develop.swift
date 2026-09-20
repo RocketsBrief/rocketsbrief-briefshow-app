@@ -195,6 +195,15 @@ struct PhotoEditSettings: Codable, Equatable {
     // itself says", so changing the template's own default still reaches the
     // photos that never asked for anything different.
     var templateArtOverPhoto: Bool?
+    /// The text laid on the print, in the PHOTO's record rather than in the
+    /// template's, for the same reason the placement is: the template is a
+    /// shape the client imported once, and a name or a date belongs to the
+    /// picture it is printed under. Sync carries it across a selection with
+    /// the template itself — see `.template` in mergedSyncSettings.
+    ///
+    /// Empty on every record written before 20.09.2026, which is what those
+    /// photos are: a print with nothing written on it.
+    var templateTexts: [TemplateText] = []
 
     /// Which meaning the numbers in this record carry.
     ///
@@ -273,6 +282,7 @@ struct PhotoEditSettings: Codable, Equatable {
         templatePlacement = try c.decodeIfPresent(SlotPlacement.self, forKey: .templatePlacement)
             ?? .centred
         templateArtOverPhoto = try c.decodeIfPresent(Bool.self, forKey: .templateArtOverPhoto)
+        templateTexts = try c.decodeIfPresent([TemplateText].self, forKey: .templateTexts) ?? []
 
         // ⚠️ The Highlights migration, and it is the reason `schemaVersion`
         // exists. Before 05.09.2026 a positive Highlights DARKENED, the
@@ -306,7 +316,7 @@ struct PhotoEditSettings: Codable, Equatable {
         case colorMixer
         case rotationQuarterTurns, straightenDegrees, crop, cropAspect
         case localAdjustments, layers
-        case templateID, templatePlacement, templateArtOverPhoto
+        case templateID, templatePlacement, templateArtOverPhoto, templateTexts
         case schemaVersion
         case temperatureKelvin, tintAbsolute
     }
@@ -3546,6 +3556,7 @@ enum PhotoEditRenderer {
                 template: template,
                 placement: settings.templatePlacement,
                 artOverPhoto: settings.templateArtOverPhoto ?? template.artOverPhoto,
+                texts: settings.templateTexts,
                 // 1 for the preview, bigger for a flatten — see
                 // briefShowBakeCanvasScale for why the bake is not drawn at
                 // print size.
@@ -7008,6 +7019,7 @@ enum PortraitRecipeService {
                 cleared.templateID = photoSettings.templateID
                 cleared.templatePlacement = photoSettings.templatePlacement
                 cleared.templateArtOverPhoto = photoSettings.templateArtOverPhoto
+                cleared.templateTexts = photoSettings.templateTexts
                 outcome.settingsByURL[url] = cleared
             }
 
@@ -8979,6 +8991,17 @@ struct DevelopView: View {
     /// the pointer was from the middle then. The ratio of the two is the new
     /// zoom, which is what keeps a resize from accumulating drift.
     @State private var templateResizeStart: (zoom: Double, distance: CGFloat)?
+    /// Which piece of text on the print is being worked on — the panel edits
+    /// THAT one, the arrow keys move THAT one, and the canvas outlines it.
+    ///
+    /// ⚠️ It is a separate selection from `templatePhotoSelected` and the two
+    /// are never both on: one set of arrow keys cannot mean two things, and a
+    /// client who has just typed a line expects the arrows to move the line.
+    @State private var selectedTemplateTextID: UUID?
+    /// Where the box sat when this drag began, so the drag measures from a
+    /// fixed point rather than accumulating — the same reason
+    /// `templateDragStart` exists for the photograph.
+    @State private var templateTextDragStart: NormalizedRect?
 
     // The layer Eraser — see LayerEraser.swift.
     @State private var layerEraserActive = false
@@ -9754,6 +9777,25 @@ struct DevelopView: View {
                 case 124: nudgeLayer(at: index, dxPixels: pixels, dyPixels: 0)
                 case 125: nudgeLayer(at: index, dxPixels: 0, dyPixels: pixels)
                 default:  nudgeLayer(at: index, dxPixels: 0, dyPixels: -pixels)
+                }
+                return nil
+            }
+
+            // A piece of text on the print takes the arrows the same way the
+            // picture does, and BEFORE it: the two selections are never both
+            // on (picking up one puts the other down), so the order only
+            // decides which guard is read first, and a client who has just
+            // typed a line expects the arrows to move the line.
+            if !isTyping, flags.isEmpty || flags == .shift,
+               [123, 124, 125, 126].contains(event.keyCode),
+               !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false),
+               isTemplateSlotEditable, selectedTemplateTextID != nil {
+                let pixels: Double = flags == .shift ? 10 : 1
+                switch event.keyCode {
+                case 123: nudgeTemplateText(dxPixels: -pixels, dyPixels: 0)
+                case 124: nudgeTemplateText(dxPixels: pixels, dyPixels: 0)
+                case 125: nudgeTemplateText(dxPixels: 0, dyPixels: pixels)
+                default:  nudgeTemplateText(dxPixels: 0, dyPixels: -pixels)
                 }
                 return nil
             }
@@ -18288,12 +18330,261 @@ struct DevelopView: View {
                 Spacer(minLength: 0)
             }
 
+            Divider()
+            templateTextControls(template)
+
             // What the print will be, in pixels, at the one dpi this app has.
             let canvas = template.canvasPixels
             Text("Prints \(Int(canvas.width)) × \(Int(canvas.height)) px at \(Int(PrintOutput.dpi)) dpi.")
                 .font(.custom("Figtree", size: 9))
                 .foregroundColor(AppColors.muted)
         }
+    }
+
+    /// The text on the print — KORAK 198, step 5.
+    ///
+    /// ⚠️ The size is in INCHES, not in points and not in pixels, and the
+    /// label says so. A point size would mean one thing on the preview and
+    /// another on the paper; an inch is the same on both, and it is what the
+    /// client can hold a ruler against once the print is in his hand.
+    private func templateTextControls(_ template: PrintTemplate) -> some View {
+        let selectedIndex = settings.templateTexts.firstIndex { $0.id == selectedTemplateTextID }
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                sectionTitle("Text")
+                Spacer()
+                Button {
+                    addTemplateText()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(EditToolButtonStyle())
+                .help("Add Text - a line written on the print. Drag it on the canvas to place it.")
+            }
+
+            if settings.templateTexts.isEmpty {
+                Text("No text on this print yet. Add one and drag it where it belongs — it travels with the template when you sync.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(spacing: 4) {
+                    ForEach(settings.templateTexts) { item in
+                        templateTextRow(item)
+                    }
+                }
+            }
+
+            if let index = selectedIndex {
+                templateTextEditor(index: index, template: template)
+            }
+        }
+    }
+
+    private func templateTextRow(_ item: TemplateText) -> some View {
+        let isSelected = item.id == selectedTemplateTextID
+        return HStack(spacing: 6) {
+            Button {
+                // Picking up a line puts the photograph down: one set of arrow
+                // keys, one thing they move.
+                selectedTemplateTextID = item.id
+                templatePhotoSelected = false
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "textformat")
+                        .font(.system(size: 10))
+                    Text(item.text.isEmpty ? "(empty)" : item.text)
+                        .font(.custom("Figtree", size: 11).weight(isSelected ? .semibold : .regular))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+                // ⚠️ SET, not inherited — the same fault KORAK 182 fixed on
+                // the recipe card: inherited, these came out near-black in the
+                // dark theme and read as a mistake.
+                .foregroundColor(isSelected ? AppColors.ink : AppColors.inkSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(isSelected ? Color.accentColor : AppColors.border,
+                                lineWidth: isSelected ? 1.5 : 1)
+                )
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                removeTemplateText(item.id)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                    .foregroundColor(AppColors.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Remove this text.")
+        }
+    }
+
+    @ViewBuilder
+    private func templateTextEditor(index: Int, template: PrintTemplate) -> some View {
+        let text = $settings.templateTexts[index]
+        let pixelsPerInch = PrintOutput.dpi
+
+        VStack(alignment: .leading, spacing: 8) {
+            // The typing itself. `axis: .vertical` so a second line is a
+            // second line rather than a longer one scrolling sideways.
+            TextField("Text", text: text.text, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.custom("Figtree", size: 12))
+                .foregroundColor(AppColors.ink)
+                .lineLimit(1...4)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 4).fill(AppColors.panelAlt))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1))
+
+            // Family and face. Step 6 replaces the LIST behind these two with
+            // the Google catalogue; the two fields the record carries are
+            // already the shape that needs — a family, and a style within it.
+            Picker("", selection: text.fontFamily) {
+                ForEach(briefShowInstalledFontFamilies, id: \.self) { family in
+                    Text(family).tag(family)
+                }
+            }
+            .labelsHidden()
+            .font(.custom("Figtree", size: 11))
+            .onChange(of: settings.templateTexts[index].fontFamily) { family in
+                // A face belongs to ONE family. Carried across, "Black Italic"
+                // asked of a family that has no such face silently fell back
+                // to the system font — the text changed face for no reason the
+                // client could see.
+                let faces = briefShowFontFaces(in: family)
+                if !faces.contains(settings.templateTexts[index].fontFace) {
+                    settings.templateTexts[index].fontFace = faces.first ?? "Regular"
+                }
+            }
+
+            Picker("", selection: text.fontFace) {
+                ForEach(briefShowFontFaces(in: settings.templateTexts[index].fontFamily), id: \.self) { face in
+                    Text(face).tag(face)
+                }
+            }
+            .labelsHidden()
+            .font(.custom("Figtree", size: 11))
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Size")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.ink)
+                    Spacer()
+                    // Both units, because the client thinks in one and the
+                    // printer in the other.
+                    Text(String(format: "%.2f in · %d pt",
+                                settings.templateTexts[index].sizeInches,
+                                Int((settings.templateTexts[index].sizeInches * 72).rounded())))
+                        .font(.custom("Figtree", size: 10))
+                        .foregroundColor(AppColors.muted)
+                }
+                Slider(value: text.sizeInches,
+                       in: TemplateText.minimumSizeInches...TemplateText.maximumSizeInches)
+            }
+
+            HStack(spacing: 8) {
+                ColorPicker("", selection: Binding(
+                    get: { Color(nsColor: NSColor(srgbRed: settings.templateTexts[index].color.red,
+                                                  green: settings.templateTexts[index].color.green,
+                                                  blue: settings.templateTexts[index].color.blue,
+                                                  alpha: settings.templateTexts[index].color.alpha)) },
+                    set: { picked in
+                        // Through sRGB on the way in: a colour picked in
+                        // another space stored raw would print as a different
+                        // colour from the swatch that was clicked.
+                        let converted = NSColor(picked).usingColorSpace(.sRGB) ?? .black
+                        settings.templateTexts[index].color = TemplateTextColor(
+                            red: Double(converted.redComponent),
+                            green: Double(converted.greenComponent),
+                            blue: Double(converted.blueComponent),
+                            alpha: Double(converted.alphaComponent))
+                    }))
+                    .labelsHidden()
+
+                ForEach(TemplateTextAlignment.allCases, id: \.self) { option in
+                    toolButton(option.label,
+                               systemImage: option.systemImage,
+                               isActive: settings.templateTexts[index].alignment == option,
+                               help: "Lay the text to the \(option.label.lowercased()) of its own box.",
+                               scale: 0.9) {
+                        settings.templateTexts[index].alignment = option
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Opacity")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.ink)
+                    Spacer()
+                    Text("\(Int((settings.templateTexts[index].opacity * 100).rounded())) %")
+                        .font(.custom("Figtree", size: 10))
+                        .foregroundColor(AppColors.muted)
+                }
+                Slider(value: text.opacity, in: 0...1)
+            }
+
+            Text("Drag the text on the canvas to place it; the arrow keys nudge it, ⇧ by ten. It sits above the photo and the frame both, and syncs with the template.")
+                .font(.custom("Figtree", size: 9))
+                .foregroundColor(AppColors.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // What it will print as, in the one unit a printer takes. Read off
+            // the PRINT, not off the preview — see briefShowPixelsPerInch.
+            Text("Prints at \(Int((settings.templateTexts[index].sizeInches * pixelsPerInch).rounded())) px on \(template.size.label).")
+                .font(.custom("Figtree", size: 9))
+                .foregroundColor(AppColors.muted)
+        }
+    }
+
+    /// A new line, placed where a name usually goes: across the lower part of
+    /// the paper, wide enough to hold a studio's name at a glance.
+    private func addTemplateText() {
+        var text = TemplateText()
+        text.text = "Text"
+        // Stacked below the last one rather than on top of it — two texts in
+        // exactly the same place look like one text that will not move.
+        if let lowest = settings.templateTexts.map({ $0.box.y }).max() {
+            text.box.y = min(lowest + 0.08, 1 - text.box.height)
+        }
+        settings.templateTexts.append(text)
+        selectedTemplateTextID = text.id
+        templatePhotoSelected = false
+    }
+
+    private func removeTemplateText(_ id: UUID) {
+        settings.templateTexts.removeAll { $0.id == id }
+        if selectedTemplateTextID == id {
+            selectedTemplateTextID = nil
+        }
+    }
+
+    /// Move the selected text by whole canvas pixels, so a nudge means the
+    /// same distance on the print whatever size the preview is drawn at.
+    private func nudgeTemplateText(dxPixels: Double, dyPixels: Double) {
+        guard let template = templateLibrary.template(id: settings.templateID),
+              let index = settings.templateTexts.firstIndex(where: { $0.id == selectedTemplateTextID })
+        else { return }
+        let canvas = template.canvasPixels
+        settings.templateTexts[index].box = briefShowTextBoxAfterDrag(
+            settings.templateTexts[index].box,
+            translation: CGSize(width: dxPixels, height: dyPixels),
+            canvasWidth: Double(canvas.width),
+            canvasHeight: Double(canvas.height))
     }
 
     /// Is the pointer on the canvas working the template's slot right now?
@@ -18386,7 +18677,10 @@ struct DevelopView: View {
                 .contentShape(Rectangle())
                 .frame(width: frame.width, height: frame.height)
                 .position(x: frame.midX, y: frame.midY)
-                .onTapGesture { templatePhotoSelected = false }
+                .onTapGesture {
+                    templatePhotoSelected = false
+                    selectedTemplateTextID = nil
+                }
 
             if let rect {
                 // The picture itself: pick it up, and drag it wherever.
@@ -18450,8 +18744,87 @@ struct DevelopView: View {
                     .position(x: rect.midX, y: rect.midY)
                 }
             }
+
+            // The text on the print, LAST in the stack — it is drawn on top of
+            // everything by the renderer, so it has to be grabbable on top of
+            // everything too. A box that sat under the picture's own drag area
+            // would be a text the client can see and cannot catch.
+            if let template {
+                ForEach(settings.templateTexts) { item in
+                    templateTextBoxOverlay(item, template: template, frame: frame)
+                }
+            }
         }
         .coordinateSpace(name: Self.templateCanvasSpace)
+    }
+
+    /// One piece of text on the canvas: click it to pick it up, drag it
+    /// anywhere on the paper.
+    ///
+    /// ⚠️ The box is drawn from the SAME normalized rectangle the renderer
+    /// lays the text out in, mapped through the frame as drawn — the outline
+    /// and the text cannot sit apart, which is the fault KORAK 198.7 had to
+    /// unpick once already for the photograph.
+    private func templateTextBoxOverlay(_ item: TemplateText,
+                                        template: PrintTemplate,
+                                        frame: CGRect) -> some View {
+        let box = briefShowTextPixelRect(item,
+                                         canvasWidth: Double(frame.width),
+                                         canvasHeight: Double(frame.height))
+            .offsetBy(dx: frame.minX, dy: frame.minY)
+        let isSelected = item.id == selectedTemplateTextID
+
+        return ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: max(box.width, 8), height: max(box.height, 8))
+                .position(x: box.midX, y: box.midY)
+                .onHover { inside in
+                    if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
+                }
+                .onTapGesture {
+                    selectedTemplateTextID = item.id
+                    templatePhotoSelected = false
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 1,
+                                coordinateSpace: .named(Self.templateCanvasSpace))
+                        .onChanged { value in
+                            selectedTemplateTextID = item.id
+                            templatePhotoSelected = false
+                            dragTemplateText(item.id, by: value.translation, frame: frame)
+                        }
+                        .onEnded { _ in
+                            templateTextDragStart = nil
+                            scheduleRefinedRender()
+                        }
+                )
+
+            if isSelected {
+                Rectangle()
+                    .stroke(layerSelectionColor, style: StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
+                    .frame(width: max(box.width, 8), height: max(box.height, 8))
+                    .position(x: box.midX, y: box.midY)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Moves the text by the drag, measured from where the box was when the
+    /// drag began — accumulating the translation instead would feed the
+    /// box's own movement back into the gesture and shake, which is what the
+    /// named coordinate space and this start value both exist to prevent.
+    private func dragTemplateText(_ id: UUID, by translation: CGSize, frame: CGRect) {
+        guard let index = settings.templateTexts.firstIndex(where: { $0.id == id }) else { return }
+        let start = templateTextDragStart ?? settings.templateTexts[index].box
+        if templateTextDragStart == nil {
+            templateTextDragStart = start
+        }
+        settings.templateTexts[index].box = briefShowTextBoxAfterDrag(
+            start,
+            translation: translation,
+            canvasWidth: Double(frame.width),
+            canvasHeight: Double(frame.height))
     }
 
     /// A corner handle. Dragging it resizes the picture about its own middle,
@@ -18664,6 +19037,12 @@ struct DevelopView: View {
         settings.templateID = nil
         settings.templatePlacement = .centred
         settings.templateArtOverPhoto = nil
+        // ⚠️ The text goes with it. It is written ON the print — kept behind,
+        // it would be a record carrying text that nothing draws and that the
+        // panel has no way to show, and it would reappear on the next
+        // template the client tried.
+        settings.templateTexts = []
+        selectedTemplateTextID = nil
         templateNote = nil
         templatePhotoSelected = false
     }
@@ -20944,6 +21323,10 @@ struct DevelopView: View {
         source.templateID = baked.templateID
         source.templatePlacement = baked.templatePlacement
         source.templateArtOverPhoto = baked.templateArtOverPhoto
+        // The text was printed with it and is in the same snapshot; a sync
+        // that carried the frame but not what was written on it would put a
+        // blank mat on the rest of the selection.
+        source.templateTexts = baked.templateTexts
         return source
     }
 
@@ -21154,6 +21537,12 @@ struct DevelopView: View {
             result.templateID = templateForTarget?.id
             result.templatePlacement = source.templatePlacement
             result.templateArtOverPhoto = source.templateArtOverPhoto
+            // The text travels with the template, which is what the client
+            // asked the sync for: a studio mark is written once and lands on
+            // all of them. Its box is a FRACTION of the canvas, so it sits in
+            // the same place on a target of the other orientation rather than
+            // sliding off the narrow side.
+            result.templateTexts = source.templateTexts
         }
         if items.contains(.masks) {
             result.localAdjustments = source.localAdjustments

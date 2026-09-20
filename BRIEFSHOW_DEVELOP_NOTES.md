@@ -22315,3 +22315,87 @@ na ono što URLSession slučajno pošalje. Komentar u kodu je prepravljen da to 
 **ostavljen prazan**, kakav je i bio.
 
 **NIJE OBJAVLJENO.** Ostaje korak **7** — izvoz na 300 dpi.
+
+---
+
+## KORAK 198.18 — izvoz otiska: papir u pikselima i 300 dpi u fajlu (20. septembar 2026)
+
+Korak **7**, poslednji iz plana: *„izvoz na 300 dpi, koji treba i da poravna
+veličinu izvoza pečene i nepečene slike"*.
+
+### Dve stvari su morale da budu tačne, a nijedna nije bila
+
+**1. Pikseli su papir.** 8×10 na 300 dpi je **3000×2400** — i sa živog zapisa i
+sa pečene slike. Pečen otisak nosi onoliko piksela koliko je pečenju trebalo da
+fotografija ostane u svojoj rezoluciji (`briefShowBakeCanvasScale`), pa je **isti
+template izvozio dve različite veličine**, u zavisnosti od toga da li je
+pritisnut Flatten.
+
+**2. Fajl kaže 300 dpi.** Isti pikseli na podrazumevanih 72 su otisak koji će
+laboratorija skalirati ili odbiti: 3000 px na 72 dpi je **„8 × 10" od 41 inča**.
+
+### Šta je urađeno
+
+- `PhotoEditRenderer.printCanvasPixels(for:photo:)` — kog je papira ova slika,
+  ili nil ako nije otisak. ⚠️ **Dva puta do odgovora**: živi zapis ima
+  `templateID`; **pečena slika ima prazan zapis po dizajnu** (198.10), pa se
+  okvir čita iz **snimka** koji bi Unflatten vratio — jedino mesto gde je ostao.
+- `briefShowFitToPrintCanvas` u `Templates.swift` — **jedno ravnomerno skaliranje**,
+  nikad isecanje i nikad razvlačenje, plus crop na kraju koji skida zaokruženi
+  pola piksela (inače extent 3000,0001 upiše fajl od 3001 px).
+- `briefShowExportData` — **JEDNO mesto koje izvoz pretvara u bajtove**, i tu se
+  upisuje dpi (veličina `NSBitmapImageRep` u poenima; 72 poena = inč). Piše se
+  **samo za otisak**; obična fotografija nema fizičku veličinu da je tvrdi.
+
+### ⚠️ Izvoza nije bilo tri, nego ČETIRI — i našla ih je provera koja broji
+
+Napisao sam da postoje tri dugmeta za izvoz i tako i prepravio. Provera „ništa
+drugo ne zove enkoder direktno" je **prebrojala** pozive i našla **četvrti**:
+`exportSelectedPhotos` — izvoz višestruke selekcije iz filmstripa. Da je lenjir
+verovao mom spisku umesto da broji, klijent bi držao otisak pogrešne veličine
+izvezen baš tim dugmetom.
+
+Sva četiri sada idu kroz isti put: pitaj papir → spusti na papir → jedan enkoder
+→ dpi samo za otisak.
+
+### Čime je zaključano
+
+`Tools/run-print-export-test.py` + `test-print-export.swift` — **piše prave
+JPEG, PNG i TIFF fajlove i čita im veličinu i dpi nazad kroz ImageIO**. Tvrdnja
+je o tome šta piše u fajlu, pa se fajl i meri.
+
+**Negativne kontrole, ODVOŽENE:**
+
+| šta je pokvareno | šta padne |
+|---|---|
+| skaliranje izbačeno iz uklapanja (pečeno se samo **iseca** na papir) | **2** provere; „ceo otisak se skalira na papir, ne iseca" — oznaka meri **0,170** širine umesto 0,100 |
+| dpi se ne upisuje za otisak | **3** provere, po jedna za JPEG/PNG/TIFF, svaka čita **72** nazad iz fajla |
+
+⚠️ **Prva negativna kontrola je prvo prošla kroz sve provere o veličini** —
+isečen otisak od 5100 px je i dalje 3000×2400. Zato je dodata provera koja meri
+**sliku**, ne njene dimenzije: oznaka na levoj desetini pečenog otiska mora i
+posle da bude desetina papira. Lenjir koji meri samo broj piksela ne vidi da je
+klijent dobio sredinu otiska bez okvira.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**;
+`run-print-export-test.py` **all passed / all good**, i ceo srodni komplet
+prolazi: `run-templates-test.py`, `run-template-text-test.py`,
+`run-template-edge-test.py`, `run-google-fonts-test.py`,
+`run-zoom-original-test.py`, `run-editsettings-decode-test.py`. App instaliran u
+`/Applications/C4S Suite.app` i pokrenut.
+
+### ✅ PLAN KORAKA 198 JE ZAVRŠEN — svih sedam koraka
+
+| # | šta | gde je zapisano |
+|---|---|---|
+| 1 | model i uvoz template-a, rupa iz alfe, par H/V | 198.1 |
+| 2 | dugme i izbornik, prvi template na klijentovoj slici | 198.2 |
+| 3 | rad u slotu: vučenje, zum, fit/fill, rotacija | 198.4–198.8 |
+| 4 | sync na selekciju sa pravilom orijentacije | 198.11–198.13 |
+| 5 | **tekst na template-u** | 198.16 |
+| 6 | **Google fontovi: katalog, Download, trajan keš** | 198.17 |
+| 7 | **izvoz na 300 dpi, pečeno i nepečeno iste veličine** | 198.18 |
+
+**NIJE OBJAVLJENO** — nema novog izdanja; app je instaliran lokalno za klijentovu
+probu. Dogovor „push tek kad sve bude složeno" je ispunjen: sve je na grani
+`briefshow-develop`.

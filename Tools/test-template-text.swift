@@ -318,9 +318,9 @@ do {
           briefShowDrawTemplateText(unknown, template: template,
                                     canvas: CGRect(x: 0, y: 0, width: 3000, height: 2400)) != nil)
 
-    check("the machine's families are listed", briefShowInstalledFontFamilies.count > 10)
+    check("the machine's families are listed", briefShowInstalledFontFamilies().count > 10)
     check("none of them is a private system face",
-          !briefShowInstalledFontFamilies.contains { $0.hasPrefix(".") })
+          !briefShowInstalledFontFamilies().contains { $0.hasPrefix(".") })
     let faces = briefShowFontFaces(in: "Helvetica")
     check("Helvetica has faces, Regular first",
           faces.first == "Regular" && faces.count > 1, "\(faces)")

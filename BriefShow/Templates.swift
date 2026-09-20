@@ -1482,3 +1482,32 @@ func briefShowFontFaces(in family: String) -> [String] {
     briefShowFontFaceCache.setObject(faces as NSArray, forKey: family as NSString)
     return faces
 }
+
+// MARK: - The print, on its paper
+
+/// The finished print, landed exactly on its own paper.
+///
+/// ⚠️ A SCALE, never a crop and never a stretch. Both sides come from the same
+/// template and therefore have the same proportions; what differs is how many
+/// pixels the bake needed in order to keep the photograph at its own
+/// resolution (see `briefShowBakeCanvasScale`). Without this, the SAME
+/// template exported one size from a live record and another from a baked one
+/// — which is what step 7 of the plan means by aligning the two.
+///
+/// The crop at the end takes a rounded half-pixel off the edge: an extent of
+/// 3000.0001 writes a 3001-pixel file otherwise.
+func briefShowFitToPrintCanvas(_ image: CIImage, canvas: CGSize) -> CIImage {
+    let extent = image.extent
+    guard extent.width > 1, extent.height > 1,
+          canvas.width > 1, canvas.height > 1,
+          extent.width.isFinite, extent.height.isFinite else {
+        return image
+    }
+    let scale = min(canvas.width / extent.width, canvas.height / extent.height)
+    let placed = abs(scale - 1) < 1e-9
+        ? image
+        : image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    let origin = placed.extent.origin
+    return placed.cropped(to: CGRect(x: origin.x, y: origin.y,
+                                     width: canvas.width, height: canvas.height))
+}

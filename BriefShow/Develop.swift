@@ -606,6 +606,40 @@ enum TemplateBatchFlatten {
 // even the same JPEG: the panel's own button used quality 0.92 while the
 // filmstrip's right-click export used 1.0, so which button you happened to
 // press changed the file you got. One setting now feeds all four paths.
+/// The ONE place a finished render becomes bytes on disk.
+///
+/// ⚠️ It exists because there are three export buttons — this photo, that
+/// thumbnail, all the edited ones — and each of them had its own copy of
+/// "make a CGImage, wrap it in a bitmap rep, encode". Three copies is three
+/// places for the print size and the dpi to be forgotten in, and two of them
+/// would have been found by a client holding a print that came out the wrong
+/// size on paper.
+///
+/// `dpi` is what the FILE says about itself. A lab opening an 8 × 10 at 300
+/// dpi lays it out at eight inches by ten; the same pixels at the default 72
+/// are a print a lab will scale, or refuse. It is written only for a print —
+/// an ordinary photograph has no physical size to claim.
+func briefShowExportData(_ rendered: CIImage,
+                         format: ExportFormat,
+                         quality: Double,
+                         dpi: Double? = nil,
+                         context: CIContext = briefEditsCIContext) -> Data? {
+    guard let cgImage = context.createCGImage(rendered, from: rendered.extent,
+                                              format: format.renderFormat,
+                                              colorSpace: briefEditsSRGBColorSpace) else {
+        return nil
+    }
+    let representation = NSBitmapImageRep(cgImage: cgImage)
+    if let dpi, dpi > 0 {
+        // A bitmap rep's `size` is in POINTS, and 72 points are an inch — so
+        // this is where "these pixels are 300 to the inch" is said. The pixels
+        // themselves are untouched.
+        representation.size = NSSize(width: Double(cgImage.width) * 72.0 / dpi,
+                                     height: Double(cgImage.height) * 72.0 / dpi)
+    }
+    return format.encode(representation, quality: quality)
+}
+
 enum ExportFormat: String, CaseIterable, Identifiable {
     case jpeg, png, tiff
 
@@ -3272,6 +3306,31 @@ enum PhotoEditRenderer {
     /// `reusingRAWDecode` is the interactive preview's own switch — see
     /// `cachedRAWDecode`. Every other caller leaves it false and gets exactly
     /// the render it got before.
+    // MARK: - What a print must come out as
+
+    /// The paper this photo prints on, in pixels at the one dpi this app has —
+    /// or nil, for a photograph that is not a print.
+    ///
+    /// ⚠️ TWO WAYS A PHOTO CAN BE A PRINT, and the second is the one that was
+    /// making the exports disagree. A photo with a template on it renders its
+    /// canvas as part of the render. A photo that has been FLATTENED has an
+    /// empty record by design (KORAK 198.10) — its print is already in the
+    /// pixels, and the frame it was printed in is only in the snapshot
+    /// Unflatten would restore. Without reading that snapshot, the baked one
+    /// exported at whatever size the bake happened to need and the unbaked one
+    /// at 3000 × 2400, from the same template.
+    static func printCanvasPixels(for settings: PhotoEditSettings, photo: URL?) -> CGSize? {
+        if let template = TemplateLibrary.shared.template(id: settings.templateID) {
+            return template.canvasPixels
+        }
+        guard let photo,
+              let baked = FlattenedImageStore.snapshot(for: photo),
+              let template = TemplateLibrary.shared.template(id: baked.templateID) else {
+            return nil
+        }
+        return template.canvasPixels
+    }
+
     static func render(_ settings: PhotoEditSettings, on base: PhotoBaseImage,
                        applyCrop: Bool = true,
                        reusingRAWDecode: Bool = false,
@@ -22775,17 +22834,21 @@ struct DevelopView: View {
         let settingsSnapshot = settings
         exportStatusText = "Exporting…"
 
+        let photoAtExport = selectedURL
         developRenderQueue.async(qos: .userInitiated) {
-            let rendered = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage)
+            var rendered = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage)
+            // A print comes out as its paper, at 300 dpi — whether the frame is
+            // still live on the record or already baked into the pixels.
+            let canvas = PhotoEditRenderer.printCanvasPixels(for: settingsSnapshot,
+                                                             photo: photoAtExport)
+            if let canvas {
+                rendered = briefShowFitToPrintCanvas(rendered, canvas: canvas)
+            }
             var didWrite = false
 
-            if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent,
-                                                              format: format.renderFormat,
-                                                              colorSpace: briefEditsSRGBColorSpace) {
-                let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-                if let data = format.encode(bitmapRep, quality: quality) {
-                    didWrite = (try? data.write(to: destinationURL)) != nil
-                }
+            if let data = briefShowExportData(rendered, format: format, quality: quality,
+                                              dpi: canvas == nil ? nil : PrintOutput.dpi) {
+                didWrite = (try? data.write(to: destinationURL)) != nil
             }
 
             DispatchQueue.main.async {
@@ -22834,14 +22897,14 @@ struct DevelopView: View {
             var didWrite = false
 
             if let base = PhotoEditRenderer.loadBaseImage(from: url) {
-                let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
-                if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent,
-                                                                  format: format.renderFormat,
-                                                                  colorSpace: briefEditsSRGBColorSpace) {
-                    let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-                    if let data = format.encode(bitmapRep, quality: quality) {
-                        didWrite = (try? data.write(to: destinationURL)) != nil
-                    }
+                var rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
+                let canvas = PhotoEditRenderer.printCanvasPixels(for: settingsForPhoto, photo: url)
+                if let canvas {
+                    rendered = briefShowFitToPrintCanvas(rendered, canvas: canvas)
+                }
+                if let data = briefShowExportData(rendered, format: format, quality: quality,
+                                                  dpi: canvas == nil ? nil : PrintOutput.dpi) {
+                    didWrite = (try? data.write(to: destinationURL)) != nil
                 }
             }
 
@@ -22964,18 +23027,18 @@ struct DevelopView: View {
             for (index, url) in urls.enumerated() {
                 let settingsForPhoto = PhotoEditStore.settings(for: url)
                 if let base = PhotoEditRenderer.loadBaseImage(from: url) {
-                    let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
-                    if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent,
-                                                                      format: format.renderFormat,
-                                                                      colorSpace: briefEditsSRGBColorSpace) {
-                        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-                        if let data = format.encode(bitmapRep, quality: quality) {
-                            let destinationURL = destinationFolder
-                                .appendingPathComponent(url.deletingPathExtension().lastPathComponent + " Edited")
-                                .appendingPathExtension(format.fileExtension)
-                            if (try? data.write(to: destinationURL)) != nil {
-                                successCount += 1
-                            }
+                    var rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
+                    let canvas = PhotoEditRenderer.printCanvasPixels(for: settingsForPhoto, photo: url)
+                    if let canvas {
+                        rendered = briefShowFitToPrintCanvas(rendered, canvas: canvas)
+                    }
+                    if let data = briefShowExportData(rendered, format: format, quality: quality,
+                                                      dpi: canvas == nil ? nil : PrintOutput.dpi) {
+                        let destinationURL = destinationFolder
+                            .appendingPathComponent(url.deletingPathExtension().lastPathComponent + " Edited")
+                            .appendingPathExtension(format.fileExtension)
+                        if (try? data.write(to: destinationURL)) != nil {
+                            successCount += 1
                         }
                     }
                 }
@@ -23038,27 +23101,27 @@ struct DevelopView: View {
             for (index, url) in editedURLs.enumerated() {
                 let settingsForPhoto = PhotoEditStore.settings(for: url)
                 if let base = PhotoEditRenderer.loadBaseImage(from: url) {
-                    let rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
-                    if let cgImage = briefEditsCIContext.createCGImage(rendered, from: rendered.extent,
-                                                                      format: format.renderFormat,
-                                                                      colorSpace: briefEditsSRGBColorSpace) {
-                        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-                        if let data = format.encode(bitmapRep, quality: quality) {
-                            // Same "<name> Edited.<ext>" naming as the
-                            // single-photo export — re-running this into
-                            // the same destination folder later (e.g.
-                            // after further edits) overwrites its own
-                            // previous output rather than piling up
-                            // "Edited 2", "Edited 3", ... copies, which
-                            // matches "export reflects the latest saved
-                            // edit" better than silently accumulating
-                            // stale exports.
-                            let destinationURL = destinationFolder
-                                .appendingPathComponent(url.deletingPathExtension().lastPathComponent + " Edited")
-                                .appendingPathExtension(format.fileExtension)
-                            if (try? data.write(to: destinationURL)) != nil {
-                                successCount += 1
-                            }
+                    var rendered = PhotoEditRenderer.render(settingsForPhoto, on: base)
+                    let canvas = PhotoEditRenderer.printCanvasPixels(for: settingsForPhoto, photo: url)
+                    if let canvas {
+                        rendered = briefShowFitToPrintCanvas(rendered, canvas: canvas)
+                    }
+                    if let data = briefShowExportData(rendered, format: format, quality: quality,
+                                                      dpi: canvas == nil ? nil : PrintOutput.dpi) {
+                        // Same "<name> Edited.<ext>" naming as the
+                        // single-photo export — re-running this into
+                        // the same destination folder later (e.g.
+                        // after further edits) overwrites its own
+                        // previous output rather than piling up
+                        // "Edited 2", "Edited 3", ... copies, which
+                        // matches "export reflects the latest saved
+                        // edit" better than silently accumulating
+                        // stale exports.
+                        let destinationURL = destinationFolder
+                            .appendingPathComponent(url.deletingPathExtension().lastPathComponent + " Edited")
+                            .appendingPathExtension(format.fileExtension)
+                        if (try? data.write(to: destinationURL)) != nil {
+                            successCount += 1
                         }
                     }
                 }

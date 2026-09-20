@@ -970,9 +970,22 @@ final class TemplateLibrary: ObservableObject {
         return outcome
     }
 
+    /// ⚠️ The pair is checked here, not at the call sites. Changing a
+    /// template's paper or its orientation can make an existing pair illegal —
+    /// two verticals joined would leave the sync believing it had a horizontal
+    /// to give and printing portraits sideways — and a partner left pointing
+    /// at a template that has forgotten it is the same fault seen from the
+    /// other end. Both sides are cleared together or not at all.
     func update(_ template: PrintTemplate) {
         guard let index = templates.firstIndex(where: { $0.id == template.id }) else { return }
         templates[index] = template
+
+        if let pairID = template.pairID,
+           let partnerIndex = templates.firstIndex(where: { $0.id == pairID }),
+           !briefShowCanPairTemplates(templates[index], templates[partnerIndex]) {
+            templates[index].pairID = nil
+            templates[partnerIndex].pairID = nil
+        }
         save()
     }
 

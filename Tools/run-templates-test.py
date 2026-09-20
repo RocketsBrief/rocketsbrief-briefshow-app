@@ -52,6 +52,11 @@ code = "\n".join(line.split("//", 1)[0] for line in source.splitlines())
 failures = 0
 
 
+def templates_source_or_develop(marker: str, text: str) -> str:
+    """The body of a type, wherever it lives, so a check reads the thing it names."""
+    return text.split(marker, 1)[-1].split("\n}", 1)[0] if marker in text else ""
+
+
 def wiring(label: str, passed: bool, detail: str = "") -> None:
     global failures
     if passed:
@@ -306,11 +311,15 @@ wiring("the crop goes in with it — a crop left live would crop the MAT",
 wiring("the bake is drawn at the scale that keeps the photo's pixels",
        "briefShowBakeCanvasScale(" in flatten_body)
 
-# ⚠️ The batch path is the other way round, and on purpose: it renders with
+# ⚠️ THE RECIPE BATCH is the other way round, and on purpose: it renders with
 # applyCrop: false, bakes no canvas, and so must not drop what it did not bake.
-batch_body = develop_code.split("outcome.settingsByURL[url] = cleared", 1)[0][-900:]
-wiring("the batch bake, which composes no canvas, keeps the template instead",
-       "cleared.templateID" in batch_body and "cleared.templatePlacement" in batch_body)
+#
+# ⚠️ Anchored on the recipe undo, not on "outcome.settingsByURL[url] = cleared":
+# the sync's own batch bake ends with that same line now, and the check read
+# the wrong one of the two the moment it existed.
+recipe_body = develop_code.split("PortraitRecipeUndoStore.record(", 1)[-1].split("outcome.settingsByURL[url] = cleared", 1)[0]
+wiring("the recipe batch, which composes no canvas, keeps the template instead",
+       "cleared.templateID" in recipe_body and "cleared.templatePlacement" in recipe_body)
 
 wiring("a photo laid into a frame HAS something to bake",
        "keptByFlatten.templateID" not in develop_code)
@@ -355,6 +364,36 @@ wiring("both the dialog's dot and the sync itself read through it",
 
 wiring("layers still have no sync bit, and the reason is written beside the template's",
        "static let layers = SyncItem" not in develop_code)
+
+# The client's answer of 20.09 to „dodaj i za 8x10 template": the model always
+# had the paper, but nothing could SAY which one a drawing is when the import
+# guessed wrong.
+wiring("every known paper can be chosen on a template",
+       'Menu("Print Size")' in develop_code and "ForEach(PrintSize.known" in develop_code)
+wiring("8×10 is one of them, and it is not typed into the panel",
+       "static let eightByTen = PrintSize(shortInches: 8, longInches: 10)" in templates_source)
+wiring("the orientation can be corrected too — a square drawing belongs to nobody",
+       'Menu("Orientation")' in develop_code)
+wiring("and the library lets go of BOTH ends of a pair it has invalidated",
+       "templates[index].pairID = nil" in templates_source
+       and "templates[partnerIndex].pairID = nil" in templates_source)
+
+# The tick beside Synchronize.
+wiring("there is a tick to bake the synced photos",
+       "syncFlattensTargets" in develop_code
+       and "flattenTargets: syncFlattensTargets" in develop_code)
+wiring("it is off unless it is asked for",
+       "@State private var syncFlattensTargets = false" in develop_code)
+wiring("the bake runs one photo at a time — this machine has 8 GB",
+       "for (index, url) in targets.enumerated()" in
+       templates_source_or_develop("enum TemplateBatchFlatten", develop_code))
+wiring("it bakes the print for a photo that has a template, and only the crop otherwise",
+       "applyCrop: template != nil" in develop_code
+       and "if template == nil {" in develop_code)
+wiring("a photo with nothing to bake is counted, not baked",
+       "outcome.skipped += 1" in develop_code)
+wiring("the settings are flushed BEFORE the bake reads them back",
+       develop_code.index("PhotoEditStore.flushNow()") < develop_code.index("flattenSyncedTargets("))
 
 wiring("deleting a template takes it off this photo first",
        "func deleteTemplate(" in develop_code and "removeTemplateFromPhoto()" in develop_code)

@@ -21880,3 +21880,75 @@ provere; uzet ceo snimak umesto samo okvira obara onu o „samo template".
 
 **Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
 i pokrenuto. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.13 — kvačica „Flatten the synced photos", i 8×10 (20. septembar 2026)
+
+Klijent: *„kvacica u sincy pored da se i falttenuje ako klijent hoce!, ali dodaj
+i za 8x10 template jer je ovo samo 8x6 bio"*.
+
+### Kvačica u sync dijalogu
+
+**Flatten the synced photos** — ispod liste kontrola, iznad dugmadi. **Podrazumevano
+je isključena**, i piše šta košta: peče template u svaku sliku, vraća se **samo**
+Unflatten-om, i svaka pečena slika je pun fajl na disku (klijentov 8×6 bake je
+~280 MB, nekompresovan 16-bitni TIFF).
+
+`TemplateBatchFlatten` radi posao:
+
+⛔ **Jedna po jedna, nikad paralelno.** Svaka slika je pun render plus upis; dve
+odjednom nisu dvaput brže nego swap fajl. Mašina ima 8 GB.
+
+⚠️ **Zapis se prvo upiše i FLUSH-uje, pa onda peče** — pečenje čita zapis svake
+slike **nazad iz store-a**, pa bi pokrenuto ranije zapeklo stanje od **pre**
+sync-a. Isti propust je već zapisan kod recepata.
+
+⚠️ **Pravilo pečenja je isto kao za pojedinačni Flatten:** slika sa template-om
+peče **otisak** i vraća prazan zapis; slika bez njega peče gradaciju a **crop
+ostaje živ**. Slika kojoj nema šta da se peče se **broji, ne peče** — poruka na
+kraju kaže i to: *„Synced to 9, flattened 9"*, uz broj preskočenih i palih.
+
+⚠️ **Sličice se poništavaju ručno i objava ide u obliku store-a**
+(`userInfo[photoEditsChangedURLsKey]`): slika čiji je zapis ostao **isti** (ona
+bez template-a, kojoj je samo crop preživeo) ne objavljuje ništa iz store-a — a
+fajl na disku joj se promenio, pa bi joj pločica ostala nepečena.
+
+### 8×10
+
+`PrintSize.eightByTen` je u modelu od 198.1 (3000×2400 na 300 dpi), ali **nije
+postojao način da se kaže kog je papira** crtež kad uvoz pogodi pogrešno — a
+4:3 i 4:5 su 6,7 % razmaknuti i template zaveden pod pogrešan papir štampa u
+pogrešnoj veličini.
+
+Zato desni klik na pločicu sada ima **Print Size** (sve poznate veličine, sa
+kvačicom na tekućoj) i **Orientation** (kvadratni crtež ne može niko osim
+klijenta da svrsta).
+
+⛔ **Par se proverava u biblioteci, ne na mestu poziva.** Promena papira ili
+orijentacije može da učini postojeći par nelegalnim; `TemplateLibrary.update`
+tada pušta **obe strane** — partner koji i dalje pokazuje na template koji je
+njega zaboravio je isti kvar viđen s druge strane.
+
+**Za probu su napravljena četiri crteža** u `~/Desktop/C4S Template Samples/`:
+8×6 H/V (2400×1800, 1800×2400) i **8×10 H/V** (3000×2400, 2400×3000), svi sa
+providnom rupom i trakom za tekst ispod.
+
+### Čime je zaključano
+
+Dva nova merenja (par pada kad se promeni orijentacija, i kad se promeni papir)
+i **deset provera iz izvora**: da kvačica postoji i da je isključena, da se peče
+jedna po jedna, da je pravilo pečenja isto kao pojedinačno, da se broji ono što
+nema šta da peče, da se zapis flush-uje pre pečenja, i da se papir i orijentacija
+mogu izabrati a 8×10 nije otkucan u panelu.
+
+**Negativne kontrole, tri:** upaljena kvačica po defaultu, paralelno pečenje, i
+par koji preživi promenu papira — svaka obara tačno svoju proveru.
+
+⚠️ **Ispravka merača, i opet ista vrsta:** provera „recepti zadržavaju template"
+je mesto nalazila po `outcome.settingsByURL[url] = cleared` — a novi batch se
+završava **istom** linijom, pa je od tog trenutka gledala pogrešan od dva. Sada
+je usidrena na `PortraitRecipeUndoStore.record(`.
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+i pokrenuto. **NIJE OBJAVLJENO.**

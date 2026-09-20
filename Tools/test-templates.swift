@@ -474,6 +474,22 @@ check("while the landscapes in the same run still get theirs",
 check("a square template takes either way up",
       briefShowSyncedTemplate(square, forPhotoOrientation: .vertical, catalogue: [square])?.id == square.id)
 
+// ⚠️ Changing a template's paper or its orientation can make an existing pair
+// illegal, and BOTH sides have to be let go: a partner still pointing at a
+// template that has forgotten it is what makes a sync believe it has a
+// vertical to give. TemplateLibrary.update owns that rule; what is checked
+// here is the rule it enforces.
+var joined = [h, v]
+joined = briefShowPairTemplates(h, v, in: joined)
+var turnedOver = joined.first { $0.id == v.id }!
+turnedOver.orientation = .horizontal
+check("two of the same orientation are no longer a legal pair",
+      !briefShowCanPairTemplates(joined.first { $0.id == h.id }!, turnedOver))
+var resized = joined.first { $0.id == v.id }!
+resized.size = .eightByTen
+check("and neither are two different papers",
+      !briefShowCanPairTemplates(joined.first { $0.id == h.id }!, resized))
+
 // MARK: - What gets written down
 
 print("\nwhat a template carries when it is stored")

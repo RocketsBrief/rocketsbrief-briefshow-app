@@ -503,6 +503,95 @@ struct SyncItem: OptionSet {
     }
 }
 
+/// Baking a run of photographs, one at a time.
+///
+/// ⚠️ SEQUENTIAL, and that is the whole design. Each photo here is a full-size
+/// render plus a 16-bit TIFF on disk — the client's 8×6 bake measures about
+/// 280 MB — and this machine has 8 GB. Two at once is not twice as fast, it is
+/// a swap file.
+enum TemplateBatchFlatten {
+
+    struct Outcome {
+        /// What each photo's record became, for the caller to write back.
+        var settingsByURL: [URL: PhotoEditSettings] = [:]
+        var failed = 0
+        /// Photos with nothing to bake. Not a failure — worth counting so the
+        /// status line does not claim work that never happened.
+        var skipped = 0
+    }
+
+    /// `catalogue` is handed in rather than read from TemplateLibrary: this
+    /// runs off the main thread, and the library is a published object the
+    /// panel is bound to.
+    static func run(on targets: [URL],
+                    catalogue: [PrintTemplate],
+                    context: CIContext,
+                    progress: @escaping (Int, Int) -> Void,
+                    completion: @escaping (Outcome) -> Void) {
+        developRenderQueue.async(qos: .userInitiated) {
+            var outcome = Outcome()
+
+            for (index, url) in targets.enumerated() {
+                DispatchQueue.main.async { progress(index, targets.count) }
+
+                let photoSettings = PhotoEditStore.settings(for: url)
+                let template = photoSettings.templateID.flatMap { id in
+                    catalogue.first { $0.id == id }
+                }
+
+                // The same question the header's Flatten button asks: is there
+                // anything here that a bake would put into the pixels? The crop
+                // alone survives a flatten, so a photo carrying only a crop has
+                // nothing to do here.
+                var keptByFlatten = PhotoEditSettings()
+                keptByFlatten.crop = photoSettings.crop
+                guard photoSettings != keptByFlatten else {
+                    outcome.skipped += 1
+                    continue
+                }
+
+                guard let base = PhotoEditRenderer.loadBaseImage(from: url) else {
+                    outcome.failed += 1
+                    continue
+                }
+
+                var scale: Double = 1
+                if let template {
+                    let extent = base.extent
+                    var width = Double(extent.width), height = Double(extent.height)
+                    if photoSettings.rotationQuarterTurns % 2 != 0 { swap(&width, &height) }
+                    if let crop = photoSettings.crop { width *= crop.width; height *= crop.height }
+                    scale = briefShowBakeCanvasScale(photoWidth: width, photoHeight: height,
+                                                     template: template,
+                                                     placement: photoSettings.templatePlacement)
+                }
+
+                // Exactly the rule flattenPhoto follows: with a template the
+                // bake draws the PRINT (crop and frame in the pixels, record
+                // emptied); without one the crop stays live.
+                let rendered = PhotoEditRenderer.render(photoSettings, on: base,
+                                                        applyCrop: template != nil,
+                                                        templateCanvasScale: scale)
+                do {
+                    try FlattenedImageStore.flatten(rendered, settings: photoSettings,
+                                                    for: url, context: context)
+                } catch {
+                    outcome.failed += 1
+                    continue
+                }
+
+                var cleared = PhotoEditSettings()
+                if template == nil {
+                    cleared.crop = photoSettings.crop
+                }
+                outcome.settingsByURL[url] = cleared
+            }
+
+            DispatchQueue.main.async { completion(outcome) }
+        }
+    }
+}
+
 // What "Export" writes. Until now every export path hardcoded JPEG, and not
 // even the same JPEG: the panel's own button used quality 0.92 while the
 // filmstrip's right-click export used 1.0, so which button you happened to
@@ -8737,6 +8826,10 @@ struct DevelopView: View {
     /// comes out of the same burst timer every slider uses; this is only so
     /// the drag itself measures from a fixed point rather than accumulating.
     @State private var templateDragStart: SlotPlacement?
+    /// „kvacica u sincy pored da se i falttenuje ako klijent hoce" — off by
+    /// default, because a bake is only undone by Unflatten and writes a
+    /// full-size TIFF per photo.
+    @State private var syncFlattensTargets = false
     /// Is the photograph in the template picked up? The client asked to SEE
     /// that it is: *„kada selektujemo sliku da se vidi da smo je selektovali i
     /// da mozemo da je rotiramo ili smanjimo velicinu"*. A click on the
@@ -17896,6 +17989,44 @@ struct DevelopView: View {
                 Button("Remove from This Photo") { removeTemplateFromPhoto() }
             }
             Divider()
+            // ⚠️ The paper is a GUESS at import — 4:3 and 4:5 are 6.7 % apart
+            // and a drawing can carry a few pixels of bleed — and a template
+            // filed under the wrong one prints at the wrong size on the
+            // client's paper. So it can always be said outright.
+            Menu("Print Size") {
+                ForEach(PrintSize.known, id: \.self) { size in
+                    Button {
+                        var updated = template
+                        updated.size = size
+                        templateLibrary.update(updated)
+                    } label: {
+                        if template.size == size {
+                            Label(size.label, systemImage: "checkmark")
+                        } else {
+                            Text(size.label)
+                        }
+                    }
+                }
+            }
+            Menu("Orientation") {
+                ForEach(TemplateOrientation.allCases, id: \.self) { orientation in
+                    Button {
+                        // A template that changed sides may no longer be
+                        // pairable with its partner; the library sees to both
+                        // ends of that — see TemplateLibrary.update.
+                        var updated = template
+                        updated.orientation = orientation
+                        templateLibrary.update(updated)
+                    } label: {
+                        if template.orientation == orientation {
+                            Label(orientation.label, systemImage: "checkmark")
+                        } else {
+                            Text(orientation.label)
+                        }
+                    }
+                }
+            }
+            Divider()
             Button("Delete Template…", role: .destructive) { templateToDelete = template }
         }
         .help("\(template.name) — \(template.size.label), \(template.orientation.label)"
@@ -19452,6 +19583,23 @@ struct DevelopView: View {
 
             Divider()
 
+            // ⚠️ Off by default, and it says what it costs. A bake is undone
+            // only by Unflatten and writes a full-size 16-bit TIFF per photo —
+            // the client's own 8×6 print measures about 280 MB — so this is a
+            // choice made per run, not a setting that quietly stays on.
+            Toggle(isOn: $syncFlattensTargets) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Flatten the synced photos")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppColors.ink)
+                    Text("Bakes the template into each one, like the open photo. Only Unflatten undoes it, and each bake is a full-size file on disk.")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(AppColors.ink.opacity(0.6))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.checkbox)
+
             HStack {
                 Text(syncSelectionSummary)
                     .font(.system(size: 11))
@@ -19465,7 +19613,8 @@ struct DevelopView: View {
                 .buttonStyle(ShowHeaderButtonStyle())
 
                 Button("Synchronize") {
-                    syncSettingsToSelection(items: syncItems, recipes: syncRecipes)
+                    syncSettingsToSelection(items: syncItems, recipes: syncRecipes,
+                                            flattenTargets: syncFlattensTargets)
                     showSyncDialog = false
                 }
                 .buttonStyle(ShowHeaderButtonStyle())
@@ -20603,7 +20752,8 @@ struct DevelopView: View {
         return source
     }
 
-    private func syncSettingsToSelection(items: SyncItem, recipes: Set<PortraitRecipe> = []) {
+    private func syncSettingsToSelection(items: SyncItem, recipes: Set<PortraitRecipe> = [],
+                                         flattenTargets: Bool = false) {
         guard let selectedURL, !items.isEmpty || !recipes.isEmpty else {
             return
         }
@@ -20662,11 +20812,63 @@ struct DevelopView: View {
             return
         }
 
+        let synced = targets.count - skippedForOrientation
+        if flattenTargets {
+            // ⚠️ AFTER the settings are written and FLUSHED, never beside
+            // them: the bake reads each photo's record back out of the store,
+            // so a run started earlier would bake the record as it was before
+            // the sync — the same trap the recipes document above.
+            PhotoEditStore.flushNow()
+            flattenSyncedTargets(photoURLs.filter { targets.contains($0) },
+                                 synced: synced, skipped: skippedForOrientation)
+            return
+        }
+
         if skippedForOrientation > 0 {
-            let count = targets.count - skippedForOrientation
-            showTransientStatus("Synced to \(count) — \(skippedForOrientation) the other way up, and this template has no pair")
+            showTransientStatus("Synced to \(synced) — \(skippedForOrientation) the other way up, and this template has no pair")
         } else {
             showTransientStatus("Synced to \(targets.count)")
+        }
+    }
+
+    /// The tick beside Synchronize: bake every photo the sync just wrote to.
+    ///
+    /// In filmstrip order rather than the set's own, so "3 of 12" counts along
+    /// the strip the client is looking at — same reason the recipes do it.
+    private func flattenSyncedTargets(_ targets: [URL], synced: Int, skipped: Int) {
+        guard !targets.isEmpty else { return }
+
+        isFlattening = true
+        exportStatusText = "Flattening 1 of \(targets.count)…"
+
+        TemplateBatchFlatten.run(on: targets,
+                                 catalogue: templateLibrary.templates,
+                                 context: briefEditsCIContext) { done, total in
+            exportStatusText = "Flattening \(done + 1) of \(total)…"
+        } completion: { outcome in
+            isFlattening = false
+            for (url, cleared) in outcome.settingsByURL {
+                PhotoEditStore.setSettings(cleared, for: url)
+            }
+            PhotoEditStore.flushNow()
+            // The baked copies are new files; a cached tile would go on
+            // showing the picture without its frame.
+            //
+            // ⚠️ Announced in the store's own shape, with the URLs in
+            // `userInfo`. A photo whose record came back UNCHANGED (one with
+            // no template, whose crop simply survived) posts nothing from the
+            // store — and its file on disk changed all the same, so without
+            // this its tile would go on showing the unbaked picture.
+            ThumbnailDiskCache.invalidate(outcome.settingsByURL.keys)
+            NotificationCenter.default.post(
+                name: .photoEditsChanged, object: nil,
+                userInfo: [photoEditsChangedURLsKey: Set(outcome.settingsByURL.keys)])
+
+            var message = "Synced to \(synced), flattened \(outcome.settingsByURL.count)"
+            if skipped > 0 { message += ", \(skipped) the other way up" }
+            if outcome.skipped > 0 { message += ", \(outcome.skipped) had nothing to bake" }
+            if outcome.failed > 0 { message += ", \(outcome.failed) failed" }
+            showTransientStatus(message)
         }
     }
 

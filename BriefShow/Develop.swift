@@ -178,6 +178,24 @@ struct PhotoEditSettings: Codable, Equatable {
     var localAdjustments: [LocalAdjustment] = []   // masks — see LocalAdjustment
     var layers: [ImageLayer] = []        // pasted cut/copied pieces — see ImageLayer
 
+    // The print template this photo is laid into, and where it sits in the
+    // template's slot. See Templates.swift.
+    //
+    // ⚠️ AN ID, NEVER THE DRAWING. This whole struct is one JSON blob in
+    // UserDefaults that is rewritten after every change, which is the same
+    // reason a layer's pixels left it for LayerPixelStore. The drawing lives
+    // in Application Support and the catalogue holds what it is.
+    //
+    // nil is "no template", and that is what every record written before
+    // 20.09.2026 decodes to — so an existing edit renders exactly as it did.
+    var templateID: UUID?
+    var templatePlacement = SlotPlacement.centred
+    // The client's below/above switch, per PHOTO rather than per template:
+    // the same frame is used both ways, and nil means "whatever the template
+    // itself says", so changing the template's own default still reaches the
+    // photos that never asked for anything different.
+    var templateArtOverPhoto: Bool?
+
     /// Which meaning the numbers in this record carry.
     ///
     /// 1 (or absent) — everything written before 05.09.2026, where Highlights
@@ -249,6 +267,12 @@ struct PhotoEditSettings: Codable, Equatable {
         cropAspect = try c.decodeIfPresent(CropAspectRatioOption.self, forKey: .cropAspect) ?? .free
         localAdjustments = try c.decodeIfPresent([LocalAdjustment].self, forKey: .localAdjustments) ?? []
         layers = try c.decodeIfPresent([ImageLayer].self, forKey: .layers) ?? []
+        // Absent from every record written before 20.09. — and nil is exactly
+        // what those photos are: no template, rendered as they always were.
+        templateID = try c.decodeIfPresent(UUID.self, forKey: .templateID)
+        templatePlacement = try c.decodeIfPresent(SlotPlacement.self, forKey: .templatePlacement)
+            ?? .centred
+        templateArtOverPhoto = try c.decodeIfPresent(Bool.self, forKey: .templateArtOverPhoto)
 
         // ⚠️ The Highlights migration, and it is the reason `schemaVersion`
         // exists. Before 05.09.2026 a positive Highlights DARKENED, the
@@ -282,6 +306,7 @@ struct PhotoEditSettings: Codable, Equatable {
         case colorMixer
         case rotationQuarterTurns, straightenDegrees, crop, cropAspect
         case localAdjustments, layers
+        case templateID, templatePlacement, templateArtOverPhoto
         case schemaVersion
         case temperatureKelvin, tintAbsolute
     }
@@ -300,6 +325,10 @@ struct PhotoEditSettings: Codable, Equatable {
             && vignette == 0 && colorMixer.isNeutral && rotationQuarterTurns == 0
             && straightenDegrees == 0 && crop == nil && localAdjustments.isEmpty
             && layers.isEmpty
+            // A template IS an edit — it decides what comes out of the printer.
+            // The placement is not counted on its own, for the same reason the
+            // vignette's shape is not: with no template chosen it moves nothing.
+            && templateID == nil
     }
 }
 
@@ -3380,6 +3409,24 @@ enum PhotoEditRenderer {
         }
 
         output = PhotoEditRenderer.applyVignette(settings.vignette, midpoint: settings.vignetteMidpoint, feather: settings.vignetteFeather, roundness: settings.vignetteRoundness, to: output)
+
+        // ⚠️ THE TEMPLATE IS LAST, and it has to be. Everything above works on
+        // the photograph; this puts the finished photograph onto the PAPER.
+        // Put anywhere earlier, every later pass would be working on the mat
+        // and the border as if they were part of the picture — Dehaze would
+        // read the white card as haze, the vignette would darken the frame's
+        // corners rather than the photograph's.
+        //
+        // `applyCrop: false` renders are the ones that measure the photograph
+        // itself (histograms, the crop overlay's own base), so the canvas stays
+        // out of those for the same reason the crop does.
+        if applyCrop, let template = TemplateLibrary.shared.template(id: settings.templateID) {
+            output = briefShowComposeTemplate(
+                photo: output,
+                template: template,
+                placement: settings.templatePlacement,
+                artOverPhoto: settings.templateArtOverPhoto ?? template.artOverPhoto)
+        }
 
         return output
     }
@@ -7977,10 +8024,71 @@ private struct PreviewClipShape: Shape {
 // the crop "Done" button and was already scoped to "only while that button
 // exists" — switching away from the Edit tab mid-crop now also unmounts it,
 // which is the same rule, not a new one.
+// The grey chequerboard behind a template's thumbnail — see templateTile.
+// It is not decoration: the opening in a template is TRANSPARENT, and against
+// the panel's own background a hole and a white mat look exactly alike.
+struct TemplateCheckerboard: View {
+    var square: CGFloat = 6
+
+    var body: some View {
+        Canvas { context, size in
+            context.fill(Path(CGRect(origin: .zero, size: size)),
+                         with: .color(Color(white: 0.82)))
+            var row = 0
+            var y: CGFloat = 0
+            while y < size.height {
+                var x: CGFloat = (row % 2 == 0) ? 0 : square
+                while x < size.width {
+                    context.fill(Path(CGRect(x: x, y: y, width: square, height: square)),
+                                 with: .color(Color(white: 0.92)))
+                    x += square * 2
+                }
+                y += square
+                row += 1
+            }
+        }
+    }
+}
+
+// Template drawings, small, for the tiles.
+//
+// ⚠️ It builds the small copy through ImageIO rather than handing a 3000 px
+// PNG to a 56 pt tile. This machine has 8 GB, the panel redraws on every
+// slider, and a full-size decode per template per redraw is the kind of cost
+// that arrives as lag rather than as an error.
+enum TemplateThumbnailCache {
+    private static let cache = NSCache<NSString, NSImage>()
+    private static let side = 256
+
+    static func image(for ref: String) -> NSImage? {
+        if let held = cache.object(forKey: ref as NSString) { return held }
+        guard let url = TemplateStore.artURL(for: ref),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let small = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceThumbnailMaxPixelSize: side,
+                  // Without this the thumbnail comes back the way the camera
+                  // or the drawing program tagged it, which for a vertical
+                  // template means it is shown lying down.
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+              ] as CFDictionary) else { return nil }
+        let image = NSImage(cgImage: small, size: NSSize(width: small.width, height: small.height))
+        cache.setObject(image, forKey: ref as NSString)
+        return image
+    }
+
+    static func forget(_ ref: String) {
+        cache.removeObject(forKey: ref as NSString)
+    }
+}
+
 enum DevelopPanelTab: String, CaseIterable, Identifiable {
     case edit = "Edit"
     case retouch = "Retouch"
     case layers = "Layers"
+    // Client, 20.09, asked for Templates to have its OWN button rather than a
+    // row inside Tools: *„svoje dugme"*.
+    case templates = "Templates"
 
     var id: String { rawValue }
 
@@ -7989,6 +8097,7 @@ enum DevelopPanelTab: String, CaseIterable, Identifiable {
         case .edit: return "slider.horizontal.3"
         case .retouch: return "hammer"
         case .layers: return "square.2.layers.3d"
+        case .templates: return "rectangle.on.rectangle.angled"
         }
     }
 
@@ -8001,6 +8110,7 @@ enum DevelopPanelTab: String, CaseIterable, Identifiable {
         // it is the header cell's id, not a label anyone reads.
         case .retouch: return "Tools - Patch, Select Subjects, Dodge & Burn, Cut, Erase and removal."
         case .layers: return "Layers - the layers on this photo."
+        case .templates: return "Templates - print templates: import your own, and lay this photo into one."
         }
     }
 }
@@ -8587,6 +8697,19 @@ struct DevelopView: View {
     // selection tracking as selectedLocalAdjustmentID, same reasoning
     // (the array can shrink/reorder out from under a cached index).
     @State private var selectedLayerID: UUID?
+
+    // Print templates — see Templates.swift. The catalogue is one shared
+    // object (the panel adds to it, the renderer reads it), so it is observed
+    // here rather than owned: a @StateObject would make a second catalogue
+    // whenever this view is rebuilt, and two of them would write over each
+    // other's templates.json.
+    @ObservedObject private var templateLibrary = TemplateLibrary.shared
+    // What the last import or the last apply had to say. It is a sentence the
+    // client has to read, not a status line: "the opening is not a rectangle"
+    // and "this photo is portrait and the template is not" are both cases
+    // where carrying on silently prints the wrong thing.
+    @State private var templateNote: String?
+    @State private var templateToDelete: PrintTemplate?
 
     // The layer Eraser — see LayerEraser.swift.
     @State private var layerEraserActive = false
@@ -11772,7 +11895,8 @@ struct DevelopView: View {
                           behaviour: .presets),
 
             tabItem(.retouch),
-            tabItem(.layers)
+            tabItem(.layers),
+            tabItem(.templates)
         ]
     }
 
@@ -15537,6 +15661,9 @@ struct DevelopView: View {
 
                     case .layers:
                         layersSection
+
+                    case .templates:
+                        templatesSection
                     }
 
                     Divider()
@@ -17585,6 +17712,256 @@ struct DevelopView: View {
         return settings.layers.firstIndex { $0.id == id }
     }
 
+    // MARK: Templates — KORAK 198
+
+    // The client's own print templates, and this photograph laid into one.
+    //
+    // ⚠️ Its own tab, not a row inside Tools. The client asked for that in as
+    // many words on 20.09: *„svoje dugme"*.
+    private var templatesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                sectionTitle("Templates")
+                Spacer()
+                Button {
+                    importTemplateFromDisk()
+                } label: {
+                    Image(systemName: "square.and.arrow.down")
+                }
+                .buttonStyle(EditToolButtonStyle())
+                .help("Import Template - a PNG with a transparent opening where the photograph should land.")
+            }
+
+            if let templateNote {
+                Text(templateNote)
+                    .font(.custom("Figtree", size: 10))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if templateLibrary.templates.isEmpty {
+                Text("No templates yet. Import a PNG with a transparent opening — the opening is found for you, and a horizontal and a vertical of the same size are joined into a pair.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 86), spacing: 8)], spacing: 8) {
+                    ForEach(templateLibrary.templates) { template in
+                        templateTile(template)
+                    }
+                }
+            }
+
+            if let applied = templateLibrary.template(id: settings.templateID) {
+                Divider()
+                appliedTemplateControls(applied)
+            }
+        }
+        .confirmationDialog("Delete this template?",
+                            isPresented: Binding(get: { templateToDelete != nil },
+                                                 set: { if !$0 { templateToDelete = nil } }),
+                            presenting: templateToDelete) { template in
+            Button("Delete “\(template.name)”", role: .destructive) {
+                deleteTemplate(template)
+            }
+            Button("Cancel", role: .cancel) { templateToDelete = nil }
+        } message: { template in
+            // ⚠️ It says what happens to the OTHER photographs, because that is
+            // the part nobody expects: the drawing goes, and every photo laid
+            // into it is a plain photograph again.
+            Text("“\(template.name)” goes from the list and its drawing is deleted. Any photo laid into it becomes a plain photograph again.")
+        }
+    }
+
+    private func templateTile(_ template: PrintTemplate) -> some View {
+        let isApplied = settings.templateID == template.id
+        return VStack(spacing: 4) {
+            ZStack {
+                // The chequerboard is not decoration: it is what says the
+                // opening is transparent, which is the whole thing being
+                // judged when the client picks a frame out of a list.
+                TemplateCheckerboard()
+                if let thumbnail = TemplateThumbnailCache.image(for: template.artRef) {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                }
+            }
+            .frame(height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(isApplied ? Color.accentColor : AppColors.border,
+                            lineWidth: isApplied ? 2 : 1)
+            )
+
+            Text(template.name)
+                .font(.custom("Figtree", size: 10).weight(isApplied ? .semibold : .regular))
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            HStack(spacing: 3) {
+                Text(template.size.label)
+                if template.pairID != nil {
+                    // A paired template is the one that can be synced across a
+                    // mixed selection without asking — worth a glyph, since it
+                    // is otherwise invisible.
+                    Image(systemName: "link")
+                }
+            }
+            .font(.custom("Figtree", size: 9))
+            .foregroundColor(AppColors.muted)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { applyTemplate(template) }
+        .contextMenu {
+            Button("Use on This Photo") { applyTemplate(template) }
+            if settings.templateID == template.id {
+                Button("Remove from This Photo") { removeTemplateFromPhoto() }
+            }
+            Divider()
+            Button("Delete Template…", role: .destructive) { templateToDelete = template }
+        }
+        .help("\(template.name) — \(template.size.label), \(template.orientation.label)"
+              + (template.pairID != nil ? ", paired" : ""))
+    }
+
+    @ViewBuilder
+    private func appliedTemplateControls(_ template: PrintTemplate) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("On This Photo")
+
+            Text(template.name)
+                .font(.custom("Figtree", size: 11).weight(.semibold))
+
+            // The client's switch, as two buttons rather than a toggle: "on"
+            // and "off" do not say which way round a photograph and a drawing
+            // are stacked, and this is the control the whole template model
+            // exists for.
+            HStack(spacing: 6) {
+                toolButton("Photo Under", systemImage: "square.on.square.dashed",
+                           isActive: settings.templateArtOverPhoto ?? template.artOverPhoto,
+                           help: "The template is drawn OVER the photo — the photo shows through its opening.") {
+                    settings.templateArtOverPhoto = true
+                }
+
+                toolButton("Photo Over", systemImage: "square.filled.on.square",
+                           isActive: !(settings.templateArtOverPhoto ?? template.artOverPhoto),
+                           help: "The template is the backdrop and the photo sits on top of it.") {
+                    settings.templateArtOverPhoto = false
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(SlotFitMode.allCases, id: \.self) { mode in
+                    toolButton(mode.label,
+                               systemImage: mode == .fill ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left",
+                               isActive: settings.templatePlacement.mode == mode,
+                               help: mode == .fill
+                                   ? "Fill the opening — the photo is cropped where it overhangs."
+                                   : "Fit the whole photo inside the opening.") {
+                        settings.templatePlacement.mode = mode
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 6) {
+                toolButton("Remove Template", systemImage: "xmark", isActive: false) {
+                    removeTemplateFromPhoto()
+                }
+                Spacer(minLength: 0)
+            }
+
+            // What the print will be, in pixels, at the one dpi this app has.
+            let canvas = template.canvasPixels
+            Text("Prints \(Int(canvas.width)) × \(Int(canvas.height)) px at \(Int(PrintOutput.dpi)) dpi.")
+                .font(.custom("Figtree", size: 9))
+                .foregroundColor(AppColors.muted)
+        }
+    }
+
+    private func importTemplateFromDisk() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.message = "Choose template drawings. A PNG with a transparent opening works best — the opening is found for you."
+        panel.prompt = "Import"
+        panel.allowedContentTypes = [.png, .tiff, .image]
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+
+        var notes: [String] = []
+        for url in panel.urls {
+            switch templateLibrary.importArt(at: url) {
+            case .measured:
+                break
+            case .needsRectangle(let template, let reason):
+                notes.append("“\(template.name)”: \(reason)")
+            case .failed(let reason):
+                notes.append("“\(url.lastPathComponent)”: \(reason)")
+            }
+        }
+        templateNote = notes.isEmpty ? nil : notes.joined(separator: "\n")
+    }
+
+    // Lay this photograph into a template.
+    //
+    // ⚠️ It follows the PAIR. A portrait photograph clicked onto a landscape
+    // frame takes that frame's vertical half when there is one — which is the
+    // rule step 4's sync runs on, and it has to behave the same here, or one
+    // click and a sync would produce different prints from the same template.
+    // When there is no pair, what the client clicked is what he gets, and the
+    // note says why it looks wrong.
+    private func applyTemplate(_ template: PrintTemplate) {
+        guard selectedURL != nil else { return }
+
+        let extent = fullBaseImage?.extent ?? previewBaseImage?.extent
+        var chosen = template
+        if let extent, extent.width > 0, extent.height > 0 {
+            let wanted = TemplateOrientation.ofPhoto(width: Int(extent.width), height: Int(extent.height))
+            if let resolved = briefShowTemplateForPhoto(width: Int(extent.width),
+                                                        height: Int(extent.height),
+                                                        chosen: template,
+                                                        catalogue: templateLibrary.templates) {
+                chosen = resolved
+                templateNote = resolved.id == template.id
+                    ? nil
+                    : "This photo is \(wanted.label.lowercased()), so its \(resolved.orientation.label.lowercased()) pair “\(resolved.name)” was used."
+            } else {
+                templateNote = "This photo is \(wanted.label.lowercased()) and “\(template.name)” is \(template.orientation.label.lowercased()). Import the other half and they will be paired."
+            }
+        } else {
+            templateNote = nil
+        }
+
+        settings.templateID = chosen.id
+        // A fresh template starts centred and filling: carrying the previous
+        // one's zoom and offset into a differently shaped opening lands the
+        // photograph somewhere nobody chose.
+        settings.templatePlacement = .centred
+        settings.templateArtOverPhoto = nil
+    }
+
+    private func removeTemplateFromPhoto() {
+        settings.templateID = nil
+        settings.templatePlacement = .centred
+        settings.templateArtOverPhoto = nil
+        templateNote = nil
+    }
+
+    private func deleteTemplate(_ template: PrintTemplate) {
+        templateToDelete = nil
+        if settings.templateID == template.id {
+            removeTemplateFromPhoto()
+        }
+        templateLibrary.remove(template)
+        TemplateThumbnailCache.forget(template.artRef)
+    }
+
     private var layersSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -19472,6 +19849,11 @@ struct DevelopView: View {
         activeSelection = nil
         activeSelectionDrawPoints.points = []
         selectedLayerID = nil
+        // ⚠️ Found by driving the app, not by reading it: the template note
+        // said "this photo is vertical, so its vertical pair was used" while a
+        // LANDSCAPE photograph was on screen. It is a sentence about the photo
+        // it was written for, and on the next one it is simply untrue.
+        templateNote = nil
         // Outlines are pictures of the PREVIOUS photo's mattes, keyed by layer
         // id, and nothing ever took them out again — so a session spent moving
         // through a folder left one full-size image per layer of every photo

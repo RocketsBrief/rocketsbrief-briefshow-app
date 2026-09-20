@@ -21142,3 +21142,126 @@ sam (projekat koristi synchronized grupe), provereno postojanjem `Templates.o`.
 nijednu od ovih funkcija. Prvi pogled je korak 2.
 
 **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.2 — dugme Templates, uvoz i prvi template na klijentovoj slici (20. septembar 2026)
+
+Drugi korak iz plana: **klijent prvi put vidi svoju sliku u svom template-u.**
+Ovde se ide iz modela (198.1) u app — dugme, uvoz, izbor, prekidač ispod/iznad
+i fit/fill, i crtanje kroz **isti** `PhotoEditRenderer`.
+
+### Šta je urađeno
+
+| šta | gde |
+|---|---|
+| **svoj tab Templates** u traci (klijentova reč: *„svoje dugme"*, ne red u Tools-u) | `DevelopPanelTab.templates`, `tabItem(.templates)` |
+| **Import Template** — NSOpenPanel, više fajlova odjednom, rupa se nalazi pri uvozu | `importTemplateFromDisk()` |
+| pločice uvezenih template-a sa **šahovnicom** iza (rupa je providna, a na panelu bela providnost i beli paspartu izgledaju isto) | `templateTile`, `TemplateCheckerboard` |
+| **ON THIS PHOTO**: Photo Under / Photo Over, Fit / Fill, Remove Template, i koliko se štampa u pikselima | `appliedTemplateControls` |
+| desni klik na pločicu: Use / Remove / **Delete Template…** sa upozorenjem šta biva sa slikama | `templateTile.contextMenu` |
+| zapis slike dobija **`templateID`, `templatePlacement`, `templateArtOverPhoto`** | `PhotoEditSettings` |
+| kompozicija platna u renderu | `Templates.swift`, `briefShowComposeTemplate` |
+
+### ⛔ Template se crta POSLEDNJI, i to nije stvar ukusa
+
+Sve iznad radi na fotografiji; template je **papir** na koji gotova fotografija
+leže. Da stoji ranije, svaki sledeći prolaz bi radio nad paspartuom kao da je
+deo slike — Dehaze bi belu kartonsku ivicu čitao kao maglu, vinjeta bi tamnila
+uglove **okvira** umesto uglova fotografije. Zato ide posle crop-a i posle
+vinjete, i **samo** na renderima koji nose crop (`applyCrop`), jer su ostali oni
+koji mere samu fotografiju (histogram, osnova crop overlay-a).
+
+⚠️ **Slika se ne smanjuje unapred.** U kompoziciju ulazi ono što je renderer
+izračunao (pun fajl, po zaključanom pravilu sa vrha dokumenta), a u slot je
+smešta transformacija — Core Image skalira jednom, pri crtanju. Platno je
+**odredište** (2400×1800 na 300 dpi), nikad radna rezolucija.
+
+⚠️ **Sve što ostane nepokriveno je BELO, ne providno.** PNG sa rupom izvezen ni
+preko čega je slika sa rupom.
+
+⚠️ **Slika je uvek isečena na svoj slot**, i kad je crtež ispod nje. Rupa u
+klijentovom PNG-u je njegova stvar; slika šira od slota bi inače isplivala svuda
+gde je crtež slučajno providan. Mereno na potpuno providnom crtežu.
+
+### Par se koristi i na JEDAN klik, ne samo u sync-u
+
+Klik na horizontalan template dok je otvorena **vertikalna** slika primenjuje
+njegovu vertikalnu polovinu i **kaže to** u panelu. Isto pravilo koje korak 4
+(sync) treba da vozi — da jedan klik i sync ne bi davali različite otiske iz
+istog template-a. Kad para nema, dobija se ono što je kliknuto, uz rečenicu
+zašto izgleda pogrešno.
+
+⚠️ **Uvoz sam spaja par** kad stigne druga polovina (isti papir, suprotna
+orijentacija, nijedna već zauzeta), pa klijent ne mora da pamti nikakav potez.
+
+### Čime je zaključano
+
+`Tools/run-templates-test.py` je narastao na **tri** polovine:
+
+1. **Kompajlirano** uz pravi `Templates.swift`: 59 provera modela i geometrije
+   iz 198.1 **plus 16 novih koje ČITAJU IZRENDEROVANE PIKSELE** gotovog platna —
+   veličina platna, šta se vidi kroz rupu, šta van nje, da Fit ostavlja **beo**
+   papir a Fill seče, da pomeraj vuče baš ono što treba u rupu, i da slika ne
+   izlazi iz slota ni kad je ceo crtež providan. **75 provera, all passed.**
+2. **Pročitano iz `Templates.swift`** — 14 provera (dpi na jednom mestu, nema
+   piksela u katalogu, pravilo o ivici, putanja „BriefShow/Templates").
+3. **Pročitano iz `Develop.swift`** — 14 novih: da zapis nosi ID a ne crtež, da
+   stari zapis i dalje dekoduje (`decodeIfPresent`, ne `decode`), da template
+   **broji kao izmena** (Reset i spiskovi za izvoz ga vide), da se platno crta
+   **posle** crop-a i vinjete i samo uz `applyCrop`, i da Templates ima **svoj**
+   tab.
+
+⚠️ **Jedna od tih provera je aritmetika u testu, ne u kodu:** prva verzija
+merenja piksela je pala na tri mesta i to je bio **pokvaren merač** — pogrešno
+sam izračunao gde slika pada u rupi. Brojevi su sada ispisani u komentaru iznad
+provere (opening 1920×1440 na x 240..2160; fill 0,36 → x 120..2280; fit 0,32 →
+x 240..2160), pa sledeća sesija ne mora da ih izvodi ponovo.
+
+**Negativne kontrole, tri nove i sve padaju tačno na svome:** platno pomereno
+**pre** vinjete obara samo proveru redosleda; `decode` umesto `decodeIfPresent`
+obara samo proveru migracije; prekidač ignorisan (crtež uvek gore) obara **samo**
+„photo OVER: slika prekriva prugu" — tu jednu, što i jeste jedini piksel koji
+ta dva slučaja razlikuje.
+
+### ✅ VIĐENO NA EKRANU (20.09, vožena prava app, v11.40)
+
+Ovo nije „spojeno je", ovo je **viđeno**:
+
+1. Templates tab se otvara i prazno stanje kaže šta da se uradi.
+2. Uvezena **dva** crteža odjednom (8×6 H i V, generisani za probu) — obe
+   pločice stoje, obe pišu „8 × 6 in" i **obe imaju znak lanca**: uvoz ih je
+   spojio u par sam.
+3. Klik na H na **horizontalnoj** slici → slika legla u rupu, paspartu okolo,
+   tekst sa crteža vidljiv ispod.
+4. **Fit** → cela slika u rupi, sa strane **beo papir**. **Fill** → rupa puna.
+5. **Photo Over** → siva linija crteža oko rupe **nestala ispod** slike; Photo
+   Under → vratila se. Prekidač je vidljivo živ.
+6. Klik na **H** dok je otvorena **vertikalna** slika → primenjen **V**, platno
+   uspravno, i panel piše: *„This photo is vertical, so its vertical pair
+   „Studio Mat 8x6 V" was used."*
+7. **⌘Z** skida template (ide kroz `settings`, kao i svaka druga izmena).
+8. Template **preživi prelazak na drugu sliku** i nazad — zapis je na disku.
+9. **Delete Template…** pita, pa skine i sa slike i iz kataloga, i partneru
+   obriše vezu.
+
+⚠️ **Proba je našla kvar koji čitanje koda nije:** poruka o paru je ostajala na
+ekranu i kad se pređe na sledeću sliku — rečenica o **drugoj** fotografiji, koja
+je na ovoj prosto netačna. `selectPhoto` je sada briše, i test to drži.
+
+⚠️ **Katalog i crteži žive u sandbox kontejneru**
+(`~/Library/Containers/com.rocketsbrief.BriefShow/Data/Library/Application
+Support/BriefShow/Templates/`), tamo gde su i `LayerPixels` — proveren disk
+posle brisanja: `templates.json` je `[]` i nijedan PNG nije ostao.
+
+**Stanje:** `xcodebuild … Debug` i `… Release` (`arm64 x86_64`) → **BUILD
+SUCCEEDED**, verzija 11.40; app instaliran u `/Applications/C4S Suite.app` i
+pokrenut. Probni crteži i sve što je proba upisala **obrisani** — klijentov
+katalog je prazan kakav je i bio.
+
+**NIJE OBJAVLJENO** — po dogovoru, push tek kad ceo Templates bude složen.
+
+### Šta je sledeće (nepromenjeno iz plana)
+
+Korak 3 (rad u slotu: pomeranje, zum, rotacija mišem), pa 4 (sync sa pravilom
+orijentacije), pa 5 i 6 (tekst i Google fontovi), pa 7 (izvoz na 300 dpi).

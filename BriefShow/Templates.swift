@@ -35,7 +35,9 @@
 //  and the work inside the slot are step 2 and step 3.
 
 import Foundation
+import Combine
 import CoreGraphics
+import CoreImage
 import ImageIO
 
 // MARK: - The one place the print resolution is written
@@ -694,4 +696,185 @@ func briefShowTemplateForPhoto(width: Int, height: Int,
           let partner = catalogue.first(where: { $0.id == pairID }),
           partner.orientation == wanted else { return nil }
     return partner
+}
+
+// MARK: - The catalogue the app holds while it runs
+
+/// The imported templates, in memory, with the disk behind them.
+///
+/// One shared instance, because two of them would be two catalogues writing
+/// over each other's `templates.json` — the panel adds, the renderer reads,
+/// and both have to be looking at the same list.
+final class TemplateLibrary: ObservableObject {
+
+    static let shared = TemplateLibrary()
+
+    @Published private(set) var templates: [PrintTemplate] = []
+
+    private init() {
+        templates = TemplateStore.loadCatalogue()
+    }
+
+    func template(id: UUID?) -> PrintTemplate? {
+        guard let id else { return nil }
+        return templates.first { $0.id == id }
+    }
+
+    /// Import a drawing the client chose, and keep it.
+    ///
+    /// ⚠️ It returns the outcome rather than swallowing it: `needsRectangle`
+    /// carries a template that IS in the catalogue but whose slot is a guess,
+    /// and the panel has to say so. An import that quietly filed a wrong
+    /// rectangle would print the photograph in the wrong place.
+    @discardableResult
+    func importArt(at url: URL, name: String? = nil, size: PrintSize? = nil) -> TemplateImportOutcome {
+        let outcome = TemplateImporter.importArt(at: url, name: name, size: size)
+        switch outcome {
+        case .measured(let template), .needsRectangle(let template, _):
+            templates.append(template)
+            // A drawing usually arrives with its other half, and the pair is
+            // what lets a mixed selection sync without asking. Joining happens
+            // here, on import, rather than as a gesture the client has to
+            // remember: same paper, opposite orientation, neither already
+            // spoken for.
+            if let partner = templates.first(where: {
+                $0.id != template.id && $0.pairID == nil && briefShowCanPairTemplates(template, $0)
+            }) {
+                templates = briefShowPairTemplates(template, partner, in: templates)
+            }
+            save()
+        case .failed:
+            break
+        }
+        return outcome
+    }
+
+    func update(_ template: PrintTemplate) {
+        guard let index = templates.firstIndex(where: { $0.id == template.id }) else { return }
+        templates[index] = template
+        save()
+    }
+
+    func remove(_ template: PrintTemplate) {
+        templates = TemplateStore.remove(template, from: templates)
+        save()
+    }
+
+    func pair(_ a: PrintTemplate, _ b: PrintTemplate) {
+        templates = briefShowPairTemplates(a, b, in: templates)
+        save()
+    }
+
+    private func save() { TemplateStore.saveCatalogue(templates) }
+}
+
+// MARK: - Drawing the canvas
+
+/// The drawings, decoded once. A template is redrawn on every slider the
+/// client touches, and reading and decoding the same PNG each time is the kind
+/// of cost that shows up as lag rather than as an error.
+enum TemplateArtCache {
+
+    private static let cache = NSCache<NSString, CIImage>()
+
+    static func image(for ref: String) -> CIImage? {
+        if let held = cache.object(forKey: ref as NSString) { return held }
+        guard let url = TemplateStore.artURL(for: ref),
+              let image = CIImage(contentsOf: url) else { return nil }
+        cache.setObject(image, forKey: ref as NSString)
+        return image
+    }
+}
+
+/// The finished print: the photograph in its slot, the drawing over it or
+/// under it, on a canvas of the print's own proportions.
+///
+/// ⚠️ THE PHOTOGRAPH IS NEVER PRE-SHRUNK. It arrives here at whatever
+/// resolution the caller rendered it — the full file, per the locked rule at
+/// the top of this document — and is placed into the slot by a transform. Core
+/// Image does the scaling when it draws, once, at the size being drawn.
+///
+/// ⚠️ Core Image counts rows from the BOTTOM and the slot is stored from the
+/// top, which is why the slot is asked for flipped here. It is the only place
+/// in the app that turns it over.
+func briefShowComposeTemplate(photo: CIImage,
+                              template: PrintTemplate,
+                              placement: SlotPlacement,
+                              artOverPhoto: Bool,
+                              canvasScale: Double = 1) -> CIImage {
+    briefShowComposeTemplate(photo: photo,
+                             template: template,
+                             art: TemplateArtCache.image(for: template.artRef),
+                             placement: placement,
+                             artOverPhoto: artOverPhoto,
+                             canvasScale: canvasScale)
+}
+
+/// The same composition with the drawing handed in.
+///
+/// ⚠️ The split is what makes this measurable. The wrapper above reaches into
+/// Application Support for the client's PNG, and a test that did the same
+/// would be writing into his own catalogue to ask a question about geometry.
+func briefShowComposeTemplate(photo: CIImage,
+                              template: PrintTemplate,
+                              art: CIImage?,
+                              placement: SlotPlacement,
+                              artOverPhoto: Bool,
+                              canvasScale: Double = 1) -> CIImage {
+    let printed = template.canvasPixels
+    let canvas = CGRect(x: 0, y: 0,
+                        width: (printed.width * canvasScale).rounded(),
+                        height: (printed.height * canvasScale).rounded())
+    guard canvas.width > 1, canvas.height > 1 else { return photo }
+
+    let slot = briefShowSlotPixelRect(template.slot.rect,
+                                      canvasWidth: canvas.width,
+                                      canvasHeight: canvas.height,
+                                      flipped: true)
+
+    // The paper. Anything the photograph does not cover and the drawing does
+    // not paint is white, not transparent: a PNG with a hole in it exported
+    // over nothing is a picture with a hole in it.
+    let paper = CIImage(color: CIColor.white).cropped(to: canvas)
+
+    let extent = photo.extent
+    var placed = photo
+    if extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite {
+        let target = briefShowPhotoRectInSlot(photoWidth: extent.width,
+                                              photoHeight: extent.height,
+                                              slot: slot,
+                                              placement: placement)
+        var transform = CGAffineTransform(translationX: target.midX, y: target.midY)
+        if placement.rotationDegrees != 0 {
+            transform = transform.rotated(by: CGFloat(placement.rotationDegrees * .pi / 180))
+        }
+        transform = transform
+            .scaledBy(x: target.width / extent.width, y: target.height / extent.height)
+            .translatedBy(x: -extent.midX, y: -extent.midY)
+        placed = photo.transformed(by: transform)
+    }
+
+    // ⚠️ Clipped to the SLOT, always — including when the drawing sits on top
+    // of it. The hole in a client's PNG is his drawing's business, and a
+    // photograph wider than the slot would otherwise run out under the mat and
+    // reappear wherever else the drawing happens to be transparent.
+    placed = placed.cropped(to: slot)
+
+    guard let art else {
+        return placed.composited(over: paper)
+    }
+    let artExtent = art.extent
+    guard artExtent.width > 0, artExtent.height > 0 else {
+        return placed.composited(over: paper)
+    }
+    let drawn = art
+        .transformed(by: CGAffineTransform(translationX: -artExtent.minX, y: -artExtent.minY))
+        .transformed(by: CGAffineTransform(scaleX: canvas.width / artExtent.width,
+                                           y: canvas.height / artExtent.height))
+
+    // The client's switch, and the whole reason the template is a canvas: one
+    // order of two images, not two different mechanisms.
+    return artOverPhoto
+        ? drawn.composited(over: placed.composited(over: paper))
+        : placed.composited(over: drawn.composited(over: paper))
 }

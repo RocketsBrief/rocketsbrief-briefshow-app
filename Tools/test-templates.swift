@@ -16,6 +16,7 @@
 //     templates
 import Foundation
 import CoreGraphics
+import CoreImage
 
 var failures = 0
 
@@ -406,6 +407,178 @@ var trio = catalogue
 trio = TemplateStore.remove(paired, from: trio)
 check("removing a template takes it out of the catalogue", !trio.contains { $0.id == h.id })
 check("and nobody is left pointing at it", !trio.contains { $0.pairID == h.id })
+
+// MARK: - The canvas, rendered and read back pixel by pixel
+
+print("\nthe finished canvas, measured")
+
+let context = CIContext(options: [.useSoftwareRenderer: true])
+
+/// The colour at a point of the canvas, read out of an actual render.
+/// Top-left coordinates, so the numbers here read the way the slot is stored.
+func colour(_ image: CIImage, atX x: Int, y: Int) -> (r: Int, g: Int, b: Int, a: Int)? {
+    let extent = image.extent
+    let point = CGRect(x: extent.minX + CGFloat(x),
+                       y: extent.minY + (extent.height - CGFloat(y) - 1),
+                       width: 1, height: 1)
+    var bytes = [UInt8](repeating: 0, count: 4)
+    context.render(image, toBitmap: &bytes, rowBytes: 4, bounds: point,
+                   format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+    return (Int(bytes[0]), Int(bytes[1]), Int(bytes[2]), Int(bytes[3]))
+}
+
+func isNear(_ got: (r: Int, g: Int, b: Int, a: Int)?, _ want: (Int, Int, Int), _ slack: Int = 12) -> Bool {
+    guard let got else { return false }
+    return abs(got.r - want.0) <= slack && abs(got.g - want.1) <= slack && abs(got.b - want.2) <= slack
+}
+
+// A drawing 2400x1800: an opaque white mat with a transparent opening at
+// 10..90 % across and 10..90 % down, and one opaque BLUE stripe running
+// through the middle of the opening. The stripe is the whole point — with an
+// opaque mat and a photograph clipped to the slot, "photo under" and "photo
+// over" would otherwise render identically, and the switch would look like it
+// worked whichever way it was wired.
+let artWidth = 2400, artHeight = 1800
+var artPixels = [UInt8](repeating: 0, count: artWidth * artHeight * 4)
+for row in 0..<artHeight {
+    for column in 0..<artWidth {
+        let index = (row * artWidth + column) * 4
+        let insideHole = column >= 240 && column < 2160 && row >= 180 && row < 1620
+        let onStripe = row >= 880 && row < 920
+        if !insideHole || onStripe {
+            // Premultiplied RGBA8: the mat is white, the stripe is blue.
+            artPixels[index] = onStripe ? 0 : 255
+            artPixels[index + 1] = onStripe ? 0 : 255
+            artPixels[index + 2] = 255
+            artPixels[index + 3] = 255
+        }
+    }
+}
+let art = CIImage(bitmapData: Data(artPixels), bytesPerRow: artWidth * 4,
+                  size: CGSize(width: artWidth, height: artHeight),
+                  format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+
+// A photograph 6000x4000 (3:2 — neither the canvas's shape nor the slot's),
+// solid red with a green band down its left tenth, so which part of it landed
+// in the opening can be read off the pixels.
+let photoWidth = 6000, photoHeight = 4000
+var photoPixels = [UInt8](repeating: 0, count: photoWidth * photoHeight * 4)
+for row in 0..<photoHeight {
+    for column in 0..<photoWidth {
+        let index = (row * photoWidth + column) * 4
+        photoPixels[index] = column < 600 ? 0 : 255
+        photoPixels[index + 1] = column < 600 ? 255 : 0
+        photoPixels[index + 2] = 0
+        photoPixels[index + 3] = 255
+    }
+}
+let photo = CIImage(bitmapData: Data(photoPixels), bytesPerRow: photoWidth * 4,
+                    size: CGSize(width: photoWidth, height: photoHeight),
+                    format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+
+let canvasTemplate = PrintTemplate(
+    name: "mat", size: .eightBySix, orientation: .horizontal,
+    slot: TemplateSlot(rect: NormalizedRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8)),
+    artOverPhoto: true, artRef: "mat.png",
+    artPixelWidth: artWidth, artPixelHeight: artHeight)
+
+let under = briefShowComposeTemplate(photo: photo, template: canvasTemplate, art: art,
+                                     placement: .centred, artOverPhoto: true)
+
+check("the canvas is the PRINT size, whatever size the photograph was",
+      under.extent.width == 2400 && under.extent.height == 1800,
+      "got \(under.extent)")
+check("outside the opening the drawing is what shows",
+      isNear(colour(under, atX: 60, y: 60), (255, 255, 255)))
+check("inside the opening the photograph is what shows",
+      isNear(colour(under, atX: 1200, y: 1200), (255, 0, 0)),
+      "got \(String(describing: colour(under, atX: 1200, y: 1200)))")
+
+// ⚠️ The switch, measured on the one pixel that can tell the two apart.
+check("photo UNDER: the drawing's stripe is drawn over the photograph",
+      isNear(colour(under, atX: 1200, y: 900), (0, 0, 255)),
+      "got \(String(describing: colour(under, atX: 1200, y: 900)))")
+
+let over = briefShowComposeTemplate(photo: photo, template: canvasTemplate, art: art,
+                                    placement: .centred, artOverPhoto: false)
+check("photo OVER: the photograph covers the stripe",
+      isNear(colour(over, atX: 1200, y: 900), (255, 0, 0)),
+      "got \(String(describing: colour(over, atX: 1200, y: 900)))")
+check("photo OVER: the drawing is still the backdrop outside the opening",
+      isNear(colour(over, atX: 60, y: 60), (255, 255, 255)))
+
+// ⚠️ THE ARITHMETIC, WRITTEN OUT, because the first version of these three
+// checks was wrong about it and called a correct picture a failure. The
+// opening is 1920x1440 at canvas x 240..2160; the photograph is 3:2, so
+//   fill  scales by 1440/4000 = 0.36 -> 2160x1440, x 120..2280 (cropped to the
+//         opening), and the green tenth down its left edge lands at x 120..336;
+//   fit   scales by 1920/6000 = 0.32 -> 1920x1280, x 240..2160, y 260..1540,
+//         and the green band lands at x 240..432.
+// So x = 400 is the pixel that tells the two apart, and y = 1200 keeps clear
+// of the drawing's stripe at y 880..920.
+var fitPlacement = SlotPlacement(); fitPlacement.mode = .fit
+let fitted2 = briefShowComposeTemplate(photo: photo, template: canvasTemplate, art: art,
+                                       placement: fitPlacement, artOverPhoto: true)
+
+check("fill crops the overhang — the photograph's green tenth is cut back",
+      isNear(colour(under, atX: 400, y: 1200), (255, 0, 0)),
+      "got \(String(describing: colour(under, atX: 400, y: 1200)))")
+check("fit keeps it, because the whole width is in the opening",
+      isNear(colour(fitted2, atX: 400, y: 1200), (0, 255, 0)),
+      "got \(String(describing: colour(fitted2, atX: 400, y: 1200)))")
+check("fill fills the opening top to bottom, where fit leaves paper",
+      isNear(colour(under, atX: 1200, y: 200), (255, 0, 0)) &&
+      isNear(colour(fitted2, atX: 1200, y: 200), (255, 255, 255)),
+      "fill \(String(describing: colour(under, atX: 1200, y: 200)))")
+
+// ⚠️ What fit leaves empty is PAPER, not a hole. A PNG with a hole exported
+// over nothing is a picture with a hole in it.
+check("what the photograph does not cover inside the opening is white paper",
+      isNear(colour(fitted2, atX: 1200, y: 250), (255, 255, 255)) &&
+      colour(fitted2, atX: 1200, y: 250)?.a == 255,
+      "got \(String(describing: colour(fitted2, atX: 1200, y: 250)))")
+
+// Moving the photograph in the slot moves what is seen through it: +0.45 of a
+// slot width is 864 px, so the green band travels from x 120..336 to
+// x 984..1200 and x = 1100 turns from red to green.
+var shifted = SlotPlacement(); shifted.offsetX = 0.45
+let moved2 = briefShowComposeTemplate(photo: photo, template: canvasTemplate, art: art,
+                                      placement: shifted, artOverPhoto: true)
+check("before the shift, x 1100 is the middle of the photograph",
+      isNear(colour(under, atX: 1100, y: 1200), (255, 0, 0)))
+check("pushing the photograph right carries its green edge to that pixel",
+      isNear(colour(moved2, atX: 1100, y: 1200), (0, 255, 0)),
+      "got \(String(describing: colour(moved2, atX: 1100, y: 1200)))")
+check("and what it uncovers on the left is paper, not a hole",
+      isNear(colour(moved2, atX: 300, y: 1200), (255, 255, 255)) &&
+      colour(moved2, atX: 300, y: 1200)?.a == 255)
+
+// ⚠️ Nothing of the photograph may appear outside its slot — a drawing can be
+// transparent in more places than the one opening.
+var holey = [UInt8](repeating: 0, count: artWidth * artHeight * 4)   // fully transparent
+let holeyArt = CIImage(bitmapData: Data(holey), bytesPerRow: artWidth * 4,
+                       size: CGSize(width: artWidth, height: artHeight),
+                       format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+let clipped = briefShowComposeTemplate(photo: photo, template: canvasTemplate, art: holeyArt,
+                                       placement: .centred, artOverPhoto: true)
+check("the photograph is clipped to its slot, whatever else the drawing lets through",
+      isNear(colour(clipped, atX: 60, y: 60), (255, 255, 255)),
+      "got \(String(describing: colour(clipped, atX: 60, y: 60)))")
+
+// A vertical template of the same paper: the canvas turns, and so does the slot.
+let verticalTemplate = PrintTemplate(
+    name: "mat V", size: .eightBySix, orientation: .vertical,
+    slot: TemplateSlot(rect: NormalizedRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8)),
+    artOverPhoto: true, artRef: "matV.png",
+    artPixelWidth: artHeight, artPixelHeight: artWidth)
+let vertical = briefShowComposeTemplate(photo: photo, template: verticalTemplate, art: nil,
+                                        placement: .centred, artOverPhoto: true)
+check("a vertical template prints a vertical canvas",
+      vertical.extent.width == 1800 && vertical.extent.height == 2400,
+      "got \(vertical.extent)")
+check("with no drawing at all the photograph still lands on paper",
+      isNear(colour(vertical, atX: 900, y: 1200), (255, 0, 0)) &&
+      isNear(colour(vertical, atX: 40, y: 40), (255, 255, 255)))
 
 print("")
 if failures > 0 {

@@ -128,6 +128,60 @@ wiring("a photograph the chosen template cannot hold returns nothing",
 wiring("nothing in this file scales a photograph down",
        "previewMax" not in source and "thumbnail" not in source.lower())
 
+print("\nwhat Develop.swift does with it — step 2, the wiring")
+
+develop = (ROOT / "BriefShow" / "Develop.swift").read_text()
+develop_code = "\n".join(line.split("//", 1)[0] for line in develop.splitlines())
+
+# The record. An ID and a placement, and nothing that holds pixels.
+settings_struct = develop.split("struct PhotoEditSettings", 1)[-1].split("\n}", 1)[0]
+wiring("the photo's record carries the template's ID",
+       "var templateID: UUID?" in settings_struct
+       and "var templatePlacement" in settings_struct)
+wiring("and the client's below/above switch, per photo",
+       "var templateArtOverPhoto: Bool?" in settings_struct)
+wiring("it is in the coding keys, so it is actually written",
+       "case templateID, templatePlacement, templateArtOverPhoto" in develop_code)
+
+# ⚠️ The migration rule this document has been bitten by before: a record
+# written yesterday must decode, and must decode to the photo it was.
+wiring("an older record still decodes — decodeIfPresent, not decode",
+       "decodeIfPresent(UUID.self, forKey: .templateID)" in develop_code
+       and "decode(UUID.self, forKey: .templateID)" not in develop_code)
+
+wiring("a template counts as an edit, so Reset and the export lists see it",
+       "&& templateID == nil" in develop_code)
+
+# ⚠️ ORDER. The template is the paper the finished photograph is laid on, so
+# it goes after everything that works on the photograph — crop and vignette
+# included. Anywhere earlier and the next pass treats the mat as picture.
+render = develop_code.split("static func render(", 1)[-1].split("\n    }", 1)[0]
+compose_at = render.find("briefShowComposeTemplate")
+vignette_at = render.rfind("applyVignette")
+crop_at = render.find("if applyCrop, let crop = settings.crop")
+wiring("the canvas is composed in render", compose_at != -1)
+wiring("AFTER the crop and AFTER the vignette",
+       compose_at > vignette_at > crop_at > 0,
+       f"compose {compose_at}, vignette {vignette_at}, crop {crop_at}")
+wiring("and only on renders that carry the crop — the measuring ones stay bare",
+       "if applyCrop, let template = TemplateLibrary.shared.template(" in develop_code)
+
+# The panel. Its own button, which is what the client asked for.
+wiring("Templates is its own tab, not a row inside Tools",
+       "case templates = \"Templates\"" in develop_code
+       and "tabItem(.templates)" in develop_code
+       and "case .templates:" in develop_code)
+wiring("there is a way to import a drawing",
+       "func importTemplateFromDisk()" in develop_code and "NSOpenPanel()" in develop_code)
+wiring("choosing a template follows the PAIR, as step 4's sync will",
+       "briefShowTemplateForPhoto(" in develop_code)
+wiring("a fresh template starts centred rather than inheriting the last one's framing",
+       "settings.templatePlacement = .centred" in develop_code)
+wiring("the note does not follow the client onto the next photograph",
+       "templateNote = nil" in develop_code.split("private func selectPhoto(", 1)[-1].split("\n    }", 1)[0])
+wiring("deleting a template takes it off this photo first",
+       "func deleteTemplate(" in develop_code and "removeTemplateFromPhoto()" in develop_code)
+
 print("")
 if failures or compiled != 0:
     print(f"{failures} wiring check(s) failed" if failures else "the compiled half failed")

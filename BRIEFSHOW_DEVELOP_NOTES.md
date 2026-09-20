@@ -21405,3 +21405,92 @@ u `/Applications/C4S Suite.app` i pokrenuto. **Klijent testira sam** — ja nisa
 dirao ni miš ni tastaturu posle njegove poruke *„ja testiram"*.
 
 **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.5 — „drag ne radi": stezaljka je bila kriva, i slika se sad drži kao sloj (20. septembar 2026)
+
+Klijent, posle probe 198.4: *„app je otvoren drag ne radi ajde vidi da mogu da
+pomeram sliku na templateu gde ja hocu i da mogu celu sliku da smanjim i ostavi
+onaj zoom…"*, pa odmah zatim: *„kada selektujemo sliku da se vidi da smo je
+selektovali i da mozemo da je rotiramo ili smanjimo velicinu isto"*.
+
+### ⚠️ Uzrok „ne radi" — moja stezaljka iz 198.4, izmerena
+
+Vučenje **jeste** bilo spojeno; samo nije imalo kuda. Pravilo je bilo „nikad ne
+dozvoli belu prugu uz ivicu otiska", tj. pomeraj najviše **pola preklapanja**.
+Za sliku 3:2 u rupi 4:3 na 1× to je:
+
+| pravac | koliko je slika smela da putuje |
+|---|---|
+| vodoravno | **0,0625** širine slota (6 %) |
+| uspravno | **tačno 0** |
+
+To nije kruto vučenje nego mrtvo. I pogrešno postavljeno pitanje: app je štitio
+otisak od čoveka koji ga pravi. Belu ivicu on vidi; ako hoće sliku van sredine
+ili manju od okvira, to je posao, ne greška.
+
+### Novo pravilo: veće od dva
+
+`briefShowPlacementLimits` sada vraća **max(pola preklapanja, pola slota)**:
+
+- **pola slota, uvek** — zato se slika uopšte pomera kad je manja ili tačno
+  jednaka rupi. Na toj granici sredina slike stoji na ivici otvora, pa se slika
+  ne može izgurati iz rupe i izgubiti.
+- **pola preklapanja, kad je slika veća** — raste sa zumom, pa se na 3× stigne
+  do svakog ćoška slike.
+
+`minimumZoom` je **0,5 → 0,1**: klijent traži *„celu sliku da smanjim"*, a pola
+nije malo. Ispod 1× u Fill-u se vidi papir — to je njegova stvar.
+
+⚠️ **Pogled u sliku (⌘+ / ⌘−) nije dirnut** — *„ostavi onaj zoom"*. Točkić je
+slobodan jer platno nikad nije zumirano točkićem, nego tasterima.
+
+### Selekcija, rotacija i ručke — kao kod sloja
+
+- Klik na sliku je **podiže**: okvir u boji selekcije, četiri okrugle ručke i
+  knob za rotaciju na stapci — isti crtež koji `layerOverlay` već koristi.
+- Klik na paspartu okolo je **spušta**.
+- **Ručka na ćošku menja veličinu** — kroz zum, dakle **proporcije se čuvaju**;
+  razvlačenje slike je jedino što ovaj fajl odbija.
+- **Knob rotira**, sa istim detentom od 5° i istim znakom kao knob na sloju.
+- Prelazak na drugu sliku je spušta (okvir oko nove slike koju niko nije podigao).
+
+⚠️ **Ručka meri ODNOS dve udaljenosti od sredine** (gde je pokazivač sad prema
+tome gde je bio kad je ručka uhvaćena), ne translaciju. Translacija bi morala da
+odlučuje šta je „veće" na svakom ćošku i odlutala bi dok se pravougaonik pomera
+pod kursorom.
+
+⚠️ **Vučenje se meri u imenovanom koordinatnom prostoru platna**, jer je okvir
+nacrtan iz istih vrednosti koje vučenje upisuje — u sopstvenom prostoru bi
+povratna sprega tresla okvir. To je prijava od 17.09. na zalepljenom sloju.
+
+### ⚠️ Smer rotacije — i jedna ispravka merača
+
+`rotationDegrees` znači **u smeru kazaljke**, kao knob. Core Image broji redove
+odozdo, pa kompozicija okreće **na drugu stranu** da bi se slika i knob slagali;
+u kodu stoji minus i pored njega razlog.
+
+Prva verzija merenja je to proglasila pogrešnim — merila je na 1×, gde
+četvrtina okreta digne kadar 1280×1920 u otvor visok 1440, pa je **rupa odsekla
+baš onu prugu koja se traži**. Merač je bio na pogrešnom mestu, ne okret.
+Mereno je ponovo na **0,6×**, gde ceo okrenut kadar stane u otvor.
+
+### Čime je zaključano
+
+Kompajlovani deo: prepisane granice putovanja (uključujući **provera-regresija**:
+„uspravno, tamo gde je staro pravilo davalo tačno nulu"), zum do desetine, i
+**tri nova merenja piksela** za rotaciju (leva ivica gore, daleka dole, i da je
+ono što okrenuta slika ne pokriva **papir**). Iz izvora: 10 novih provera —
+okvir se pojavljuje **samo kad je slika podignuta**, ručke vise o istom uslovu,
+rotacija ima isti znak i detent kao sloj, veličina ide kroz zum (nikad
+razvlačenje), okvir se crta iz **istog** pravougaonika koji renderer postavlja.
+
+**Negativne kontrole, tri nove:** vraćena stara stezaljka obara četiri provere,
+uključujući baš onu o mrtvoj uspravnoj osi (0,0625 i 0,0); okrenut znak rotacije
+obara dva merenja piksela i jednu iz izvora; ugašen okvir selekcije obara
+proveru o podignutoj slici — **tek pošto je ta provera pooštrena**, jer je prva
+verzija gledala samo da boja postoji u fajlu i propustila isključen blok.
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+i pokrenuto. **NIJE OBJAVLJENO.**

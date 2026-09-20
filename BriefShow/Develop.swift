@@ -8714,6 +8714,15 @@ struct DevelopView: View {
     /// comes out of the same burst timer every slider uses; this is only so
     /// the drag itself measures from a fixed point rather than accumulating.
     @State private var templateDragStart: SlotPlacement?
+    /// Is the photograph in the template picked up? The client asked to SEE
+    /// that it is: *„kada selektujemo sliku da se vidi da smo je selektovali i
+    /// da mozemo da je rotiramo ili smanjimo velicinu"*. A click on the
+    /// picture selects it, a click on the mat around it puts it down.
+    @State private var templatePhotoSelected = false
+    /// Where a corner-handle drag began: the zoom it started from and how far
+    /// the pointer was from the middle then. The ratio of the two is the new
+    /// zoom, which is what keeps a resize from accumulating drift.
+    @State private var templateResizeStart: (zoom: Double, distance: CGFloat)?
 
     // The layer Eraser — see LayerEraser.swift.
     @State private var layerEraserActive = false
@@ -17923,6 +17932,9 @@ struct DevelopView: View {
             HStack(spacing: 6) {
                 toolButton("Recentre", systemImage: "scope", isActive: false,
                            help: "Put the photo back in the middle of the opening, at 1×.") {
+                    // Everything about the framing, including the turn: this
+                    // is the way back when a photo has been dragged, zoomed
+                    // and rotated into a corner.
                     settings.templatePlacement = SlotPlacement(mode: settings.templatePlacement.mode)
                 }
 
@@ -17988,26 +18000,174 @@ struct DevelopView: View {
                height: max(template.slot.rect.height * Double(frame.height), 1))
     }
 
+    private static let templateCanvasSpace = "briefshow.templateCanvas"
+
+    /// The photograph's own rectangle on screen, inside the opening.
+    ///
+    /// The same two functions the renderer uses, on the frame as drawn — so
+    /// what is outlined here is where the picture actually is, not a second
+    /// opinion about it.
+    private func templatePhotoRectOnScreen(_ template: PrintTemplate, frame: CGRect) -> CGRect? {
+        guard let photo = templatePhotoPixelSize else { return nil }
+        let slot = briefShowSlotPixelRect(template.slot.rect,
+                                          canvasWidth: Double(frame.width),
+                                          canvasHeight: Double(frame.height))
+        let inFrame = CGRect(x: frame.minX + slot.minX, y: frame.minY + slot.minY,
+                             width: slot.width, height: slot.height)
+        return briefShowPhotoRectInSlot(photoWidth: Double(photo.width),
+                                        photoHeight: Double(photo.height),
+                                        slot: inFrame,
+                                        placement: settings.templatePlacement)
+    }
+
+    /// The picture in the template: drag it, turn it, resize it — and see that
+    /// it is picked up.
+    ///
+    /// ⚠️ Built like `layerOverlay` and for the same reasons, down to the
+    /// named coordinate space: the outline is positioned from the very values
+    /// the drag writes, so a translation measured in the view's own space
+    /// would feed back on itself and shake. That was a real report on a pasted
+    /// layer, 17.09.
     private func templateSlotDragOverlay(frame: CGRect) -> some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .frame(width: frame.width, height: frame.height)
-            .position(x: frame.midX, y: frame.midY)
-            .onHover { inside in
-                if inside {
-                    NSCursor.openHand.push()
-                } else {
-                    NSCursor.pop()
+        let template = templateLibrary.template(id: settings.templateID)
+        let rect = template.flatMap { templatePhotoRectOnScreen($0, frame: frame) }
+        let angle = settings.templatePlacement.rotationDegrees
+        let stem: CGFloat = 26
+
+        return ZStack {
+            // The mat around the opening: a click here puts the picture down,
+            // the same way clicking off a layer deselects it.
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .onTapGesture { templatePhotoSelected = false }
+
+            if let rect {
+                // The picture itself: pick it up, and drag it wherever.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+                    .onHover { inside in
+                        if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
+                    }
+                    .onTapGesture { templatePhotoSelected = true }
+                    .gesture(
+                        DragGesture(minimumDistance: 1,
+                                    coordinateSpace: .named(Self.templateCanvasSpace))
+                            .onChanged { value in
+                                templatePhotoSelected = true
+                                dragTemplatePhoto(by: value.translation, frame: frame)
+                            }
+                            .onEnded { _ in
+                                templateDragStart = nil
+                                scheduleRefinedRender()
+                            }
+                    )
+
+                if templatePhotoSelected {
+                    ZStack {
+                        Rectangle()
+                            .stroke(layerSelectionColor, lineWidth: 1.4)
+                            .allowsHitTesting(false)
+
+                        Path { path in
+                            path.move(to: CGPoint(x: rect.width / 2, y: 0))
+                            path.addLine(to: CGPoint(x: rect.width / 2, y: -stem))
+                        }
+                        .stroke(layerSelectionColor, lineWidth: 1.2)
+                        .allowsHitTesting(false)
+
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(AppColors.background)
+                            .padding(4)
+                            .background(Circle().fill(layerSelectionColor))
+                            .shadow(radius: 1)
+                            .position(x: rect.width / 2, y: -stem)
+                            .gesture(
+                                DragGesture(minimumDistance: 0,
+                                            coordinateSpace: .named(Self.templateCanvasSpace))
+                                    .onChanged { value in
+                                        rotateTemplatePhoto(towards: value.location,
+                                                            centre: CGPoint(x: rect.midX, y: rect.midY))
+                                    }
+                                    .onEnded { _ in scheduleRefinedRender() }
+                            )
+
+                        ForEach(LayerCorner.allCases, id: \.self) { corner in
+                            templateHandleView(corner, rect: rect)
+                        }
+                    }
+                    .frame(width: rect.width, height: rect.height)
+                    .rotationEffect(.degrees(angle))
+                    .position(x: rect.midX, y: rect.midY)
                 }
             }
+        }
+        .coordinateSpace(name: Self.templateCanvasSpace)
+    }
+
+    /// A corner handle. Dragging it resizes the picture about its own middle,
+    /// PROPORTIONS KEPT — a photograph stretched to fill a frame is the one
+    /// thing this whole file refuses to do.
+    private func templateHandleView(_ corner: LayerCorner, rect: CGRect) -> some View {
+        let position: CGPoint
+        switch corner {
+        case .topLeft: position = CGPoint(x: 0, y: 0)
+        case .topRight: position = CGPoint(x: rect.width, y: 0)
+        case .bottomLeft: position = CGPoint(x: 0, y: rect.height)
+        case .bottomRight: position = CGPoint(x: rect.width, y: rect.height)
+        }
+        let centre = CGPoint(x: rect.midX, y: rect.midY)
+
+        return Circle()
+            .fill(Color.white)
+            .overlay(Circle().stroke(layerSelectionColor, lineWidth: 1))
+            .frame(width: 12, height: 12)
+            .shadow(radius: 1)
+            .position(position)
             .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in dragTemplatePhoto(by: value.translation, frame: frame) }
+                DragGesture(minimumDistance: 0,
+                            coordinateSpace: .named(Self.templateCanvasSpace))
+                    .onChanged { value in
+                        resizeTemplatePhoto(towards: value.location, centre: centre)
+                    }
                     .onEnded { _ in
-                        templateDragStart = nil
+                        templateResizeStart = nil
                         scheduleRefinedRender()
                     }
             )
+    }
+
+    /// Points the picture at the pointer, measured from its middle — the same
+    /// gesture, the same 5° detent and the same sign as a layer's knob, so the
+    /// two cannot come to mean different things.
+    private func rotateTemplatePhoto(towards location: CGPoint, centre: CGPoint) {
+        let dx = location.x - centre.x
+        let dy = location.y - centre.y
+        guard abs(dx) > 1 || abs(dy) > 1 else { return }
+        var degrees = atan2(dx, -dy) * 180 / .pi
+        if degrees < 0 { degrees += 360 }
+        settings.templatePlacement.rotationDegrees = (degrees / 5).rounded() * 5
+    }
+
+    /// Resizes by the RATIO of two distances from the middle — where the
+    /// pointer is now against where it was when the handle was grabbed.
+    ///
+    /// ⚠️ Not by the drag's translation. A resize driven by translation has to
+    /// decide what "bigger" means at each corner and drifts as the rectangle
+    /// moves under the cursor; a ratio measured from a fixed starting distance
+    /// does neither, and the handle stays under the finger.
+    private func resizeTemplatePhoto(towards location: CGPoint, centre: CGPoint) {
+        let distance = hypot(location.x - centre.x, location.y - centre.y)
+        guard distance > 1 else { return }
+        let start = templateResizeStart
+            ?? (zoom: settings.templatePlacement.zoom, distance: distance)
+        templateResizeStart = start
+        guard start.distance > 1 else { return }
+        setTemplateZoom(start.zoom * Double(distance / start.distance))
     }
 
     private func dragTemplatePhoto(by translation: CGSize, frame: CGRect) {
@@ -18112,6 +18272,7 @@ struct DevelopView: View {
         settings.templatePlacement = .centred
         settings.templateArtOverPhoto = nil
         templateNote = nil
+        templatePhotoSelected = false
     }
 
     private func deleteTemplate(_ template: PrintTemplate) {
@@ -20015,6 +20176,11 @@ struct DevelopView: View {
         // LANDSCAPE photograph was on screen. It is a sentence about the photo
         // it was written for, and on the next one it is simply untrue.
         templateNote = nil
+        // And the picture in the template is put down: an outline left up
+        // would be drawn around the NEW photograph, which nobody picked up.
+        templatePhotoSelected = false
+        templateDragStart = nil
+        templateResizeStart = nil
         // Outlines are pictures of the PREVIOUS photo's mattes, keyed by layer
         // id, and nothing ever took them out again — so a session spent moving
         // through a folder left one full-size image per layer of every photo

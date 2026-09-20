@@ -420,52 +420,68 @@ let fillLimits = briefShowPlacementLimits(photoWidth: wide.width, photoHeight: w
                                           slotWidth: openingSize.width, slotHeight: openingSize.height,
                                           placement: fillPlacement)
 
-// Fill scales by 1440/4000 = 0.36 -> 2160 wide against an opening of 1920, so
-// the overhang is 240 and half of it, in slot widths, is 120/1920 = 0.0625.
-check("in Fill the photograph may slide by half its overhang, no further",
-      close(fillLimits.x, 0.0625, 1e-9), "got \(fillLimits.x)")
-check("and not at all the way it already fits exactly",
-      close(fillLimits.y, 0, 1e-9), "got \(fillLimits.y)")
+// ⚠️ THE REGRESSION, AS A CHECK. The first version allowed only half the
+// overhang: this same photograph in this same opening could travel 0.0625 of a
+// slot sideways and EXACTLY NOTHING vertically, which the client reported as
+// „drag ne radi". Half a slot is always available now.
+check("a filled photograph can be dragged sideways, properly",
+      fillLimits.x >= 0.5, "got \(fillLimits.x)")
+check("AND vertically, where the old rule allowed exactly zero",
+      fillLimits.y >= 0.5, "got \(fillLimits.y)")
 
 var fitInOpening = SlotPlacement(); fitInOpening.mode = .fit
 let fitLimits = briefShowPlacementLimits(photoWidth: wide.width, photoHeight: wide.height,
                                          slotWidth: openingSize.width, slotHeight: openingSize.height,
                                          placement: fitInOpening)
-// Fit scales by 1920/6000 = 0.32 -> 1280 tall inside 1440: 160 of slack, half
-// of it is 80/1440 = 0.0555…
-check("in Fit the same arithmetic keeps it INSIDE instead",
-      close(fitLimits.y, 80.0 / 1440, 1e-9) && close(fitLimits.x, 0, 1e-9),
-      "got \(fitLimits)")
+check("a photograph smaller than its opening moves too",
+      fitLimits.x >= 0.5 && fitLimits.y >= 0.5, "got \(fitLimits)")
 
-// ⚠️ The one that costs paper: a drag must never open a white sliver down the
-// edge of a print.
-var pushed = fillPlacement; pushed.offsetX = 5
-let held = briefShowClampedPlacement(pushed, photoWidth: wide.width, photoHeight: wide.height,
+// The other half of the rule: a photograph BIGGER than the opening can be
+// panned until its own far edge arrives, which is more than half a slot.
+var zoomed3 = fillPlacement; zoomed3.zoom = 3
+let roomAtThree = briefShowPlacementLimits(photoWidth: wide.width, photoHeight: wide.height,
+                                           slotWidth: openingSize.width, slotHeight: openingSize.height,
+                                           placement: zoomed3)
+// Fill at 3x is 6480 wide against 1920: half the overhang is 2280/1920.
+check("zoomed in, the travel grows with the picture — every corner is reachable",
+      close(roomAtThree.x, (6480.0 - 1920) / (2 * 1920), 1e-9), "got \(roomAtThree.x)")
+
+// ⚠️ What the floor still refuses: losing the photograph out of the hole.
+var runAway = fillPlacement; runAway.offsetX = 5; runAway.offsetY = -5
+let held = briefShowClampedPlacement(runAway, photoWidth: wide.width, photoHeight: wide.height,
                                      slotWidth: openingSize.width, slotHeight: openingSize.height)
-check("a drag that runs away is held at the edge of the overhang",
-      close(held.offsetX, fillLimits.x, 1e-9), "got \(held.offsetX)")
+check("a drag cannot push the photograph out of the opening and out of reach",
+      close(held.offsetX, fillLimits.x, 1e-9) && close(held.offsetY, -fillLimits.y, 1e-9),
+      "got \(held.offsetX), \(held.offsetY)")
 
-var zoomed3 = fillPlacement; zoomed3.zoom = 3; zoomed3.offsetX = 0.5
-let atThree = briefShowClampedPlacement(zoomed3, photoWidth: wide.width, photoHeight: wide.height,
-                                        slotWidth: openingSize.width, slotHeight: openingSize.height)
-check("zoomed in there is more room to move", atThree.offsetX > fillLimits.x)
-
-// ⚠️ And zooming back OUT has to pull the framing in with it — an offset that
-// was legal at 3x hangs the photograph outside the opening at 1x.
-var backTo1 = atThree; backTo1.zoom = 1
+// ⚠️ Zooming BACK OUT has to pull the framing in with it: an offset that is
+// legal at 3x hangs the photograph outside the opening at 1x.
+var farAtThree = zoomed3; farAtThree.offsetX = 1.1
+let stillFine = briefShowClampedPlacement(farAtThree, photoWidth: wide.width, photoHeight: wide.height,
+                                          slotWidth: openingSize.width, slotHeight: openingSize.height)
+check("an offset of 1.1 slots is fine at 3×", close(stillFine.offsetX, 1.1, 1e-9))
+var backTo1 = stillFine; backTo1.zoom = 1
 let pulledIn = briefShowClampedPlacement(backTo1, photoWidth: wide.width, photoHeight: wide.height,
                                          slotWidth: openingSize.width, slotHeight: openingSize.height)
-check("zooming back out pulls the framing in with it",
+check("and is pulled back to the edge on the way out to 1×",
       close(pulledIn.offsetX, fillLimits.x, 1e-9), "got \(pulledIn.offsetX)")
 
 var tooFar = fillPlacement; tooFar.zoom = 99
 check("the zoom has a ceiling", briefShowClampedPlacement(tooFar, photoWidth: wide.width,
       photoHeight: wide.height, slotWidth: openingSize.width, slotHeight: openingSize.height).zoom
       == SlotPlacement.maximumZoom)
-var tooSmall = fillPlacement; tooSmall.zoom = 0
-check("and a floor — a zoom of nothing is a photograph that is not there",
-      briefShowClampedPlacement(tooSmall, photoWidth: wide.width, photoHeight: wide.height,
-      slotWidth: openingSize.width, slotHeight: openingSize.height).zoom == SlotPlacement.minimumZoom)
+var tiny = fillPlacement; tiny.zoom = 0.1
+let shrunk = briefShowClampedPlacement(tiny, photoWidth: wide.width, photoHeight: wide.height,
+                                       slotWidth: openingSize.width, slotHeight: openingSize.height)
+// ⚠️ *„da mogu celu sliku da smanjim"* — a tenth, not a half. At 0.1 the
+// photograph is a tenth of the way it fills the opening, which is what
+// shrinking a layer looks like.
+check("the whole photograph can be shrunk to a tenth", shrunk.zoom == 0.1)
+check("and a zoom of nothing is still refused",
+      briefShowClampedPlacement({ var p = fillPlacement; p.zoom = 0; return p }(),
+                                photoWidth: wide.width, photoHeight: wide.height,
+                                slotWidth: openingSize.width, slotHeight: openingSize.height).zoom
+      == SlotPlacement.minimumZoom)
 
 print("\nthe drag itself")
 
@@ -473,30 +489,33 @@ print("\nthe drag itself")
 // points, and the offsets come out in slot widths either way.
 let screenSlot = (width: 480.0, height: 360.0)
 let dragged = briefShowPlacementAfterDrag(fillPlacement,
-                                          translationX: 24, translationY: 0,
+                                          translationX: 24, translationY: 18,
                                           slotWidthOnScreen: screenSlot.width,
                                           slotHeightOnScreen: screenSlot.height,
                                           photoWidth: wide.width, photoHeight: wide.height)
 check("a drag of 24 pt across a 480 pt opening is 0.05 of a slot width",
       close(dragged.offsetX, 0.05, 1e-9), "got \(dragged.offsetX)")
+check("and 18 pt down a 360 pt opening is 0.05 of its height — the axis that used to be dead",
+      close(dragged.offsetY, 0.05, 1e-9), "got \(dragged.offsetY)")
 
 // ⚠️ The photograph follows the POINTER, which means the same drag means the
 // same thing whatever size the preview happens to be.
 let draggedBig = briefShowPlacementAfterDrag(fillPlacement,
-                                             translationX: 48, translationY: 0,
+                                             translationX: 48, translationY: 36,
                                              slotWidthOnScreen: 960,
                                              slotHeightOnScreen: 720,
                                              photoWidth: wide.width, photoHeight: wide.height)
 check("the same gesture on a preview twice the size lands in the same place",
-      close(draggedBig.offsetX, dragged.offsetX, 1e-9))
+      close(draggedBig.offsetX, dragged.offsetX, 1e-9) &&
+      close(draggedBig.offsetY, dragged.offsetY, 1e-9))
 
 let ranAway = briefShowPlacementAfterDrag(fillPlacement,
                                           translationX: 4000, translationY: 4000,
                                           slotWidthOnScreen: screenSlot.width,
                                           slotHeightOnScreen: screenSlot.height,
                                           photoWidth: wide.width, photoHeight: wide.height)
-check("a drag off the screen still stops at the edge of the overhang",
-      close(ranAway.offsetX, fillLimits.x, 1e-9) && close(ranAway.offsetY, 0, 1e-9),
+check("a drag off the screen stops where the photograph would be lost",
+      close(ranAway.offsetX, fillLimits.x, 1e-9) && close(ranAway.offsetY, fillLimits.y, 1e-9),
       "got \(ranAway.offsetX), \(ranAway.offsetY)")
 
 check("a drag against an opening of no size changes nothing",
@@ -660,6 +679,32 @@ let clipped = briefShowComposeTemplate(photo: photo, template: canvasTemplate, a
 check("the photograph is clipped to its slot, whatever else the drawing lets through",
       isNear(colour(clipped, atX: 60, y: 60), (255, 255, 255)),
       "got \(String(describing: colour(clipped, atX: 60, y: 60)))")
+
+// ⚠️ WHICH WAY A TURN GOES, measured rather than reasoned about. The knob on
+// the canvas reads CLOCKWISE, like the layer knob beside it, and Core Image
+// counts its rows from the bottom — so the composition has to turn the other
+// way to agree with the knob. The green tenth down the photograph's LEFT edge
+// is what says which happened: turned 90° clockwise it belongs at the TOP.
+//
+// ⚠️ Measured at 0.6×, and the zoom is part of the measurement. Fit at 1×
+// gives 1920×1280 and a quarter turn stands that on end — 1280 wide by 1920
+// tall against an opening only 1440 tall — so the very band being looked for
+// is clipped away by the hole. The first version of this check read red at
+// the top and called the turn wrong; the turn was fine, the ruler was in the
+// wrong place. At 0.6× the whole turned picture sits inside the opening:
+// 1152×768 becomes 768×1152, y 324…1476.
+var turned = SlotPlacement(); turned.mode = .fit; turned.zoom = 0.6; turned.rotationDegrees = 90
+let rotated = briefShowComposeTemplate(photo: photo, template: canvasTemplate, art: nil,
+                                       placement: turned, artOverPhoto: false)
+check("a 90° turn is CLOCKWISE — the left edge of the photo ends up at the top",
+      isNear(colour(rotated, atX: 1200, y: 380), (0, 255, 0)),
+      "got \(String(describing: colour(rotated, atX: 1200, y: 380)))")
+check("and the far edge ends up at the bottom",
+      isNear(colour(rotated, atX: 1200, y: 1420), (255, 0, 0)),
+      "got \(String(describing: colour(rotated, atX: 1200, y: 1420)))")
+check("what the turned picture does not cover is paper, not a hole",
+      isNear(colour(rotated, atX: 400, y: 900), (255, 255, 255)),
+      "got \(String(describing: colour(rotated, atX: 400, y: 900)))")
 
 // A vertical template of the same paper: the canvas turns, and so does the slot.
 let verticalTemplate = PrintTemplate(

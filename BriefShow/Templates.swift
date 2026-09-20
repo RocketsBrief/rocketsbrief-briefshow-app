@@ -203,25 +203,56 @@ struct SlotPlacement: Codable, Equatable {
     var offsetY: Double = 0
     /// 1 = exactly fit/fill. Above 1 the photograph is pushed in closer.
     var zoom: Double = 1
+    /// CLOCKWISE, like the rotate knob on the canvas and like a layer's own.
     var rotationDegrees: Double = 0
 
     static let centred = SlotPlacement()
 
     /// How far in and how far out the photograph may be taken inside its
-    /// opening. Below 1 in Fill it starts showing paper, which is the client's
-    /// business, not the app's — but a zoom of 0 is a photograph that is not
-    /// there, and 20× is a single pixel blown across a print.
-    static let minimumZoom = 0.5
+    /// opening.
+    ///
+    /// ⚠️ 0.1, NOT 0.5. The client asked to be able to shrink the whole
+    /// photograph inside the frame the way a layer shrinks — *„da mogu celu
+    /// sliku da smanjim"* — and half size is not small. Below 1 in Fill the
+    /// paper starts to show, which is his business and not the app's. A zoom
+    /// of 0 is a photograph that is not there; 20× is one pixel across a
+    /// print.
+    static let minimumZoom = 0.1
     static let maximumZoom = 5.0
+
+    /// How far the photograph may be pushed when it is SMALLER than the
+    /// opening, in slot widths: half a slot each way, which puts the middle
+    /// of the photograph on the edge of the opening.
+    ///
+    /// ⚠️ This is what makes the drag feel like dragging. The first version
+    /// allowed only half the overhang, so a 3:2 photograph filling a 4:3
+    /// opening could travel 6 % of the slot sideways and — measured — EXACTLY
+    /// NOTHING vertically. That is not a stiff drag, it is a dead one, and it
+    /// is what the client reported as *„drag ne radi"*.
+    static let freeTravel = 0.5
 }
 
-/// How far the placement may travel before the photograph leaves its opening.
+/// How far the photograph may be taken inside its opening, in slot widths.
 ///
-/// In Fill the photograph is bigger than the opening, so it may slide by half
-/// the overhang and no further — one step past that and a white sliver appears
-/// down one edge, which on paper is a reprint. In Fit it is smaller, and the
-/// same arithmetic keeps it INSIDE instead: |photo − slot| ÷ 2, either way
-/// round, in slot widths.
+/// Two things at once, and the larger of them wins:
+///
+///  - **half the overhang**, which is what lets a photograph BIGGER than the
+///    opening be panned until its own far edge arrives. This is the part that
+///    grows with the zoom: at 3× there is a lot of picture to reach.
+///  - **half a slot**, always available. It is what makes a photograph that is
+///    smaller than the opening — or exactly filling it — movable at all.
+///
+/// ⚠️ THE FIRST VERSION HAD ONLY THE FIRST HALF, and the client reported the
+/// result as *„drag ne radi"*. It was not far wrong: with a 3:2 photograph in
+/// a 4:3 opening at 1×, the travel came to 6 % of the slot sideways and, in
+/// the other axis, exactly zero. The rule that produced it — never let a white
+/// sliver open down the edge — was the app protecting the print against the
+/// person making it. He can see the paper; if he wants the photograph off
+/// centre, or smaller than its frame, that is the work.
+///
+/// What the floor still refuses is losing the photograph altogether: at half a
+/// slot the middle of the picture sits on the edge of the opening, and a drag
+/// cannot push it out of the hole and out of reach.
 func briefShowPlacementLimits(photoWidth: Double, photoHeight: Double,
                               slotWidth: Double, slotHeight: Double,
                               placement: SlotPlacement) -> (x: Double, y: Double) {
@@ -232,8 +263,8 @@ func briefShowPlacementLimits(photoWidth: Double, photoHeight: Double,
     let zoom = max(SlotPlacement.minimumZoom, min(placement.zoom, SlotPlacement.maximumZoom))
     let width = photoWidth * base * zoom
     let height = photoHeight * base * zoom
-    return (abs(width - slotWidth) / (2 * slotWidth),
-            abs(height - slotHeight) / (2 * slotHeight))
+    return (max(abs(width - slotWidth) / (2 * slotWidth), SlotPlacement.freeTravel),
+            max(abs(height - slotHeight) / (2 * slotHeight), SlotPlacement.freeTravel))
 }
 
 /// The placement, kept inside what the opening allows.
@@ -907,7 +938,13 @@ func briefShowComposeTemplate(photo: CIImage,
                                               placement: placement)
         var transform = CGAffineTransform(translationX: target.midX, y: target.midY)
         if placement.rotationDegrees != 0 {
-            transform = transform.rotated(by: CGFloat(placement.rotationDegrees * .pi / 180))
+            // ⚠️ MINUS, and it is the difference between the knob and the
+            // picture turning the same way. `rotationDegrees` is CLOCKWISE,
+            // because that is what the rotate knob on the canvas reads and
+            // what the layer knob beside it has always meant. Core Image
+            // counts its rows from the bottom, so a positive angle there comes
+            // out anti-clockwise on screen.
+            transform = transform.rotated(by: CGFloat(-placement.rotationDegrees * .pi / 180))
         }
         transform = transform
             .scaledBy(x: target.width / extent.width, y: target.height / extent.height)

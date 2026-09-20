@@ -131,6 +131,7 @@ wiring("nothing in this file scales a photograph down",
 print("\nwhat Develop.swift does with it — step 2, the wiring")
 
 develop = (ROOT / "BriefShow" / "Develop.swift").read_text()
+templates_source = source
 develop_code = "\n".join(line.split("//", 1)[0] for line in develop.splitlines())
 
 # The record. An ID and a placement, and nothing that holds pixels.
@@ -210,6 +211,36 @@ wiring("the drag measures the photo AFTER the turns and the crop",
 # how that happened once before, on the recipe card (KORAK 182).
 wiring("both template labels set their own colour rather than inheriting one",
        develop_code.split("private func templateTile(", 1)[-1].split("\n    }", 1)[0].count("foregroundColor") >= 2)
+
+# Step 3, second half — the picture is picked up, turned and resized.
+# ⚠️ The outline has to be GATED on the selection, not merely present in the
+# file: a first version of this check only looked for the colour, and passed
+# over a copy where the whole block was switched off.
+overlay_body = develop_code.split("func templateSlotDragOverlay(", 1)[-1].split("\n    /// A corner handle", 1)[0]
+wiring("picking the photo up is visible — an outline appears when it is selected",
+       "if templatePhotoSelected {" in overlay_body and "layerSelectionColor" in overlay_body)
+wiring("and the handles hang off that same gate",
+       overlay_body.index("if templatePhotoSelected {") < overlay_body.index("templateHandleView("))
+wiring("a click on the mat puts it down again",
+       "templatePhotoSelected = false" in develop_code)
+wiring("it can be turned, with the same detent and sign as a layer's knob",
+       "func rotateTemplatePhoto(" in develop_code
+       and "atan2(dx, -dy)" in develop_code
+       and "(degrees / 5).rounded() * 5" in develop_code)
+wiring("and resized from its corners, by the RATIO of two distances",
+       "func resizeTemplatePhoto(" in develop_code and "start.zoom * Double(distance / start.distance)" in develop_code)
+wiring("resizing keeps the photo's proportions — it goes through the zoom, never a stretch",
+       "setTemplateZoom(start.zoom" in develop_code)
+wiring("the outline is drawn from the SAME rectangle the renderer places",
+       "briefShowPhotoRectInSlot(" in
+       develop_code.split("func templatePhotoRectOnScreen(", 1)[-1].split("\n    }", 1)[0])
+wiring("the drag is measured in a named canvas space, so the outline cannot shake",
+       'coordinateSpace: .named(Self.templateCanvasSpace)' in develop_code)
+wiring("a turn is stored clockwise and the composition turns the other way to match",
+       "rotated(by: CGFloat(-placement.rotationDegrees" in templates_source)
+wiring("the photo is put down when the client moves to the next one",
+       "templatePhotoSelected = false" in
+       develop_code.split("private func selectPhoto(", 1)[-1].split("\n    }", 1)[0])
 
 wiring("deleting a template takes it off this photo first",
        "func deleteTemplate(" in develop_code and "removeTemplateFromPhoto()" in develop_code)

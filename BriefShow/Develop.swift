@@ -4270,7 +4270,18 @@ enum PhotoEditRenderer {
         // bilateral upsample of the coarse map with the photograph as its guide,
         // which is the same job: smooth the map, keep the picture's edges.
         let scale = 1 / max(radius * DehazeAtmosphere.refineRadiusFraction, 1)
-        let small = coarse.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        // ⚠️ CLAMPED BEFORE IT IS SHRUNK, and this is the pale band along the
+        // top of a print. The upsample reads a neighbourhood around every
+        // pixel; at the edge of the small map there is nothing to read, so it
+        // came back PARTLY TRANSPARENT there — measured on a flat test frame:
+        // alpha 74 at the top row, still 185 thirty-two rows down, opaque only
+        // past row 64. On a photograph filling the window that was invisible.
+        // Laid into a template it is a white feather along the edge, and the
+        // client saw it at once: *„zastu su krajeve slike blei? kao neki
+        // fheater bele boje da je implementovan?"*.
+        let small = coarse.clampedToExtent()
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .cropped(to: coarse.extent.applying(CGAffineTransform(scaleX: scale, y: scale)))
         let refine = CIFilter(name: "CIEdgePreserveUpsampleFilter")
         refine?.setValue(image, forKey: "inputImage")
         refine?.setValue(small, forKey: "inputSmallImage")
@@ -4303,7 +4314,19 @@ enum PhotoEditRenderer {
         clamp?.setValue(scaled, forKey: kCIInputImageKey)
         clamp?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputMinComponents")
         clamp?.setValue(CIVector(x: 1, y: 1, z: 1, w: 1), forKey: "inputMaxComponents")
-        return clamp?.outputImage?.cropped(to: extent) ?? scaled
+        guard let ranged = clamp?.outputImage?.cropped(to: extent) else { return scaled }
+
+        // ⚠️ AND THE MAP IS MADE OPAQUE, whatever the filters above did to its
+        // alpha. This is a LOOKUP MAP, not a picture: every reader downstream
+        // wants its red channel, and a transparent corner of it turns into a
+        // transparent corner of the photograph. Belt and braces with the clamp
+        // above — that one stops the transparency being made, this one stops it
+        // ever mattering again.
+        let opaque = CIFilter.colorMatrix()
+        opaque.inputImage = ranged
+        opaque.aVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+        opaque.biasVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        return opaque.outputImage?.cropped(to: extent) ?? ranged
     }
 
     /// The transmission the CLEAREST content in this frame reads, so the map can
@@ -10521,6 +10544,21 @@ struct DevelopView: View {
                 }
                 .disabled(isAIWorkingOnOpenPhoto)
             }
+
+            Divider()
+
+            // Asked for 20.09: *„kada selektujem ovako sve tri slike da imam na
+            // desni klik reset za sve selektovane slike.. da resetuje na
+            // original"*. Same target rule as every item above — the whole
+            // selection when the right-clicked photo is part of one.
+            //
+            // Not behind a confirmation, deliberately: it goes through the
+            // panel's own Reset, which is one click there too, and it takes
+            // nothing off the disk that Unflatten would not have restored.
+            Button(bwTargets.count > 1 ? "Reset to Original (\(bwTargets.count))" : "Reset to Original") {
+                resetPhotos(bwTargets)
+            }
+            .disabled(isAIWorkingOnOpenPhoto)
 
             Divider()
 
@@ -19755,23 +19793,51 @@ struct DevelopView: View {
     /// are bound to, and writing only the store would leave the panel showing
     /// edits that no longer exist.
     private func resetSelectedPhotos() {
-        let targets = multiSelectedURLs
-        guard !targets.isEmpty else {
-            return
-        }
+        resetPhotos(Array(multiSelectedURLs))
+    }
 
-        for url in targets where url != selectedURL {
-            PhotoEditStore.setSettings(PhotoEditSettings(), for: url)
+    /// Back to the original — the panel's button and the strip's right-click
+    /// both come here, so the two cannot come to mean different things.
+    ///
+    /// ⚠️ IT UNFLATTENS. Clearing the settings alone puts a flattened photo
+    /// back to "no edits" on top of BAKED PIXELS — which on a photo laid into
+    /// a template means it is still in the template, still cropped, and the
+    /// panel says there is nothing on it. The client asked for this by the
+    /// only name that matters: *„da resetuje na original"*.
+    private func resetPhotos(_ targets: [URL]) {
+        guard !targets.isEmpty else { return }
+
+        for url in targets {
+            // Throws the baked copy away and hands back the record from before
+            // the first flatten; that record is discarded here on purpose,
+            // because this is a reset, not an Unflatten.
+            _ = FlattenedImageStore.unflatten(url)
+            if url != selectedURL {
+                PhotoEditStore.setSettings(PhotoEditSettings(), for: url)
+            }
         }
 
         if let selectedURL, targets.contains(selectedURL) {
             resetAllSettings()
+            templatePhotoSelected = false
+            PhotoEditStore.setSettings(PhotoEditSettings(), for: selectedURL)
+            // The base on disk has changed if this one was flattened, so the
+            // decode has to happen again — nothing in memory describes the
+            // original file any more.
+            loadImages(for: selectedURL)
         }
 
         // The strip and the grid are told at once rather than waiting for the
         // debounce: this is a deliberate, one-shot action on many photos, not
         // a slider being dragged.
         PhotoEditStore.flushNow()
+        // ⚠️ And announced by hand as well. A photo that had NO settings and
+        // was only flattened comes out of this with the same empty record it
+        // went in with, so the store has nothing to announce — while its file
+        // on disk has just gone back to the original.
+        ThumbnailDiskCache.invalidate(targets)
+        NotificationCenter.default.post(name: .photoEditsChanged, object: nil,
+                                        userInfo: [photoEditsChangedURLsKey: Set(targets)])
     }
 
     // MARK: Black & White, Duplicate

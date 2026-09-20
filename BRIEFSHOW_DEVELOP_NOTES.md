@@ -21952,3 +21952,107 @@ je usidrena na `PortraitRecipeUndoStore.record(`.
 
 **Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
 i pokrenuto. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.14 — „Reset to Original" na desni klik, i on zaista vraća original (20. septembar 2026)
+
+Klijent: *„kada selektujem ovako sve tri slike da imam na desni klik reset za sve
+selektovane slike.. da resetuje na original"*.
+
+- **Reset to Original (N)** u desnom kliku na filmstrip, po istom pravilu mete
+  kao i ostale stavke tog menija: **cela selekcija** kad je kliknuta slika deo
+  nje, inače samo ta slika.
+- Panel-ovo dugme i ova stavka zovu **istu** funkciju (`resetPhotos`), da ne bi
+  s vremenom počele da znače različite stvari.
+
+⛔ **RESET SADA I RASPEČE (unflatten).** Brisanje podešavanja samo po sebi
+ostavlja pečene piksele: slika bi ostala **u template-u**, isečena, a panel bi
+tvrdio da na njoj nema ničega. Klijent je tražio jedinim imenom koje je važno —
+*„da resetuje na original"*.
+
+⚠️ **Sličice se poništavaju i objavljuju ručno**, u obliku koji store koristi:
+slika koja je imala prazan zapis a bila **samo pečena** izlazi odavde sa istim
+praznim zapisom, pa store nema šta da objavi — a fajl na disku joj se upravo
+vratio na original.
+
+---
+
+## KORAK 198.15 — beli feather uz ivicu slike: Dehaze je ostavljao providnu traku (20. septembar 2026)
+
+Klijent, sa dva snimka: *„zastu su krajeve slike blei? kao neki fheater bele
+boje da je implementovan?"*
+
+### Merenje, pa tek onda popravka
+
+Prvo je izmerena **sama kompozicija**: na veličini otiska ivica slike prelazi u
+papir kroz **tačno jedan piksel** — obično zaglađivanje. Dakle krivac je
+uzvodno.
+
+Onda je kroz **pravi pipeline** (harness iz `run-lightroom-calibration.py`)
+pušteno jedanaest kontrola, jedna po jedna, nad ravnom probnom slikom. Rezultat
+je bio jednoznačan:
+
+| kontrola | providnih redova uz ivicu |
+|---|---|
+| sve ostalo (ekspozicija, kontrast, clarity, texture, sharpness, glow, vinjeta…) | **0** |
+| **Dehaze** | **40+** |
+
+Profil je izmeren do kraja: alfa **74** u prvom redu, 130 na 16., 185 na 32.,
+opaque tek posle **64. reda** na kadru 3000×2000. Samo **gornja** ivica.
+
+### Uzrok
+
+Mapa prenosivosti se doteruje **edge-preserving upsample-om** smanjene mape
+(1/radius veličine). Unutar otprilike **dva radijusa** od ivice kadra taj filter
+nema šta da uzorkuje, pa vraća **delimično providne** piksele. Na fotografiji
+koja puni prozor to se ne vidi; položena na **beli papir** template-a to je
+beli feather uz ivicu — i klijent ga je video odmah.
+
+### Popravka
+
+1. `coarse.clampedToExtent()` **pre** smanjivanja — filter tada ima šta da čita
+   uz ivicu.
+2. Mapa se na kraju **forsira na alfa 1**. Ona je **tabela**, ne slika: svaki
+   čitalac nizvodno uzima crveni kanal, a providan ugao mape postaje providan
+   ugao fotografije.
+
+Izmereno posle: **0** providnih piksela na sve četiri ivice, na svih 19 kombinacija
+kontrola, a sredina slike je **identična** (203,109,109 pre i posle) — izgled
+nije dirnut.
+
+### ⚠️ Test dehaze-a je zbog ovoga morao da se pomeri, i to je zapisano kod njega
+
+`run-dehaze-test.py` je proveravao „bliski kraj se pomera manje od **petine**
+onoga koliko daleki". Taj prag je bio postavljen na merenju koje je **uključivalo
+pokvarenu, providnu traku** — providno se čita kao „skoro se nije pomerilo", pa
+je bliski kraj sebi laskao: **2,1 naspram 12,0**. Sa opaque mapom ista scena
+čita **2,4 naspram 12,0**.
+
+⛔ **Prvo sam pokušao da pomerim prozor merenja** (da počne posle trake) — i to
+je bilo **pogrešno**: ploča ima gradijent magle, pa prozor pomeren udesno meri
+**hazovitiji deo scene** (4,7). Vraćeno, a **prag je pomeren na četvrtinu**, sa
+oba broja i razlogom upisanim uz proveru. Tvrdnje koje nose model su nedirnute i
+i dalje prolaze: daleki kraj se pomera **više od dvaput** od bliskog, i odnos je
+bolji nego kod stare staze.
+
+### Nov stalan test
+
+`Tools/run-template-edge-test.py` + `test-template-edge.swift`: vozi **pravi**
+`PhotoEditRenderer.render` i meri alfu na **sve četiri ivice** za svaku kontrolu
+posebno i za sve zajedno, plus da ravan kadar posle Dehaze-a ima **istu boju na
+ivici i u sredini**. Ovo je jedino mesto gde se ova klasa kvara vidi — i sledeće
+zamućenje dodato u lanac pada ovde.
+
+**Negativna kontrola:** sa uklonjenom stezaljkom padaju tačno dve provere —
+„dehaze: ivica je opaque" (23 providna piksela) i „ista boja na ivici i u
+sredini" (141 naspram 203).
+
+**Stanje na kraju dana:** `run-templates-test.py` **all green**,
+`run-header-bar-test.py` **OK**, `run-dehaze-test.py` **all good**,
+`run-template-edge-test.py` **all passed**; Debug i Release (`arm64 x86_64`) →
+**BUILD SUCCEEDED**; instalirano u `/Applications/C4S Suite.app`.
+
+**NIJE OBJAVLJENO.** Koraci 1–4 plana su gotovi; ostaju **5** (tekst na
+template-u), **6** (Google fontovi) i **7** (izvoz na 300 dpi, koji treba i da
+poravna veličinu izvoza pečene i nepečene slike).

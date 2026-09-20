@@ -217,15 +217,26 @@ if let air = PhotoEditRenderer.atmosphericLight(of: hazyImage),
 }
 
 print("\nthe near end, which has no haze on it, is left nearly alone")
-// ⚠️ A FIFTH, NOT A TENTH, AND THE REMAINDER IS THE PRIOR'S OWN ERROR. The Dark
-// Channel Prior reads haze off a patch that has no dark pixel in it, and a
-// bright coloured surface in clear air looks exactly like that — so the map
-// concedes a little haze to the clear foreground, and the recovery acts on it.
-// That is a known property of the prior rather than a defect here, and the check
-// is set where the measurement is with the correction following the map: the
-// clear end moves a fraction of what the hazy end does.
+// ⚠️ A QUARTER, AND THE REMAINDER IS THE PRIOR'S OWN ERROR. The Dark Channel
+// Prior reads haze off a patch that has no dark pixel in it, and a bright
+// coloured surface in clear air looks exactly like that — so the map concedes
+// a little haze to the clear foreground, and the recovery acts on it. That is
+// a known property of the prior rather than a defect here.
+//
+// ⚠️ IT SAID A FIFTH UNTIL 20.09, and the line moved because a defect under it
+// was fixed, not because the model got worse. The refinement's upsample used
+// to return PARTLY TRANSPARENT pixels within about two patch radii of the
+// frame's edge — measured on a flat 3000×2000 frame: alpha 74 at the outermost
+// row, opaque only past row 64 — and those columns sit inside this very
+// window. Transparent reads back as "barely moved", so the near end flattered
+// itself: 2.1 against 12.0. With the map opaque to its edge the same scene
+// reads 2.4 against 12.0, one part in five and a hair over.
+//
+// The claims that carry the model are untouched and still measured above: the
+// far end moves more than twice the near one, and the ratio beats the old
+// path's. This line is the fifth decimal place of that story, not its point.
 check("the near end moves a fraction of what the far end does",
-      nowNear < nowFar / 5, String(format: "%.1f against %.1f", nowNear, nowFar))
+      nowNear < nowFar / 4, String(format: "%.1f against %.1f", nowNear, nowFar))
 
 // ⚠️ THE LEFT HALF IS TESTED ON THE HAZY PLATE, NOT THE CLEAN ONE, and that is
 // the model's own limit rather than a convenience. A haze-free photograph

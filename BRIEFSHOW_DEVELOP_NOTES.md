@@ -21700,3 +21700,63 @@ onome **čime se završava** (`settings = cleared`, odnosno
 
 **Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
 i pokrenuto. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.10 — flatten peče i template: jednom pečeno, ništa se više ne hvata (20. septembar 2026)
+
+Klijent, sa snimkom: *„ja sam sliku falltenovao i opet sam mogao da je
+selektiream to znaci da nije faltenovana! jednom faltten to je to nema layera ne
+mzoe da se selektuje slika!"*
+
+### ⚠️ Ovo poništava 198.9, i klijent je u pravu oko svoje reči
+
+U 198.9 sam template **proveo kroz** flatten kao podešavanje (kao crop), sa
+obrazloženjem da je raspored, ne gradacija, pa neka ostane pomerljiv. Klijent je
+to probao i rekao šta **on** misli pod flatten: pečeno je pečeno. Flatten posle
+kog nešto i dalje može da se uhvati i povuče nije flatten. Put nazad je
+**Unflatten**, i on i dalje radi.
+
+### Šta sada radi flatten kad slika ima template
+
+| pre | sada |
+|---|---|
+| render sa `applyCrop: false` → pekla se **fotografija** | render sa `applyCrop: true` → peče se **OTISAK**, sa paspartuom |
+| zapis je zadržavao `templateID` (i crop) | zapis se vraća **prazan** |
+| okvir selekcije je i dalje stajao na slici | nema šta da se selektuje |
+
+⛔ **Crop ide zajedno sa okvirom.** Inače bi u pikselima stajao isečen kadar u
+ramu, a živ crop bi posle toga sekao **mat**.
+
+⚠️ **Batch pečenje (portretni recepti) je namerno drugačije:** ono renderuje sa
+`applyCrop: false`, dakle **ne peče platno** — pa mora i da **ne baca** template,
+nego da ga zadrži. Dva puta, dva pravila, i oba su zapisana uz kod.
+
+### ⚠️ Rezolucija: bake se NE crta na veličini otiska
+
+Zaključano pravilo sa vrha dokumenta kaže da se slika ne smanjuje. Otisak je
+2400×1800 na 300 dpi; fotografija od 6000 px u otvoru od 2112 px bi na putu u
+pečeni fajl bila presempl'ovana na ~35 %, i samo bi je Unflatten vratio.
+
+Zato `briefShowBakeCanvasScale` crta platno **onoliko puta veće koliko treba da
+slika zadrži svoje piksele** (za ovaj template ≈ 2,84×), a smanjivanje na 300 dpi
+ostaje za izvoz — jednom, na kraju, gde mu je mesto.
+
+⚠️ **Plafon je u megapikselima, ne u faktoru** — mašina ima 8 GB, a platno je
+4 bajta po pikselu dok se piše: 60 MP ≈ 240 MB. Mereno: 6000 px u ovom
+template-u pada na ~35 MP; 100 000 px bi bez plafona tražilo gigabajte.
+
+### Čime je zaključano
+
+Pet novih merenja za `briefShowBakeCanvasScale` (da čuva piksele, da **ne**
+naduvava malu sliku, da plafon drži na 8 GB, i da zumirana slika traži **manje**
+platna), i šest provera iz izvora oko flatten-a: da peče otisak
+(`applyCrop: bakesTemplate` + skala), da zapis ostaje bez template-a i selekcija
+se spušta, da crop ide zajedno, i da **batch** put — koji ne peče platno — i
+dalje **zadržava** template.
+
+**Negativne kontrole, dve:** vraćeno ponašanje iz 198.9 obara tri provere o
+flatten-u; bake nacrtan na veličini otiska obara tri merenja o rezoluciji.
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+i pokrenuto. **NIJE OBJAVLJENO.**

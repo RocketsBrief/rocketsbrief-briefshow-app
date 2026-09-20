@@ -3145,7 +3145,8 @@ enum PhotoEditRenderer {
     /// the render it got before.
     static func render(_ settings: PhotoEditSettings, on base: PhotoBaseImage,
                        applyCrop: Bool = true,
-                       reusingRAWDecode: Bool = false) -> CIImage {
+                       reusingRAWDecode: Bool = false,
+                       templateCanvasScale: Double = 1) -> CIImage {
         var output: CIImage
         let isRAWSource: Bool
 
@@ -3425,7 +3426,11 @@ enum PhotoEditRenderer {
                 photo: output,
                 template: template,
                 placement: settings.templatePlacement,
-                artOverPhoto: settings.templateArtOverPhoto ?? template.artOverPhoto)
+                artOverPhoto: settings.templateArtOverPhoto ?? template.artOverPhoto,
+                // 1 for the preview, bigger for a flatten — see
+                // briefShowBakeCanvasScale for why the bake is not drawn at
+                // print size.
+                canvasScale: templateCanvasScale)
         }
 
         return output
@@ -6851,9 +6856,11 @@ enum PortraitRecipeService {
                     continue
                 }
 
-                // Everything is in the pixels now. The crop and the print
-                // template are what is kept, because neither was baked —
-                // same rule as flattenPhoto.
+                // Everything is in the pixels now. The crop is kept because
+                // it was not baked — same rule as flattenPhoto, including what
+                // happens when there is a template: this path renders with
+                // `applyCrop: false`, so it bakes no canvas, and a photo that
+                // has one keeps it rather than losing it here.
                 var cleared = PhotoEditSettings()
                 cleared.crop = photoSettings.crop
                 cleared.templateID = photoSettings.templateID
@@ -19927,13 +19934,40 @@ struct DevelopView: View {
         let cropToKeep = settingsSnapshot.crop
         let photoAtActionTime = selectedURL
 
+        // ⚠️ A FLATTEN IS FINAL, and the client said so in as many words after
+        // the first attempt left the frame live: *„jednom flatten to je to nema
+        // layera ne moze da se selektuje slika!"*. So when a template is on the
+        // photo, the bake draws the PRINT — mat and all — and the record comes
+        // back empty: nothing to pick up, nothing to drag.
+        //
+        // The crop goes in with it. It normally survives a flatten as a
+        // setting, but the print already contains the cropped picture, and a
+        // crop left live afterwards would be a crop of the MAT.
+        let template = templateLibrary.template(id: settingsSnapshot.templateID)
+        let bakesTemplate = template != nil
+        let bakeScale: Double = {
+            guard let template else { return 1 }
+            let extent = fullBaseImage.extent
+            guard extent.width > 0, extent.height > 0 else { return 1 }
+            var width = Double(extent.width), height = Double(extent.height)
+            if settingsSnapshot.rotationQuarterTurns % 2 != 0 { swap(&width, &height) }
+            if let crop = settingsSnapshot.crop { width *= crop.width; height *= crop.height }
+            return briefShowBakeCanvasScale(photoWidth: width, photoHeight: height,
+                                            template: template,
+                                            placement: settingsSnapshot.templatePlacement)
+        }()
+
         isFlattening = true
         isFlatteningOpenPhoto = true
         flattenErrorMessage = nil
 
         developRenderQueue.async(qos: .userInitiated) {
+            // ⚠️ `applyCrop` also gates the canvas — both are the things that
+            // turn a photograph into a print, and a template baked over an
+            // UNCROPPED picture would put the wrong part of it in the frame.
             let rendered = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage,
-                                                    applyCrop: false)
+                                                    applyCrop: bakesTemplate,
+                                                    templateCanvasScale: bakeScale)
             var failure: String?
             do {
                 try FlattenedImageStore.flatten(rendered, settings: settingsSnapshot,
@@ -19955,28 +19989,25 @@ struct DevelopView: View {
                     completion?()
                     return
                 }
-                // Everything is in the pixels now — except the two things
-                // that were never baked, and both survive as settings.
+                // Everything is in the pixels now.
                 //
-                // ⚠️ THE TEMPLATE IS ONE OF THEM, and leaving it out is what
-                // the client hit: *„kada sam isao flatten photo desilo se ovo
-                // nema template-a a treba da je sa templatom"*. The flatten
-                // renders with `applyCrop: false`, and the canvas is composed
-                // inside that same branch — so the baked pixels are the
-                // PHOTOGRAPH, never the print. Dropping the id therefore did
-                // not bake the frame, it threw it away.
-                //
-                // Keeping it live is also the better half of the bargain: the
-                // template is a layout, like the crop, so after a flatten it
-                // can still be moved, swapped or taken off, and a later grade
-                // works on the picture rather than on the mat around it.
+                // ⚠️ THIS WENT THE OTHER WAY FIRST, on 198.9: the template was
+                // carried through the flatten as a setting, like the crop, so
+                // that it stayed adjustable. The client tried it and said what
+                // he means by flatten — *„jednom flatten to je to"* — and he
+                // is right about his own word: a flatten that leaves something
+                // still draggable is a flatten that did not happen. Unflatten
+                // is the way back, and it still is.
                 var cleared = PhotoEditSettings()
-                cleared.crop = cropToKeep
-                cleared.templateID = settingsSnapshot.templateID
-                cleared.templatePlacement = settingsSnapshot.templatePlacement
-                cleared.templateArtOverPhoto = settingsSnapshot.templateArtOverPhoto
+                // With a template, the print IS the file now: the crop is in
+                // those pixels and so is the frame, so the record keeps
+                // neither. Without one, the crop survives as it always has.
+                if !bakesTemplate {
+                    cleared.crop = cropToKeep
+                }
                 settings = cleared
-                pendingCrop = cropToKeep ?? .full
+                templatePhotoSelected = false
+                pendingCrop = (bakesTemplate ? nil : cropToKeep) ?? .full
                 selectedLocalAdjustmentID = nil
                 activeSelection = nil
                 selectedLayerID = nil
@@ -20023,18 +20054,13 @@ struct DevelopView: View {
     /// otherwise leave the button lit up forever offering to bake nothing.
     /// Is there anything a flatten would actually bake?
     ///
-    /// ⚠️ The crop and the TEMPLATE are excluded, and for the same reason:
-    /// neither is baked. The flatten renders with `applyCrop: false`, and the
-    /// print canvas is composed inside that branch, so both come through the
-    /// flatten as settings. Counting them here would light Flatten up on a
-    /// photo whose only edit is the frame it is printed in — a bake with
-    /// nothing to bake, which still rewrites the file on disk.
+    /// ⚠️ The crop alone is excluded, because the crop alone survives a
+    /// flatten as a setting. A TEMPLATE counts: baking it is the whole of what
+    /// the client means by flatten, so a photo laid into a frame and otherwise
+    /// untouched still has something to bake.
     private var hasUnbakedEdits: Bool {
         var keptByFlatten = PhotoEditSettings()
         keptByFlatten.crop = settings.crop
-        keptByFlatten.templateID = settings.templateID
-        keptByFlatten.templatePlacement = settings.templatePlacement
-        keptByFlatten.templateArtOverPhoto = settings.templateArtOverPhoto
         return settings != keptByFlatten
     }
 

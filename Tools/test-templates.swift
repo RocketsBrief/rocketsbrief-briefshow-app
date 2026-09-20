@@ -314,6 +314,49 @@ if let hole = briefShowTemplateHole(alpha: lShape, width: 400, height: 300) {
     check("an L-shaped opening is found", false)
 }
 
+// MARK: - What a flatten bakes at
+
+print("\nthe scale a flatten bakes the print at")
+
+let bakeTemplate = PrintTemplate(
+    name: "mat", size: .eightBySix, orientation: .horizontal,
+    slot: TemplateSlot(rect: NormalizedRect(x: 0.08, y: 0.08, width: 0.88, height: 0.76)),
+    artOverPhoto: true, artRef: "mat.png", artPixelWidth: 2400, artPixelHeight: 1800)
+
+// ⚠️ THE LOCKED RESOLUTION RULE, MEETING THE BAKE. The opening is 2,112 px of
+// a 2,400 px print; a 6,000 px photograph laid into it at print size would be
+// resampled to about a third on the way into the flattened file, and only
+// Unflatten could get it back.
+let bakeScale = briefShowBakeCanvasScale(photoWidth: 6000, photoHeight: 4000,
+                                         template: bakeTemplate, placement: .centred)
+let photoInPrint = briefShowPhotoRectOnCanvas(photoWidth: 6000, photoHeight: 4000,
+                                              slot: bakeTemplate.slot.rect,
+                                              canvasWidth: 2400, canvasHeight: 1800,
+                                              placement: .centred)
+check("the bake is drawn big enough to keep the photograph's own pixels",
+      close(bakeScale, 6000 / Double(photoInPrint.width), 1e-9),
+      "scale \(bakeScale), photo lands \(photoInPrint.width) px wide at print size")
+check("which for this template is more than print size",
+      bakeScale > 1.5, "got \(bakeScale)")
+
+// A photograph SMALLER than its opening is not blown up to fill it: baking
+// invented pixels is not keeping anything.
+check("a small photograph does not drag the canvas up with it",
+      briefShowBakeCanvasScale(photoWidth: 800, photoHeight: 600,
+                               template: bakeTemplate, placement: .centred) == 1)
+
+// ⚠️ 8 GB. A canvas is four bytes a pixel while it is written, so the ceiling
+// is in megapixels rather than in a scale factor.
+let huge = briefShowBakeCanvasScale(photoWidth: 100_000, photoHeight: 60_000,
+                                    template: bakeTemplate, placement: .centred)
+check("and the ceiling holds on a machine with 8 GB",
+      2400 * huge * 1800 * huge <= 60_000_000 + 1,
+      "\(Int(2400 * huge * 1800 * huge / 1_000_000)) MP")
+check("a zoomed-in photograph needs less canvas, not more",
+      briefShowBakeCanvasScale(photoWidth: 6000, photoHeight: 4000, template: bakeTemplate,
+                               placement: { var p = SlotPlacement(); p.zoom = 2; return p }())
+      < bakeScale)
+
 // MARK: - The pair
 
 print("\nthe horizontal and vertical pair")

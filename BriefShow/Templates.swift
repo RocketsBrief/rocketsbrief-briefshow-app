@@ -836,6 +836,39 @@ func briefShowTemplateForPhoto(width: Int, height: Int,
     return partner
 }
 
+/// How much bigger than the print the canvas has to be drawn so the
+/// photograph keeps its OWN pixels when a flatten bakes it in.
+///
+/// ⚠️ This is the locked resolution rule meeting the bake. The print canvas is
+/// 2,400 × 1,800 at 300 dpi; a 6,000 px photograph laid into a 2,112 px
+/// opening would be resampled down to 35 % on the way into the flattened file,
+/// and nothing afterwards could get that back except Unflatten. So the bake is
+/// drawn at the scale that keeps the picture's own pixels, and the export at
+/// 300 dpi does the resizing — once, at the end, where it belongs.
+///
+/// ⚠️ CAPPED, because this machine has 8 GB. A canvas is four bytes a pixel
+/// while it is being written, so the ceiling is expressed in megapixels rather
+/// than in a scale factor: 60 MP is about 240 MB, which the flatten already
+/// spends on a full-size render, and 6,000 px of photograph in this template
+/// lands around 35 MP.
+func briefShowBakeCanvasScale(photoWidth: Double, photoHeight: Double,
+                              template: PrintTemplate,
+                              placement: SlotPlacement,
+                              megapixelCeiling: Double = 60) -> Double {
+    let canvas = template.canvasPixels
+    guard photoWidth > 0, photoHeight > 0, canvas.width > 0, canvas.height > 0 else { return 1 }
+    let rect = briefShowPhotoRectOnCanvas(photoWidth: photoWidth, photoHeight: photoHeight,
+                                          slot: template.slot.rect,
+                                          canvasWidth: Double(canvas.width),
+                                          canvasHeight: Double(canvas.height),
+                                          placement: placement)
+    guard rect.width > 1 else { return 1 }
+
+    let wanted = max(1, photoWidth / Double(rect.width))
+    let ceiling = (megapixelCeiling * 1_000_000 / (Double(canvas.width) * Double(canvas.height))).squareRoot()
+    return min(wanted, max(1, ceiling))
+}
+
 // MARK: - The catalogue the app holds while it runs
 
 /// The imported templates, in memory, with the disk behind them.

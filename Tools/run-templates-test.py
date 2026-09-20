@@ -289,17 +289,31 @@ wiring("⇧ makes the step ten, as it does for a layer",
 # ⚠️ Each site is found by what CLOSES it, not by counting occurrences: the
 # first version split on "var cleared = …" and, with one site emptied out,
 # reported the fault against the other one's name.
-for anchor, label in (("settings = cleared", "the open photo"),
-                      ("outcome.settingsByURL[url] = cleared", "a batch flatten")):
-    body = develop_code.split(anchor, 1)[0][-900:]
-    wiring(f"a flatten keeps the template on {label}",
-           "cleared.templateID" in body and "cleared.templatePlacement" in body
-           and "cleared.templateArtOverPhoto" in body)
+# ⚠️ THIS TURNED ROUND ON 198.10. The template used to be carried THROUGH the
+# flatten as a setting, like the crop; the client tried it and said what he
+# means by the word — „jednom flatten to je to nema layera ne moze da se
+# selektuje slika!". So the bake draws the print, and the record comes back
+# with nothing in it to pick up.
+flatten_body = develop_code.split("private func flattenPhoto(", 1)[-1].split("loadImages(for: photoAtActionTime)", 1)[0]
+wiring("a flatten with a template bakes the print",
+       "applyCrop: bakesTemplate" in flatten_body
+       and "templateCanvasScale: bakeScale" in flatten_body)
+wiring("and leaves nothing selectable behind",
+       "cleared.templateID" not in flatten_body
+       and "templatePhotoSelected = false" in flatten_body)
+wiring("the crop goes in with it — a crop left live would crop the MAT",
+       "if !bakesTemplate {" in flatten_body and "cleared.crop = cropToKeep" in flatten_body)
+wiring("the bake is drawn at the scale that keeps the photo's pixels",
+       "briefShowBakeCanvasScale(" in flatten_body)
 
-wiring("and the crop is still kept beside it",
-       develop_code.count("cleared.crop = ") == 2)
-wiring("a photo whose only edit is its frame is not offered a bake",
-       "keptByFlatten.templateID = settings.templateID" in develop_code)
+# ⚠️ The batch path is the other way round, and on purpose: it renders with
+# applyCrop: false, bakes no canvas, and so must not drop what it did not bake.
+batch_body = develop_code.split("outcome.settingsByURL[url] = cleared", 1)[0][-900:]
+wiring("the batch bake, which composes no canvas, keeps the template instead",
+       "cleared.templateID" in batch_body and "cleared.templatePlacement" in batch_body)
+
+wiring("a photo laid into a frame HAS something to bake",
+       "keptByFlatten.templateID" not in develop_code)
 
 wiring("deleting a template takes it off this photo first",
        "func deleteTemplate(" in develop_code and "removeTemplateFromPhoto()" in develop_code)

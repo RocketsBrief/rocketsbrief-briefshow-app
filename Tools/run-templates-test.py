@@ -260,6 +260,28 @@ wiring("the photo is put down when the client moves to the next one",
        "templatePhotoSelected = false" in
        develop_code.split("private func selectPhoto(", 1)[-1].split("\n    }", 1)[0])
 
+# The arrows, asked for 20.09 — and the filmstrip they must not take over.
+keys = develop_code.split("[123, 124, 125, 126].contains(event.keyCode)")
+wiring("the arrows nudge the picture in the template",
+       "func nudgeTemplatePhoto(" in develop_code
+       and "nudgeTemplatePhoto(dxPixels:" in develop_code)
+# ⚠️ Against the CODE of the filmstrip walk, not against its comment: the
+# comments are stripped out of develop_code, and a check that looks for one
+# there can only ever fail.
+wiring("only while it is picked up — otherwise they still walk the filmstrip",
+       "isTemplateSlotEditable, templatePhotoSelected {" in develop_code
+       and develop_code.index("isTemplateSlotEditable, templatePhotoSelected {")
+           < develop_code.index("stepPhoto(by: event.keyCode == 124 ? 1 : -1)"))
+wiring("the layer nudge still comes first, so a selected layer keeps its arrows",
+       develop_code.index("nudgeLayer(at: index, dxPixels: -pixels") <
+       develop_code.index("nudgeTemplatePhoto(dxPixels: -pixels"))
+wiring("a nudge is whole PRINT pixels, so one press is one step at any preview size",
+       "canvas.width" in develop_code.split("func nudgeTemplatePhoto(", 1)[-1].split("\n    }", 1)[0])
+wiring("and it goes through the same clamp as the drag",
+       "briefShowClampedPlacement(" in develop_code.split("func nudgeTemplatePhoto(", 1)[-1].split("\n    }", 1)[0])
+wiring("⇧ makes the step ten, as it does for a layer",
+       'flags == .shift ? 10 : 1' in develop_code)
+
 wiring("deleting a template takes it off this photo first",
        "func deleteTemplate(" in develop_code and "removeTemplateFromPhoto()" in develop_code)
 

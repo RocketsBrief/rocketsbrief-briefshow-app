@@ -9491,6 +9491,29 @@ struct DevelopView: View {
                 return nil
             }
 
+            // The picture in a template takes the arrows once it is PICKED UP,
+            // exactly as a selected layer does above — asked for 20.09:
+            // *„ovde isto da mogu da pomeram sliku pored draga sa strelicama
+            // levo, desno, gore dole (na keyboardu)"*.
+            //
+            // ⚠️ Only while it is selected. With nothing picked up the arrows
+            // go on walking the filmstrip, which is what they have meant since
+            // KORAK 190 — a template on the photo must not quietly take that
+            // away. One click on the picture is what asks for them.
+            if !isTyping, flags.isEmpty || flags == .shift,
+               [123, 124, 125, 126].contains(event.keyCode),
+               !((NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor ?? false),
+               isTemplateSlotEditable, templatePhotoSelected {
+                let pixels: Double = flags == .shift ? 10 : 1
+                switch event.keyCode {
+                case 123: nudgeTemplatePhoto(dxPixels: -pixels, dyPixels: 0)
+                case 124: nudgeTemplatePhoto(dxPixels: pixels, dyPixels: 0)
+                case 125: nudgeTemplatePhoto(dxPixels: 0, dyPixels: pixels)
+                default:  nudgeTemplatePhoto(dxPixels: 0, dyPixels: -pixels)
+                }
+                return nil
+            }
+
             // ← / → walk the filmstrip, which is what the client asked the
             // arrows to be. Q/E keep doing it too — they are the configurable
             // shortcut handled above, and taking them away was not asked for.
@@ -17923,7 +17946,7 @@ struct DevelopView: View {
                                       set: { setTemplateZoom($0) }),
                        in: SlotPlacement.minimumZoom...SlotPlacement.maximumZoom)
 
-                Text("Drag the photo on the canvas to move it in the opening; scroll over it to zoom.")
+                Text("Drag the photo on the canvas to move it; scroll over it to zoom. Click it to pick it up — then the arrow keys nudge it, ⇧ by ten.")
                     .font(.custom("Figtree", size: 9))
                     .foregroundColor(AppColors.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -18191,6 +18214,31 @@ struct DevelopView: View {
             // the photograph off the screen while claiming it was on paper.
             canvasWidth: Double(frame.width),
             canvasHeight: Double(frame.height))
+    }
+
+    /// Moves the picture by whole PRINT pixels, so one press is the same step
+    /// whatever size the preview happens to be — the same promise `nudgeLayer`
+    /// makes about photo pixels, for the same reason.
+    ///
+    /// ⚠️ 125 is DOWN and 126 is UP on this keyboard, and down is +y here
+    /// because the placement is measured the way the screen is. That was worth
+    /// getting right once: the outline and the picture disagreeing about which
+    /// way is down is exactly what KORAK 198.7 had to undo.
+    private func nudgeTemplatePhoto(dxPixels: Double, dyPixels: Double) {
+        guard let template = templateLibrary.template(id: settings.templateID),
+              let photo = templatePhotoPixelSize else { return }
+        let canvas = template.canvasPixels
+        let slotWidth = max(template.slot.rect.width * Double(canvas.width), 1)
+        let slotHeight = max(template.slot.rect.height * Double(canvas.height), 1)
+
+        var next = settings.templatePlacement
+        next.offsetX += dxPixels / slotWidth
+        next.offsetY += dyPixels / slotHeight
+        settings.templatePlacement = briefShowClampedPlacement(
+            next,
+            photoWidth: Double(photo.width), photoHeight: Double(photo.height),
+            slot: template.slot.rect,
+            canvasWidth: Double(canvas.width), canvasHeight: Double(canvas.height))
     }
 
     /// Zoom the photograph inside its opening, keeping it where it may be.

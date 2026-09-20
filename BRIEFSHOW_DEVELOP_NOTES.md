@@ -21610,3 +21610,44 @@ reprodukuje tačno ono što je klijent slikao.
 
 **Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
 i pokrenuto. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.8 — strelice pomeraju sliku u template-u (20. septembar 2026)
+
+Klijent: *„ovde isto da mogu da pomeram sliku pored draga sa strelicama levo,
+dfesno gore dole (na keyboardu)"*. Na istom snimku se vidi i da okvir selekcije
+sada **stoji na slici** — popravka iz 198.7 je potvrđena na ekranu.
+
+- **← → ↑ ↓ pomeraju sliku za jedan piksel OTISKA**, ⇧ za deset. Piksel otiska,
+  ne ekrana, pa je jedan pritisak isti korak koliki god pregled bio — isto
+  obećanje koje `nudgeLayer` daje za piksele fotografije.
+- Ide kroz **istu stezaljku** kao vučenje, pa strelica ne može da odnese sliku
+  sa papira, a ⌘Z vraća ceo niz pritisaka u jednom koraku (isti debounce kao
+  svaka druga izmena).
+
+⛔ **Samo dok je slika PODIGNUTA.** Bez toga strelice i dalje šetaju filmstrip,
+što im je značenje od KORAKA 190 — template na slici ne sme to tiho da uzme.
+Jedan klik na sliku je ono što traži strelice, i to je isto pravilo koje sloj
+već ima.
+
+⚠️ **Red u lancu tastera je deo popravke:** grana za **sloj ostaje prva**, pa
+izabran sloj zadržava svoje strelice; grana za template je odmah iza nje, a
+filmstrip posle obe.
+
+⚠️ **125 je DOLE, 126 GORE, i dole je +y** — pomeraj se meri onako kako ekran
+gleda. Tu se ne improvizuje: okvir i slika koji se ne slažu oko toga šta je
+dole su tačno ono što je 198.7 morao da razmrsi.
+
+### Čime je zaključano
+
+Šest novih provera iz izvora: da strelice postoje, da rade **samo** kad je slika
+podignuta (i to provereno **naspram koda** filmstrip grane, ne naspram njenog
+komentara — komentari se u testu skidaju), da grana za sloj ostaje ispred, da je
+korak u pikselima otiska, da ide kroz stezaljku, i da ⇧ daje deset.
+
+**Negativne kontrole, dve:** skinut uslov „podignuta" obara proveru o
+filmstripu; premeštena grana ispred sloja obara proveru o redosledu.
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+i pokrenuto. **NIJE OBJAVLJENO.**

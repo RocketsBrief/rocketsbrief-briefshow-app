@@ -21039,3 +21039,106 @@ ceo smisao ove odluke da izdanje ostane iste veličine kao danas.
 7. Izvoz na 300 dpi kroz postojeći `exportPhotos`.
 
 **Push tek kad sve stoji**, kako je dogovoreno.
+
+---
+
+## KORAK 198.1 — template je PLATNO: model, rupa iz alfe, i par H/V (20. septembar 2026)
+
+Prvi od sedam koraka iz plana iznad. **Bez UI-a**, kako plan i kaže: nov fajl
+`BriefShow/Templates.swift`, i ništa u app-i ga još ne zove. Dugme, izbornik i
+rad u slotu su korak 2 i 3.
+
+### Zašto je ovo platno, a ne još jedan sloj
+
+Klijent traži da slika može **ispod** template-a i **iznad** njega. To u
+današnjem modelu nisu dve varijante jedne stvari:
+
+- slika ispod → crtež je PNG sa rupom, crta se **preko** slike; to app već ume,
+- slika iznad → crtež je podloga, a fotografija stoji **na** njoj; to app **ne
+  ume**, jer je pozadina uvek fotografija i pod nju se ne može ništa staviti.
+
+Zato `PrintTemplate` nije sloj nego **kadar fiksnih proporcija** sa jednim
+slotom, jednim crtežom i **jednim prekidačem** (`artOverPhoto`). Fotografija
+postaje **sadržaj slota**, i tek time su oba klijentova slučaja jedan mehanizam.
+
+### Šta je u fajlu
+
+| šta | zašto baš tako |
+|---|---|
+| `PrintOutput.dpi = 300` | klijentov odgovor od 20.09; **jedini** broj, sve veličine su računica iz njega (8×6 → 2400×1800, 8×10 → 3000×2400). dpi prepisan u drugi fajl je kako jedno mesto ostane 300 a drugo postane 240 |
+| `PrintSize` (kratka strana prva) | 8×6 i 6×8 su isti papir okrenut; jedna vrednost pokriva obe orijentacije |
+| `NormalizedRect` — slot u **razlomcima platna** | isti template se meri na klijentovom PNG-u bilo koje veličine, a štampa na 300 dpi; slot u pikselima bi bio tačan u tačno jednom od to dvoje |
+| `SlotPlacement` — pomeraj u **širinama slota**, zum, rotacija | isto kadriranje na preview veličini i na 300 dpi; u pikselima bi se kadar pomerio čim se platno promeni |
+| `SlotFitMode` fit/fill | **nijedan ne razvlači**; fill seče, fit ostavlja prazno — razvučena slika se primeti tek na papiru |
+| `briefShowTemplateHole` | rupa se **nalazi** iz alfa kanala, jednom, pri uvozu |
+| `TemplateStore` | crteži u Application Support/**BriefShow**/Templates, ime fajla = sadržaj (isto pravilo kao `LayerPixelStore`) |
+| par H/V | `pairID` sa **obe** strane, i odbija par iste orijentacije |
+
+### ⚠️ Nalaz koji je odredio algoritam za rupu — rub crteža NIJE rupa
+
+Prva verzija „uzmi najveću providnu oblast" pada na fajlovima koji će najverovatnije
+i stići: crtež izvezen sa providnom marginom ima **jednu ogromnu** providnu
+oblast koja obilazi ceo kadar, i ona je veća od rupe **svaki put**. Slika bi tada
+otišla iza paspartua. Zato oblast koja **dodiruje ivicu** nije kandidat — mereno
+na sintetičkom crtežu sa marginom od 20 px: bez tog pravila slot ispadne ceo
+kadar (`x:0, y:0, w:1, h:1`), sa njim tačno unutrašnja rupa.
+
+Merenje ide **run-length** povezivanjem: svaki red se iseče na providne poteze i
+poteze spoji sa onima iznad. Cena je broj poteza, ne broj piksela — PNG od
+3000×2400 se izmeri bez ijedne mape veličine slike. Mašina ima 8 GB.
+
+⛔ **Nalaženje rupe je POMOĆ, ne uslov.** Klijent nosi svoje PNG-ove; neki neće
+imati čistu providnu rupu. Tada uvoz vraća `needsRectangle` sa razlogom, slot je
+sredina platna, a klijent ga sam povuče. Okrugla rupa se vrati kao svoj
+pravougaonik, ali **označena** (`rectangularity` π/4 ≈ 0,785 umesto 1), da UI
+može da kaže šta je izmerio umesto da se pravi da je video pravougaonik.
+
+⚠️ **Poluprovidno nije providno.** Prag je alfa ≤ 8: senka na 20 % je deo
+crteža, ne deo rupe.
+
+⚠️ **Papir se pogađa usko, i „ne znam" je dozvoljen odgovor.** 4:3 i 4:5 su
+6,7 % razmaknuti, a template zaveden pod pogrešan papir štampa sliku pogrešne
+veličine — to je jedina greška ovde koja košta papir. Kvadrat i 16:9 vraćaju
+`nil`, pa izbornik pita.
+
+⚠️ **Par iste orijentacije se ODBIJA.** Dva horizontalna spojena ostavila bi
+sync iz koraka 4 u uverenju da ima vertikalan da ponudi — i **tiho** bi štampao
+svaki portret položeno. Bez para, `briefShowTemplateForPhoto` vraća `nil`, što
+korak 4 mora da **kaže naglas**.
+
+### Dva zaključana pravila koja su ispoštovana
+
+1. **Rezolucija.** Ništa u fajlu ne smanjuje fotografiju; platno je odredište
+   (gde pikseli idu), nikad radna rezolucija. Test to i čita iz izvora.
+2. **Gde se čuva.** `PrintTemplate` nosi **ID crteža** (`artRef`), nikad
+   piksele — zapis slike je jedan JSON blob u UserDefaults koji se prepisuje
+   posle svake izmene. Ceo katalog od tri template-a je **ispod 4 KB**, i test
+   to meri.
+
+### Čime je zaključano
+
+`Tools/run-templates-test.py`, dve polovine:
+
+1. **Kompajlirano** — `Tools/test-templates.swift` se gradi zajedno sa **pravim**
+   `Templates.swift` (fajl koji se isporučuje), pa test vozi njegove funkcije, ne
+   kopiju geometrije: **59 provera, all passed**.
+2. **Pročitano iz izvora** — 14 provera koje nijedan unit test ne vidi: da je dpi
+   napisan **jednom** i da u kodu nema nijednog `2400`/`3000` otkucanog rukom, da
+   `PrintTemplate` nema nijedno polje tipa `Data`, da je putanja na disku
+   „BriefShow/Templates", da pravilo o ivici postoji, da postoji prolaz i kad se
+   rupa ne nađe, i da fajl nigde ne pominje preview ni sličicu.
+
+**Negativna kontrola puštena, četiri puta**, i svaka pada tačno na svojim
+proverama: bez pravila o ivici padaju dve provere o rupi (+1 iz izvora); sa
+slikom razvučenom na slot šest o proporcijama; sa dozvoljenim parom iste
+orijentacije dve o paru (+1 iz izvora); sa pomerajem u pikselima **tačno jedna**
+— ona koja kaže da isto kadriranje važi i na preview veličini i na 300 dpi.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**, `… Release` sa
+`ARCHS="arm64 x86_64"` → **BUILD SUCCEEDED**. `Templates.swift` ulazi u target
+sam (projekat koristi synchronized grupe), provereno postojanjem `Templates.o`.
+
+⚠️ **Nije viđeno na ekranu, i nema šta da se vidi** — u ovom koraku app ne zove
+nijednu od ovih funkcija. Prvi pogled je korak 2.
+
+**NIJE OBJAVLJENO.**

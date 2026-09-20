@@ -22540,3 +22540,54 @@ uključujući `run-double-click-test.py` i `run-folder-rename-test.py` (druge dv
 putanje koje dele isto pravilo o kliku). App instaliran i pokrenut.
 
 ⚠️ **Nije viđeno na ekranu** — keychain lozinka.
+
+---
+
+## KORAK 202 — boja teksta se bira u temi app-a, ne u sistemskom prozoru (21. septembar 2026)
+
+Klijent, uz snimak macOS „Colors" prozora: *„ovo za boju texta mora da bude u
+themi app-a"*.
+
+⛔ **`ColorPicker` otvara SISTEMSKI prozor.** To je poseban prozor, u sistemskom
+izgledu, i **ništa u ovom app-u ne može da ga prefarba** — ni tema, ni boje, ni
+font. Jedini način je da app nacrta svoj. Nacrtan je, i `ColorPicker` više ne
+postoji nigde u projektu (test to broji).
+
+### Šta je unutra
+
+| deo | čemu služi |
+|---|---|
+| kvadrat zasićenje × svetlina | ono što svaki editor crta; knob se vuče mišem |
+| klizač nijanse | **isti `GradientTrackSlider`** koji već nose Temperature i Tint — jedan klizač u app-u, ne drugi soj za ovaj panel |
+| **12 pločica** | crna, četiri sive, bela i šest boja; ono čime se otisak najčešće potpisuje |
+| **Hex polje** | ono što fotografu daje brend-uputstvo klijenta |
+
+### Tri zamke koje su namerno rešene
+
+- ⚠️ **Siva nema nijansu.** Crna i bela ne nose hue koji bi se pročitao nazad, pa
+  se pamti **nijansa na kojoj klizač stoji** — bez toga bi knob skočio na crveno
+  čim se svetlina spusti do dna kvadrata.
+- ⚠️ **Hex koji ništa ne znači ne menja ništa.** Pola otkucanog koda („#1A") nije
+  crna boja; uzeti ga kao crnu znači prefarbati klijentov tekst dok još kuca.
+- ⚠️ **Alfa se prenosi.** Poluprovidan natpis mora da preživi pomeranje nijanse.
+
+### Čime je zaključano
+
+`run-template-text-test.py` vozi **prave konverzije** iz `Templates.swift`: put
+u HSB i nazad za svih 7 boja iz palete, hue 0/⅓/⅔ = crvena/zelena/plava,
+uvijanje kruga, siva i crna, prenos alfe, čitanje hex-a (sa i bez `#`, i
+trocifarni oblik), i **odbijanje** pola koda, reči i praznog polja.
+
+**Negativna kontrola, ODVOŽENA:** izbačeno uvijanje nijanse → pada „a hue below
+zero wraps round the circle" (čita **#FF0080** umesto ljubičaste na 0,75).
+
+⚠️ **Prva verzija te provere — „1.0 je ista crvena kao 0.0" — PROŠLA je sa
+pokvarenim kodom**, jer se sektor ionako uzima modulo šest. Negativna vrednost
+je jedina koju modulo ne spasava, i tek ona meri. Zamenjeno.
+
+⚠️ **I još jedna provera je bila nemerljiva:** „svaka boja preživi put kroz HSB"
+je bila petlja koja prijavljuje samo padove — takva prolazi jednako glasno i kad
+se petlja **nikad ne izvrši**. Sada **broji** (7) i pada ako ih nije toliko.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; svi srodni testovi
+prolaze; app instaliran i pokrenut. ⚠️ **Nije viđeno na ekranu** — keychain.

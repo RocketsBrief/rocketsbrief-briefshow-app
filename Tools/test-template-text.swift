@@ -430,5 +430,83 @@ do {
                                      id: one, at: now, interval: interval))
 }
 
+// MARK: - Colour, in the app's own picker
+
+print("\nthe colour maths behind the app's own picker")
+
+do {
+    // Round trip through HSB, on colours that are not greys.
+    //
+    // ⚠️ The number of them is COUNTED, not assumed. Written as a loop that
+    // only reports its failures, this passes just as loudly when the loop
+    // never runs at all — which is a check that cannot fail.
+    var roundTripped = 0
+    for swatch in briefShowTextSwatches where !(swatch.red == swatch.green && swatch.green == swatch.blue) {
+        let back = briefShowColor(from: briefShowHSB(of: swatch), alpha: swatch.alpha)
+        let same = abs(back.red - swatch.red) < 0.002
+            && abs(back.green - swatch.green) < 0.002
+            && abs(back.blue - swatch.blue) < 0.002
+        if !same {
+            check("\(briefShowHexString(swatch)) survives a trip through HSB", false,
+                  "\(briefShowHexString(back))")
+        }
+        roundTripped += 1
+    }
+    check("all \(roundTripped) colours survive a trip through HSB", roundTripped == 7,
+          "\(roundTripped) were tried, not 7")
+
+    check("hue 0 at full saturation is red",
+          briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: 0, saturation: 1, brightness: 1))) == "#FF0000")
+    check("a third of the way round is green",
+          briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: 1.0 / 3, saturation: 1, brightness: 1))) == "#00FF00")
+    check("two thirds is blue",
+          briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: 2.0 / 3, saturation: 1, brightness: 1))) == "#0000FF")
+    // ⚠️ Hue is a CIRCLE, and the check has to be one that needs it. "1.0 is
+    // red" passes even with the wrap removed, because the sector is taken
+    // modulo six anyway — measured, 21.09. A hue BELOW zero is what the
+    // modulo cannot save: it lands on a negative sector and falls through to
+    // the last branch, which is a colour nobody asked for.
+    check("hue 1.0 is the same red as 0.0",
+          briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: 1, saturation: 1, brightness: 1))) == "#FF0000")
+    check("a hue below zero wraps round the circle",
+          briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: -0.25, saturation: 1, brightness: 1)))
+            == briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: 0.75, saturation: 1, brightness: 1))),
+          briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: -0.25, saturation: 1, brightness: 1))))
+    check("and a hue past one comes round to the same place",
+          briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: 1.5, saturation: 1, brightness: 1)))
+            == briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: 0.5, saturation: 1, brightness: 1))))
+    check("no saturation is a grey", 
+          briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: 0.5, saturation: 0, brightness: 0.5))) == "#808080")
+    check("no brightness is black",
+          briefShowHexString(briefShowColor(from: TemplateTextHSB(hue: 0.5, saturation: 1, brightness: 0))) == "#000000")
+
+    // The alpha is carried, not quietly made opaque — a half-transparent text
+    // must survive a nudge of the hue.
+    let faded = briefShowColor(from: TemplateTextHSB(hue: 0.2, saturation: 0.5, brightness: 0.5), alpha: 0.4)
+    check("the alpha is carried through the picker", abs(faded.alpha - 0.4) < 1e-9, "\(faded.alpha)")
+}
+
+do {
+    check("white is #FFFFFF", briefShowHexString(.white) == "#FFFFFF")
+    check("black is #000000", briefShowHexString(.black) == "#000000")
+
+    check("a typed hex is read", briefShowColor(fromHex: "#FF8000").map { briefShowHexString($0) } == "#FF8000")
+    check("without the hash too", briefShowColor(fromHex: "ff8000").map { briefShowHexString($0) } == "#FF8000")
+    check("and the three-digit form", briefShowColor(fromHex: "#fff").map { briefShowHexString($0) } == "#FFFFFF")
+    check("whitespace does not stop it", briefShowColor(fromHex: "  #00FF00 ") != nil)
+
+    // ⚠️ nil, NOT black. Half a code typed is not the colour black, and taking
+    // it as one would repaint the text while the client is still typing.
+    check("half a code means nothing", briefShowColor(fromHex: "#1A") == nil)
+    check("so does a word", briefShowColor(fromHex: "blue") == nil)
+    check("and so does a code with a letter that is not a digit",
+          briefShowColor(fromHex: "#GGGGGG") == nil)
+    check("an empty field means nothing", briefShowColor(fromHex: "") == nil)
+
+    check("the swatch row has twelve", briefShowTextSwatches.count == 12)
+    check("and it opens with the two a print is written in",
+          briefShowTextSwatches.first == .black && briefShowTextSwatches[4] == .white)
+}
+
 print(failures == 0 ? "\nall passed\n" : "\n\(failures) FAILED\n")
 exit(failures == 0 ? 0 : 1)

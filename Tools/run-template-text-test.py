@@ -30,6 +30,11 @@ Two halves.
        flatten and the export draw these prints with no window anywhere.
 
 Negative controls, RUN rather than assumed (20.09 and 21.09):
+  - the hue wrap removed from `briefShowColor(from:)`: "a hue below zero wraps
+    round the circle" fails, reading #FF0080 instead of the purple at 0.75.
+    ⚠️ The check written first — "1.0 is the same red as 0.0" — passed under
+    that fault, because the sector is taken modulo six anyway. A hue BELOW zero
+    is the one the modulo cannot save;
   - the `gap >= 0` dropped from the second-click decision: "a clock that goes
     backwards opens nothing" fails — NTP or a sleep/wake would open a line for
     typing on a single click;
@@ -276,6 +281,23 @@ wiring("what is typed is drawn at the size it will print",
        and "briefShowPixelsPerInch(template:" in field)
 wiring("and on a plate, so it is not typed over its own drawn copy",
        "AppColors.background.opacity(0.94)" in field)
+
+# The colour picker, 21.09: *„ovo za boju texta mora da bude u themi app-a"*.
+wiring("nothing opens the system's Colors window any more",
+       "ColorPicker(" not in develop)
+picker = body(develop, "    private func textColourPicker(index: Int) -> some View {")
+wiring("the app draws its own picker, in its own panel colour",
+       "presentationBackgroundIfAvailable(AppColors.panel)" in picker
+       and ".background(AppColors.panel)" in picker)
+wiring("its hue slider is the one this app already has, not a second kind",
+       "GradientTrackSlider(" in picker)
+wiring("a grey keeps the hue the slider is on",
+       "textColourHue" in picker and "hsb.saturation < 0.001" in picker)
+wiring("a hex that means nothing changes nothing",
+       "if let picked = briefShowColor(fromHex: textColourHex" in picker)
+wiring("and the swatches are named once, beside the colour maths",
+       "briefShowTextSwatches" in picker
+       and "let briefShowTextSwatches" in TEMPLATES.read_text(encoding="utf-8"))
 
 print()
 if compiled != 0:

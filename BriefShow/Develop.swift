@@ -9125,6 +9125,14 @@ struct DevelopView: View {
     @State private var editingTextValue = ""
     @State private var lastTextClick: (id: UUID, at: Date)?
     @FocusState private var canvasTextFieldFocused: Bool
+    /// The app's own colour picker for the text — see textColourPicker for why
+    /// the system's is not used.
+    @State private var showTextColourPicker = false
+    @State private var textColourHex = "#000000"
+    /// ⚠️ The hue the SLIDER is on, which a grey cannot tell us. Black and
+    /// white have no hue to read back, so without this the knob would snap to
+    /// red the moment the brightness reached the bottom of the square.
+    @State private var textColourHue: Double = 0
     /// The font browser — what is on this Mac, and the Google catalogue.
     @State private var showFontBrowser = false
     @State private var fontBrowserShowsGoogle = true
@@ -18677,23 +18685,7 @@ struct DevelopView: View {
             }
 
             HStack(spacing: 8) {
-                ColorPicker("", selection: Binding(
-                    get: { Color(nsColor: NSColor(srgbRed: settings.templateTexts[index].color.red,
-                                                  green: settings.templateTexts[index].color.green,
-                                                  blue: settings.templateTexts[index].color.blue,
-                                                  alpha: settings.templateTexts[index].color.alpha)) },
-                    set: { picked in
-                        // Through sRGB on the way in: a colour picked in
-                        // another space stored raw would print as a different
-                        // colour from the swatch that was clicked.
-                        let converted = NSColor(picked).usingColorSpace(.sRGB) ?? .black
-                        settings.templateTexts[index].color = TemplateTextColor(
-                            red: Double(converted.redComponent),
-                            green: Double(converted.greenComponent),
-                            blue: Double(converted.blueComponent),
-                            alpha: Double(converted.alphaComponent))
-                    }))
-                    .labelsHidden()
+                textColourWell(index: index)
 
                 ForEach(TemplateTextAlignment.allCases, id: \.self) { option in
                     toolButton(option.label,
@@ -19280,6 +19272,165 @@ struct DevelopView: View {
             && activeSelection == nil
             && selectedLayerIndex == nil
             && !isSpaceHeld
+    }
+
+    /// The colour of the text — in THIS app's theme.
+    ///
+    /// ⚠️ NOT `ColorPicker`. That opens the system's own "Colors" window: a
+    /// separate window, in the SYSTEM's appearance, which nothing here can
+    /// restyle — reported 21.09 with a screenshot: *„ovo za boju texta mora da
+    /// bude u themi app-a"*. So the well opens a popover the app draws itself,
+    /// and every colour in it is one of AppColors.
+    private func textColourWell(index: Int) -> some View {
+        let colour = settings.templateTexts[index].color
+        return Button {
+            showTextColourPicker = true
+        } label: {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color(nsColor: NSColor(srgbRed: colour.red, green: colour.green,
+                                             blue: colour.blue, alpha: 1)))
+                .frame(width: 44, height: 24)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("The colour of this text.")
+        .popover(isPresented: $showTextColourPicker, arrowEdge: .leading) {
+            textColourPicker(index: index)
+        }
+    }
+
+    private func textColourPicker(index: Int) -> some View {
+        let colour = settings.templateTexts[index].color
+        let hsb = briefShowHSB(of: colour)
+        // ⚠️ The knob's hue comes from the SLIDER's own memory, not from the
+        // colour, while the colour is a grey. A grey has no hue to read back,
+        // so a picker that re-read it would snap the hue knob to red the moment
+        // the client dragged the brightness to the bottom.
+        let hue = (hsb.saturation < 0.001 || hsb.brightness < 0.001)
+            ? textColourHue : hsb.hue
+
+        return VStack(alignment: .leading, spacing: 10) {
+            // Saturation across, brightness up: the square every editor draws.
+            GeometryReader { proxy in
+                let size = proxy.size
+                ZStack(alignment: .topLeading) {
+                    Rectangle()
+                        .fill(Color(nsColor: NSColor(srgbRed: briefShowColor(from: TemplateTextHSB(hue: hue, saturation: 1, brightness: 1)).red,
+                                                     green: briefShowColor(from: TemplateTextHSB(hue: hue, saturation: 1, brightness: 1)).green,
+                                                     blue: briefShowColor(from: TemplateTextHSB(hue: hue, saturation: 1, brightness: 1)).blue,
+                                                     alpha: 1)))
+                    LinearGradient(colors: [.white, .white.opacity(0)],
+                                   startPoint: .leading, endPoint: .trailing)
+                    LinearGradient(colors: [.black.opacity(0), .black],
+                                   startPoint: .top, endPoint: .bottom)
+
+                    Circle()
+                        .stroke(Color.white, lineWidth: 2)
+                        .background(Circle().stroke(Color.black.opacity(0.6), lineWidth: 3))
+                        .frame(width: 12, height: 12)
+                        .position(x: size.width * CGFloat(hsb.saturation),
+                                  y: size.height * CGFloat(1 - hsb.brightness))
+                        .allowsHitTesting(false)
+                }
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let saturation = min(max(Double(value.location.x / max(size.width, 1)), 0), 1)
+                            let brightness = min(max(Double(1 - value.location.y / max(size.height, 1)), 0), 1)
+                            textColourHue = hue
+                            settings.templateTexts[index].color = briefShowColor(
+                                from: TemplateTextHSB(hue: hue, saturation: saturation, brightness: brightness),
+                                alpha: colour.alpha)
+                        }
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(AppColors.border, lineWidth: 1))
+            }
+            .frame(height: 120)
+
+            // The hue, on the same gradient track Temperature and Tint use —
+            // one slider in this app, not a second kind for this panel.
+            GradientTrackSlider(
+                value: Binding(get: { hue },
+                               set: { newHue in
+                                   textColourHue = newHue
+                                   settings.templateTexts[index].color = briefShowColor(
+                                       from: TemplateTextHSB(hue: newHue,
+                                                             saturation: max(hsb.saturation, 0.001),
+                                                             brightness: max(hsb.brightness, 0.001)),
+                                       alpha: colour.alpha)
+                               }),
+                range: 0...1,
+                step: 0.001,
+                gradient: LinearGradient(
+                    colors: stride(from: 0.0, through: 1.0, by: 1.0 / 12).map { stop in
+                        let swatch = briefShowColor(from: TemplateTextHSB(hue: stop, saturation: 1, brightness: 1))
+                        return Color(nsColor: NSColor(srgbRed: swatch.red, green: swatch.green,
+                                                      blue: swatch.blue, alpha: 1))
+                    },
+                    startPoint: .leading, endPoint: .trailing))
+                .frame(height: 20)
+
+            // The ones a print is usually written in, one click away.
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 6),
+                      spacing: 5) {
+                ForEach(Array(briefShowTextSwatches.enumerated()), id: \.offset) { _, swatch in
+                    let isChosen = abs(swatch.red - colour.red) < 0.004
+                        && abs(swatch.green - colour.green) < 0.004
+                        && abs(swatch.blue - colour.blue) < 0.004
+                    Button {
+                        settings.templateTexts[index].color =
+                            TemplateTextColor(red: swatch.red, green: swatch.green,
+                                              blue: swatch.blue, alpha: colour.alpha)
+                        textColourHue = briefShowHSB(of: swatch).hue
+                    } label: {
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color(nsColor: NSColor(srgbRed: swatch.red, green: swatch.green,
+                                                         blue: swatch.blue, alpha: 1)))
+                            .frame(height: 20)
+                            .overlay(RoundedRectangle(cornerRadius: 3)
+                                .stroke(isChosen ? Color.accentColor : AppColors.border,
+                                        lineWidth: isChosen ? 2 : 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // What a brand guide gives a photographer.
+            HStack(spacing: 6) {
+                Text("Hex")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.ink)
+                TextField("#000000", text: $textColourHex)
+                    .textFieldStyle(.plain)
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.ink)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(AppColors.panelAlt))
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1))
+                    .onSubmit {
+                        // ⚠️ Only a hex that MEANS something is taken. Half a
+                        // code typed is not the colour black, and repainting
+                        // the client's text while he is still typing is what
+                        // taking it as one would do.
+                        if let picked = briefShowColor(fromHex: textColourHex, alpha: colour.alpha) {
+                            settings.templateTexts[index].color = picked
+                            textColourHue = briefShowHSB(of: picked).hue
+                        }
+                        textColourHex = briefShowHexString(settings.templateTexts[index].color)
+                    }
+            }
+        }
+        .padding(12)
+        .frame(width: 240)
+        // The same two lines the font browser needed: a popover paints its own
+        // translucent material BEHIND the content, so the colour under the
+        // pointer would be the photograph's, not the app's.
+        .background(AppColors.panel)
+        .presentationBackgroundIfAvailable(AppColors.panel)
+        .onAppear { textColourHex = briefShowHexString(colour) }
     }
 
     /// Typing on the picture itself.

@@ -1575,3 +1575,120 @@ func briefShowFitToPrintCanvas(_ image: CIImage, canvas: CGSize) -> CIImage {
     return placed.cropped(to: CGRect(x: origin.x, y: origin.y,
                                      width: canvas.width, height: canvas.height))
 }
+
+// MARK: - Colour, without the system's own window
+//
+// Client, 21.09, with a screenshot of the macOS "Colors" panel: *„ovo za boju
+// texta mora da bude u themi app-a"*. That panel is the SYSTEM's — it is drawn
+// in the system's appearance, it opens as a separate window, and nothing in
+// this app can restyle it. So the app draws its own, and these are the
+// conversions behind it: pure, so they can be run rather than looked at.
+
+/// Hue 0–1, saturation 0–1, brightness 0–1.
+struct TemplateTextHSB: Equatable {
+    var hue: Double
+    var saturation: Double
+    var brightness: Double
+}
+
+/// ⚠️ The alpha is CARRIED, not dropped. A text can be written in a
+/// half-transparent colour, and a picker that quietly made every colour opaque
+/// would undo that the first time the client nudged the hue.
+func briefShowColor(from hsb: TemplateTextHSB, alpha: Double = 1) -> TemplateTextColor {
+    let hue = hsb.hue - hsb.hue.rounded(.down)          // 1.0 is 0.0, not out of range
+    let saturation = min(max(hsb.saturation, 0), 1)
+    let brightness = min(max(hsb.brightness, 0), 1)
+
+    let sector = hue * 6
+    let index = Int(sector.rounded(.down)) % 6
+    let fraction = sector - sector.rounded(.down)
+    let p = brightness * (1 - saturation)
+    let q = brightness * (1 - saturation * fraction)
+    let t = brightness * (1 - saturation * (1 - fraction))
+
+    let rgb: (Double, Double, Double)
+    switch index {
+    case 0: rgb = (brightness, t, p)
+    case 1: rgb = (q, brightness, p)
+    case 2: rgb = (p, brightness, t)
+    case 3: rgb = (p, q, brightness)
+    case 4: rgb = (t, p, brightness)
+    default: rgb = (brightness, p, q)
+    }
+    return TemplateTextColor(red: rgb.0, green: rgb.1, blue: rgb.2,
+                             alpha: min(max(alpha, 0), 1))
+}
+
+func briefShowHSB(of colour: TemplateTextColor) -> TemplateTextHSB {
+    let red = min(max(colour.red, 0), 1)
+    let green = min(max(colour.green, 0), 1)
+    let blue = min(max(colour.blue, 0), 1)
+    let high = max(red, green, blue)
+    let low = min(red, green, blue)
+    let span = high - low
+
+    var hue: Double = 0
+    if span > 0 {
+        if high == red {
+            hue = (green - blue) / span
+        } else if high == green {
+            hue = 2 + (blue - red) / span
+        } else {
+            hue = 4 + (red - green) / span
+        }
+        hue /= 6
+        if hue < 0 { hue += 1 }
+    }
+    // ⚠️ A grey keeps whatever hue the slider was left on — that is the
+    // caller's business, not this function's: black has no hue, and returning
+    // one it invented would move the knob on its own.
+    return TemplateTextHSB(hue: hue,
+                           saturation: high > 0 ? span / high : 0,
+                           brightness: high)
+}
+
+/// "#1A2B3C", the way a client's brand guide writes a colour.
+func briefShowHexString(_ colour: TemplateTextColor) -> String {
+    func byte(_ value: Double) -> Int { Int((min(max(value, 0), 1) * 255).rounded()) }
+    return String(format: "#%02X%02X%02X", byte(colour.red), byte(colour.green), byte(colour.blue))
+}
+
+/// The colour a typed hex means, or nil when it means nothing.
+///
+/// ⚠️ nil rather than black. A half-typed "#1A" is not the colour black, and a
+/// picker that took it as one would repaint the client's text while he was
+/// still typing.
+func briefShowColor(fromHex text: String, alpha: Double = 1) -> TemplateTextColor? {
+    var digits = text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    if digits.hasPrefix("#") { digits.removeFirst() }
+    // "FFF" is what half the world writes for white.
+    if digits.count == 3 {
+        digits = digits.map { "\($0)\($0)" }.joined()
+    }
+    guard digits.count == 6, digits.allSatisfy({ $0.isHexDigit }),
+          let value = Int(digits, radix: 16) else {
+        return nil
+    }
+    return TemplateTextColor(red: Double((value >> 16) & 0xFF) / 255,
+                             green: Double((value >> 8) & 0xFF) / 255,
+                             blue: Double(value & 0xFF) / 255,
+                             alpha: min(max(alpha, 0), 1))
+}
+
+/// The swatches the picker opens with: the two a print is usually written in,
+/// four greys, and a row of colours. Kept here rather than in the view so a
+/// test can count them and so they are named once.
+let briefShowTextSwatches: [TemplateTextColor] = [
+    .black,
+    TemplateTextColor(red: 0.25, green: 0.25, blue: 0.25),
+    TemplateTextColor(red: 0.5, green: 0.5, blue: 0.5),
+    TemplateTextColor(red: 0.75, green: 0.75, blue: 0.75),
+    .white,
+    TemplateTextColor(red: 0.78, green: 0.13, blue: 0.13),
+    TemplateTextColor(red: 0.85, green: 0.45, blue: 0.10),
+    TemplateTextColor(red: 0.90, green: 0.75, blue: 0.20),
+    TemplateTextColor(red: 0.20, green: 0.55, blue: 0.30),
+    TemplateTextColor(red: 0.15, green: 0.40, blue: 0.70),
+    TemplateTextColor(red: 0.40, green: 0.25, blue: 0.60),
+    TemplateTextColor(red: 0.72, green: 0.60, blue: 0.45)
+]

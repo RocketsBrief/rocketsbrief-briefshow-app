@@ -8968,6 +8968,8 @@ struct DevelopView: View {
     // whenever this view is rebuilt, and two of them would write over each
     // other's templates.json.
     @ObservedObject private var templateLibrary = TemplateLibrary.shared
+    /// Which Google families are on this Mac, and which one is arriving.
+    @ObservedObject private var fontLibrary = FontLibrary.shared
     // What the last import or the last apply had to say. It is a sentence the
     // client has to read, not a status line: "the opening is not a rectangle"
     // and "this photo is portrait and the template is not" are both cases
@@ -9002,6 +9004,10 @@ struct DevelopView: View {
     /// fixed point rather than accumulating — the same reason
     /// `templateDragStart` exists for the photograph.
     @State private var templateTextDragStart: NormalizedRect?
+    /// The font browser — what is on this Mac, and the Google catalogue.
+    @State private var showFontBrowser = false
+    @State private var fontBrowserShowsGoogle = true
+    @State private var fontSearch = ""
 
     // The layer Eraser — see LayerEraser.swift.
     @State private var layerEraserActive = false
@@ -18447,16 +18453,36 @@ struct DevelopView: View {
                 .background(RoundedRectangle(cornerRadius: 4).fill(AppColors.panelAlt))
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1))
 
-            // Family and face. Step 6 replaces the LIST behind these two with
-            // the Google catalogue; the two fields the record carries are
-            // already the shape that needs — a family, and a style within it.
-            Picker("", selection: text.fontFamily) {
-                ForEach(briefShowInstalledFontFamilies, id: \.self) { family in
-                    Text(family).tag(family)
+            // The family. A button rather than a menu, because behind it is
+            // the whole Google catalogue with a Download on every row — see
+            // templateFontBrowser.
+            Button {
+                showFontBrowser = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "textformat.size")
+                        .font(.system(size: 11))
+                    // Drawn IN the font it names, which is the fastest way to
+                    // see what has been chosen — and, for a downloaded Google
+                    // family, that it really did arrive.
+                    Text(settings.templateTexts[index].fontFamily)
+                        .font(.custom(settings.templateTexts[index].fontFamily, size: 12))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9))
                 }
+                .foregroundColor(AppColors.ink)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 4).fill(AppColors.panelAlt))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1))
             }
-            .labelsHidden()
-            .font(.custom("Figtree", size: 11))
+            .buttonStyle(.plain)
+            .popover(isPresented: $showFontBrowser, arrowEdge: .leading) {
+                templateFontBrowser(index: index)
+            }
             .onChange(of: settings.templateTexts[index].fontFamily) { family in
                 // A face belongs to ONE family. Carried across, "Black Italic"
                 // asked of a family that has no such face silently fell back
@@ -18548,6 +18574,166 @@ struct DevelopView: View {
             Text("Prints at \(Int((settings.templateTexts[index].sizeInches * pixelsPerInch).rounded())) px on \(template.size.label).")
                 .font(.custom("Figtree", size: 9))
                 .foregroundColor(AppColors.muted)
+        }
+    }
+
+    /// The fonts: what is on this Mac, and the whole Google catalogue with a
+    /// Download on every row — KORAK 198, step 6.
+    ///
+    /// ⚠️ A ROW CANNOT BE DRAWN IN ITS OWN FONT BEFORE THE FONT IS HERE. They
+    /// are the same file. It looks like an omission and it is not: the choice
+    /// is between this and downloading all 1946 families, which is about
+    /// 1.5 GB. So the row carries its name, category and styles, and the real
+    /// thing comes one click later.
+    private func templateFontBrowser(index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("", selection: $fontBrowserShowsGoogle) {
+                Text("On this Mac").tag(false)
+                Text("Google Fonts").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            TextField("Search", text: $fontSearch)
+                .textFieldStyle(.plain)
+                .font(.custom("Figtree", size: 12))
+                .foregroundColor(AppColors.ink)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 4).fill(AppColors.panelAlt))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1))
+
+            if let problem = fontLibrary.lastError {
+                // Said out loud. A Download that does nothing and explains
+                // nothing is a fault this document has written up twice.
+                Text(problem)
+                    .font(.custom("Figtree", size: 10))
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if fontBrowserShowsGoogle {
+                        ForEach(GoogleFontCatalogue.families(matching: fontSearch)) { family in
+                            googleFontRow(family, index: index)
+                        }
+                    } else {
+                        ForEach(installedFontFamilies(matching: fontSearch), id: \.self) { family in
+                            installedFontRow(family, index: index)
+                        }
+                    }
+                }
+            }
+            .frame(height: 320)
+
+            if fontBrowserShowsGoogle {
+                Text("\(GoogleFontCatalogue.families.count) families. A font is used once it is downloaded — after that it works on this Mac forever, offline and in exports. Its licence is saved beside it.")
+                    .font(.custom("Figtree", size: 9))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(width: 320)
+    }
+
+    private func installedFontFamilies(matching query: String) -> [String] {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let all = briefShowInstalledFontFamilies()
+        guard !trimmed.isEmpty else { return all }
+        return all.filter { $0.range(of: trimmed, options: .caseInsensitive) != nil }
+    }
+
+    private func installedFontRow(_ family: String, index: Int) -> some View {
+        let isChosen = settings.templateTexts[index].fontFamily == family
+        return Button {
+            settings.templateTexts[index].fontFamily = family
+            showFontBrowser = false
+        } label: {
+            HStack(spacing: 6) {
+                Text(family)
+                    .font(.custom(family, size: 13))
+                    .lineLimit(1)
+                    .foregroundColor(AppColors.ink)
+                Spacer(minLength: 0)
+                if isChosen {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Color.accentColor)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+            .background(RoundedRectangle(cornerRadius: 4)
+                .fill(isChosen ? Color.accentColor.opacity(0.14) : Color.clear))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func googleFontRow(_ family: GoogleFontFamily, index: Int) -> some View {
+        let isHere = fontLibrary.isDownloaded(family)
+        let isFetching = fontLibrary.downloading == family.name
+        return HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                // In its own face once it is here, in the panel's face until
+                // then — which is also how the client SEES that it arrived.
+                Text(family.name)
+                    .font(isHere ? .custom(family.name, size: 13) : .custom("Figtree", size: 12))
+                    .lineLimit(1)
+                    .foregroundColor(AppColors.ink)
+                Text("\(family.category) · \(family.styles.joined(separator: ", "))")
+                    .font(.custom("Figtree", size: 9))
+                    .foregroundColor(AppColors.muted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+
+            if isFetching {
+                ProgressView()
+                    .scaleEffect(0.5)
+                    .frame(width: 18, height: 18)
+            } else if isHere {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color.accentColor)
+            } else {
+                Button("Download") {
+                    fontLibrary.download(family) { done in
+                        // ⚠️ CoreText's OWN name for the family goes into the
+                        // record, not the catalogue's — see
+                        // FontLibrary.coreTextFamilyName for what the
+                        // difference costs when they disagree.
+                        let name = fontLibrary.coreTextFamilyName(for: family)
+                            ?? done.registeredFamily
+                        settings.templateTexts[index].fontFamily = name
+                        let faces = briefShowFontFaces(in: name)
+                        if !faces.contains(settings.templateTexts[index].fontFace) {
+                            settings.templateTexts[index].fontFace = faces.first ?? "Regular"
+                        }
+                    }
+                }
+                .font(.custom("Figtree", size: 10))
+                .buttonStyle(.borderless)
+                .foregroundColor(Color.accentColor)
+                .disabled(fontLibrary.downloading != nil)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Tapping a family that is here chooses it. One that is not is
+            // chosen by its Download, and until then a tap must not set the
+            // text in a font this Mac cannot draw.
+            guard isHere, let name = fontLibrary.coreTextFamilyName(for: family) else { return }
+            settings.templateTexts[index].fontFamily = name
+            let faces = briefShowFontFaces(in: name)
+            if !faces.contains(settings.templateTexts[index].fontFace) {
+                settings.templateTexts[index].fontFace = faces.first ?? "Regular"
+            }
+            showFontBrowser = false
         }
     }
 

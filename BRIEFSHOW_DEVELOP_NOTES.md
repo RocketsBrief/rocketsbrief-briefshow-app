@@ -22226,3 +22226,92 @@ round trip sa novim poljem.
 **OK (131/131)**; app instaliran u `/Applications/C4S Suite.app` i pokrenut.
 
 **NIJE OBJAVLJENO.** Ostaju koraci **6** (Google fontovi) i **7** (izvoz na 300 dpi).
+
+---
+
+## KORAK 198.17 — Google fontovi: katalog u app-u, font na zahtev (20. septembar 2026)
+
+Korak **6** iz plana, po klijentovom odgovoru na pitanje 5: **katalog se vidi
+ceo**, sa stilovima; **font se koristi tek kad se skine**, a jednom skinut radi
+na tom računaru zauvek.
+
+### Šta je isporučeno
+
+| nivo | gde je | treba li mreža |
+|---|---|---|
+| katalog od **1946 porodica** | `GoogleFontsCatalogue.json` u paketu, **195.671 bajta** = **0,17 %** izdanja | ne |
+| preuzimanje | dugme **Download** na redu; skida **sve stilove** te porodice | da, jednom |
+| korišćenje | `~/Library/Application Support/BriefShow/Fonts`, registruje se **na svakom startu** | ne |
+| licenca | `<Porodica>-LICENSE.txt` pored fontova | skida se sa fontom |
+
+⛔ **U katalogu su SAMO tri polja — ime, kategorija, stilovi.** Klijentova
+izričita reč. Test ih **prebrojava iz samog fajla**; četvrto polje obara proveru.
+
+⛔ **Sami fontovi ne idu u paket** — svih 1946 porodica je reda veličine 1,5 GB.
+Veličina izdanja ostaje ista kao danas.
+
+### Odluke koje nisu očigledne, i zašto
+
+- ⚠️ **Fontovi se registruju NA STARTU app-a**, u `BriefShowApp.init`, ne kad se
+  otvori panel za tekst. Otisak se crta na tri mesta koja taj panel nikad ne
+  otvore: batch flatten, pečenje kroz sync i izvoz — sva tri se pokreću iz grida.
+  Registrovani kasnije, otisak napravljen iz grida posle restarta tiho bi izašao
+  u sistemskom fontu, koji se ne poklapa ni sa čim na ekranu.
+- ⚠️ **U zapis ide CoreText-ovo ime porodice, ne ime iz kataloga.** Razilaze se
+  retko i tiho; zapis sa imenom koje CoreText ne zna crta se sistemskim fontom i
+  na ekranu i na papiru, a nigde ne piše zašto.
+- **Registracija je `.process`** — fontovi su klijentovi, ovaj app ne instalira
+  ništa za ceo sistem.
+- **Ono što stigne se proverava da je font** (četiri bajta zaglavlja): HTML
+  stranica greške snimljena pod `.ttf` registruje se kao ništa i ostavlja red
+  koji tvrdi da je porodica tu.
+- **Ime fonta se ne može nacrtati tim fontom pre nego što se font skine** — to je
+  isti fajl. Red do tada nosi ime, kategoriju i stilove; posle jednog klika crta
+  se sobom, i to je ujedno ono po čemu klijent vidi da je stigao.
+
+### ⚠️ Nalaz iz merenja: varijabilne porodice prijavljuju težine koje niko ne imenuje
+
+Katalog je prvi put izašao sa stilovima **„1"** i **„1000"** — krajevi ose
+varijabilnih fontova (Google Sans Flex, DM Sans, Cairo… **50 takvih upisa** u 22
+porodice). Ime im ne postoji, a `briefShowGoogleFontStyleAxes` ne ume da ih vrati
+u težinu, pa bi red „1000" bio **skinut kao Regular** i tiho postavio tekst u
+pogrešan rez. Izbačeni su; devet imenovanih težina tih porodica je ostalo.
+
+**Ovo je našla provera „svaki stil u katalogu se preslikava u težinu"**, koja
+poredi dve tabele pisane u dva jezika (Python generator i Swift), i to je jedino
+mesto gde se te dve sreću.
+
+### Čime je zaključano
+
+`Tools/run-google-fonts-test.py` (+ `test-google-fonts.swift`,
+`make-google-font-catalogue.py`) — kompajlira **pravi** `Fonts.swift`, a sa
+`--live` **stvarno skida** jednu porodicu i pita CoreText za nju.
+
+**Izmereno uživo 20.09:** ABeeZee, oba stila, registrovan, licenca zapisana,
+tekst postavljen u njega **crta u njemu**.
+
+**Negativne kontrole, ODVOŽENE:**
+
+| šta je pokvareno | šta padne |
+|---|---|
+| css2 zahtev poslat sa **Safari** user agentom | **2** provere; Google vraća woff2, preuzimanje se **odbija** rečima „what came back for Regular was not a font file" |
+| četvrto polje u katalogu | provera o tri polja, i ništa drugo |
+
+⚠️ **ISPRAVKA SOPSTVENE TVRDNJE, jer je izmerena:** napisao sam u kodu i u testu
+da bez `User-Agent`-a Google vraća woff2. **Ne vraća.** Mereno 20.09:
+
+| user agent | format |
+|---|---|
+| Safari 17 | **woff2** |
+| `Mozilla/4.0` | truetype |
+| ono što CFNetwork sam šalje | truetype |
+
+Dakle zaglavlje ne **popravlja** format — ono ga **pribija**, da se app ne osloni
+na ono što URLSession slučajno pošalje. Komentar u kodu je prepravljen da to kaže.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; `run-google-fonts-test.py`
+**all passed / all good** (i sa `--live`); app instaliran u
+`/Applications/C4S Suite.app` i pokrenut. Folder sa fontovima je posle testa
+**ostavljen prazan**, kakav je i bio.
+
+**NIJE OBJAVLJENO.** Ostaje korak **7** — izvoz na 300 dpi.

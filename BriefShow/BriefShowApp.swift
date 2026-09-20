@@ -94,6 +94,19 @@ struct BriefShowApp: App {
     init() {
         Self.registerBundledFonts()
 
+        // ⚠️ THE FONTS THE CLIENT DOWNLOADED, AT LAUNCH — not when the text
+        // tool is first opened. A print is drawn in three places that never go
+        // near that panel: the batch flatten, the sync's bake and the export,
+        // and all three run straight from the grid. Registered later, a print
+        // made from the grid after a restart would quietly come out in the
+        // system face, matching nothing on screen.
+        //
+        // Off the main thread: it is a directory listing plus one CoreText
+        // call per file, and the window should not wait for it.
+        DispatchQueue.global(qos: .utility).async {
+            FontStore.registerDownloadedFonts()
+        }
+
         Self.reregisterWithLaunchServicesIfVersionChanged()
 
         // The "one email, one computer" check runs from the app itself,

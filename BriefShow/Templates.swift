@@ -1414,18 +1414,38 @@ func briefShowComposeTemplateTexts(_ texts: [TemplateText],
 // of these — which is the reason the record carries a FAMILY and a FACE rather
 // than a PostScript name.
 
+private let briefShowInstalledFamilyLock = NSLock()
+private var briefShowInstalledFamilyCache: [String]?
+
 /// Every font family on the machine, named the way a human names them.
 ///
-/// Computed once: the list does not change while the app runs (a font
-/// installed mid-session is a restart away from mattering), and it is read on
-/// every rebuild of the panel.
-let briefShowInstalledFontFamilies: [String] = {
+/// ⚠️ CACHED, NOT CONSTANT. It is read on every rebuild of the panel, and a
+/// font match walks the whole registry — but the list DOES change while the
+/// app runs, because step 6 downloads families into it. Whoever adds one calls
+/// `briefShowRefreshInstalledFontFamilies()`; a constant here would mean a
+/// font the client just downloaded is missing from the list he downloaded it
+/// from, until the next launch.
+func briefShowInstalledFontFamilies() -> [String] {
+    briefShowInstalledFamilyLock.lock()
+    defer { briefShowInstalledFamilyLock.unlock() }
+    if let held = briefShowInstalledFamilyCache { return held }
     let names = (CTFontManagerCopyAvailableFontFamilyNames() as? [String]) ?? []
     // The dot-prefixed ones are the system's own private faces (".SF NS" and
     // friends). They are not the client's to choose and they do not survive a
     // trip through a font name.
-    return names.filter { !$0.hasPrefix(".") }.sorted()
-}()
+    let families = names.filter { !$0.hasPrefix(".") }.sorted()
+    briefShowInstalledFamilyCache = families
+    return families
+}
+
+/// A family has been added to the machine — read the registry again, and drop
+/// the faces cached for it.
+func briefShowRefreshInstalledFontFamilies() {
+    briefShowInstalledFamilyLock.lock()
+    briefShowInstalledFamilyCache = nil
+    briefShowInstalledFamilyLock.unlock()
+    briefShowFontFaceCache.removeAllObjects()
+}
 
 private let briefShowFontFaceCache = NSCache<NSString, NSArray>()
 

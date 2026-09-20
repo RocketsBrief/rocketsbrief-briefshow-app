@@ -22716,3 +22716,91 @@ način na koji je kvar nađen — provera je napisana pre popravke, ne posle.
 
 **Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; app instaliran i pokrenut.
 ⚠️ **Nije viđeno na ekranu** — keychain.
+
+---
+
+## KORAK 205 — Image i Template kao redovi, i Merge Layers na desni klik (21. septembar 2026)
+
+Klijent: *„kada dodamo template, u layeru mora da se vidi Image i template! da
+moze da se klikne ne jedno ili drugo i da se edituje.. isto da mogu da …
+selektujem vise od jednog layera … i desni click da mi pokaze option merge
+layers.. i samo se ta dva merguju a treci ostane … e jedino kada idem na dugme
+flatten image onda da se naravne sve flatenuje"*.
+
+### 1. Otisak se vidi kao dva reda
+
+| red | klik | kanta |
+|---|---|---|
+| **Template** (ime + format) | otvara **Templates** tab, gde se okvir i radi | skida okvir sa slike (**isti poziv** koji radi dugme u tabu, ne druga kopija) |
+| **Image** (ime fajla) | **podiže sliku u rupi** — isto stanje koje postavlja klik na samu sliku, pa onda rade drag, točkić i strelice | nema je, i to nije propust: ovaj red **jeste** fotografija |
+
+⚠️ **Njihov redosled prati prekidač**, nije fiksan: kad je crtež iznad slike
+(„Photo Under") Template je gore; kad je slika iznad, menjaju mesta. Spisak koji
+bi uvek pokazivao jedan redosled opisivao bi slaganje koje app pola vremena nema.
+
+⚠️ Rečenica „No layers yet" se više ne ispisuje **iznad redova koji postoje**.
+
+### 2. Više layera odjednom, i Merge Layers
+
+- **⌘-klik** dodaje layer u skup, **⇧-klik** uzima ceo niz između — ista dva
+  modifikatora koja filmstrip već koristi, pa gest nije nova stvar za učenje.
+- Desni klik → **Merge Layers (n)**. Spajaju se **samo izabrani**; ostali ostaju
+  tačno gde su bili, a spojeni komad ulazi **na mesto najgornjeg** koji zamenjuje.
+- Desni klik na layer **van** skupa znači **taj** layer, kao i svuda drugde.
+- ⚠️ **Dve liste, ne jedan skup.** `selectedLayerID` je i dalje onaj na koji su
+  vezani slajderi i okvir na platnu; jedan skup bi ostavio pitanje „kom od njih
+  pripadaju slajderi" bez odgovora na svakoj putanji u fajlu koja to pita.
+
+### ⛔ Šta merge NE može, i zašto to piše u meniju
+
+`briefShowLayerMergeRefusal` je **čista funkcija**, a stavka menija čita **nju** —
+i naslov, i to da je siva, i **razlog**. Siva stavka bez objašnjenja je kvar koji
+je ovaj dokument već dvaput ispravljao.
+
+| slučaj | razlog koji klijent vidi |
+|---|---|
+| **People / Background** | *„adjustments on the photo, not pixels — Flatten Photo is what bakes those in"* |
+| blend mod koji nije Normal | *„mixed with what is under it, so merging it would change the photo"* |
+| jedan ili nijedan layer | *„select two or more layers to merge"* |
+
+To nije ograda nego istina o modelu: derived layer **nema piksele** — on je
+oblast fotografije uzeta kroz matu — a blend je definisan **prema onome ispod**,
+a ispod spojenog komada nema ničega. Klijentova sopstvena rečenica to i kaže:
+**Flatten Photo je taj koji peče sve.** Flatten nije dirnut, i test to drži.
+
+Spojen komad se crta **preko providnog platna** (ne nosi fotografiju) i **u
+rezoluciji fotografije**, pa merge ne prepakuje klijentov rad u manju sliku.
+Snima se kao **PNG** — komad je uglavnom providan, a to PNG košta gotovo ništa:
+izmereno, 800×600 okvir sa jednim kvadratom je **manje od 20 KB** naspram 1,9 MB
+sirovo.
+
+### Čime je zaključano
+
+`Tools/run-layer-merge-test.py` + `test-layer-merge.swift` — kompajlira **prave**
+`ImageLayer`, `LayerBlendMode` i pravilo, vozi ih, i piše pravi PNG pa ga čita
+nazad. Plus čitanje izvora: ko ulazi u merge, gde se ubacuje, da neizabrani
+ostaju, i svih šest tvrdnji o dva nova reda.
+
+**Negativne kontrole, ODVOŽENE:**
+
+| šta je pokvareno | šta padne |
+|---|---|
+| pravilo pušta People/Background | **3** provere, među njima razlog koji imenuje Flatten Photo |
+| `briefShowNextMergedLayerNumber` broji umesto da uzme najveći | „it takes the highest, not the count" — dva merge-a bi se zvala isto |
+
+### ⚠️ Još jedan lenjir koji od 198.1 nije merio ništa
+
+`run-layer-pixel-store-test.py` deli spisak tipova sa
+`run-editsettings-decode-test.py`, pa je **i on prestao da se kompajlira** kad je
+`SlotPlacement` otišao u `Templates.swift` — isti uzrok koji je juče nađen kod
+onog drugog, samo drugo mesto. Sada vadi i tipove iz `Templates.swift`.
+
+**Posle popravke:** **68 pixel layera i 10 derived** u klijentovom store-u,
+svima bajtovi razrešeni; dekodiranje 5,6 ms, upis 6,3 ms.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; prolaze
+`run-layer-merge-test.py`, `run-layer-reorder-test.py`, `run-layer-eraser-test.py`,
+`run-layer-outline-test.py`, `run-layer-pixel-store-test.py`,
+`run-template-text-test.py`, `run-templates-test.py`,
+`run-editsettings-decode-test.py`. App instaliran i pokrenut.
+⚠️ **Nije viđeno na ekranu** — keychain.

@@ -30,7 +30,17 @@ src = decode_test.SRC.read_text(encoding="utf-8")
 # so the decode harness cannot compile without it either. Extracting a second
 # copy here is what this line used to do, and it made the two collide with
 # "invalid redeclaration of 'LayerPixelStore'". One list, one copy.
-types = "\n\n".join(decode_test.extract(src, header) for header in decode_test.DECLARATIONS)
+# ⚠️ AND THE TEMPLATE TYPES, from their own file. A photo's record has carried
+# the print since KORAK 198.1 and the text on it since 198.16, and both live in
+# Templates.swift — so without these the harness does not COMPILE, which means
+# it measures nothing. That is the state it was found in on 21.09, the same day
+# and the same cause as run-editsettings-decode-test.py, which is why both now
+# read the one list.
+template_src = decode_test.TEMPLATES_SRC.read_text(encoding="utf-8")
+types = "\n\n".join(
+    [decode_test.extract(template_src, header, "Templates.swift")
+     for header in decode_test.TEMPLATE_DECLARATIONS]
+    + [decode_test.extract(src, header) for header in decode_test.DECLARATIONS])
 
 # ⚠️ THE SANDBOX BOUNDARY, and it made this harness lie once already.
 #

@@ -5605,6 +5605,29 @@ enum PhotoEditRenderer {
     /// `base` and `settings` are carried in for ONE reason: a derived layer's
     /// Exposure, Temperature and Tint on a RAW file cannot be done in pixels.
     /// See `rawShiftedPhoto`.
+    /// The chosen layers drawn onto NOTHING — which is what a merge is.
+    ///
+    /// ⚠️ Over transparency, deliberately. The merged piece has to go back on
+    /// the stack as one layer and leave everything under it exactly as it was,
+    /// so what it holds is those layers and nothing of the photograph.
+    ///
+    /// ⚠️ Two kinds of layer cannot be merged this way and the caller refuses
+    /// them rather than this pretending:
+    ///   * a DERIVED layer (People, Background) holds no pixels at all — it is
+    ///     a region of the photograph taken through a matte, so over
+    ///     transparency there is nothing for it to adjust;
+    ///   * a layer whose blend mode is not Normal is defined AGAINST what is
+    ///     under it, and under it here is nothing.
+    /// Both are in `briefShowLayerMergeRefusal`, which is what the menu reads.
+    static func mergedLayerImage(_ layers: [ImageLayer], extent: CGRect) -> CIImage? {
+        guard !layers.isEmpty, extent.width >= 1, extent.height >= 1,
+              extent.width.isFinite, extent.height.isFinite else {
+            return nil
+        }
+        let clear = CIImage.empty().cropped(to: extent)
+        return compositeLayers(layers, onto: clear).cropped(to: extent)
+    }
+
     private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage,
                                         base: PhotoBaseImage? = nil,
                                         settings: PhotoEditSettings? = nil) -> CIImage {
@@ -8609,6 +8632,59 @@ func briefShowIsSecondTextClick(previous: (id: UUID, at: Date)?,
     return gap >= 0 && gap <= interval
 }
 
+/// "Merged 1", "Merged 2" — the next free number, so two merges do not both
+/// come back as "Merged 1" and leave the client with two rows he cannot tell
+/// apart. Same convention New Folder and Paste already use.
+func briefShowNextMergedLayerNumber(in layers: [ImageLayer]) -> Int {
+    let used = layers.compactMap { layer -> Int? in
+        guard layer.name.hasPrefix("Merged ") else { return nil }
+        return Int(layer.name.dropFirst("Merged ".count))
+    }
+    return (used.max() ?? 0) + 1
+}
+
+/// PNG bytes for a finished image.
+///
+/// ⚠️ PNG, not TIFF: a merged layer is mostly transparent — the pieces sit
+/// somewhere on a full frame of nothing — and PNG is the format that costs
+/// almost nothing for the nothing.
+func briefShowPNGData(_ image: CGImage) -> Data? {
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else {
+        return nil
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else { return nil }
+    return data as Data
+}
+
+/// Why these layers cannot be merged, or nil when they can.
+///
+/// ⚠️ A pure function, and the menu item's label, its disabled state and its
+/// explanation all read THIS. Written into the button instead, the reason the
+/// item is grey would live somewhere the client cannot see and no test can
+/// reach.
+func briefShowLayerMergeRefusal(_ layers: [ImageLayer]) -> String? {
+    guard layers.count >= 2 else {
+        return "Select two or more layers to merge."
+    }
+    if layers.contains(where: { $0.isDerived }) {
+        // People and Background are not pixels. Merging them would mean baking
+        // the photograph itself, which is what Flatten Photo is for — and the
+        // client's own sentence says so: *„jedino kada idem na dugme flatten
+        // image onda da se naravne sve flatenuje"*.
+        return "People and Background layers are adjustments on the photo, not pixels — "
+             + "Flatten Photo is what bakes those in."
+    }
+    if layers.contains(where: { $0.blendMode != .normal }) {
+        // A blend is defined against what is UNDER it, and a merged piece
+        // carries nothing under it. Merging would change the picture.
+        return "A layer set to a blend mode other than Normal is mixed with what is under it, "
+             + "so merging it would change the photo."
+    }
+    return nil
+}
+
 struct DevelopView: View {
     /// The photos in the filmstrip.
     ///
@@ -9075,6 +9151,17 @@ struct DevelopView: View {
     // selection tracking as selectedLocalAdjustmentID, same reasoning
     // (the array can shrink/reorder out from under a cached index).
     @State private var selectedLayerID: UUID?
+    /// The OTHER layers a right-click acts on, beside `selectedLayerID`.
+    ///
+    /// ⚠️ Two lists rather than one set, and on purpose: `selectedLayerID` is
+    /// the layer the editor under the list is bound to, and everything that
+    /// draws a frame, a rotate knob and handles on the canvas reads it. One
+    /// set would leave "which of them do the sliders belong to?" unanswered on
+    /// every path in this file that asks.
+    ///
+    /// Client, 21.09: *„da mogu da recimo selektujem vise od jednog layera …
+    /// i desni click da mi pokaze option merge layers"*.
+    @State private var multiSelectedLayerIDs: Set<UUID> = []
 
     // Print templates — see Templates.swift. The catalogue is one shared
     // object (the panel adds to it, the renderer reads it), so it is observed
@@ -19881,7 +19968,10 @@ struct DevelopView: View {
             // tab precisely because the monitor, not this button, owns it.
             .keyboardShortcut("v", modifiers: .command)
 
-            if settings.layers.isEmpty {
+            // ⚠️ Only when the list is REALLY empty. With a frame or a line of
+            // text on the photo there are rows right underneath this sentence,
+            // and "no layers yet" printed above them reads as a fault.
+            if settings.layers.isEmpty && settings.templateID == nil && settings.templateTexts.isEmpty {
                 Text("No layers yet. Cut or copy a selection, then paste it here.")
                     .font(.custom("Figtree", size: 11))
                     .foregroundColor(AppColors.muted)
@@ -19907,6 +19997,31 @@ struct DevelopView: View {
             if !settings.templateTexts.isEmpty {
                 ForEach(settings.templateTexts.reversed()) { item in
                     textLayerRow(item)
+                }
+
+                if !settings.layers.isEmpty {
+                    Divider()
+                }
+            }
+
+            // The print, when there is one: the frame and the photograph in
+            // it, as two rows — client, 21.09: *„kada dodamo template, u
+            // layeru mora da se vidi Image i template … da moze da se klikne
+            // ne jedno ili drugo i da se edituje"*.
+            //
+            // ⚠️ THEIR ORDER FOLLOWS THE SWITCH, it is not fixed. With the
+            // frame drawn over the photograph (the client's „Photo Under") the
+            // Template row is above; with the photograph on top of the frame
+            // they swap. A list that always showed one order would be
+            // describing a stack the app does not have half the time.
+            if let template = templateLibrary.template(id: settings.templateID) {
+                let artOnTop = settings.templateArtOverPhoto ?? template.artOverPhoto
+                if artOnTop {
+                    templateLayerRow(template)
+                    templatePhotoLayerRow()
+                } else {
+                    templatePhotoLayerRow()
+                    templateLayerRow(template)
                 }
 
                 if !settings.layers.isEmpty {
@@ -20012,8 +20127,205 @@ struct DevelopView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
+    /// The frame, as a row in the Layers list.
+    ///
+    /// Clicking it opens the tab where a frame is worked on, which is the
+    /// client's *„da moze da se klikne … i da se edituje"*. The trash takes
+    /// the frame off the photo — the same call the Templates tab's own button
+    /// makes, not a second copy of it.
+    private func templateLayerRow(_ template: PrintTemplate) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "rectangle.on.rectangle.angled")
+                .font(.system(size: 10))
+                .foregroundColor(AppColors.muted.opacity(0.7))
+                .frame(width: 12)
+
+            Button {
+                panelTab = .templates
+                templatePhotoSelected = false
+                selectedTemplateTextID = nil
+            } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(template.name)
+                        .font(.custom("Figtree", size: 12).weight(.medium))
+                        .foregroundColor(AppColors.ink)
+                        .lineLimit(1)
+                    Text("Template · \(template.size.label)")
+                        .font(.custom("Figtree", size: 9))
+                        .foregroundColor(AppColors.muted)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open the Templates tab to work on the frame.")
+
+            Button {
+                removeTemplateFromPhoto()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppColors.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Take the frame off this photo. The text stays.")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(AppColors.panelAlt.opacity(panelTab == .templates ? 1 : 0.5))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(AppColors.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// The photograph inside the frame.
+    ///
+    /// ⚠️ It has no eye and no trash, and that is not an omission: this row IS
+    /// the photograph. There is nothing to delete it into, and a photo hidden
+    /// inside its own frame is an empty print.
+    ///
+    /// Clicking it picks the picture up on the canvas — the same state a click
+    /// on the picture itself sets — so the arrow keys, the drag and the wheel
+    /// then work on it.
+    private func templatePhotoLayerRow() -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo")
+                .font(.system(size: 10))
+                .foregroundColor(AppColors.muted.opacity(0.7))
+                .frame(width: 12)
+
+            Button {
+                templatePhotoSelected = true
+                selectedTemplateTextID = nil
+                selectedLayerID = nil
+                multiSelectedLayerIDs = []
+            } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Image")
+                        .font(.custom("Figtree", size: 12).weight(.medium))
+                        .foregroundColor(AppColors.ink)
+                    Text(selectedURL?.lastPathComponent ?? "the photograph")
+                        .font(.custom("Figtree", size: 9))
+                        .foregroundColor(AppColors.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Pick the photo up in the frame — then drag it, zoom it, or nudge it with the arrows.")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(AppColors.panelAlt.opacity(templatePhotoSelected ? 1 : 0.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(templatePhotoSelected ? layerSelectionColor : AppColors.border,
+                        lineWidth: templatePhotoSelected ? 1.5 : 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// Which layers a merge would act on, in STACK order (bottom to top).
+    ///
+    /// ⚠️ The order is the array's, never the order they were clicked in:
+    /// merging is a composite, and a composite in the wrong order is a
+    /// different picture.
+    private var layerMergeTargets: [ImageLayer] {
+        var ids = multiSelectedLayerIDs
+        if let selectedLayerID { ids.insert(selectedLayerID) }
+        return settings.layers.filter { ids.contains($0.id) }
+    }
+
+    /// ⌘ adds one to the set; ⇧ takes the whole run between it and the layer
+    /// the editor is on.
+    private func extendLayerSelection(to id: UUID, shift: Bool) {
+        guard let anchorID = selectedLayerID,
+              let anchor = settings.layers.firstIndex(where: { $0.id == anchorID }),
+              let target = settings.layers.firstIndex(where: { $0.id == id }) else {
+            // Nothing chosen yet, so this click is the choice.
+            multiSelectedLayerIDs = []
+            selectLayer(id)
+            return
+        }
+        if shift {
+            let range = min(anchor, target)...max(anchor, target)
+            multiSelectedLayerIDs = Set(settings.layers[range].map(\.id))
+        } else if multiSelectedLayerIDs.contains(id) {
+            multiSelectedLayerIDs.remove(id)
+        } else if id != anchorID {
+            multiSelectedLayerIDs.insert(id)
+        }
+        // The anchor is always part of the set — it is the one the sliders
+        // belong to, and a merge that left it out would drop the layer the
+        // client was looking at.
+        multiSelectedLayerIDs.insert(anchorID)
+    }
+
+    @ViewBuilder
+    private func layerMergeMenuItem(clickedOn layer: ImageLayer) -> some View {
+        // Right-clicking a layer that is not in the set means THAT layer, the
+        // way right-click works everywhere else in this app.
+        let targets = layerMergeTargets.contains(where: { $0.id == layer.id })
+            ? layerMergeTargets
+            : [layer]
+        let refusal = briefShowLayerMergeRefusal(targets)
+
+        Button("Merge Layers (\(targets.count))") {
+            mergeSelectedLayers()
+        }
+        .disabled(refusal != nil)
+
+        if let refusal {
+            // ⚠️ The reason is IN the menu, not swallowed. A grey item with no
+            // explanation is the thing this document has had to fix twice
+            // elsewhere — the client is left guessing what he did wrong.
+            Text(refusal)
+        }
+    }
+
+    /// Bakes the chosen layers into ONE layer, and leaves the rest alone.
+    ///
+    /// ⚠️ It goes in at the position of the TOPMOST one it replaces, so the
+    /// stack the client built is not reshuffled underneath him: anything that
+    /// was above the merged pieces stays above, anything below stays below.
+    private func mergeSelectedLayers() {
+        let targets = layerMergeTargets
+        guard briefShowLayerMergeRefusal(targets) == nil,
+              let extent = (fullBaseImage?.extent ?? previewBaseImage?.extent),
+              extent.width >= 1, extent.height >= 1 else {
+            return
+        }
+        // ⚠️ The FULL frame, at the photograph's own resolution. The pieces
+        // are placed as fractions of the picture, so anything smaller would be
+        // a merge that quietly resamples the client's work — and the locked
+        // rule at the top of the notes says the picture stays at the file's
+        // resolution.
+        let canvas = CGRect(origin: .zero, size: extent.size)
+        guard let merged = PhotoEditRenderer.mergedLayerImage(targets, extent: canvas),
+              let cgImage = briefEditsCIContext.createCGImage(merged, from: canvas,
+                                                              format: .RGBA8,
+                                                              colorSpace: briefEditsSRGBColorSpace),
+              let data = briefShowPNGData(cgImage) else {
+            return
+        }
+
+        let ids = Set(targets.map(\.id))
+        guard let topmost = settings.layers.lastIndex(where: { ids.contains($0.id) }) else { return }
+        let insertAt = settings.layers[..<topmost].filter { !ids.contains($0.id) }.count
+
+        var kept = settings.layers.filter { !ids.contains($0.id) }
+        let name = "Merged \(briefShowNextMergedLayerNumber(in: settings.layers))"
+        kept.insert(ImageLayer(name: name, imageData: data,
+                               x: 0, y: 0, width: 1, height: 1), at: insertAt)
+        settings.layers = kept
+        multiSelectedLayerIDs = []
+        selectedLayerID = kept[insertAt].id
+    }
+
     private func layerRow(_ layer: ImageLayer) -> some View {
         let isSelected = selectedLayerID == layer.id
+        let isInMergeSet = multiSelectedLayerIDs.contains(layer.id)
 
         return HStack(spacing: 8) {
             // Grip glyph, not the old stack-of-layers icon: the row is now
@@ -20051,10 +20363,18 @@ struct DevelopView: View {
                 // has already selected the layer, so the second does not
                 // toggle it off again.
                 Button {
-                    if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+                    let flags = NSApp.currentEvent?.modifierFlags ?? []
+                    if flags.contains(.command) || flags.contains(.shift) {
+                        // ⌘ adds this one to what a merge acts on; ⇧ takes
+                        // everything between it and the one already chosen —
+                        // the same two modifiers the filmstrip already uses,
+                        // so the gesture is not a second thing to learn.
+                        extendLayerSelection(to: layer.id, shift: flags.contains(.shift))
+                    } else if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
                         if selectedLayerID != layer.id { selectLayer(layer.id) }
                         beginLayerRename(layer)
                     } else {
+                        multiSelectedLayerIDs = []
                         selectLayer(layer.id)
                     }
                 } label: {
@@ -20079,14 +20399,17 @@ struct DevelopView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(AppColors.panelAlt.opacity(isSelected ? 1 : 0.5))
+        .background(AppColors.panelAlt.opacity(isSelected || isInMergeSet ? 1 : 0.5))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(isSelected ? layerSelectionColor : Color.clear, lineWidth: 1.5)
+                .stroke(isSelected ? layerSelectionColor
+                        : (isInMergeSet ? layerSelectionColor.opacity(0.55) : Color.clear),
+                        lineWidth: 1.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contextMenu {
             Button("Rename…") { beginLayerRename(layer) }
+            layerMergeMenuItem(clickedOn: layer)
         }
     }
 

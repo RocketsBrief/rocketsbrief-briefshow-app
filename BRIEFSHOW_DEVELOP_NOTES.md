@@ -22646,3 +22646,73 @@ provere, crna čita **1,3:1**.
 **Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; `run-template-text-test.py`
 **all passed / all good**; app instaliran i pokrenut. ⚠️ **Nije viđeno na
 ekranu** — keychain.
+
+---
+
+## KORAK 204 — tekst se vidi u Layers panelu, i jedan kvar koji je mogao da obriše sve izmene (21. septembar 2026)
+
+Klijent: *„ovde mora da pokaze text layer ako je text add on the image u ovom
+slucaju jeste ali ga ne vidim kao layer"*.
+
+### Redovi teksta u Layers panelu
+
+Svaki natpis ima svoj red — **iznad** redova sa layerima, jer se tekst i crta
+iznad svega (fotografije i okvira). Panel koji bi ga naveo drugde opisivao bi
+slaganje koje ovaj app nema.
+
+Red nosi **oko**, **ime** (sam tekst) i **kantu**, tačno kao red pored njega.
+Nema hvataljku za prevlačenje — natpisi su svi na vrhu, pa nema ni prema čemu da
+se preuređuju; hvataljka bi bila ručica koja ništa ne pomera.
+
+⛔ **NATPIS NIJE `ImageLayer` i ne sme to da postane da bi dobio red.** Layer su
+pikseli isečeni iz **jedne određene** fotografije, sa svojom gumicom, blendom i
+kopijom slajdera; tekst je string, font i kutija — i **zato** može da se sinhronizuje
+preko selekcije. Dve stvari, dva razloga, dva bita (`SyncItem.text`). Test to drži.
+
+⛔ **Oko je JEDNA funkcija, zvana iz dva panela** (Layers i Text tab). Dve kopije
+„okreni bit" je način na koji dva spiska počnu da se ne slažu oko toga šta je
+sakriveno — isto pravilo koje red foldera i ćelija u gridu već dele.
+
+Sakriven natpis **ne crta se i ne može da se uhvati** na platnu: kutija koju
+klijent ne vidi a može slučajno da je povuče je gora od nevidljivog natpisa.
+⚠️ **Sakrivanje nije „opacity 0"** — natpis zadrži svoju providnost, pa ga oko
+vraća onakvog kakav je bio.
+
+### ⚠️⚠️ NALAZ: novo polje u zapisu je moglo da obriše SVE klijentove izmene
+
+Dodavanje `isVisible` na `TemplateText` je bilo dovoljno da se **svaki tekst
+snimljen ranijim buildom više ne dekodira**. Swift-ov sintetizovani `Codable`
+**ne uzima podrazumevanu vrednost kad ključ fali — baca grešku.**
+
+A `PhotoEditStore` dekodira **ceo rečnik odjednom**: jedan zapis koji ne prođe
+znači `[:]`, pa sledeći flush **prepiše sav njegov rad**. Bez poruke, bez undo-a.
+
+**Izmereno na klijentovim pravim podacima 21.09:** u njegovom store-u su
+**2 zapisa sa tekstom** (`C4S_8926.NEF`, `C4S_8931.NEF`), i **nijedan nema
+`isVisible`**. Dakle ovo nije hipoteza — sa sintetizovanim dekoderom bi mu
+131 zapis postao prazan.
+
+`TemplateText` sada ima **ručno napisan `init(from:)`**, gde se **svako** polje
+čita kroz `decodeIfPresent` sa podrazumevanom vrednošću. Sledeće polje koje neko
+doda ne košta ništa.
+
+⛔ **PRAVILO ZA SVAKO BUDUĆE POLJE U ZAPISU:** ili `decodeIfPresent`, ili se ne
+dodaje. `PhotoEditSettings` to već radi iz istog razloga i na istom mestu je
+zapisano.
+
+### Čime je zaključano
+
+- `run-template-text-test.py`: sakriven natpis ne crta ništa (ni na otisku ni na
+  slici), onaj pored njega crta, oko ne jede providnost, **zapis bez `isVisible`
+  se dekodira kao vidljiv**, i **zapis sa samo jednim poljem** se i dalje
+  dekodira sa podrazumevanim vrednostima. Plus provere iz izvora o redu u
+  Layers panelu.
+- `run-editsettings-decode-test.py`: **131 od 131** klijentovog zapisa preživljava
+  round trip sa novim poljem.
+
+**Negativna kontrola:** uklonjen ručni `init(from:)` → pada „a line written
+before the eye existed is visible" sa **„did not decode at all"**. ⚠️ To i **jeste**
+način na koji je kvar nađen — provera je napisana pre popravke, ne posle.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; app instaliran i pokrenut.
+⚠️ **Nije viđeno na ekranu** — keychain.

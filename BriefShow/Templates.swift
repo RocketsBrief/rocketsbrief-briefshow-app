@@ -1213,6 +1213,14 @@ struct TemplateText: Codable, Equatable, Identifiable {
     var alignment: TemplateTextAlignment = .center
     var opacity: Double = 1
 
+    /// The eye in the Layers panel. ⚠️ Not the same thing as opacity 0: a
+    /// hidden line keeps whatever opacity it was set to, so turning it back on
+    /// brings back the line the client made rather than an invisible one.
+    ///
+    /// Absent from every record written before 21.09, and those lines are all
+    /// visible — which is what `true` decodes to.
+    var isVisible: Bool = true
+
     /// The box the text is laid out in, as a fraction of the canvas, measured
     /// from the TOP left — the same convention `TemplateSlot.rect` uses, and
     /// turned over in exactly one place (see `briefShowSlotPixelRect`).
@@ -1225,6 +1233,55 @@ struct TemplateText: Codable, Equatable, Identifiable {
 
     static let minimumSizeInches = 0.05
     static let maximumSizeInches = 3.0
+
+    init(id: UUID = UUID(), text: String = "Text",
+         fontFamily: String = "Helvetica Neue", fontFace: String = "Regular",
+         sizeInches: Double = 0.25, color: TemplateTextColor = .black,
+         alignment: TemplateTextAlignment = .center, opacity: Double = 1,
+         isVisible: Bool = true,
+         box: NormalizedRect = NormalizedRect(x: 0.1, y: 0.82, width: 0.8, height: 0.1)) {
+        self.id = id
+        self.text = text
+        self.fontFamily = fontFamily
+        self.fontFace = fontFace
+        self.sizeInches = sizeInches
+        self.color = color
+        self.alignment = alignment
+        self.opacity = opacity
+        self.isVisible = isVisible
+        self.box = box
+    }
+
+    /// ⚠️ WRITTEN OUT BY HAND, AND IT HAS TO BE. Swift's synthesized decoding
+    /// does NOT fall back on a property's default value when the key is
+    /// missing — it throws. A line of text written by yesterday's build has no
+    /// `isVisible`, so the synthesized version threw on it; and because the
+    /// whole of PhotoEditStore is ONE dictionary decoded in one go, a single
+    /// line that will not decode turns every edit in the app into `[:]` and the
+    /// next flush writes that over the client's work. There is no error and no
+    /// undo — the same path `run-editsettings-decode-test.py` exists for.
+    ///
+    /// Caught by a test that fed it a record written before the field existed.
+    /// Every field here is read the same way, so the next one added costs
+    /// nothing.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        fontFamily = try c.decodeIfPresent(String.self, forKey: .fontFamily) ?? "Helvetica Neue"
+        fontFace = try c.decodeIfPresent(String.self, forKey: .fontFace) ?? "Regular"
+        sizeInches = try c.decodeIfPresent(Double.self, forKey: .sizeInches) ?? 0.25
+        color = try c.decodeIfPresent(TemplateTextColor.self, forKey: .color) ?? .black
+        alignment = try c.decodeIfPresent(TemplateTextAlignment.self, forKey: .alignment) ?? .center
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1
+        isVisible = try c.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true
+        box = try c.decodeIfPresent(NormalizedRect.self, forKey: .box)
+            ?? NormalizedRect(x: 0.1, y: 0.82, width: 0.8, height: 0.1)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, text, fontFamily, fontFace, sizeInches, color, alignment, opacity, isVisible, box
+    }
 }
 
 /// How many pixels of this canvas one inch of print is.
@@ -1357,7 +1414,8 @@ func briefShowDrawText(_ text: TemplateText,
                        canvas: CGRect,
                        pixelsPerInch: Double) -> CIImage? {
     let content = text.text
-    guard !content.isEmpty, text.opacity > 0, canvas.width > 1, canvas.height > 1 else {
+    guard text.isVisible, !content.isEmpty, text.opacity > 0,
+          canvas.width > 1, canvas.height > 1 else {
         return nil
     }
 

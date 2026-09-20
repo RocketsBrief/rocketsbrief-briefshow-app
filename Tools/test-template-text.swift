@@ -576,5 +576,54 @@ do {
           briefShowEditingPlate(for: yellow) != briefShowEditingPlate(for: blue))
 }
 
+// MARK: - The eye
+
+print("\na hidden line draws nothing, and keeps what it was")
+
+do {
+    var hidden = line
+    hidden.isVisible = false
+    check("a hidden line draws nothing",
+          briefShowDrawTemplateText(hidden, template: template,
+                                    canvas: CGRect(x: 0, y: 0, width: 3000, height: 2400)) == nil)
+    check("and nothing of it reaches the print",
+          compose([hidden], scale: 1).inkBounds() == nil)
+    check("while the one beside it still does",
+          compose([hidden, line], scale: 1).inkBounds() != nil)
+    check("a hidden line on a plain photograph draws nothing either",
+          renderPhotoText([hidden], width: 1200, height: 900).inkBounds() == nil)
+
+    // ⚠️ Hiding is not "opacity 0": the line keeps whatever it was set to, so
+    // turning the eye back on brings back the line the client made.
+    var faded = line
+    faded.opacity = 0.5
+    faded.isVisible = false
+    faded.isVisible = true
+    check("the eye does not eat the opacity", abs(faded.opacity - 0.5) < 1e-9)
+
+    // A record written before the eye existed is a visible line.
+    let old = """
+    {"id":"\(UUID().uuidString)","text":"Date:","fontFamily":"Helvetica","fontFace":"Regular",
+     "sizeInches":0.25,"color":{"red":0,"green":0,"blue":0,"alpha":1},
+     "alignment":"center","opacity":1,
+     "box":{"x":0.1,"y":0.8,"width":0.8,"height":0.1}}
+    """
+    let decoded = try? JSONDecoder().decode(TemplateText.self, from: Data(old.utf8))
+    check("a line written before the eye existed is visible", decoded?.isVisible == true,
+          decoded == nil ? "did not decode at all" : "isVisible false")
+    check("and it keeps everything else it said", decoded?.text == "Date:")
+
+    // ⚠️ THE REASON THAT CHECK MATTERS, and it is not about the eye. The whole
+    // of PhotoEditStore is ONE dictionary decoded in one go: a single line
+    // that will not decode makes every edit in the app `[:]`, and the next
+    // flush writes that over the client's work. So a record missing ANY field
+    // has to come back, not throw.
+    let bare = "{\"text\":\"Studio\"}"
+    let sparse = try? JSONDecoder().decode(TemplateText.self, from: Data(bare.utf8))
+    check("a record missing every other field still decodes", sparse != nil)
+    check("and comes back with the defaults", sparse?.fontFamily == "Helvetica Neue"
+          && sparse?.isVisible == true && sparse?.opacity == 1)
+}
+
 print(failures == 0 ? "\nall passed\n" : "\n\(failures) FAILED\n")
 exit(failures == 0 ? 0 : 1)

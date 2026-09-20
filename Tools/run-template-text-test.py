@@ -30,6 +30,12 @@ Two halves.
        flatten and the export draw these prints with no window anywhere.
 
 Negative controls, RUN rather than assumed (20.09 and 21.09):
+  - the hand-written `init(from:)` on TemplateText removed, leaving Swift's
+    synthesized one: "a line written before the eye existed is visible" fails
+    with "did not decode at all". ⚠️ This is how the fault was FOUND rather
+    than a control written afterwards — Swift's synthesized decoding does not
+    fall back on a property's default when a key is missing, it throws, and one
+    line that will not decode turns every edit in the app into `[:]`;
   - the typing plate drawn in the app's own theme, which is the fault the
     client reported: 3 checks fail, black reading 1.3:1 against it. The same
     checks also caught the FIRST fix — near-white/near-black plates chosen by a
@@ -307,6 +313,28 @@ wiring("a hex that means nothing changes nothing",
 wiring("and the swatches are named once, beside the colour maths",
        "briefShowTextSwatches" in picker
        and "let briefShowTextSwatches" in TEMPLATES.read_text(encoding="utf-8"))
+
+# The Layers panel, 21.09: *„ovde mora da pokaze text layer … ali ga ne vidim
+# kao layer"*.
+layers = body(develop, "    private var layersSection: some View {")
+row = body(develop, "    private func textLayerRow(_ item: TemplateText) -> some View {")
+wiring("a line of text has a row in the Layers panel",
+       "textLayerRow(item)" in layers)
+wiring("and it is listed ABOVE the layers, which is where it is drawn",
+       layers.index("textLayerRow(item)") < layers.index("ForEach(Array(settings.layers.reversed()))"))
+wiring("⛔ a line of text is NOT turned into an ImageLayer to get there",
+       "ImageLayer(" not in row and "settings.layers" not in row)
+wiring("the row has an eye and a trash, like the rows beside it",
+       "toggleTemplateTextVisible(item.id)" in row and "removeTemplateText(item.id)" in row)
+wiring("and no grip, because there is nothing to reorder it against",
+       "line.3.horizontal" not in row and "onDrag" not in row)
+wiring("the eye is ONE function, called from both panels",
+       develop.count("toggleTemplateTextVisible(item.id)") == 2
+       and develop.count("private func toggleTemplateTextVisible(") == 1)
+wiring("a hidden line cannot be grabbed on the canvas either",
+       develop.count("settings.templateTexts.filter { $0.isVisible }") == 2)
+wiring("and the drawing itself refuses it",
+       "guard text.isVisible," in TEMPLATES.read_text(encoding="utf-8"))
 
 print()
 if compiled != 0:

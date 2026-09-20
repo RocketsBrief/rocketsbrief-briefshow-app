@@ -18534,6 +18534,17 @@ struct DevelopView: View {
         let isSelected = item.id == selectedTemplateTextID
         return HStack(spacing: 6) {
             Button {
+                toggleTemplateTextVisible(item.id)
+            } label: {
+                Image(systemName: item.isVisible ? "eye" : "eye.slash")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(item.isVisible ? "Hide this line." : "Show this line.")
+
+            Button {
                 // Picking up a line puts the photograph down: one set of arrow
                 // keys, one thing they move.
                 selectedTemplateTextID = item.id
@@ -18933,6 +18944,16 @@ struct DevelopView: View {
         templatePhotoSelected = false
     }
 
+    /// ⛔ ONE function, two panels. The eye is in the Layers list and in the
+    /// Text tab both — the client works in whichever he has open — and two
+    /// copies of "toggle the bit" is how two lists come to disagree about
+    /// which line is hidden. Same rule the folder row and the grid cell follow
+    /// for renaming (KORAK 197).
+    private func toggleTemplateTextVisible(_ id: UUID) {
+        guard let index = settings.templateTexts.firstIndex(where: { $0.id == id }) else { return }
+        settings.templateTexts[index].isVisible.toggle()
+    }
+
     private func removeTemplateText(_ id: UUID) {
         settings.templateTexts.removeAll { $0.id == id }
         if selectedTemplateTextID == id {
@@ -19121,7 +19142,10 @@ struct DevelopView: View {
             // everything by the renderer, so it has to be grabbable on top of
             // everything too. A box that sat under the picture's own drag area
             // would be a text the client can see and cannot catch.
-            ForEach(settings.templateTexts) { item in
+            // ⚠️ A hidden line draws nothing, so it offers nothing to grab
+            // either — a box sitting over the photo with no text in it is a
+            // thing the client cannot see and can still pick up by accident.
+            ForEach(settings.templateTexts.filter { $0.isVisible }) { item in
                 templateTextBoxOverlay(item, frame: frame)
             }
         }
@@ -19249,7 +19273,10 @@ struct DevelopView: View {
                 .position(x: frame.midX, y: frame.midY)
                 .onTapGesture { selectedTemplateTextID = nil }
 
-            ForEach(settings.templateTexts) { item in
+            // ⚠️ A hidden line draws nothing, so it offers nothing to grab
+            // either — a box sitting over the photo with no text in it is a
+            // thing the client cannot see and can still pick up by accident.
+            ForEach(settings.templateTexts.filter { $0.isVisible }) { item in
                 templateTextBoxOverlay(item, frame: frame)
             }
         }
@@ -19861,6 +19888,32 @@ struct DevelopView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // ⚠️ THE TEXT SITS AT THE TOP OF THE LIST, and that is not a
+            // decoration: the renderer draws every line ABOVE the photograph
+            // and above the frame, always (see briefShowComposeTemplateTexts).
+            // A panel that listed it anywhere else would be describing a stack
+            // this app does not have.
+            //
+            // Reported 21.09: *„ovde mora da pokaze text layer ako je text add
+            // on the image … ali ga ne vidim kao layer"*.
+            //
+            // ⛔ A LINE OF TEXT IS NOT AN `ImageLayer`, and it must not become
+            // one to get a row here. A layer is pixels cut out of one
+            // particular photograph, with its own eraser, blend mode and copy
+            // of the edit sliders; text is a string, a font and a box, and it
+            // syncs across a selection precisely BECAUSE it is not tied to one
+            // picture. The two have their own reasons and their own bits (see
+            // `SyncItem.text`), and they are not to be folded together later.
+            if !settings.templateTexts.isEmpty {
+                ForEach(settings.templateTexts.reversed()) { item in
+                    textLayerRow(item)
+                }
+
+                if !settings.layers.isEmpty {
+                    Divider()
+                }
+            }
+
             // Topmost layer first, the way every layers panel reads.
             // settings.layers is stored bottom-to-top because compositeLayers
             // draws it in array order, so this reverses for DISPLAY only —
@@ -19886,6 +19939,77 @@ struct DevelopView: View {
                 selectedLayerEditor(index: index)
             }
         }
+    }
+
+    /// A line of text, in the Layers panel, reading like the rows beside it.
+    ///
+    /// The eye, the name and the trash do here exactly what they do for a
+    /// layer. What is deliberately NOT here: the grip. Lines are drawn in the
+    /// order they were added and there is nothing to reorder them against —
+    /// they are all above everything — so a grip would be a handle that moves
+    /// nothing.
+    private func textLayerRow(_ item: TemplateText) -> some View {
+        let isSelected = selectedTemplateTextID == item.id
+
+        return HStack(spacing: 8) {
+            // Where a layer row has its grip, a text row says what it is.
+            Image(systemName: "textformat")
+                .font(.system(size: 10))
+                .foregroundColor(AppColors.muted.opacity(0.7))
+                .frame(width: 12)
+                .help("Text — written above the photo and the frame.")
+
+            Button {
+                toggleTemplateTextVisible(item.id)
+            } label: {
+                Image(systemName: item.isVisible ? "eye" : "eye.slash")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(item.isVisible ? "Hide this line." : "Show this line.")
+
+            Button {
+                // One click picks the line up on the canvas; a second opens
+                // the Text tab, where it is edited. The same two meanings the
+                // layer row beside it gives a click, and read the same way —
+                // off the click's own count, because the row carries no drag.
+                selectedTemplateTextID = item.id
+                templatePhotoSelected = false
+                if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+                    panelTab = .text
+                }
+            } label: {
+                Text(item.text.isEmpty ? "(empty)" : item.text)
+                    .font(.custom("Figtree", size: 12).weight(.medium))
+                    .foregroundColor(item.isVisible ? AppColors.ink : AppColors.muted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Click to pick this line up on the photo; double-click to edit it.")
+
+            Button {
+                removeTemplateText(item.id)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppColors.muted)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(AppColors.panelAlt.opacity(isSelected ? 1 : 0.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isSelected ? Color.accentColor : AppColors.border,
+                        lineWidth: isSelected ? 1.5 : 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private func layerRow(_ layer: ImageLayer) -> some View {

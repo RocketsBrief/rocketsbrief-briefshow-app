@@ -179,6 +179,38 @@ wiring("a fresh template starts centred rather than inheriting the last one's fr
        "settings.templatePlacement = .centred" in develop_code)
 wiring("the note does not follow the client onto the next photograph",
        "templateNote = nil" in develop_code.split("private func selectPhoto(", 1)[-1].split("\n    }", 1)[0])
+# Step 3 — the photograph is moved and zoomed inside its opening.
+wiring("the photo can be dragged inside its opening",
+       "func templateSlotDragOverlay(" in develop_code
+       and "briefShowPlacementAfterDrag(" in develop_code)
+
+# ⚠️ The gate. Every tool on the canvas claims the same drag, and a template
+# layer that ignored them would quietly break painting, cropping and masks.
+gate = develop_code.split("private var isTemplateSlotEditable: Bool {", 1)[-1].split("}", 1)[0]
+for tool in ("isCropping", "isRemoveBrushActive", "layerEraserActive",
+             "selectedAdjustmentIndex", "activeSelection", "selectedLayerIndex", "isSpaceHeld"):
+    wiring(f"the slot drag stands down for {tool}", tool in gate)
+
+wiring("the wheel over the photo zooms it in the opening",
+       "if isTemplateSlotEditable {" in develop_code
+       and "setTemplateZoom(settings.templatePlacement.zoom * factor)" in develop_code)
+wiring("and there is a slider for the same thing, with the client's range",
+       "SlotPlacement.minimumZoom...SlotPlacement.maximumZoom" in develop_code)
+wiring("every zoom goes through the clamp, so zooming out pulls the framing in",
+       "briefShowClampedPlacement(" in develop_code
+       and "next.zoom = zoom" in develop_code)
+wiring("switching Fit/Fill re-clamps — the two do not allow the same travel",
+       "settings.templatePlacement.mode = mode\n                        " in develop
+       and "setTemplateZoom(settings.templatePlacement.zoom)" in develop_code)
+wiring("the drag measures the photo AFTER the turns and the crop",
+       "rotationQuarterTurns % 2" in develop_code and "crop.width" in
+       develop_code.split("private var templatePhotoPixelSize", 1)[-1].split("\n    }", 1)[0])
+
+# ⚠️ The client read these two as black in the dark theme. Inherited colour is
+# how that happened once before, on the recipe card (KORAK 182).
+wiring("both template labels set their own colour rather than inheriting one",
+       develop_code.split("private func templateTile(", 1)[-1].split("\n    }", 1)[0].count("foregroundColor") >= 2)
+
 wiring("deleting a template takes it off this photo first",
        "func deleteTemplate(" in develop_code and "removeTemplateFromPhoto()" in develop_code)
 

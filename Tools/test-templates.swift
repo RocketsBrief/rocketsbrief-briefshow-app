@@ -408,6 +408,102 @@ trio = TemplateStore.remove(paired, from: trio)
 check("removing a template takes it out of the catalogue", !trio.contains { $0.id == h.id })
 check("and nobody is left pointing at it", !trio.contains { $0.pairID == h.id })
 
+// MARK: - Dragging and zooming the photograph inside its opening
+
+print("\nhow far the photograph may be taken, and how it gets there")
+
+let openingSize = (width: 1920.0, height: 1440.0)          // 4:3
+let wide = (width: 6000.0, height: 4000.0)                  // 3:2, overhangs left and right
+
+var fillPlacement = SlotPlacement(); fillPlacement.mode = .fill
+let fillLimits = briefShowPlacementLimits(photoWidth: wide.width, photoHeight: wide.height,
+                                          slotWidth: openingSize.width, slotHeight: openingSize.height,
+                                          placement: fillPlacement)
+
+// Fill scales by 1440/4000 = 0.36 -> 2160 wide against an opening of 1920, so
+// the overhang is 240 and half of it, in slot widths, is 120/1920 = 0.0625.
+check("in Fill the photograph may slide by half its overhang, no further",
+      close(fillLimits.x, 0.0625, 1e-9), "got \(fillLimits.x)")
+check("and not at all the way it already fits exactly",
+      close(fillLimits.y, 0, 1e-9), "got \(fillLimits.y)")
+
+var fitInOpening = SlotPlacement(); fitInOpening.mode = .fit
+let fitLimits = briefShowPlacementLimits(photoWidth: wide.width, photoHeight: wide.height,
+                                         slotWidth: openingSize.width, slotHeight: openingSize.height,
+                                         placement: fitInOpening)
+// Fit scales by 1920/6000 = 0.32 -> 1280 tall inside 1440: 160 of slack, half
+// of it is 80/1440 = 0.0555…
+check("in Fit the same arithmetic keeps it INSIDE instead",
+      close(fitLimits.y, 80.0 / 1440, 1e-9) && close(fitLimits.x, 0, 1e-9),
+      "got \(fitLimits)")
+
+// ⚠️ The one that costs paper: a drag must never open a white sliver down the
+// edge of a print.
+var pushed = fillPlacement; pushed.offsetX = 5
+let held = briefShowClampedPlacement(pushed, photoWidth: wide.width, photoHeight: wide.height,
+                                     slotWidth: openingSize.width, slotHeight: openingSize.height)
+check("a drag that runs away is held at the edge of the overhang",
+      close(held.offsetX, fillLimits.x, 1e-9), "got \(held.offsetX)")
+
+var zoomed3 = fillPlacement; zoomed3.zoom = 3; zoomed3.offsetX = 0.5
+let atThree = briefShowClampedPlacement(zoomed3, photoWidth: wide.width, photoHeight: wide.height,
+                                        slotWidth: openingSize.width, slotHeight: openingSize.height)
+check("zoomed in there is more room to move", atThree.offsetX > fillLimits.x)
+
+// ⚠️ And zooming back OUT has to pull the framing in with it — an offset that
+// was legal at 3x hangs the photograph outside the opening at 1x.
+var backTo1 = atThree; backTo1.zoom = 1
+let pulledIn = briefShowClampedPlacement(backTo1, photoWidth: wide.width, photoHeight: wide.height,
+                                         slotWidth: openingSize.width, slotHeight: openingSize.height)
+check("zooming back out pulls the framing in with it",
+      close(pulledIn.offsetX, fillLimits.x, 1e-9), "got \(pulledIn.offsetX)")
+
+var tooFar = fillPlacement; tooFar.zoom = 99
+check("the zoom has a ceiling", briefShowClampedPlacement(tooFar, photoWidth: wide.width,
+      photoHeight: wide.height, slotWidth: openingSize.width, slotHeight: openingSize.height).zoom
+      == SlotPlacement.maximumZoom)
+var tooSmall = fillPlacement; tooSmall.zoom = 0
+check("and a floor — a zoom of nothing is a photograph that is not there",
+      briefShowClampedPlacement(tooSmall, photoWidth: wide.width, photoHeight: wide.height,
+      slotWidth: openingSize.width, slotHeight: openingSize.height).zoom == SlotPlacement.minimumZoom)
+
+print("\nthe drag itself")
+
+// The opening on screen is much smaller than the print; the translation is in
+// points, and the offsets come out in slot widths either way.
+let screenSlot = (width: 480.0, height: 360.0)
+let dragged = briefShowPlacementAfterDrag(fillPlacement,
+                                          translationX: 24, translationY: 0,
+                                          slotWidthOnScreen: screenSlot.width,
+                                          slotHeightOnScreen: screenSlot.height,
+                                          photoWidth: wide.width, photoHeight: wide.height)
+check("a drag of 24 pt across a 480 pt opening is 0.05 of a slot width",
+      close(dragged.offsetX, 0.05, 1e-9), "got \(dragged.offsetX)")
+
+// ⚠️ The photograph follows the POINTER, which means the same drag means the
+// same thing whatever size the preview happens to be.
+let draggedBig = briefShowPlacementAfterDrag(fillPlacement,
+                                             translationX: 48, translationY: 0,
+                                             slotWidthOnScreen: 960,
+                                             slotHeightOnScreen: 720,
+                                             photoWidth: wide.width, photoHeight: wide.height)
+check("the same gesture on a preview twice the size lands in the same place",
+      close(draggedBig.offsetX, dragged.offsetX, 1e-9))
+
+let ranAway = briefShowPlacementAfterDrag(fillPlacement,
+                                          translationX: 4000, translationY: 4000,
+                                          slotWidthOnScreen: screenSlot.width,
+                                          slotHeightOnScreen: screenSlot.height,
+                                          photoWidth: wide.width, photoHeight: wide.height)
+check("a drag off the screen still stops at the edge of the overhang",
+      close(ranAway.offsetX, fillLimits.x, 1e-9) && close(ranAway.offsetY, 0, 1e-9),
+      "got \(ranAway.offsetX), \(ranAway.offsetY)")
+
+check("a drag against an opening of no size changes nothing",
+      briefShowPlacementAfterDrag(fillPlacement, translationX: 10, translationY: 10,
+                                  slotWidthOnScreen: 0, slotHeightOnScreen: 0,
+                                  photoWidth: wide.width, photoHeight: wide.height) == fillPlacement)
+
 // MARK: - The canvas, rendered and read back pixel by pixel
 
 print("\nthe finished canvas, measured")

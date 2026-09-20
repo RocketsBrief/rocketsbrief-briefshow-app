@@ -21334,3 +21334,74 @@ SUCCEEDED**; app instaliran u `/Applications/C4S Suite.app` i pokrenut.
 **Klijent testira sam** — poslednji pogled na ekran je njegov, ne moj.
 
 **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.4 — slika se vuče i zumira u rupi, i dva natpisa su bila crna (20. septembar 2026)
+
+Klijent, posle probe: *„ovde da ja mogu da dragujem sliku gde ja ocu onda da je
+smnjim ili uvecam..kao i ovaj text sa desne strane da ne bude crn studio mat gde
+pise ispod templatea i ispod on this photo pise studio ma isto crnim slivima
+treba da matchuje tex brighter!!!"*
+
+Ovo je **korak 3 iz plana** (rad u slotu), plus jedna popravka boje.
+
+### Boja: natpisi su NASLEĐIVALI boju
+
+Ime template-a ispod pločice i ime u „ON THIS PHOTO" nisu postavljala boju, pa
+su u tamnoj temi ispadala skoro crna. Isti kvar je već jednom bio — kartica
+recepata, KORAK 182. Sada je boja **postavljena**: `AppColors.ink` za izabran i
+za naslov, `AppColors.inkSecondary` za ostale pločice. Test to i drži: oba
+natpisa moraju sama da kažu boju.
+
+### Vučenje i zum
+
+- **Vučenje po platnu** pomera sliku u rupi. Prevod je: pomeraj se čuva u
+  **širinama slota**, a slot na ekranu je razlomak nacrtanog platna — zato slika
+  prati **pokazivač**, a isti potez znači isto i na malom pregledu i na velikom.
+- **Točkić iznad slike** zumira sliku u rupi (±10 % po koraku), kroz isti
+  monitor koji već menja veličinu četkice; **slajder Zoom** u panelu radi isto
+  kad treba tačno. Opseg **0,5×–5×**.
+- **Recentre** vraća sliku na sredinu, na 1×.
+
+⛔ **Granica koja košta papir:** vučenje se **zaustavlja** na pola preklapanja —
+korak dalje i niz ivicu otiska se otvara bela pruga. U Fit-u ista aritmetika
+radi obrnuto i drži sliku **unutar** rupe. Formula je jedna: |slika − slot| / 2,
+u širinama slota.
+
+⚠️ **Zumiranje NAZAD mora da povuče kadar sa sobom.** Na 3× slika sme daleko od
+sredine; na 1× isti taj pomeraj bi je izbacio iz rupe. Zato **svaka** promena
+zuma ide kroz istu stezaljku, ne samo vučenje. Isto važi za prebacivanje
+**Fit/Fill** — dva režima nemaju isti prostor za kretanje.
+
+⚠️ **Vučenje ustupa mesto svakom drugom alatu.** Crop, Remove četkica, gumica
+za sloj, maska, selekcija, izabran sloj i Space-ručica — svaki od njih polaže
+pravo na isti potez, a sloj koji bi ih pregazio tiho bi pokvario slikanje,
+kadriranje i vučenje maski. To je isti kvar koji je opisan uz pan sloj nekoliko
+stotina linija iznad. Test nabraja **svih sedam** poimenično.
+
+⚠️ **Koliko slika sme da putuje računa se po veličini koju će renderer videti** —
+posle četvrtina okreta i posle crop-a, jer to ulazi u slot. Straighten se
+namerno ne modeluje (par procenata na par stepeni); biti konzervativan tu se ne
+vidi, a pretvarati se da je izmodelovano bi se videlo.
+
+### Čime je zaključano
+
+U `run-templates-test.py`: **13 novih provera** u kompajlovanom delu (granice u
+Fill-u i u Fit-u izračunate rukom u komentaru — 240 px preklapanja → 0,0625
+širine slota; 160 px zazora → 0,0555), i da isti potez na duplo većem pregledu
+sleti na isto mesto, i da vučenje van ekrana stane na ivici. Plus **16 novih
+provera iz izvora**: da vučenje postoji, da **ustupa** svakom od sedam alata, da
+točkić i slajder rade istu stvar kroz stezaljku, da Fit/Fill ponovo steže, i da
+oba natpisa postavljaju boju.
+
+**Negativne kontrole, tri nove:** bez stezaljke u vučenju pada „stane na ivici";
+bez stezaljke u zumu padaju tri provere uključujući „zumiranje nazad povlači
+kadar"; `isTemplateSlotEditable` sveden na „ima template" obara **svih sedam**
+provera o ustupanju alatima.
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+u `/Applications/C4S Suite.app` i pokrenuto. **Klijent testira sam** — ja nisam
+dirao ni miš ni tastaturu posle njegove poruke *„ja testiram"*.
+
+**NIJE OBJAVLJENO.**

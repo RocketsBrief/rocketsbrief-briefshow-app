@@ -8710,6 +8710,10 @@ struct DevelopView: View {
     // where carrying on silently prints the wrong thing.
     @State private var templateNote: String?
     @State private var templateToDelete: PrintTemplate?
+    /// Where the photograph sat when this drag began. One undo step per drag
+    /// comes out of the same burst timer every slider uses; this is only so
+    /// the drag itself measures from a fixed point rather than accumulating.
+    @State private var templateDragStart: SlotPlacement?
 
     // The layer Eraser — see LayerEraser.swift.
     @State private var layerEraserActive = false
@@ -9783,6 +9787,13 @@ struct DevelopView: View {
         if isRemoveBrushActive {
             return true
         }
+        // A template on the photo: the wheel zooms the photograph inside its
+        // opening. It is last-but-one in this chain rather than first, because
+        // a brush or a mask that IS active still owns the wheel — the same
+        // rule isTemplateSlotEditable follows for the drag.
+        if isTemplateSlotEditable {
+            return true
+        }
         if let index = selectedAdjustmentIndex {
             switch settings.localAdjustments[index].type {
             case .brush, .radial: return true
@@ -9808,6 +9819,11 @@ struct DevelopView: View {
         // tool the client is actually painting with right now.
         if isRemoveBrushActive {
             removalBrushSize = min(max(removalBrushSize * factor, 0.01), 0.3)
+            return
+        }
+
+        if isTemplateSlotEditable {
+            setTemplateZoom(settings.templatePlacement.zoom * factor)
             return
         }
 
@@ -12233,6 +12249,16 @@ struct DevelopView: View {
                                     layerPickTargets(frame: fullImageFrame(from: fitted))
                                     derivedLayerOutlineOverlay(settings.layers[index], frame: fullImageFrame(from: fitted))
                                 }
+                            } else if isTemplateSlotEditable {
+                                // Client, 20.09: *„ovde da ja mogu da dragujem
+                                // sliku gde ja ocu onda da je smnjim ili
+                                // uvecam"*. The drag lives here, in the same
+                                // chain as every other tool, so it can never
+                                // be active at the same time as one of them —
+                                // and it comes BEFORE the layer targets, since
+                                // with a template on the photo the thing under
+                                // the pointer is the print, not a layer.
+                                templateSlotDragOverlay(frame: fitted)
                             } else {
                                 // Client, 18.09: back on a photo with a layer,
                                 // clicking the layer ON THE PHOTO has to select it.
@@ -17786,8 +17812,12 @@ struct DevelopView: View {
                             lineWidth: isApplied ? 2 : 1)
             )
 
+            // ⚠️ The colour is SET, not inherited. Inherited, these two came
+            // out near-black in the dark theme and the client read them as a
+            // mistake — the same fault KORAK 182 fixed on the recipe card.
             Text(template.name)
                 .font(.custom("Figtree", size: 10).weight(isApplied ? .semibold : .regular))
+                .foregroundColor(isApplied ? AppColors.ink : AppColors.inkSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
@@ -17824,6 +17854,7 @@ struct DevelopView: View {
 
             Text(template.name)
                 .font(.custom("Figtree", size: 11).weight(.semibold))
+                .foregroundColor(AppColors.ink)
 
             // The client's switch, as two buttons rather than a toggle: "on"
             // and "off" do not say which way round a photograph and a drawing
@@ -17854,13 +17885,47 @@ struct DevelopView: View {
                                    ? "Fill the opening — the photo is cropped where it overhangs."
                                    : "Fit the whole photo inside the opening.") {
                         settings.templatePlacement.mode = mode
+                        // ⚠️ The two modes do NOT allow the same travel: what
+                        // is a legal offset while the photo overhangs the
+                        // opening hangs it outside once it is fitted inside.
+                        setTemplateZoom(settings.templatePlacement.zoom)
                     }
                 }
 
                 Spacer(minLength: 0)
             }
 
+            // Zoom, with the drag on the canvas as its other half: the
+            // client asked to drag the photo where he wants it and then make
+            // it smaller or bigger. The slider is the half that can be aimed;
+            // the scroll wheel over the picture does the same thing by hand.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Zoom")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.ink)
+                    Spacer()
+                    Text(String(format: "%.2f×", settings.templatePlacement.zoom))
+                        .font(.custom("Figtree", size: 10))
+                        .foregroundColor(AppColors.muted)
+                }
+
+                Slider(value: Binding(get: { settings.templatePlacement.zoom },
+                                      set: { setTemplateZoom($0) }),
+                       in: SlotPlacement.minimumZoom...SlotPlacement.maximumZoom)
+
+                Text("Drag the photo on the canvas to move it in the opening; scroll over it to zoom.")
+                    .font(.custom("Figtree", size: 9))
+                    .foregroundColor(AppColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack(spacing: 6) {
+                toolButton("Recentre", systemImage: "scope", isActive: false,
+                           help: "Put the photo back in the middle of the opening, at 1×.") {
+                    settings.templatePlacement = SlotPlacement(mode: settings.templatePlacement.mode)
+                }
+
                 toolButton("Remove Template", systemImage: "xmark", isActive: false) {
                     removeTemplateFromPhoto()
                 }
@@ -17873,6 +17938,111 @@ struct DevelopView: View {
                 .font(.custom("Figtree", size: 9))
                 .foregroundColor(AppColors.muted)
         }
+    }
+
+    /// Is the pointer on the canvas working the template's slot right now?
+    ///
+    /// ⚠️ Every one of these tools claims the same drag. A template layer that
+    /// ignored them would quietly break painting, cropping and mask dragging —
+    /// the defect the pan layer's own comment describes a few hundred lines up.
+    private var isTemplateSlotEditable: Bool {
+        settings.templateID != nil
+            && !isCropping
+            && !isRemoveBrushActive
+            && !layerEraserActive
+            && selectedAdjustmentIndex == nil
+            && activeSelection == nil
+            && selectedLayerIndex == nil
+            && !isSpaceHeld
+    }
+
+    /// The photograph's own pixel size as the RENDERER will see it — after the
+    /// quarter turns and after the crop, because that is what goes into the
+    /// slot. It decides how far a drag may travel, so it has to be the same
+    /// rectangle the composition places.
+    ///
+    /// ⚠️ Straighten is not accounted for. It changes the extent by a few
+    /// per cent at a few degrees, and the only thing riding on this is how
+    /// close to the edge a drag may go; being a little conservative there is
+    /// invisible, and pretending to model it would not be.
+    private var templatePhotoPixelSize: CGSize? {
+        guard let extent = fullBaseImage?.extent ?? previewBaseImage?.extent,
+              extent.width > 0, extent.height > 0 else { return nil }
+        var width = Double(extent.width)
+        var height = Double(extent.height)
+        if settings.rotationQuarterTurns % 2 != 0 {
+            swap(&width, &height)
+        }
+        if let crop = settings.crop {
+            width *= crop.width
+            height *= crop.height
+        }
+        return CGSize(width: width, height: height)
+    }
+
+    /// The opening, in points on screen. `frame` is the whole canvas as drawn,
+    /// and the slot is a fraction of it — which is the conversion that makes a
+    /// drag follow the pointer at any preview size.
+    private func templateSlotOnScreen(_ template: PrintTemplate, frame: CGRect) -> CGSize {
+        CGSize(width: max(template.slot.rect.width * Double(frame.width), 1),
+               height: max(template.slot.rect.height * Double(frame.height), 1))
+    }
+
+    private func templateSlotDragOverlay(frame: CGRect) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .frame(width: frame.width, height: frame.height)
+            .position(x: frame.midX, y: frame.midY)
+            .onHover { inside in
+                if inside {
+                    NSCursor.openHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in dragTemplatePhoto(by: value.translation, frame: frame) }
+                    .onEnded { _ in
+                        templateDragStart = nil
+                        scheduleRefinedRender()
+                    }
+            )
+    }
+
+    private func dragTemplatePhoto(by translation: CGSize, frame: CGRect) {
+        guard let template = templateLibrary.template(id: settings.templateID),
+              let photo = templatePhotoPixelSize else { return }
+        let start = templateDragStart ?? settings.templatePlacement
+        templateDragStart = start
+        let slot = templateSlotOnScreen(template, frame: frame)
+        settings.templatePlacement = briefShowPlacementAfterDrag(
+            start,
+            translationX: Double(translation.width),
+            translationY: Double(translation.height),
+            slotWidthOnScreen: Double(slot.width),
+            slotHeightOnScreen: Double(slot.height),
+            photoWidth: Double(photo.width),
+            photoHeight: Double(photo.height))
+    }
+
+    /// Zoom the photograph inside its opening, keeping it where it may be.
+    ///
+    /// ⚠️ Zooming BACK OUT has to pull the framing in with it: at 3× the
+    /// photograph may sit far off centre, and at 1× that same offset would
+    /// hang it outside the opening. So every change goes through the clamp
+    /// rather than only the drag.
+    private func setTemplateZoom(_ zoom: Double) {
+        guard let template = templateLibrary.template(id: settings.templateID),
+              let photo = templatePhotoPixelSize else { return }
+        var next = settings.templatePlacement
+        next.zoom = zoom
+        let slot = CGSize(width: template.slot.rect.width * Double(template.canvasPixels.width),
+                          height: template.slot.rect.height * Double(template.canvasPixels.height))
+        settings.templatePlacement = briefShowClampedPlacement(
+            next,
+            photoWidth: Double(photo.width), photoHeight: Double(photo.height),
+            slotWidth: Double(slot.width), slotHeight: Double(slot.height))
     }
 
     private func importTemplateFromDisk() {

@@ -206,6 +206,67 @@ struct SlotPlacement: Codable, Equatable {
     var rotationDegrees: Double = 0
 
     static let centred = SlotPlacement()
+
+    /// How far in and how far out the photograph may be taken inside its
+    /// opening. Below 1 in Fill it starts showing paper, which is the client's
+    /// business, not the app's — but a zoom of 0 is a photograph that is not
+    /// there, and 20× is a single pixel blown across a print.
+    static let minimumZoom = 0.5
+    static let maximumZoom = 5.0
+}
+
+/// How far the placement may travel before the photograph leaves its opening.
+///
+/// In Fill the photograph is bigger than the opening, so it may slide by half
+/// the overhang and no further — one step past that and a white sliver appears
+/// down one edge, which on paper is a reprint. In Fit it is smaller, and the
+/// same arithmetic keeps it INSIDE instead: |photo − slot| ÷ 2, either way
+/// round, in slot widths.
+func briefShowPlacementLimits(photoWidth: Double, photoHeight: Double,
+                              slotWidth: Double, slotHeight: Double,
+                              placement: SlotPlacement) -> (x: Double, y: Double) {
+    guard photoWidth > 0, photoHeight > 0, slotWidth > 0, slotHeight > 0 else { return (0, 0) }
+    let scaleX = slotWidth / photoWidth
+    let scaleY = slotHeight / photoHeight
+    let base = placement.mode == .fill ? max(scaleX, scaleY) : min(scaleX, scaleY)
+    let zoom = max(SlotPlacement.minimumZoom, min(placement.zoom, SlotPlacement.maximumZoom))
+    let width = photoWidth * base * zoom
+    let height = photoHeight * base * zoom
+    return (abs(width - slotWidth) / (2 * slotWidth),
+            abs(height - slotHeight) / (2 * slotHeight))
+}
+
+/// The placement, kept inside what the opening allows.
+func briefShowClampedPlacement(_ placement: SlotPlacement,
+                               photoWidth: Double, photoHeight: Double,
+                               slotWidth: Double, slotHeight: Double) -> SlotPlacement {
+    var next = placement
+    next.zoom = max(SlotPlacement.minimumZoom, min(placement.zoom, SlotPlacement.maximumZoom))
+    let limits = briefShowPlacementLimits(photoWidth: photoWidth, photoHeight: photoHeight,
+                                          slotWidth: slotWidth, slotHeight: slotHeight,
+                                          placement: next)
+    next.offsetX = min(max(next.offsetX, -limits.x), limits.x)
+    next.offsetY = min(max(next.offsetY, -limits.y), limits.y)
+    return next
+}
+
+/// Where a drag leaves the photograph.
+///
+/// ⚠️ The translation is in POINTS ON SCREEN and the offsets are in slot
+/// widths, so the slot's size on screen is what converts them. That is also
+/// what makes the drag feel right at any preview size: the photograph follows
+/// the pointer, rather than moving a fixed fraction per point dragged.
+func briefShowPlacementAfterDrag(_ start: SlotPlacement,
+                                 translationX: Double, translationY: Double,
+                                 slotWidthOnScreen: Double, slotHeightOnScreen: Double,
+                                 photoWidth: Double, photoHeight: Double) -> SlotPlacement {
+    guard slotWidthOnScreen > 0, slotHeightOnScreen > 0 else { return start }
+    var next = start
+    next.offsetX = start.offsetX + translationX / slotWidthOnScreen
+    next.offsetY = start.offsetY + translationY / slotHeightOnScreen
+    return briefShowClampedPlacement(next,
+                                     photoWidth: photoWidth, photoHeight: photoHeight,
+                                     slotWidth: slotWidthOnScreen, slotHeight: slotHeightOnScreen)
 }
 
 struct TemplateSlot: Codable, Equatable, Identifiable {

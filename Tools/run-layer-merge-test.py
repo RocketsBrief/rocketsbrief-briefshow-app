@@ -34,8 +34,10 @@ Two halves.
      - the print shows as Image + Template, in the order the switch puts them.
 
 Negative controls, RUN rather than assumed (21.09):
-  - the derived-layer branch removed from the rule: 3 checks fail, and the one
-    that matters is the reason naming Flatten Photo;
+  - the mixed-selection branch removed from the rule: 3 checks fail — a People
+    layer and a pasted piece would have been merged into one another;
+  - the frame's row made to open the Templates tab on a single click again
+    (the reported fault): "only a DOUBLE click opens the tab" fails;
   - `briefShowNextMergedLayerNumber` returning `used.count + 1`: "it takes the
     highest, not the count" fails — two merges would both come back as
     "Merged 2" after one was deleted.
@@ -164,8 +166,7 @@ wiring("a print shows as Image and Template, both",
        "templateLayerRow(template)" in layers_panel and "templatePhotoLayerRow()" in layers_panel)
 wiring("and their order follows the photo-under/photo-over switch",
        "if artOnTop {" in layers_panel
-       and layers_panel.count("templateLayerRow(template)") == 2
-       and layers_panel.count("templatePhotoLayerRow()") == 2)
+       and layers_panel.count("templateLayerRow(template)") == 2)
 wiring("clicking the frame opens the tab it is worked on in",
        "panelTab = .templates" in template_row)
 wiring("clicking the image picks the photo up in the frame",
@@ -174,9 +175,38 @@ wiring("the frame's trash is the SAME call the Templates tab makes",
        "removeTemplateFromPhoto()" in template_row)
 wiring("and the photograph has no trash and no eye — it is the photograph",
        "trash" not in photo_row and "eye" not in photo_row)
-wiring("\"No layers yet\" is not printed above rows that exist",
-       "settings.layers.isEmpty && settings.templateID == nil && settings.templateTexts.isEmpty"
-       in layers_panel)
+wiring("the empty line does not claim there is nothing, since the photo is a row",
+       "Just the photo so far." in layers_panel
+       and "settings.layers.isEmpty && settings.templateTexts.isEmpty" in layers_panel)
+
+# The two kinds of merge, 21.09.
+derived_merge = extract("    static func mergedDerivedLayerImage(_ layers: [ImageLayer],")
+wiring("People and Background merge through the photo, not over transparency",
+       "render(only, on: base, applyCrop: false)" in derived_merge)
+wiring("and only those layers are on it while it renders",
+       "only.layers = layers" in derived_merge)
+wiring("the matte is the union of theirs",
+       "maximumCompositing()" in derived_merge)
+wiring("taken at full strength, because the render already used their opacity",
+       "scaled by opacity" in derived_merge)
+wiring("and the merge picks the right one of the two paths",
+       "targets.allSatisfy(\\.isDerived)" in merge)
+
+# The frame's row selects; it does not walk off to another tab.
+wiring("clicking the frame's row selects it",
+       "templateRowSelected = true" in template_row)
+wiring("and only a DOUBLE click opens the tab",
+       "if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {" in template_row
+       and "panelTab = .templates" in template_row)
+wiring("the frame and the photo both say why they cannot merge",
+       "printRowMergeMenuItem()" in template_row and "printRowMergeMenuItem()" in photo_row)
+
+# The photograph is always in the list.
+wiring("the photograph is a row even with no frame on the photo",
+       "if settings.templateID == nil {" in layers_panel
+       and layers_panel.count("templatePhotoLayerRow()") == 3)
+wiring("and it carries the file's own name",
+       "selectedURL?.lastPathComponent" in photo_row)
 
 print()
 if compiled != 0:

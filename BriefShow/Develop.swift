@@ -5628,6 +5628,70 @@ enum PhotoEditRenderer {
         return compositeLayers(layers, onto: clear).cropped(to: extent)
     }
 
+    /// People and Background put back together — a merge for layers that hold
+    /// no pixels of their own.
+    ///
+    /// ⚠️ A DIFFERENT OPERATION FROM `mergedLayerImage`, not a branch of it. A
+    /// derived layer adjusts the photograph under its own matte, so what comes
+    /// out is the PHOTOGRAPH as those layers leave it, cut to the matte they
+    /// cover between them. There is nothing to composite over transparency,
+    /// because there are no pixels until the photo is rendered through them.
+    ///
+    /// The result goes back as one ordinary pixel layer, which is what the
+    /// client asked for: *„da moze people i backround da se spoje kad se
+    /// odvoje, kao merge"*.
+    static func mergedDerivedLayerImage(_ layers: [ImageLayer],
+                                        settings: PhotoEditSettings,
+                                        base: PhotoBaseImage,
+                                        extent: CGRect) -> CIImage? {
+        guard !layers.isEmpty, layers.allSatisfy(\.isDerived),
+              extent.width >= 1, extent.height >= 1 else {
+            return nil
+        }
+
+        // The photograph with THESE layers on it and nothing else: no crop, no
+        // print, no other layer. `applyCrop: false` is what keeps the frame
+        // and the paper out of it — the merged piece belongs in the picture's
+        // own coordinates, and the crop is still live on the record after.
+        var only = settings
+        only.layers = layers
+        only.templateTexts = []
+        let photo = render(only, on: base, applyCrop: false).cropped(to: extent)
+
+        // The matte they cover between them. Taken at full strength, not
+        // scaled by opacity: the render above has already blended each layer
+        // by its own opacity, so scaling here would fade it twice.
+        var union: CIImage?
+        for layer in layers {
+            guard let data = layer.maskData, let stored = CIImage(data: data),
+                  stored.extent.width > 0, stored.extent.height > 0 else { continue }
+            let scaled = stored
+                .transformed(by: CGAffineTransform(scaleX: extent.width / stored.extent.width,
+                                                   y: extent.height / stored.extent.height))
+            let placed = scaled
+                .transformed(by: CGAffineTransform(translationX: extent.origin.x - scaled.extent.origin.x,
+                                                   y: extent.origin.y - scaled.extent.origin.y))
+                .cropped(to: extent)
+            if let held = union {
+                // Lighter of the two, per pixel: two mattes that overlap stay
+                // opaque rather than adding up past white.
+                let maximum = CIFilter.maximumCompositing()
+                maximum.inputImage = placed
+                maximum.backgroundImage = held
+                union = maximum.outputImage ?? held
+            } else {
+                union = placed
+            }
+        }
+        guard let matte = union else { return nil }
+
+        let cut = CIFilter.blendWithMask()
+        cut.inputImage = photo
+        cut.backgroundImage = CIImage.empty().cropped(to: extent)
+        cut.maskImage = matte
+        return cut.outputImage?.cropped(to: extent)
+    }
+
     private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage,
                                         base: PhotoBaseImage? = nil,
                                         settings: PhotoEditSettings? = nil) -> CIImage {
@@ -8668,15 +8732,22 @@ func briefShowLayerMergeRefusal(_ layers: [ImageLayer]) -> String? {
     guard layers.count >= 2 else {
         return "Select two or more layers to merge."
     }
-    if layers.contains(where: { $0.isDerived }) {
-        // People and Background are not pixels. Merging them would mean baking
-        // the photograph itself, which is what Flatten Photo is for — and the
-        // client's own sentence says so: *„jedino kada idem na dugme flatten
-        // image onda da se naravne sve flatenuje"*.
-        return "People and Background layers are adjustments on the photo, not pixels — "
-             + "Flatten Photo is what bakes those in."
+    // ⚠️ DERIVED AND PIXEL LAYERS MERGE, BUT NEVER WITH EACH OTHER.
+    //
+    // A derived layer (People, Background) holds no pixels: it is a region of
+    // the photograph taken through a matte. Merging two of them means baking
+    // the photograph through the matte they cover between them — which is
+    // exactly what the client asked for on 21.09, *„da moze people i backround
+    // da se spoje kad se odvoje"*, and it is how Select People is undone by
+    // hand. Merging one of them WITH a pasted piece has no single answer: one
+    // is a region of the photo and the other is bytes that came from somewhere
+    // else, and they do not live at the same place in the stack.
+    let derived = layers.filter(\.isDerived).count
+    if derived > 0 && derived < layers.count {
+        return "A People or Background layer is a region of the photo, and a pasted layer is "
+             + "not — merge them separately, or use Flatten Photo to bake everything."
     }
-    if layers.contains(where: { $0.blendMode != .normal }) {
+    if derived == 0, layers.contains(where: { $0.blendMode != .normal }) {
         // A blend is defined against what is UNDER it, and a merged piece
         // carries nothing under it. Merging would change the picture.
         return "A layer set to a blend mode other than Normal is mixed with what is under it, "
@@ -9162,6 +9233,12 @@ struct DevelopView: View {
     /// Client, 21.09: *„da mogu da recimo selektujem vise od jednog layera …
     /// i desni click da mi pokaze option merge layers"*.
     @State private var multiSelectedLayerIDs: Set<UUID> = []
+    /// Is the frame's row picked? ⚠️ Its own flag: clicking that row must
+    /// SELECT it, not walk off to another tab — reported 21.09, *„kada kliknem
+    /// na layer template on me baca na template seciju umesto samo da se
+    /// selektuje layer"*. The tab is what a DOUBLE click is for, the same two
+    /// meanings a layer row's name already carries.
+    @State private var templateRowSelected = false
 
     // Print templates — see Templates.swift. The catalogue is one shared
     // object (the panel adds to it, the renderer reads it), so it is observed
@@ -19971,8 +20048,10 @@ struct DevelopView: View {
             // ⚠️ Only when the list is REALLY empty. With a frame or a line of
             // text on the photo there are rows right underneath this sentence,
             // and "no layers yet" printed above them reads as a fault.
-            if settings.layers.isEmpty && settings.templateID == nil && settings.templateTexts.isEmpty {
-                Text("No layers yet. Cut or copy a selection, then paste it here.")
+            if settings.layers.isEmpty && settings.templateTexts.isEmpty {
+                // The photograph's own row is always below this, so the line
+                // says what is missing rather than claiming there is nothing.
+                Text("Just the photo so far. Cut or copy a selection, then paste it here.")
                     .font(.custom("Figtree", size: 11))
                     .foregroundColor(AppColors.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -20048,6 +20127,20 @@ struct DevelopView: View {
                             layers: $settings.layers
                         )
                     )
+            }
+
+            // ⚠️ THE PHOTOGRAPH IS ALWAYS A ROW, and at the BOTTOM when there
+            // is no frame — client, 21.09: *„na layeru uvek da stoji image i
+            // naziv slike, jer layer postoji kao slika"*. Everything in this
+            // list is drawn over it, which is exactly where it is listed.
+            //
+            // With a frame it is shown above instead, in the order the
+            // photo-under/photo-over switch puts the two.
+            if settings.templateID == nil {
+                if !settings.layers.isEmpty {
+                    Divider()
+                }
+                templatePhotoLayerRow()
             }
 
             if let index = selectedLayerIndex {
@@ -20141,9 +20234,17 @@ struct DevelopView: View {
                 .frame(width: 12)
 
             Button {
-                panelTab = .templates
+                templateRowSelected = true
                 templatePhotoSelected = false
                 selectedTemplateTextID = nil
+                selectedLayerID = nil
+                multiSelectedLayerIDs = []
+                // Double click is what opens the tab — a single click is the
+                // client saying "this row", and it has to stay on this row so
+                // he can pick the other one beside it.
+                if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+                    panelTab = .templates
+                }
             } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(template.name)
@@ -20158,7 +20259,7 @@ struct DevelopView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Open the Templates tab to work on the frame.")
+            .help("Click to pick the frame; double-click to open the Templates tab.")
 
             Button {
                 removeTemplateFromPhoto()
@@ -20172,8 +20273,13 @@ struct DevelopView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(AppColors.panelAlt.opacity(panelTab == .templates ? 1 : 0.5))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(AppColors.border, lineWidth: 1))
+                .background(AppColors.panelAlt.opacity(templateRowSelected ? 1 : 0.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(templateRowSelected ? layerSelectionColor : AppColors.border,
+                        lineWidth: templateRowSelected ? 1.5 : 1)
+        )
+        .contextMenu { printRowMergeMenuItem() }
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
@@ -20195,6 +20301,7 @@ struct DevelopView: View {
 
             Button {
                 templatePhotoSelected = true
+                templateRowSelected = false
                 selectedTemplateTextID = nil
                 selectedLayerID = nil
                 multiSelectedLayerIDs = []
@@ -20224,6 +20331,22 @@ struct DevelopView: View {
                         lineWidth: templatePhotoSelected ? 1.5 : 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contextMenu { printRowMergeMenuItem() }
+    }
+
+    /// What a right click on the frame or the photograph offers.
+    ///
+    /// ⚠️ It offers the same item as every other row and REFUSES it, with the
+    /// reason in the menu. The frame and the photograph are not two pieces to
+    /// be stuck together — the print IS the two of them, and baking it is what
+    /// Flatten Photo does, which is the client's own rule: *„jedino kada idem
+    /// na dugme flatten image onda da se naravne sve flatenuje"*. An item that
+    /// simply was not there would leave him clicking and finding nothing.
+    @ViewBuilder
+    private func printRowMergeMenuItem() -> some View {
+        Button("Merge Layers (2)") { }
+            .disabled(true)
+        Text("The frame and the photo are the print itself — Flatten Photo bakes them together.")
     }
 
     /// Which layers a merge would act on, in STACK order (bottom to top).
@@ -20302,7 +20425,17 @@ struct DevelopView: View {
         // rule at the top of the notes says the picture stays at the file's
         // resolution.
         let canvas = CGRect(origin: .zero, size: extent.size)
-        guard let merged = PhotoEditRenderer.mergedLayerImage(targets, extent: canvas),
+        // Two kinds of merge, and the rule above has already made sure the
+        // selection is all of one kind. See mergedDerivedLayerImage for why
+        // they are not one function with a branch in it.
+        let composed: CIImage?
+        if targets.allSatisfy(\.isDerived), let base = fullBaseImage ?? previewBaseImage {
+            composed = PhotoEditRenderer.mergedDerivedLayerImage(targets, settings: settings,
+                                                                 base: base, extent: canvas)
+        } else {
+            composed = PhotoEditRenderer.mergedLayerImage(targets, extent: canvas)
+        }
+        guard let merged = composed,
               let cgImage = briefEditsCIContext.createCGImage(merged, from: canvas,
                                                               format: .RGBA8,
                                                               colorSpace: briefEditsSRGBColorSpace),

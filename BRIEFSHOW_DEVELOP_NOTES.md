@@ -22804,3 +22804,71 @@ svima bajtovi razrešeni; dekodiranje 5,6 ms, upis 6,3 ms.
 `run-template-text-test.py`, `run-templates-test.py`,
 `run-editsettings-decode-test.py`. App instaliran i pokrenut.
 ⚠️ **Nije viđeno na ekranu** — keychain.
+
+---
+
+## KORAK 206 — People i Background se spajaju, Image je uvek red, i klik na okvir više ne beži (21. septembar 2026)
+
+Tri prijave iz iste klijentove poruke.
+
+### 1. People i Background se spajaju — *„da moze people i backround da se spoje kad se odvoje, kao merge"*
+
+⛔ **To je DRUGA operacija, ne grana one prve.** Derived layer nema piksele — on
+je oblast fotografije uzeta kroz matu — pa nema šta da se kompozituje preko
+providnog platna. `mergedDerivedLayerImage` zato:
+
+1. renderuje **fotografiju sa SAMO tim layerima** (`applyCrop: false`, bez
+   template-a i teksta — spojen komad pripada koordinatama same slike),
+2. sabere njihove **mate** (`maximumCompositing`, pa preklop ostaje pun, ne ide
+   preko bele),
+3. iseče render tom matom.
+
+⚠️ **Mata se uzima punom snagom**, jer je render već primenio opacity svakog
+layera — skaliranje ovde bi ga izbledelo dvaput.
+
+**Ostaje zabranjeno:** derived **sa** pasted komadom u istoj selekciji. Jedno je
+oblast fotografije, drugo su bajtovi odnekud drugde; razlog stoji u meniju i
+upućuje na Flatten Photo. Blend mod više **ne** blokira dva derived layera — to
+je pitanje pikselskog layera, a derived se ni ne kompozituje preko providnog.
+
+### 2. Image je uvek red — *„na layeru uvek da stoji image i naziv slike"*
+
+Fotografija sada ima svoj red i kad nema template-a, i stoji **na dnu** spiska,
+jer je sve u tom spisku nacrtano preko nje. Sa template-om se i dalje prikazuje
+gore, u redosledu koji određuje prekidač.
+
+Rečenica iznad je promenjena u *„Just the photo so far."* — stara je tvrdila da
+nema ničega, a red sa fotografijom stoji tačno ispod nje.
+
+### 3. Klik na okvir više ne baca u drugi tab
+
+*„kada kliknem na layer template on me baca na template seciju umesto samo da se
+selektuje layer jer sam kliknuo na njega"*.
+
+Sada **klik bira red** (svoj `templateRowSelected`, okvir u boji selekcije), a
+**dupli klik** otvara Templates tab — ista dva značenja koja ime layera već nosi.
+Desni klik na okvir ili na sliku nudi **Merge Layers** i **odbija ga sa razlogom**:
+otisak **jeste** to dvoje, a peče ga **Flatten Photo** — klijentovo sopstveno
+pravilo. Stavka koje prosto nema ostavila bi ga da klikće i ne nalazi ništa.
+
+### Čime je zaključano
+
+`run-layer-merge-test.py` dopunjen: dva derived se spajaju, derived + pasted ne,
+blend ne blokira derived, spajanje ide kroz fotografiju a ne preko providnog,
+mata je unija, klik bira a dupli otvara tab, i fotografija je red i bez okvira.
+
+**Negativne kontrole, ODVOŽENE:**
+
+| šta je pokvareno | šta padne |
+|---|---|
+| pravilo pušta mešanu selekciju | **3** provere |
+| klik na okvir opet skače na tab (prijavljeni kvar) | „only a DOUBLE click opens the tab" |
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; prolaze
+`run-layer-merge-test.py`, `run-template-text-test.py`, `run-templates-test.py`,
+`run-editsettings-decode-test.py`, `run-layer-pixel-store-test.py`,
+`run-layer-reorder-test.py`, `run-print-export-test.py`. App instaliran u
+`/Applications/C4S Suite.app` i pokrenut.
+
+⚠️ **Nije viđeno na ekranu** — keychain lozinka. Spajanje People+Background je
+mereno kroz pravilo i kroz izvor; **sam rezultat na slici klijent vidi prvi**.

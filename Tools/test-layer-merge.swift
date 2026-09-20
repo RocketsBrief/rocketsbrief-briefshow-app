@@ -57,13 +57,26 @@ check("and neither does an empty selection",
       briefShowLayerMergeRefusal([]) != nil)
 
 do {
-    // People and Background hold no pixels: they are a region of the photo
-    // taken through a matte, so there is nothing to bake into a piece.
-    let derived = piece("People 1", mask: Data([9, 9, 9]))
-    let refusal = briefShowLayerMergeRefusal([piece("a"), derived])
-    check("a People/Background layer refuses, and says why", refusal != nil)
-    check("and the reason names Flatten Photo, which is what does bake those",
+    // Client, 21.09: *„da moze people i backround da se spoje kad se odvoje"* —
+    // putting back by hand what Select People took apart.
+    let people = piece("People 1", mask: Data([9, 9, 9]))
+    let background = piece("Background 1", mask: Data([7, 7, 7]))
+    check("People and Background merge with each other",
+          briefShowLayerMergeRefusal([people, background]) == nil)
+
+    // ⚠️ But never with a pasted piece: one is a region of the photograph and
+    // the other is bytes from somewhere else.
+    let refusal = briefShowLayerMergeRefusal([piece("a"), people])
+    check("a derived layer does not merge with a pasted one", refusal != nil)
+    check("and the reason says what to do instead",
           refusal?.contains("Flatten Photo") == true, refusal ?? "nil")
+
+    // A blend mode is a pixel-layer question; derived layers do not composite
+    // over transparency at all, so the rule must not refuse them for it.
+    let blended = piece("People 2", blend: .multiply, mask: Data([5, 5, 5]))
+    check("a blend mode does not stop two derived layers",
+          briefShowLayerMergeRefusal([people, blended]) == nil,
+          briefShowLayerMergeRefusal([people, blended]) ?? "")
 }
 
 do {

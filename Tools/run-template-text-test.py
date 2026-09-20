@@ -11,7 +11,8 @@ Two halves.
 
 1. COMPILED. Tools/test-template-text.swift is built against the real
    BriefShow/Templates.swift — the file that ships — and RENDERS through its
-   own `briefShowComposeTemplate`, then counts pixels. What it holds down is
+   own `briefShowComposeTemplate` and `briefShowComposeTextsOnPhoto`, then
+   counts pixels. What it holds down is
    the one thing that decides whether this works at all: a text lands in the
    same place and at the same size on the preview canvas as on the 3000 px
    print. It also holds the size being INCHES of paper, the three alignments,
@@ -28,7 +29,10 @@ Two halves.
      - Templates.swift still knows nothing about AppKit or SwiftUI: the batch
        flatten and the export draw these prints with no window anywhere.
 
-Negative controls, RUN rather than assumed (20.09):
+Negative controls, RUN rather than assumed (20.09 and 21.09):
+  - the canvas offset dropped when laying text on a PHOTOGRAPH: "a cropped
+    photo has its text in the same place" fails — a cropped photo's extent does
+    not start at zero, so the writing lands off the picture entirely;
   - the font size taken as POINTS (`sizeInches * 72`) instead of inches of
     paper: 4 checks fail, and the numbers are the point of the whole step —
     a line 0.36 of the paper wide on the preview prints 0.072 wide, a fifth of
@@ -113,27 +117,79 @@ wiring("it is in the coding keys, so it survives a restart",
        re.search(r"case templateID, templatePlacement, templateArtOverPhoto, templateTexts",
                  develop) is not None)
 
-# The sync. The client asked for the template to go across a selection; the
-# text is written on that template.
+# The sync. ⚠️ ITS OWN TICK since 20.09 („isto dodaj da text moze isto da se
+# sync-uje"), and NOT the template's: by then text went on ordinary photographs
+# too, and a tick called "Print Template" that also wrote words onto photos
+# with no template in sight is a tick that lies.
 merged = body(develop, "    private static func mergedSyncSettings(")
 template_branch = merged.split("if items.contains(.template) {", 1)[-1].split("}", 1)[0]
-wiring("a sync carries the text with the template",
-       "result.templateTexts = source.templateTexts" in template_branch)
-wiring("and only under the template's own tick",
-       "templateTexts" not in merged.replace(template_branch, ""))
+text_branch = merged.split("if items.contains(.text) {", 1)[-1].split("}", 1)[0]
+wiring("the text has its own tick in a sync",
+       "result.templateTexts = source.templateTexts" in text_branch)
+wiring("and the template's tick does not carry it",
+       "templateTexts" not in template_branch)
+wiring("the tick is a bit of its own", "static let text = SyncItem(rawValue: 1 << 22)" in develop)
+wiring("it is a row in the dialog", 'Row(item: .text, title: "Text"' in develop)
+wiring("and the dialog can tell when a photo has some",
+       "case .text: return !settings.templateTexts.isEmpty" in develop)
 
 sync_source = body(develop, "    private var syncSourceSettings: PhotoEditSettings {")
 wiring("a sync off a BAKED photo reads the text out of its snapshot too",
        "source.templateTexts = baked.templateTexts" in sync_source)
 
 remove = body(develop, "    private func removeTemplateFromPhoto() {")
-wiring("taking the template off takes the text with it",
-       "settings.templateTexts = []" in remove and "selectedTemplateTextID = nil" in remove)
+wiring("taking the template off KEEPS the text — it belongs to the picture now",
+       "settings.templateTexts = []" not in remove)
 
-# One set of arrow keys, one thing they move.
+# One set of arrow keys, one thing they move — on a print or on a photograph.
 wiring("the arrow keys move a picked-up text",
        "nudgeTemplateText(dxPixels:" in develop
-       and "isTemplateSlotEditable, selectedTemplateTextID != nil" in develop)
+       and "isTemplateSlotEditable || isTextEditable, selectedTemplateTextID != nil" in develop)
+
+# Text on an ordinary photograph — the whole of the 20.09 change.
+render = body(develop, "    static func render(_ settings: PhotoEditSettings, on base: PhotoBaseImage,")
+wiring("a photo with no template still gets its text drawn",
+       "briefShowComposeTextsOnPhoto(settings.templateTexts, over: output)" in render)
+wiring("and only on the renders that are not MEASURING the photograph",
+       "} else if applyCrop, !settings.templateTexts.isEmpty {" in render)
+# ⚠️ PhotoEditSettings' own `isNeutral`, not the first one in the file — three
+# other types have one, and reading a one-line ColorMixerBand instead is a
+# check that can only ever fail.
+neutral = body(settings, "    var isNeutral: Bool {")
+wiring("a photo whose only edit is a line of text counts as edited",
+       "templateTexts.isEmpty" in neutral)
+wiring("Text has its own tab, beside Templates",
+       'case text = "Text"' in develop and "tabItem(.text)" in develop)
+wiring("and its own drag on the canvas when there is no template",
+       "textOnlyDragOverlay(frame:" in develop
+       and "settings.templateID == nil" in body(develop, "    private var isTextEditable: Bool {"))
+
+# The two reports from the screenshot, 20.09: a popover you could see through
+# and a black "Regular" on a dark field.
+browser = body(develop, "    private func templateFontBrowser(index: Int) -> some View {")
+wiring("the font browser paints its own background",
+       "presentationBackgroundIfAvailable(AppColors.panel)" in browser
+       and ".background(AppColors.panel)" in browser)
+wiring("and does not leave a Picker to paint itself in the system's colours",
+       "pickerStyle(.segmented)" not in browser)
+editor = body(develop, "    private func textEditor(index: Int) -> some View {")
+# ⚠️ The FACE control, not any control whose name ends in Picker: the colour
+# well beside it is a `ColorPicker`, and looking for "Picker(" found that.
+wiring("the face list is a Menu with its colours set, not a Picker",
+       "Picker(\"\", selection: text.fontFace)" not in editor
+       and "Menu {" in editor
+       and "Text(settings.templateTexts[index].fontFace)" in editor)
+
+# The cursor, and what selected looks like.
+overlay = body(develop, "    private func templateTextBoxOverlay(_ item: TemplateText, frame: CGRect) -> some View {")
+wiring("the pointer says the text can be picked up, and that it has been",
+       "NSCursor.openHand.push()" in overlay and "NSCursor.closedHand.push()" in overlay)
+wiring("every cursor push is popped",
+       overlay.count("NSCursor.pop()") == 2 and overlay.count(".push()") == 2)
+wiring("a selected text looks selected: outline, wash and corner dots",
+       "layerSelectionColor.opacity(0.12)" in overlay
+       and "stroke(layerSelectionColor, lineWidth: 1.4)" in overlay
+       and "ForEach(LayerCorner.allCases" in overlay)
 picking_up_text = develop.count("selectedTemplateTextID = item.id")
 wiring("picking up a text puts the photograph down",
        develop.count("templatePhotoSelected = false") >= picking_up_text and picking_up_text >= 2)

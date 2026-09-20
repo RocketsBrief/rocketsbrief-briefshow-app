@@ -1238,6 +1238,56 @@ func briefShowPixelsPerInch(template: PrintTemplate, canvasWidth: Double) -> Dou
     return PrintOutput.dpi * canvasWidth / Double(printed.width)
 }
 
+/// How long the long edge of a photograph with NO template is taken to be, in
+/// inches of print.
+///
+/// ⚠️ A PHOTOGRAPH HAS NO PAPER, and a text still has to be the same size on
+/// the preview as in the export. The size in the record is inches, so the
+/// picture is given a length: its long edge is read as an 8-inch print. That
+/// makes a 0.25 in line one thirty-second of the long edge — the same fraction
+/// on a 900 px preview and on a 6000 px export — and the same physical size it
+/// would have on an 8-inch print of that photograph.
+///
+/// The alternative was a size in pixels of the preview, which is the exact
+/// fault the whole of step 5 was written to avoid.
+let briefShowPhotoLongEdgeInches: Double = 8
+
+/// How many pixels of THIS canvas one inch is, for a picture that is not a
+/// print.
+func briefShowPhotoPixelsPerInch(canvasWidth: Double, canvasHeight: Double) -> Double {
+    let longEdge = max(canvasWidth, canvasHeight)
+    guard longEdge > 0 else { return PrintOutput.dpi }
+    return longEdge / briefShowPhotoLongEdgeInches
+}
+
+/// Every line written on a photograph that is not a print.
+///
+/// ⚠️ Topmost, exactly as on a print, and for the same reason: the writing is
+/// ON the picture. Nothing below it is touched, so an export of a photo with no
+/// text is byte for byte what it was before this existed.
+func briefShowComposeTextsOnPhoto(_ texts: [TemplateText], over photo: CIImage) -> CIImage {
+    let canvas = photo.extent
+    guard !texts.isEmpty, canvas.width > 1, canvas.height > 1,
+          canvas.width.isFinite, canvas.height.isFinite else {
+        return photo
+    }
+    let pixelsPerInch = briefShowPhotoPixelsPerInch(canvasWidth: Double(canvas.width),
+                                                    canvasHeight: Double(canvas.height))
+    var output = photo
+    for text in texts {
+        // ⚠️ Drawn in the canvas's OWN coordinates: a cropped photograph's
+        // extent does not start at zero, and a text laid out as if it did
+        // would sit off the picture by however far the crop moved it.
+        guard let drawn = briefShowDrawText(text,
+                                            canvas: CGRect(origin: .zero, size: canvas.size),
+                                            pixelsPerInch: pixelsPerInch) else { continue }
+        output = drawn
+            .transformed(by: CGAffineTransform(translationX: canvas.minX, y: canvas.minY))
+            .composited(over: output)
+    }
+    return output
+}
+
 /// The box in pixels of the canvas, top-left measured — the screen's way up.
 func briefShowTextPixelRect(_ text: TemplateText,
                             canvasWidth: Double,
@@ -1291,6 +1341,21 @@ func briefShowTemplateTextFont(family: String, face: String, sizePixels: Double)
 func briefShowDrawTemplateText(_ text: TemplateText,
                                template: PrintTemplate,
                                canvas: CGRect) -> CIImage? {
+    briefShowDrawText(text, canvas: canvas,
+                      pixelsPerInch: briefShowPixelsPerInch(template: template,
+                                                            canvasWidth: Double(canvas.width)))
+}
+
+/// The same drawing, told how big an inch is here.
+///
+/// ⚠️ The split is what lets a line of text live on a PHOTOGRAPH as well as on
+/// a print — asked for 20.09: *„dodaj da text moze bilo gde da se stavi cak i
+/// na normalnu sliku ne samo na template"*. A print knows its paper; a
+/// photograph is given one (see `briefShowPhotoPixelsPerInch`), and everything
+/// below is the same code either way.
+func briefShowDrawText(_ text: TemplateText,
+                       canvas: CGRect,
+                       pixelsPerInch: Double) -> CIImage? {
     let content = text.text
     guard !content.isEmpty, text.opacity > 0, canvas.width > 1, canvas.height > 1 else {
         return nil
@@ -1300,7 +1365,6 @@ func briefShowDrawTemplateText(_ text: TemplateText,
                                      canvasHeight: Double(canvas.height))
     guard box.width >= 1 else { return nil }
 
-    let pixelsPerInch = briefShowPixelsPerInch(template: template, canvasWidth: Double(canvas.width))
     let font = briefShowTemplateTextFont(family: text.fontFamily,
                                          face: text.fontFace,
                                          sizePixels: text.sizeInches * pixelsPerInch)

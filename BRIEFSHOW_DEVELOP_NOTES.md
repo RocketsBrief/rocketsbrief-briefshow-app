@@ -22399,3 +22399,76 @@ prolazi: `run-templates-test.py`, `run-template-text-test.py`,
 **NIJE OBJAVLJENO** — nema novog izdanja; app je instaliran lokalno za klijentovu
 probu. Dogovor „push tek kad sve bude složeno" je ispunjen: sve je na grani
 `briefshow-develop`.
+
+---
+
+## KORAK 200 — tekst izlazi iz template-a: svoje dugme, svoj sync, i dve boje koje su bile crne (20–21. septembar 2026)
+
+Šest prijava iz klijentove probe, sve o tekstu:
+
+| # | prijava | šta je urađeno |
+|---|---|---|
+| 1 | *„ovo nije vidljivo kako treba"* (uz snimak pregledača fontova) | popover crta **svoju neprovidnu pozadinu** |
+| 2 | *„dok se bira regular italic tu je crni text"* | rez fonta je sada **Menu sa postavljenim bojama**, ne `Picker` |
+| 3 | *„kada sam kursorom na text napravi kursor ikonica da se pomeri"* | otvorena šaka na prelazu, **zatvorena dok se vuče** |
+| 4 | *„kada se selektira text kao layer, da se vidi da je selektovan"* | pun okvir, blago ispunjenje i **četiri tačke na uglovima**, kao kod layera |
+| 5 | *„dodaj da text moze bilo gde da se stavi cak i na normalnu sliku ne samo na template"* | tekst se crta i na fotografiji **bez template-a** |
+| 6 | *„dodaj text kockasto dugme … pored templates dugmeta"* + *„isto dodaj da text moze isto da se sync-uje"* | **svoj tab** u traci i **svoja kvačica** u syncu |
+
+### ⚠️ Treći put u ovom dokumentu: `Picker` se farba SISTEMSKIM bojama
+
+Sa app-om u tamnoj temi na Mac-u podešenom na svetlu, `Picker` ispisuje **crna
+slova na tamnom polju** — i „Regular" i nepritisnuta polovina segmentiranog
+prekidača. Isto je KORAK 182 popravio na kartici recepta, a 198.2 na pločicama
+template-a. Oba su zamenjena kontrolama kojima je **svaka boja postavljena**.
+
+⚠️ **A popover ima i svoj materijal.** Ne pomaže boja iza sadržaja: macOS crta
+providni materijal **ispod** svega što sadržaj nacrta, pa se kroz spisak
+fontova videla klijentova fotografija. Traži se `presentationBackground`
+(macOS 13.3+, uz `@ViewBuilder` most jer app ide od 13.0).
+
+### Tekst više nije deo štampe — i to menja četiri pravila
+
+| pravilo | pre | sada |
+|---|---|---|
+| gde se crta | samo unutar `briefShowComposeTemplate` | i preko obične fotografije (`briefShowComposeTextsOnPhoto`) |
+| koliko je inč | `canvasWidth / širina papira` | za sliku bez template-a: **duža ivica = 8 inča** (`briefShowPhotoLongEdgeInches`) |
+| skidanje template-a | brisalo tekst | **čuva tekst** — pripada slici, ne papiru |
+| sync | vozio se na kvačici „Print Template" | **svoj bit** (`1 << 22`) i svoj red |
+
+⚠️ **Zašto slika bez template-a dobija dužinu, a ne veličinu u pikselima:** ceo
+korak 5 postoji zato da tekst bude iste veličine na preview-u i u izvozu.
+Fotografija nema papir, pa joj se daje: duža ivica se čita kao otisak od 8 inča.
+Red od 0,25 in je tako **1/32 duže ivice** — isto na 900 px preview-u i na
+6000 px izvozu, i tačno ta fizička veličina ako se slika odštampa 8 inča široka.
+
+⚠️ **Tekst je sada i „ima izmena"** (`isNeutral`). Bez toga bi fotografija čija
+je jedina izmena klijentovo ime preko nje bila **nevidljiva** za „Export All
+Edited", bez oznake u filmstripu i preskočena u batch flatten-u.
+
+### Čime je zaključano
+
+`Tools/run-template-text-test.py` dopunjen: sada renderuje i **tekst na običnoj
+fotografiji** i meri isto što i na štampi — ista pozicija i ista širina na
+1200 px i na 6000 px slici.
+
+**Negativna kontrola, ODVOŽENA:** pomeranje na `canvas.minX/minY` izbačeno →
+pada „a cropped photo has its text in the same place". **Isečena fotografija ne
+počinje od nule**, pa bi tekst sleteo potpuno van slike — i svaki izvoz isečene
+slike bio bi bez natpisa.
+
+Uz to, provere iz izvora prepravljene da mere **novo** ponašanje (svoja kvačica,
+tekst preživljava skidanje template-a, kursor se gura i skida u paru, selekcija
+ima okvir i tačke), i **dve od njih su prvo pale zbog greške u samom lenjiru**:
+`isNeutral` je čitan iz prvog tipa u fajlu umesto iz `PhotoEditSettings`, a
+`Picker(` je nalazio `ColorPicker` pored njega.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; osam testova prolazi —
+`run-templates-test.py`, `run-template-text-test.py`, `run-template-edge-test.py`,
+`run-google-fonts-test.py`, `run-zoom-original-test.py`, `run-print-export-test.py`,
+`run-editsettings-decode-test.py`, `run-slider-parity-test.py`. App instaliran u
+`/Applications/C4S Suite.app` i pokrenut.
+
+⚠️ **Ništa od ovoga nije viđeno na ekranu** — app stoji na keychain lozinki,
+koja je klijentova i odavde se ne dira. Prijave 1–4 su o **izgledu**, pa ih on
+potvrđuje jednim pogledom; ostalo je mereno kroz isporučeni pipeline.

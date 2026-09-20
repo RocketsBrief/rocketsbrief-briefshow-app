@@ -326,5 +326,78 @@ do {
           faces.first == "Regular" && faces.count > 1, "\(faces)")
 }
 
+// MARK: - On an ordinary photograph, with no template at all
+
+print("\ntext on a photograph that is not a print")
+
+func renderPhotoText(_ texts: [TemplateText], width: Int, height: Int,
+                     originX: Double = 0, originY: Double = 0) -> Bitmap {
+    let picture = CIImage(color: CIColor(red: 1, green: 1, blue: 1))
+        .cropped(to: CGRect(x: originX, y: originY,
+                            width: Double(width), height: Double(height)))
+    let drawn = briefShowComposeTextsOnPhoto(texts, over: picture)
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    pixels.withUnsafeMutableBytes { raw in
+        context.render(drawn, toBitmap: raw.baseAddress!, rowBytes: width * 4,
+                       bounds: CGRect(x: originX, y: originY,
+                                      width: Double(width), height: Double(height)),
+                       format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+    }
+    return Bitmap(width: width, height: height, pixels: pixels)
+}
+
+do {
+    var onPhoto = line
+    onPhoto.box = NormalizedRect(x: 0.1, y: 0.75, width: 0.8, height: 0.15)
+
+    // The SAME rule as the print: the preview the client places it on is a
+    // fraction of the size of the file he exports.
+    let small = renderPhotoText([onPhoto], width: 1200, height: 900).inkBounds()
+    let large = renderPhotoText([onPhoto], width: 6000, height: 4500).inkBounds()
+
+    check("text is drawn on a photo with no template", small != nil && large != nil)
+    if let small, let large {
+        check("it starts at the same place across the picture",
+              close(small.x, large.x, 0.006),
+              String(format: "%.4f against %.4f", small.x, large.x))
+        check("and at the same height down it",
+              close(small.y, large.y, 0.008),
+              String(format: "%.4f against %.4f", small.y, large.y))
+        check("and it is the same fraction of the picture wide",
+              close(small.width, large.width, 0.008),
+              String(format: "%.4f against %.4f", small.width, large.width))
+    }
+
+    // An inch is the photograph's long edge divided by the length it is taken
+    // to have — the number a size in inches is only meaningful against.
+    check("an inch of a 6000 px photo is \(Int(6000 / briefShowPhotoLongEdgeInches)) px",
+          close(briefShowPhotoPixelsPerInch(canvasWidth: 6000, canvasHeight: 4500),
+                6000 / briefShowPhotoLongEdgeInches, 1e-9))
+    check("and the long edge is what decides it, upright or not",
+          close(briefShowPhotoPixelsPerInch(canvasWidth: 4500, canvasHeight: 6000),
+                6000 / briefShowPhotoLongEdgeInches, 1e-9))
+
+    check("a photo with nothing written on it is untouched",
+          renderPhotoText([], width: 1200, height: 900).inkBounds() == nil)
+}
+
+do {
+    // ⚠️ A CROPPED photograph's extent does not start at zero. Laid out as if
+    // it did, the text would sit off the picture by however far the crop moved
+    // it — and every export of a cropped photo would be missing its writing.
+    var onPhoto = line
+    onPhoto.box = NormalizedRect(x: 0.1, y: 0.75, width: 0.8, height: 0.15)
+    let atOrigin = renderPhotoText([onPhoto], width: 1200, height: 900).inkBounds()
+    let moved = renderPhotoText([onPhoto], width: 1200, height: 900,
+                                originX: 500, originY: 300).inkBounds()
+    check("a cropped photo has its text in the same place", moved != nil)
+    if let atOrigin, let moved {
+        check("and not offset by wherever the crop began",
+              close(atOrigin.x, moved.x, 0.002) && close(atOrigin.y, moved.y, 0.002),
+              String(format: "%.4f,%.4f against %.4f,%.4f",
+                     atOrigin.x, atOrigin.y, moved.x, moved.y))
+    }
+}
+
 print(failures == 0 ? "\nall passed\n" : "\n\(failures) FAILED\n")
 exit(failures == 0 ? 0 : 1)

@@ -211,3 +211,19 @@ struct ThemeToggleButton: View {
         .accessibilityLabel(accessibilityThemeLabel)
     }
 }
+
+/// A popover's own translucent material, replaced by a plain colour.
+///
+/// ⚠️ `presentationBackground` is macOS 13.3, and this app ships for 13.0 —
+/// so it is asked for only where it exists. On 13.0–13.2 the content's own
+/// opaque background is what carries it, which is why the caller sets both.
+extension View {
+    @ViewBuilder
+    func presentationBackgroundIfAvailable(_ colour: Color) -> some View {
+        if #available(macOS 13.3, *) {
+            self.presentationBackground(colour)
+        } else {
+            self
+        }
+    }
+}

@@ -22056,3 +22056,87 @@ sredini" (141 naspram 203).
 **NIJE OBJAVLJENO.** Koraci 1–4 plana su gotovi; ostaju **5** (tekst na
 template-u), **6** (Google fontovi) i **7** (izvoz na 300 dpi, koji treba i da
 poravna veličinu izvoza pečene i nepečene slike).
+
+---
+
+## KORAK 199 — ⌘ i točkić zumiraju, a Original pokazuje fajl sa kartice (20. septembar 2026)
+
+Dve prijave iz klijentove probe, doslovno: *„Zoom - cmd and scroll on mous,
+beside cmd = and -, also original button when clicked and hold to get back not
+one step history, instead need to get to the real reset show on the original
+image"*.
+
+### 1. ⌘ + točkić = zum slike
+
+Točkić je do sada značio **jednu** stvar: veličina alata (četkica, patch,
+selekcija, a od 198.4 i zum slike u rupi template-a). ⌘ + točkić je značio
+ništa — monitor je vraćao događaj sistemu čim vidi bilo koji modifikator.
+
+Sada ⌘ + točkić poziva **isti `stepZoom`** koji ⌘= i ⌘− pozivaju: jedna
+lestvica, prečka je 1,25×, od 1× do 8×. Dve poluge za istu stvar ne mogu da se
+raziđu ako zovu istu funkciju — isto pravilo koje 🔴 MUST na vrhu traži za
+slajdere.
+
+⛔ **⌘ grana se odlučuje PRE grane za alat i NE pita da li je alat naoružan.**
+Zumiranje da se vidi šta je četkica upravo uradila je tačno trenutak kad je
+četkica naoružana. Običan točkić i dalje menja veličinu te četkice; ⌘ znači
+platno.
+
+### Odluka je izvađena iz `NSEvent` zatvarača, i to je ono što je merljivo
+
+`briefShowScrollWheelAction` je funkcija na nivou fajla, pored
+`ScrollWheelAction` i `ScrollWheelTravel` — jer **skrol se na ovoj mašini ne
+može poslati** (nema accessibility dozvole), pa odluka ostavljena unutar
+zatvarača nije odluka koju iko meri. Isti potez kao `DeleteKeyAction` i
+`briefShowFolderClickAction`.
+
+⚠️ **Dva brojača pređenog puta, ne jedan.** Trackpad javlja delove linije, miš
+cele zupce; zum traži 12 jedinica po prečki, alat 6. Sa **jednim** zajedničkim
+brojačem put nakupljen za zum je već duži od cele prečke alata — i izmereno je:
+jedan jedini delić poteza posle toga poveća četkicu za **dve veličine**.
+
+### 2. Original je pokazivao pečenu sliku, ne original
+
+`showOriginal` je oduvek renderovao `PhotoEditSettings()` — sve na nuli. Ali
+**preko čega**: `previewBaseImage` i `fullBaseImage` se otvaraju kroz
+`FlattenedImageStore.sourceURL`, što je posle flatten-a **pečena kopija**. Držati
+Original na pečenoj slici je zato značilo „pečeno, sa slajderima na nuli" — tačno
+onaj jedan korak unazad koji je klijent prijavio.
+
+| | šta se videlo | šta se vidi sada |
+|---|---|---|
+| slika bez flatten-a | original | original (nepromenjeno) |
+| **pečena slika** | **pečeno, slajderi na nuli** | **fajl sa kartice** |
+
+- `loadBaseImage(at:)` i `loadPreviewBaseImage(at:)` su nove polovine postojećih
+  funkcija — iste dekodere, ali im se **kaže koji fajl** da otvore.
+- ⛔ **Imaju tačno jednog pozivaoca, i test to broji preko svih `.swift` fajlova
+  app-e.** Sve ostalo mora da nastavi da vidi pečenu kopiju; drugi pozivalac bi
+  tiho poništio flatten na nekoj putanji i ništa to ne bi reklo.
+- Dekodira se **lenjo, na prvo držanje, i samo za sliku koja IMA pečenu kopiju** —
+  mašina ima 8 GB, a za sve ostale slike bi to bio drugi dekod identične slike.
+- Zamenu prave **oba** render puta. Brzi i **oštri koji sleće 0,45 s kasnije**:
+  bez drugog, držanje bi pokazalo original pa tiho prestalo da ga pokazuje.
+- Pušta se u `loadImages`, jedinom mestu kroz koje prolazi svaka zamena osnovne
+  slike — uključujući flatten i unflatten, koji menjaju šta original i jeste.
+
+### Čime je zaključano
+
+`Tools/run-zoom-original-test.py` + `test-scroll-wheel.swift` — kompajlira
+**pravu** odluku izvađenu iz `Develop.swift` i vozi je, plus čitanje izvora za
+držanje Originala (oba render puta, jedan pozivalac, čišćenje pri promeni slike).
+
+**Negativne kontrole, ODVOŽENE a ne pretpostavljene:**
+
+| šta je pokvareno | šta padne |
+|---|---|
+| ⌘ grana spuštena ispod grane za alat | **3** provere, među njima „⌘ zumira i kad je alat naoružan" |
+| jedan zajednički brojač umesto dva | **2** provere; `resizeTool(steps: 2)` na jedan delić poteza |
+
+⚠️ **Prva verzija provere o zajedničkom brojaču je PROŠLA sa pokvarenim kodom** —
+bila je napisana u smeru u kome kraća prečka ne stiže da prekorači dužu. Zamenjena
+je onom koja meri suprotan smer, i tek ona pada. Lenjir koji ne meri ne prijavljuje.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; `run-zoom-original-test.py`
+**all passed / all good**; app instaliran u `/Applications/C4S Suite.app` i
+pokrenut. **NIJE OBJAVLJENO.**

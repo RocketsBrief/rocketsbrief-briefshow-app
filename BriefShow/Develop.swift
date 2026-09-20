@@ -2793,7 +2793,19 @@ enum PhotoEditRenderer {
         // it does so HERE so that every path — preview, refine, export, the
         // erases — sees the same picture. Flattening that only the preview
         // honoured would be a lie the export would then tell.
-        let url = FlattenedImageStore.sourceURL(for: photoURL)
+        loadBaseImage(at: FlattenedImageStore.sourceURL(for: photoURL))
+    }
+
+    /// The same decode, told exactly WHICH file to open.
+    ///
+    /// ⚠️ The split exists for ONE caller: See Original. Everything else in the
+    /// app must go through the wrapper above, because "the photograph" means
+    /// the baked copy once a photo has been flattened. The hold-to-compare is
+    /// the single place that means the file on the card instead — the client's
+    /// word, 20.09: *„original button when clicked and hold … need to get to
+    /// the real reset show on the original image"*. Calling this from anywhere
+    /// else would quietly un-flatten that path and nothing would say so.
+    static func loadBaseImage(at url: URL) -> PhotoBaseImage? {
         if isRAW(url), let rawFilter = CIRAWFilter(imageURL: url) {
             // Full quality, not the fast/lossy draft decode — this is for
             // an actual edit session, not a filmstrip thumbnail.
@@ -2863,7 +2875,13 @@ enum PhotoEditRenderer {
     /// changed is what the client looks at in between, which is most of the
     /// time they spend in this window.
     static func loadPreviewBaseImage(from photoURL: URL, full: PhotoBaseImage, previewMax: CGFloat = 2600) -> PhotoBaseImage {
-        let url = FlattenedImageStore.sourceURL(for: photoURL)
+        loadPreviewBaseImage(at: FlattenedImageStore.sourceURL(for: photoURL),
+                             full: full, previewMax: previewMax)
+    }
+
+    /// The same reduced decode, told exactly WHICH file to open — the other
+    /// half of `loadBaseImage(at:)`, and for the same one caller.
+    static func loadPreviewBaseImage(at url: URL, full: PhotoBaseImage, previewMax: CGFloat = 2600) -> PhotoBaseImage {
         let extent = full.extent
         let longEdge = max(extent.width, extent.height)
         let scale = (longEdge.isFinite && longEdge > previewMax) ? previewMax / longEdge : 1
@@ -8382,6 +8400,89 @@ enum DeleteKeyAction: Equatable {
     }
 }
 
+/// What one turn of the wheel over the editor means.
+///
+/// ⚠️ IT IS A FUNCTION, NOT A BRANCH INSIDE THE MONITOR, and that is the whole
+/// reason it can be held down. A scroll event cannot be posted on this machine
+/// — there is no accessibility permission — so a decision left inside the
+/// `NSEvent` closure is a decision nothing measures. Same move as
+/// `DeleteKeyAction` above and `briefShowFolderClickAction` in ContentView.
+enum ScrollWheelAction: Equatable {
+    /// Hand the event back: the panel scrolls, the system does its thing.
+    case pass
+    /// Ours, but nothing came of it yet — swallowed so it cannot scroll the
+    /// panel underneath while the client is working over the picture.
+    case swallow
+    /// ⌘ + wheel: rungs of the SAME ladder ⌘= and ⌘− climb. Positive is in.
+    case zoom(steps: Int)
+    /// A plain wheel with a sizeable tool armed. Positive is bigger.
+    case resizeTool(steps: Int)
+}
+
+/// The travel spent so far, one counter per gesture.
+///
+/// ⚠️ TWO COUNTERS, NOT ONE. Shared, half a brush rung left over from the last
+/// plain scroll would be spent by the first ⌘-scroll and jump the picture a
+/// step nobody asked for.
+struct ScrollWheelTravel: Equatable {
+    var toolSize: CGFloat = 0
+    var zoom: CGFloat = 0
+}
+
+/// A trackpad reports fractions of a line, a wheel reports whole detents — so
+/// the same gesture has to be worth a different amount of travel on each.
+/// The zoom asks for more than the brush does because its ladder is coarser:
+/// one rung is 1.25x, and a flick of a trackpad should not cross four of them.
+let briefShowScrollToolStep: CGFloat = 6
+let briefShowScrollZoomStep: CGFloat = 12
+
+func briefShowScrollWheelAction(commandHeld: Bool,
+                                otherModifiersHeld: Bool,
+                                delta: CGFloat,
+                                hasPreciseDeltas: Bool,
+                                pointerOverCanvas: Bool,
+                                toolHasAdjustableSize: Bool,
+                                travel: inout ScrollWheelTravel) -> ScrollWheelAction {
+
+    /// Spend the accumulated travel in whole rungs. A reversal clears what is
+    /// held first, so changing your mind is immediate rather than having to
+    /// pay back the other direction.
+    func rungs(_ held: inout CGFloat, step: CGFloat) -> Int {
+        if held != 0, (held > 0) != (delta > 0) {
+            held = 0
+        }
+        held += delta
+        var steps = 0
+        while abs(held) >= step {
+            steps += held > 0 ? 1 : -1
+            held -= held > 0 ? step : -step
+        }
+        return steps
+    }
+
+    // ⌘ + wheel ZOOMS THE PICTURE — the client's word, 20.09: *„Zoom - cmd and
+    // scroll on mous, beside cmd = and -"*.
+    //
+    // ⚠️ Decided BEFORE the tool branch, and it does not ask whether a tool is
+    // armed: zooming in to look at what a brush has just done is exactly when
+    // a brush IS armed. The plain wheel keeps resizing that brush; ⌘ means the
+    // canvas.
+    if commandHeld && !otherModifiersHeld {
+        guard pointerOverCanvas else { return .pass }
+        guard delta != 0 else { return .swallow }
+        let steps = rungs(&travel.zoom, step: hasPreciseDeltas ? briefShowScrollZoomStep : 1)
+        return steps == 0 ? .swallow : .zoom(steps: steps)
+    }
+
+    // Any other modifier is somebody asking for something else — horizontal
+    // scrolling, whatever the system does with it.
+    guard !commandHeld, !otherModifiersHeld else { return .pass }
+    guard pointerOverCanvas, toolHasAdjustableSize else { return .pass }
+    guard delta != 0 else { return .swallow }
+    let steps = rungs(&travel.toolSize, step: hasPreciseDeltas ? briefShowScrollToolStep : 1)
+    return steps == 0 ? .swallow : .resizeTool(steps: steps)
+}
+
 struct DevelopView: View {
     /// The photos in the filmstrip.
     ///
@@ -8427,6 +8528,22 @@ struct DevelopView: View {
     @State private var settings = PhotoEditSettings()
     @State private var fullBaseImage: PhotoBaseImage?
     @State private var previewBaseImage: PhotoBaseImage?
+    // The file ON THE CARD, for the Original hold and for nothing else.
+    //
+    // ⚠️ THE TWO ABOVE ARE NOT THE ORIGINAL ONCE A PHOTO HAS BEEN FLATTENED.
+    // They open the baked copy, which is the whole point of a flatten — so
+    // holding Original on a flattened photo showed the BAKE with its sliders
+    // at zero, one step back rather than the picture that came off the camera.
+    // Reported 20.09: *„original button when clicked and hold to get back not
+    // one step history, instead need to get to the real reset show on the
+    // original image"*.
+    //
+    // Decoded lazily, on the first hold, and only for a photo that HAS a baked
+    // copy — for every other photo the two above already are the original and
+    // a second decode would buy nothing.
+    @State private var originalBaseImage: PhotoBaseImage?
+    @State private var originalPreviewBaseImage: PhotoBaseImage?
+    @State private var originalBaseURL: URL?
     // The still frame shown once editing pauses is rendered from
     // `fullBaseImage` — the untouched, full-resolution, full-quality decode
     // that export uses. Nothing extra is decoded for it.
@@ -8991,7 +9108,9 @@ struct DevelopView: View {
     /// would make the brush leap across its whole range on a trackpad and crawl
     /// on a wheel. Accumulating and stepping at a threshold gives both the same
     /// feel — see `briefEditsScrollStep`.
-    @State private var scrollSizeAccumulator: CGFloat = 0
+    // How much wheel travel is held, one counter per gesture. See
+    // ScrollWheelTravel for why it is two and not one.
+    @State private var scrollWheelTravel = ScrollWheelTravel()
     /// Whether the pointer is anywhere over the preview area — see
     /// `isPointerOverCanvas`.
     @State private var isHoveringPreview = false
@@ -9253,7 +9372,16 @@ struct DevelopView: View {
         // leaving) — checked one by one. The ones that do neither
         // (applyCropAspectRatio, "Reset Crop", the drag) need no render,
         // because of the first paragraph.
-        .onChange(of: showOriginal) { _ in renderNow() }
+        .onChange(of: showOriginal) { isOn in
+            // The decode is asked for BEFORE the render, and the render is not
+            // made to wait for it: on a photo whose baked copy is a 142 MB
+            // TIFF the hold would otherwise show nothing for the length of a
+            // decode. The neutral render of the baked copy goes up at once and
+            // the true original replaces it the moment it lands — which is
+            // what `loadOriginalBaseIfNeeded` calls renderNow again for.
+            if isOn { loadOriginalBaseIfNeeded() }
+            renderNow()
+        }
         .onAppear {
             installEditingKeyMonitor()
             installSpaceKeyMonitor()
@@ -9775,17 +9903,11 @@ struct DevelopView: View {
             return
         }
         scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard NSApp.keyWindow?.title == DevelopWindowController.windowTitle,
-                  activeToolHasAdjustableSize,
-                  isPointerOverCanvas else {
+            guard NSApp.keyWindow?.title == DevelopWindowController.windowTitle else {
                 return event
             }
-            // A modifier held with a scroll is somebody asking for something
-            // else — horizontal scrolling, a zoom gesture, whatever the system
-            // does with it. Only a plain scroll resizes.
-            guard event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty else {
-                return event
-            }
+
+            let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
 
             // The PHYSICAL direction, not the reported one. macOS already
             // inverts the delta when "natural" scrolling is on, so reading the
@@ -9794,27 +9916,34 @@ struct DevelopView: View {
             let delta = event.isDirectionInvertedFromDevice
                 ? -event.scrollingDeltaY
                 : event.scrollingDeltaY
-            guard delta != 0 else {
+
+            // What it MEANS is decided by a function that can be run without a
+            // window; this closure only carries it out. See ScrollWheelAction.
+            let action = briefShowScrollWheelAction(
+                commandHeld: modifiers.contains(.command),
+                otherModifiersHeld: !modifiers.subtracting(.command).isEmpty,
+                delta: delta,
+                hasPreciseDeltas: event.hasPreciseScrollingDeltas,
+                pointerOverCanvas: isPointerOverCanvas,
+                toolHasAdjustableSize: activeToolHasAdjustableSize,
+                travel: &scrollWheelTravel)
+
+            switch action {
+            case .pass:
+                return event
+            case .swallow:
+                return nil
+            case .zoom(let steps):
+                for _ in 0..<abs(steps) {
+                    stepZoom(steps > 0 ? 1 : -1)
+                }
+                return nil
+            case .resizeTool(let steps):
+                for _ in 0..<abs(steps) {
+                    adjustActiveToolSize(increase: steps > 0)
+                }
                 return nil
             }
-
-            // A trackpad's deltas are fractions; a wheel's are whole detents.
-            let step: CGFloat = event.hasPreciseScrollingDeltas ? 6 : 1
-
-            // Reset when the direction reverses, so changing your mind is
-            // immediate rather than having to spend the accumulated other way
-            // first.
-            if scrollSizeAccumulator != 0,
-               (scrollSizeAccumulator > 0) != (delta > 0) {
-                scrollSizeAccumulator = 0
-            }
-            scrollSizeAccumulator += delta
-
-            while abs(scrollSizeAccumulator) >= step {
-                adjustActiveToolSize(increase: scrollSizeAccumulator > 0)
-                scrollSizeAccumulator -= scrollSizeAccumulator > 0 ? step : -step
-            }
-            return nil
         }
     }
 
@@ -9823,7 +9952,7 @@ struct DevelopView: View {
             NSEvent.removeMonitor(scrollWheelMonitor)
             self.scrollWheelMonitor = nil
         }
-        scrollSizeAccumulator = 0
+        scrollWheelTravel = ScrollWheelTravel()
     }
 
     /// Is the pointer over the picture, with a tool that draws a ring?
@@ -21708,6 +21837,13 @@ struct DevelopView: View {
         PhotoEditRenderer.releaseCachedRAWDecode()
         fullBaseImage = nil
         previewBaseImage = nil
+        // The card's own file belongs to the photo that is leaving, and this
+        // is the same one place every replacement of the base image passes
+        // through — a flatten and an unflatten included, both of which change
+        // what "the original" is compared AGAINST.
+        originalBaseImage = nil
+        originalPreviewBaseImage = nil
+        originalBaseURL = nil
         refineWorkItem?.cancel()
         refineWorkItem = nil
         displayedImage = nil
@@ -21746,6 +21882,44 @@ struct DevelopView: View {
                 // down. A no-op on every later photo switch, since the card is
                 // only up during a launch.
                 DevelopLaunchProgress.shared.finish()
+            }
+        }
+    }
+
+    /// The file on the card, decoded once, for the Original hold.
+    ///
+    /// ⚠️ Only for a photo that HAS a baked copy. Without that guard this
+    /// would decode a second copy of every photograph the client compares —
+    /// on a machine with 8 GB, and for a picture that would be identical.
+    ///
+    /// ⚠️ And it is the ONLY caller of `loadBaseImage(at:)`. Everything else
+    /// must keep seeing the bake; see that function's own note.
+    private func loadOriginalBaseIfNeeded() {
+        guard let url = selectedURL,
+              FlattenedImageStore.isFlattened(url),
+              originalBaseURL != url else {
+            return
+        }
+        // Claimed before the work starts, so a hold that is pressed, let go
+        // and pressed again does not start the same decode twice.
+        originalBaseURL = url
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let full = PhotoEditRenderer.loadBaseImage(at: url) else {
+                DispatchQueue.main.async {
+                    if originalBaseURL == url { originalBaseURL = nil }
+                }
+                return
+            }
+            let preview = PhotoEditRenderer.loadPreviewBaseImage(at: url, full: full)
+            DispatchQueue.main.async {
+                guard url == selectedURL else {
+                    return
+                }
+                originalBaseImage = full
+                originalPreviewBaseImage = preview
+                // Still held? Then the picture on screen is the bake, and this
+                // is the frame that was actually asked for.
+                if showOriginal { renderNow() }
             }
         }
     }
@@ -21791,7 +21965,11 @@ struct DevelopView: View {
         let generation = renderGeneration
         let effectiveSettings = showOriginal ? PhotoEditSettings() : settings
         let cropEnabled = !isCropping
-        let source = previewBaseImage
+        // Neutral settings over the BAKED copy is one step back, not the
+        // original — so the hold reads the card's own file when it has it.
+        // Until that decode lands this is still the bake, which is better than
+        // an empty canvas and is replaced the moment it arrives.
+        let source = showOriginal ? (originalPreviewBaseImage ?? previewBaseImage) : previewBaseImage
         let photoAtRenderTime = selectedURL
 
         developPreviewRenderQueue.async(qos: .userInteractive) {
@@ -21941,7 +22119,11 @@ struct DevelopView: View {
     }
 
     private func refinedRenderNow() {
-        guard let fullBaseImage else {
+        // The same swap the fast path makes, and it has to be made here too:
+        // the sharp frame lands 0.45 s into a hold, and without this it would
+        // land as the BAKE — the hold would show the original for a moment and
+        // then quietly stop showing it.
+        guard let fullBaseImage = showOriginal ? (originalBaseImage ?? fullBaseImage) : fullBaseImage else {
             return
         }
         // Not bumped: this render is a REPLACEMENT for whatever the fast

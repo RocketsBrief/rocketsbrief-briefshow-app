@@ -21265,3 +21265,72 @@ katalog je prazan kakav je i bio.
 
 Korak 3 (rad u slotu: pomeranje, zum, rotacija mišem), pa 4 (sync sa pravilom
 orijentacije), pa 5 i 6 (tekst i Google fontovi), pa 7 (izvoz na 300 dpi).
+
+---
+
+## KORAK 198.3 — traka je postala kolona, i zašto: 13 je prost broj (20. septembar 2026)
+
+Klijent je poslao snimak: gornja traka u panelu se razvukla u **jedno dugme po
+redu**, niz ceo panel. Traži: *„ovaj deo treba da bude horizontalni kockasti
+dugmici jedan do drugog i kad se hoveruje da pise sta je kao sto i radi"*.
+
+### Uzrok, i napravio ga je KORAK 198.2
+
+Ćelije su se **razvlačile** da popune red, pa je broj kolona morao da bude
+**delilac** broja dugmadi — inače bi poslednji red ostao kratak, a to je ono što
+je 18.09 traženo: *„da nikad ne ostavlja prostor prazan izmedju ikonica ili sa
+strane"*. Sa dvanaest dugmadi to je radilo (12 se deli na 6×2, 4×3, 3×4, 2×6).
+
+**Templates je bio trinaesti. Trinaest je prost broj** — nema nijedan delilac
+osim sebe i jedinice, a trinaest ćelija od 34 pt ne stane u panel od 300 pt.
+Jedini preostali „legalan" raspored bio je **13×1**. Traka nije imala grešku u
+crtanju; pravilo ju je matematički oteralo u kolonu.
+
+### Popravka: kvadrati ne moraju ništa da dele
+
+- Ćelija je sada **34×34, fiksna u oba pravca**, sa svojim zaobljenim okvirom —
+  ne parče jedne široke trake. Broj po redu je prosto **koliko ih stane**.
+- Redovi se **izbalansiraju**, ne pune pohlepno: 13 → **7 + 6**. Pohlepno
+  punjenje daje isto za 13, ali za 8 dugmadi po 5 daje 5 + 3 (pun red i patrljak),
+  a ovako 4 + 4. Time obećanje *„uvek isto gore isto dole"* preživljava i bez
+  pravila delilaca.
+- Okvir oko cele trake i vlas-linije između ćelija su **sklonjeni**: postojali su
+  da razvučene ćelije ne izgledaju kao jedno široko dugme, a kvadrat sa svojim
+  okvirom to kaže sam.
+- **Hover je nedirnut** — natpis ispod trake i dalje odmah kaže šta je dugme
+  (klijent: *„kao sto i radi"*).
+
+### ⚠️ Merač je bio pokvaren, i to je glavna pouka ovog koraka
+
+Test trake je sve vreme bio **zelen** dok je traka na ekranu bila kolona. Dva
+razloga, oba ista greška — test je nosio **svoju kopiju** broja umesto da ga
+pročita iz koda:
+
+| šta je test tvrdio | šta je zapravo bilo |
+|---|---|
+| `let buttonCount = 12` u harness-u | app isporučuje **13** |
+| `case (edit|retouch|layers) = ` u regexu za brojanje tabova | postoji i **četvrti** tab |
+
+Zato sada **sve** dolazi iz izvora: broj dugmadi se prebrojava iz samog niza,
+veličina kvadrata i razmak se izvlače iz `Develop.swift`, i izvlači se i
+`headerBarRows`. Uz to, nove provere koje opisuju **pravilo, ne raspored**: red
+mora da **stane** u panel, mora da **iskoristi** širinu (još jedan kvadrat ne
+sme da stane), redovi se razlikuju najviše za jedan, svako dugme se pojavljuje
+tačno jednom i po redu, i — direktno na kvar — **jedno dugme po redu sme samo
+ako dva zaista ne staju**.
+
+Izmereno posle popravke, kroz pravu funkciju: 7 po redu na 300–327 pt, pa 8, 9,
+10, 11, 12, i 13 u jednom redu od 518 pt naviše. Raspored redova je **7 + 6** na
+svim širinama osim najšire.
+
+**Negativne kontrole, tri, sve padaju tačno na svome:** vraćeno staro pravilo
+delilaca sa 13 dugmadi obara „još jedan kvadrat bi stao" i „jedno po redu gde
+dva staju" na **svakoj** širini (tj. reprodukuje snimak koji je klijent poslao);
+pohlepno punjenje redova obara samo „redovi su ravnomerni" (8 + 5); vraćeno
+`maxWidth: .infinity` obara dve provere o kvadratu iz izvora.
+
+**Stanje:** `xcodebuild … Debug` i `… Release` (`arm64 x86_64`) → **BUILD
+SUCCEEDED**; app instaliran u `/Applications/C4S Suite.app` i pokrenut.
+**Klijent testira sam** — poslednji pogled na ekran je njegov, ne moj.
+
+**NIJE OBJAVLJENO.**

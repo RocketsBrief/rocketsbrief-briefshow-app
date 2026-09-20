@@ -11702,58 +11702,60 @@ struct DevelopView: View {
         let behaviour: Behaviour
     }
 
+    /// The buttons are SQUARES, and that is the client's word for them:
+    /// *„horizontalni kockasti dugmici jedan do drugog"* (20.09).
     private static let headerCellHeight: CGFloat = 34
+    private static let headerCellGap: CGFloat = 4
 
-    /// How many cells go in one row.
+    /// How many square buttons go in one row.
     ///
-    /// ⚠️ Only DIVISORS of the button count are ever returned, and that is the
-    /// whole trick. With a divisor every row is full, so the bar can never end
-    /// in a hole — which is the requirement, stated twice: *„da nikad ne
-    /// ostavlja prostor prazan izmedju ikonica ili sa strane"* and *„uvek isto
-    /// gore isto dole"*. The panel is draggable from 300 to 560, so the count
-    /// per row has to change with it: twelve buttons go 12×1, 6×2, 4×3, 3×4,
-    /// 2×6 and nothing else.
+    /// ⚠️ THIS RULE REPLACED AN OLDER ONE, AND THE REASON IS WORTH KEEPING.
+    /// Until 20.09 the cells STRETCHED to fill the row, so the column count
+    /// had to be a DIVISOR of the button count or a row would end in a hole —
+    /// which is what *„da nikad ne ostavlja prostor prazan izmedju ikonica ili
+    /// sa strane"* asked for. That held while there were twelve buttons
+    /// (12 splits six ways). Templates made it **thirteen — a prime** — and a
+    /// prime has no divisors but itself and one: thirteen cells will not fit
+    /// at 300 pt, so the only legal split left was 13×1 and the bar became one
+    /// button per line down the whole panel. That is exactly what the client
+    /// then photographed and asked to be fixed.
     ///
-    /// ⚠️ It is also why the Unflatten cell is PERMANENT (greyed out when there
-    /// is nothing to unflatten) instead of appearing only on a flattened
-    /// photo: twelve divides six ways, eleven divides none at all — a row
-    /// would have to end short. Flatten already greys out for its own reason,
-    /// so the pair behaves alike.
+    /// With SQUARE buttons the count no longer has to divide anything: a cell
+    /// is 34×34 whatever the panel does, so nothing stretches, nothing is left
+    /// over between them, and the rows are balanced (13 → 7 + 6) rather than
+    /// one full row and one stray.
     private static func headerBarColumns(for width: CGFloat, count: Int) -> Int {
         guard count > 1 else {
             return max(count, 1)
         }
         // 28 = the panel's own horizontal padding, which is not the bar's to use.
-        let available = max(width - 28, 60)
-        // Aimed at, not required: the split whose cells land NEAREST this is
-        // the one taken. A minimum alone was tried first and it sat on six per
-        // row across almost the whole drag range — technically legal, but it
-        // ignored the width instead of following it, which is the opposite of
-        // what was asked (*„zavisno kako se desna strana siri ili suzava"*).
-        let idealCell: CGFloat = 64
-        // A floor, so a very narrow panel gives up a row rather than a target
-        // too small to hit.
-        let smallestCell: CGFloat = 34
+        let available = max(width - 28, headerCellHeight)
+        let perCell = headerCellHeight + headerCellGap
+        let fits = Int((available + headerCellGap) / perCell)
+        return min(count, max(1, fits))
+    }
 
-        let divisors = (1...count).filter { count % $0 == 0 }.sorted()
-        var best = divisors.first ?? 1
-        var bestDistance = CGFloat.greatestFiniteMagnitude
-
-        for columns in divisors {
-            // The seams between cells are a pixel each, and they come out of
-            // the same width the cells divide.
-            let cell = (available - CGFloat(columns - 1)) / CGFloat(columns)
-            guard cell >= smallestCell else {
-                continue
-            }
-            let distance = abs(cell - idealCell)
-            if distance < bestDistance {
-                bestDistance = distance
-                best = columns
-            }
+    /// The buttons cut into rows of at most `columns`, as EVENLY as they go.
+    ///
+    /// ⚠️ Evenly, not greedily. Greedy filling of thirteen buttons seven at a
+    /// time gives 7 + 6 too, but eight buttons five at a time gives 5 + 3 —
+    /// a full row and a stub — where this gives 4 + 4. The old layout got
+    /// "same on top, same at the bottom" from the divisor rule; this is what
+    /// keeps that promise now that the rule is gone.
+    private static func headerBarRows<T>(_ items: [T], columns: Int) -> [[T]] {
+        guard columns > 0, items.count > columns else {
+            return items.isEmpty ? [] : [items]
         }
-
-        return best
+        let rowCount = Int((Double(items.count) / Double(columns)).rounded(.up))
+        var rows: [[T]] = []
+        var index = 0
+        for row in 0..<rowCount {
+            let left = items.count - index
+            let size = Int((Double(left) / Double(rowCount - row)).rounded(.up))
+            rows.append(Array(items[index..<(index + size)]))
+            index += size
+        }
+        return rows
     }
 
     /// One tool at a time. Pressing a header cell puts down whatever else was
@@ -11913,12 +11915,19 @@ struct DevelopView: View {
         }
         .foregroundColor(item.isActive ? AppColors.hoverInk : AppColors.ink)
         .opacity(item.isDisabled ? 0.35 : 1)
-        // maxWidth .infinity is what makes every cell the same width and the
-        // row full: the cells divide whatever the panel gives them, so there
-        // is nothing left over at either end.
-        .frame(maxWidth: .infinity)
-        .frame(height: Self.headerCellHeight)
-        .background(item.isActive ? AppColors.panelAlt : Color.clear)
+        // A SQUARE, fixed both ways. It used to be `maxWidth: .infinity` so a
+        // row of cells divided the panel between them; that is what turned
+        // into one button per line the moment there were thirteen of them —
+        // see headerBarColumns.
+        .frame(width: Self.headerCellHeight, height: Self.headerCellHeight)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(item.isActive ? AppColors.panelAlt : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(AppColors.border.opacity(item.isActive ? 0.9 : 0.55), lineWidth: 1)
+        )
         // Load-bearing, not decoration: without it only the glyph itself is
         // hit-testable and the space around it is dead — the same omission was
         // a real bug on the Crop/Rotate and aspect-ratio buttons (a50776f).
@@ -11995,40 +12004,22 @@ struct DevelopView: View {
         let items = headerBarItems
         let columns = Self.headerBarColumns(for: CGFloat(effectivePanelWidth),
                                             count: items.count)
-        let rows: [[HeaderBarItem]] = stride(from: 0, to: items.count, by: columns).map {
-            Array(items[$0..<min($0 + columns, items.count)])
-        }
+        let rows = Self.headerBarRows(items, columns: columns)
 
-        // Hairlines rather than spacing. A gap between cells is exactly what
-        // was asked to go, but a bar with no seam at all reads as one wide
-        // button, so the seam is a single pixel and the cells still touch.
+        // ⚠️ No surrounding box and no hairlines any more. Those existed to
+        // keep stretched cells from reading as one wide button; squares with
+        // their own outline say it themselves, which is what was asked for:
+        // *„horizontalni kockasti dugmici jedan do drugog"*.
         return VStack(alignment: .leading, spacing: 5) {
-        VStack(spacing: 0) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
-                if rowIndex > 0 {
-                    Rectangle()
-                        .fill(AppColors.border.opacity(0.5))
-                        .frame(height: 1)
-                }
-
-                HStack(spacing: 0) {
-                    ForEach(Array(row.enumerated()), id: \.element.id) { cellIndex, item in
-                        if cellIndex > 0 {
-                            Rectangle()
-                                .fill(AppColors.border.opacity(0.5))
-                                .frame(width: 1, height: Self.headerCellHeight)
+            VStack(alignment: .leading, spacing: Self.headerCellGap) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: Self.headerCellGap) {
+                        ForEach(row) { item in
+                            headerBarCell(item)
                         }
-
-                        headerBarCell(item)
                     }
                 }
             }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
-        )
 
             headerHoverCaption
         }

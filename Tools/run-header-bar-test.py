@@ -38,16 +38,6 @@ if start == -1:
 end = src.index("    private func headerBarCell(", start)
 items_body = src[start:end]
 
-actions = items_body.count("HeaderBarItem(id: \"")
-tab_cases = len(re.findall(r"case (edit|retouch|layers) = ", src))
-total = actions + tab_cases - 1  # the last HeaderBarItem(id:) builds each tab
-
-check(total == 12,
-      "the bar holds %d buttons (%d actions + %d tabs)" % (total, actions - 1, tab_cases))
-check(12 % 6 == 0 and 12 % 4 == 0 and 12 % 3 == 0,
-      "twelve splits 6×2, 4×3 and 3×4 — every one of them a full grid")
-check("isDisabled: isFlattening || !isFlattenedPhoto" in items_body,
-      "Unflatten keeps a permanent cell and greys out, so the count never changes")
 
 # ---- 1b. the order the client asked for, and it is an ORDER, not a set ------
 order = re.findall(r'HeaderBarItem\(id: "([a-z]+)"|tabItem\(\.([a-z]+)\)', items_body)
@@ -57,8 +47,36 @@ sequence = [a or ("tab." + b) for a, b in order]
 wanted = ["grid", "original", "ai", "crop", "tab.edit"]
 check(sequence[:5] == wanted,
       "the bar opens with %s (found %s)" % (" → ".join(wanted), " → ".join(sequence[:5])))
-check(sequence[-2:] == ["tab.retouch", "tab.layers"],
-      "Retouch and Layers close the bar (found %s)" % " → ".join(sequence[-2:]))
+check(sequence[-3:] == ["tab.retouch", "tab.layers", "tab.templates"],
+      "Retouch, Layers and Templates close the bar (found %s)" % " → ".join(sequence[-3:]))
+
+actions = items_body.count("HeaderBarItem(id: \"")
+# ⚠️ EVERY case of the tab enum, not a list of three names. This line used to
+# read `case (edit|retouch|layers) = `, so when Templates was added the count
+# stayed at twelve and the check below went on passing while the bar it
+# describes had thirteen buttons and had collapsed to one button per line.
+tab_body = src.split("enum DevelopPanelTab", 1)[1].split("\n}", 1)[0]
+tab_cases = len(re.findall(r"\n    case \w+ = ", tab_body))
+total = actions + tab_cases - 1  # the last HeaderBarItem(id:) builds each tab
+
+check(total == len(sequence),
+      "the bar holds %d buttons (%d actions + %d tabs), and the array agrees"
+      % (total, actions - 1, tab_cases))
+
+# The count no longer has to divide anything — that is what square cells buy —
+# so what is checked here instead is that nothing stretches.
+cell_body = src[src.index("    private func headerBarCell("):
+                src.index("    /// What the pointer is over")]
+check(".frame(width: Self.headerCellHeight, height: Self.headerCellHeight)" in cell_body,
+      "the cells are squares of a fixed side")
+# Comments only, stripped: the comment above the frame explains that this
+# USED to be `maxWidth: .infinity`, and a check that reads prose is a check
+# that fails on its own documentation.
+cell_code = "\n".join(l.split("//", 1)[0] for l in cell_body.splitlines())
+check("maxWidth: .infinity" not in cell_code,
+      "no cell stretches to divide the row — stretching is what forced the divisor rule")
+check("isDisabled: isFlattening || !isFlattenedPhoto" in items_body,
+      "Unflatten keeps a permanent cell and greys out rather than coming and going")
 
 # ---- 1c. the tooltip is attached to the CONTROL, not inside the label -------
 # This is the bug the client reported: a macOS Button lays its own tracking
@@ -122,7 +140,40 @@ else:
     sys.exit("headerBarColumns never closes — brace matching failed.")
 
 function = src[start:i + 1].replace("private static func", "func")
-print("\nextracted headerBarColumns from Develop.swift, compiling…")
+
+# ⚠️ The constants come from the source as well. The cell side is what decides
+# how many fit, so a test carrying its own copy of it would keep passing while
+# the app changed underneath — which is exactly how the bar came to be one
+# button per line without a single check going red.
+constants = []
+for name in ("headerCellHeight", "headerCellGap"):
+    line = next((l for l in src.splitlines()
+                 if l.strip().startswith(f"private static let {name}")), None)
+    if line is None:
+        sys.exit(f"{name} not found in Develop.swift — was it renamed?")
+    constants.append(line.strip().replace("private static let", "let"))
+
+rows_marker = "    private static func headerBarRows<T>(_ items: [T], columns: Int) -> [[T]] {"
+rows_start = src.find(rows_marker)
+if rows_start == -1:
+    sys.exit("headerBarRows not found in Develop.swift — was it renamed?")
+depth, k = 0, src.index("{", src.index("-> [[T]]", rows_start))
+while k < len(src):
+    if src[k] == "{":
+        depth += 1
+    elif src[k] == "}":
+        depth -= 1
+        if depth == 0:
+            break
+    k += 1
+rows_function = src[rows_start:k + 1].replace("private static func", "func")
+
+# ⚠️ AND THE REAL BUTTON COUNT, counted off the array above rather than typed
+# in. The old harness said twelve while the app shipped thirteen, so the one
+# number that mattered was the one the test was not reading.
+function = (f"let shippingButtonCount = {len(sequence)}\n\n"
+            + "\n".join(constants) + "\n\n" + function + "\n\n" + rows_function)
+print("\nextracted headerBarColumns, headerBarRows and the cell size from Develop.swift, compiling…")
 
 harness = (root / "Tools" / "test-header-bar.swift").read_text(encoding="utf-8")
 anchor = "// ---- the real function, pasted in by the extractor at run time -------------"

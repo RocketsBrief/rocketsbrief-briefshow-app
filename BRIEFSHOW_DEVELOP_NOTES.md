@@ -21494,3 +21494,74 @@ verzija gledala samo da boja postoji u fajlu i propustila isključen blok.
 
 **Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
 i pokrenuto. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.6 — slika ide po CELOM template-u, i klik na pločicu prosto menja (20. septembar 2026)
+
+Klijent: *„ali isto ovako kada selektujem sliku da mogu bukvalno da je pomeram
+dragujem po celom templetu da izabere ja lokaciju.. isto ako importujem template
+super sto mogu da ostanu sa desne strane i kada kliknem na jedan da se zameni
+ako koiknem na drugi da se zameni isto.."*
+
+### Dva pravila koja su ovde pala, oba ista greška
+
+| kad | pravilo | koliko je davalo hoda (slika 3:2, rupa 4:3, 1×) |
+|---|---|---|
+| 198.4 | „nikad bela pruga uz ivicu otiska" = pola preklapanja | **0,0625** vodoravno, **0** uspravno |
+| 198.5 | „bar sredina slike u rupi" = pola slota | 0,5 i 0,5 |
+| **198.6** | **ceo papir** | do svake ivice platna |
+
+Obe ranije verzije su bile app koji odlučuje umesto klijenta. Sada se sredina
+slike kreće **do svake tačke papira**, a kad je slika veća od otvora (zum) hod
+prati **sliku**, da bi se stiglo do njenog ćoška. Jedino što se i dalje odbija
+je da slika ode **sa papira** i nestane.
+
+⛔ **Hod je ASIMETRIČAN, i mora da bude.** Klijentov template ima rupu visoko i
+traku sa tekstom ispod; „isto gore koliko dole" bi sliku zaustavilo pre dna
+otiska a pustilo je van gornje ivice. Zato `SlotTravel` nosi četiri broja, ne
+dva.
+
+### Sečenje se preselilo sa RUPE na PAPIR
+
+Ranije je slika bila isečena na slot uvek. Sada je isečena na **platno**:
+
+- crtež **iznad** slike (mat) i dalje pokazuje sliku samo kroz svoj otvor — jer
+  je mat neproziran svuda drugde, što mat i jeste;
+- slika **iznad** crteža sad sme bilo gde po otisku, što je tačno ono što je
+  traženo;
+- ništa ne curi van papira.
+
+Oba slučaja su izmerena na pikselima, sa slikom gurnutom za 0,6 slota ulevo.
+
+### Klik na pločicu = ta pločica
+
+Klik je ranije išao kroz **par**: klik na horizontalan okvir dok je otvorena
+uspravna slika donosio je vertikalnu polovinu. Klijent je to pročitao kao „ne
+menja se". Sada klik primenjuje **tačno ono što je kliknuto**, a rečenica ispod
+kaže koji bi okvir pristajao i da je **sync** taj koji će ga sam uzeti. Pravilo
+o paru je ostalo nedirnuto u `briefShowTemplateForPhoto` — za korak 4.
+
+⚠️ **Zamena čuva kadriranje.** Drugi klik na drugu pločicu ne vraća sliku na
+sredinu: razlog za taj klik je poređenje **iste** slike u dva okvira, a
+recentriranje bi svaki put bacilo posao koji se poredi. Kadriranje se samo
+steže na ono što novi okvir dozvoljava. Prvi template na slici i dalje kreće
+centriran.
+
+### Čime je zaključano
+
+Prepisane provere hoda (uključujući **asimetriju**: gore ≠ dole kad rupa nije na
+sredini), tri nova merenja piksela za sečenje na papir, i provere iz izvora da
+klik **ne** zove pravilo o paru a da rečenica o orijentaciji postoji.
+
+**Negativne kontrole, tri:** hod vraćen na pola preklapanja obara šest provera
+(među njima i mrtvu uspravnu osu); sečenje vraćeno na rupu obara „sme preko
+mata"; klik vraćen na par obara „klik koristi TAJ template".
+
+⚠️ **Ispravka merača, drugi put isti tip:** provera „ispod mata se vidi samo
+kroz otvor" je prvo merila na y=900 — tačno na plavoj pruzi koju sam sam ucrtao
+u probni crtež preko cele širine. Merilo je gledalo prugu i proglasilo mat
+fotografijom.
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+i pokrenuto. **NIJE OBJAVLJENO.**

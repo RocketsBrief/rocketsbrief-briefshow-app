@@ -18183,7 +18183,13 @@ struct DevelopView: View {
             slotWidthOnScreen: Double(slot.width),
             slotHeightOnScreen: Double(slot.height),
             photoWidth: Double(photo.width),
-            photoHeight: Double(photo.height))
+            photoHeight: Double(photo.height),
+            slot: template.slot.rect,
+            // The canvas AS DRAWN, not the print: the travel is worked out in
+            // whatever units the drag arrives in, and mixing the two would let
+            // the photograph off the screen while claiming it was on paper.
+            canvasWidth: Double(frame.width),
+            canvasHeight: Double(frame.height))
     }
 
     /// Zoom the photograph inside its opening, keeping it where it may be.
@@ -18197,12 +18203,12 @@ struct DevelopView: View {
               let photo = templatePhotoPixelSize else { return }
         var next = settings.templatePlacement
         next.zoom = zoom
-        let slot = CGSize(width: template.slot.rect.width * Double(template.canvasPixels.width),
-                          height: template.slot.rect.height * Double(template.canvasPixels.height))
+        let canvas = template.canvasPixels
         settings.templatePlacement = briefShowClampedPlacement(
             next,
             photoWidth: Double(photo.width), photoHeight: Double(photo.height),
-            slotWidth: Double(slot.width), slotHeight: Double(slot.height))
+            slot: template.slot.rect,
+            canvasWidth: Double(canvas.width), canvasHeight: Double(canvas.height))
     }
 
     private func importTemplateFromDisk() {
@@ -18240,31 +18246,48 @@ struct DevelopView: View {
     private func applyTemplate(_ template: PrintTemplate) {
         guard selectedURL != nil else { return }
 
-        let extent = fullBaseImage?.extent ?? previewBaseImage?.extent
-        var chosen = template
-        if let extent, extent.width > 0, extent.height > 0 {
-            let wanted = TemplateOrientation.ofPhoto(width: Int(extent.width), height: Int(extent.height))
-            if let resolved = briefShowTemplateForPhoto(width: Int(extent.width),
-                                                        height: Int(extent.height),
-                                                        chosen: template,
-                                                        catalogue: templateLibrary.templates) {
-                chosen = resolved
-                templateNote = resolved.id == template.id
-                    ? nil
-                    : "This photo is \(wanted.label.lowercased()), so its \(resolved.orientation.label.lowercased()) pair “\(resolved.name)” was used."
-            } else {
-                templateNote = "This photo is \(wanted.label.lowercased()) and “\(template.name)” is \(template.orientation.label.lowercased()). Import the other half and they will be paired."
-            }
-        } else {
-            templateNote = nil
-        }
+        let swapping = settings.templateID != nil && settings.templateID != template.id
+        settings.templateID = template.id
 
-        settings.templateID = chosen.id
-        // A fresh template starts centred and filling: carrying the previous
-        // one's zoom and offset into a differently shaped opening lands the
-        // photograph somewhere nobody chose.
-        settings.templatePlacement = .centred
-        settings.templateArtOverPhoto = nil
+        // ⚠️ WHAT WAS CLICKED IS WHAT IS USED. It used to follow the pair —
+        // click the horizontal frame on an upright photograph and the vertical
+        // half arrived instead — and the client reported that as the tiles not
+        // swapping: *„kada kliknem na jedan da se zameni ako kliknem na drugi
+        // da se zameni isto"*. The pair rule belongs to the SYNC across a
+        // mixed selection, where nobody is clicking anything; here it only
+        // says which one would have fitted.
+        templateNote = orientationNote(for: template)
+
+        if swapping {
+            // Swapping frames keeps the framing and pulls it back into what
+            // the new one allows — comparing the same photo in two templates
+            // is the reason to click the second tile, and re-centring it every
+            // time would throw away the work being compared.
+            setTemplateZoom(settings.templatePlacement.zoom)
+        } else {
+            settings.templatePlacement = .centred
+            settings.templateArtOverPhoto = nil
+        }
+        templatePhotoSelected = false
+    }
+
+    /// Says — without overruling anything — when the frame and the photograph
+    /// are the other way up, and which template does fit.
+    private func orientationNote(for template: PrintTemplate) -> String? {
+        guard let extent = fullBaseImage?.extent ?? previewBaseImage?.extent,
+              extent.width > 0, extent.height > 0 else { return nil }
+        let wanted = TemplateOrientation.ofPhoto(width: Int(extent.width), height: Int(extent.height))
+        guard template.orientation != wanted, template.orientation != .square else { return nil }
+
+        if let pairID = template.pairID,
+           let partner = templateLibrary.templates.first(where: { $0.id == pairID }),
+           partner.orientation == wanted {
+            return "This photo is \(wanted.label.lowercased()) and “\(template.name)” is "
+                 + "\(template.orientation.label.lowercased()). Its pair “\(partner.name)” fits it — "
+                 + "and that is the one a sync would use."
+        }
+        return "This photo is \(wanted.label.lowercased()) and “\(template.name)” is "
+             + "\(template.orientation.label.lowercased()). Import the other half and they will be paired."
     }
 
     private func removeTemplateFromPhoto() {

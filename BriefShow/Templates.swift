@@ -220,64 +220,87 @@ struct SlotPlacement: Codable, Equatable {
     static let minimumZoom = 0.1
     static let maximumZoom = 5.0
 
-    /// How far the photograph may be pushed when it is SMALLER than the
-    /// opening, in slot widths: half a slot each way, which puts the middle
-    /// of the photograph on the edge of the opening.
-    ///
-    /// ⚠️ This is what makes the drag feel like dragging. The first version
-    /// allowed only half the overhang, so a 3:2 photograph filling a 4:3
-    /// opening could travel 6 % of the slot sideways and — measured — EXACTLY
-    /// NOTHING vertically. That is not a stiff drag, it is a dead one, and it
-    /// is what the client reported as *„drag ne radi"*.
-    static let freeTravel = 0.5
 }
 
-/// How far the photograph may be taken inside its opening, in slot widths.
+/// How far the photograph may be taken, in slot widths, measured from the
+/// middle of the opening.
 ///
-/// Two things at once, and the larger of them wins:
+/// ⚠️ ASYMMETRIC, and it has to be: the opening is rarely in the middle of the
+/// paper. The client's own template has its hole high on an 8×6 with a caption
+/// band underneath, so "as far down as up" would stop the photograph short of
+/// the bottom of the print while letting it run off the top.
+struct SlotTravel: Equatable {
+    var minX: Double
+    var maxX: Double
+    var minY: Double
+    var maxY: Double
+}
+
+/// Where the photograph is allowed to go.
 ///
+/// Two things at once, and the larger of them wins on each side:
+///
+///  - **the whole canvas.** The client asked to put the picture anywhere on
+///    the template — *„da mogu bukvalno da je pomeram dragujem po celom
+///    templetu da izabere ja lokaciju"* — so the middle of the photograph may
+///    reach any point of the paper, not only of the hole.
 ///  - **half the overhang**, which is what lets a photograph BIGGER than the
-///    opening be panned until its own far edge arrives. This is the part that
-///    grows with the zoom: at 3× there is a lot of picture to reach.
-///  - **half a slot**, always available. It is what makes a photograph that is
-///    smaller than the opening — or exactly filling it — movable at all.
+///    opening be panned until its own far edge arrives. It grows with the
+///    zoom: at 3× there is a lot of picture to reach.
 ///
-/// ⚠️ THE FIRST VERSION HAD ONLY THE FIRST HALF, and the client reported the
-/// result as *„drag ne radi"*. It was not far wrong: with a 3:2 photograph in
-/// a 4:3 opening at 1×, the travel came to 6 % of the slot sideways and, in
-/// the other axis, exactly zero. The rule that produced it — never let a white
-/// sliver open down the edge — was the app protecting the print against the
-/// person making it. He can see the paper; if he wants the photograph off
-/// centre, or smaller than its frame, that is the work.
-///
-/// What the floor still refuses is losing the photograph altogether: at half a
-/// slot the middle of the picture sits on the edge of the opening, and a drag
-/// cannot push it out of the hole and out of reach.
-func briefShowPlacementLimits(photoWidth: Double, photoHeight: Double,
-                              slotWidth: Double, slotHeight: Double,
-                              placement: SlotPlacement) -> (x: Double, y: Double) {
-    guard photoWidth > 0, photoHeight > 0, slotWidth > 0, slotHeight > 0 else { return (0, 0) }
-    let scaleX = slotWidth / photoWidth
-    let scaleY = slotHeight / photoHeight
+/// ⚠️ TWO RULES DIED HERE, and both were the app deciding for the client.
+/// First "never let a white sliver open down the edge of the print", which
+/// measured out as six per cent of travel sideways and exactly none
+/// vertically — reported as „drag ne radi". Then "at least keep the middle of
+/// the picture inside the hole", which is this same mistake one size smaller.
+/// What is left refuses only to lose the photograph off the paper altogether.
+func briefShowPlacementTravel(photoWidth: Double, photoHeight: Double,
+                              slot: NormalizedRect,
+                              canvasWidth: Double, canvasHeight: Double,
+                              placement: SlotPlacement) -> SlotTravel {
+    let slotRect = briefShowSlotPixelRect(slot, canvasWidth: canvasWidth, canvasHeight: canvasHeight)
+    guard photoWidth > 0, photoHeight > 0,
+          slotRect.width > 0, slotRect.height > 0,
+          canvasWidth > 0, canvasHeight > 0 else {
+        return SlotTravel(minX: 0, maxX: 0, minY: 0, maxY: 0)
+    }
+
+    let scaleX = slotRect.width / photoWidth
+    let scaleY = slotRect.height / photoHeight
     let base = placement.mode == .fill ? max(scaleX, scaleY) : min(scaleX, scaleY)
     let zoom = max(SlotPlacement.minimumZoom, min(placement.zoom, SlotPlacement.maximumZoom))
     let width = photoWidth * base * zoom
     let height = photoHeight * base * zoom
-    return (max(abs(width - slotWidth) / (2 * slotWidth), SlotPlacement.freeTravel),
-            max(abs(height - slotHeight) / (2 * slotHeight), SlotPlacement.freeTravel))
+
+    let overhangX = abs(width - slotRect.width) / (2 * slotRect.width)
+    let overhangY = abs(height - slotRect.height) / (2 * slotRect.height)
+
+    // From the middle of the opening out to each edge of the paper, in slot
+    // widths — which is the unit the offsets are stored in.
+    let left = Double(slotRect.midX) / Double(slotRect.width)
+    let right = Double(canvasWidth - slotRect.midX) / Double(slotRect.width)
+    let up = Double(slotRect.midY) / Double(slotRect.height)
+    let down = Double(canvasHeight - slotRect.midY) / Double(slotRect.height)
+
+    return SlotTravel(minX: -max(overhangX, left),
+                      maxX: max(overhangX, right),
+                      minY: -max(overhangY, up),
+                      maxY: max(overhangY, down))
 }
 
-/// The placement, kept inside what the opening allows.
+/// The placement, kept inside what the paper allows.
 func briefShowClampedPlacement(_ placement: SlotPlacement,
                                photoWidth: Double, photoHeight: Double,
-                               slotWidth: Double, slotHeight: Double) -> SlotPlacement {
+                               slot: NormalizedRect,
+                               canvasWidth: Double, canvasHeight: Double) -> SlotPlacement {
     var next = placement
     next.zoom = max(SlotPlacement.minimumZoom, min(placement.zoom, SlotPlacement.maximumZoom))
-    let limits = briefShowPlacementLimits(photoWidth: photoWidth, photoHeight: photoHeight,
-                                          slotWidth: slotWidth, slotHeight: slotHeight,
+    let travel = briefShowPlacementTravel(photoWidth: photoWidth, photoHeight: photoHeight,
+                                          slot: slot,
+                                          canvasWidth: canvasWidth, canvasHeight: canvasHeight,
                                           placement: next)
-    next.offsetX = min(max(next.offsetX, -limits.x), limits.x)
-    next.offsetY = min(max(next.offsetY, -limits.y), limits.y)
+    next.offsetX = min(max(next.offsetX, travel.minX), travel.maxX)
+    next.offsetY = min(max(next.offsetY, travel.minY), travel.maxY)
     return next
 }
 
@@ -290,14 +313,17 @@ func briefShowClampedPlacement(_ placement: SlotPlacement,
 func briefShowPlacementAfterDrag(_ start: SlotPlacement,
                                  translationX: Double, translationY: Double,
                                  slotWidthOnScreen: Double, slotHeightOnScreen: Double,
-                                 photoWidth: Double, photoHeight: Double) -> SlotPlacement {
+                                 photoWidth: Double, photoHeight: Double,
+                                 slot: NormalizedRect,
+                                 canvasWidth: Double, canvasHeight: Double) -> SlotPlacement {
     guard slotWidthOnScreen > 0, slotHeightOnScreen > 0 else { return start }
     var next = start
     next.offsetX = start.offsetX + translationX / slotWidthOnScreen
     next.offsetY = start.offsetY + translationY / slotHeightOnScreen
     return briefShowClampedPlacement(next,
                                      photoWidth: photoWidth, photoHeight: photoHeight,
-                                     slotWidth: slotWidthOnScreen, slotHeight: slotHeightOnScreen)
+                                     slot: slot,
+                                     canvasWidth: canvasWidth, canvasHeight: canvasHeight)
 }
 
 struct TemplateSlot: Codable, Equatable, Identifiable {
@@ -952,11 +978,15 @@ func briefShowComposeTemplate(photo: CIImage,
         placed = photo.transformed(by: transform)
     }
 
-    // ⚠️ Clipped to the SLOT, always — including when the drawing sits on top
-    // of it. The hole in a client's PNG is his drawing's business, and a
-    // photograph wider than the slot would otherwise run out under the mat and
-    // reappear wherever else the drawing happens to be transparent.
-    placed = placed.cropped(to: slot)
+    // ⚠️ Clipped to the PAPER, not to the hole — changed 20.09 on the client's
+    // word: *„da mogu bukvalno da je pomeram dragujem po celom templetu da
+    // izabere ja lokaciju"*. The slot is where the photograph LANDS, not a
+    // cage it has to stay in.
+    //
+    // With the drawing on top, a mat still shows the picture only through its
+    // own opening, which is what a mat is. With the photograph on top it can
+    // now sit anywhere on the print. Either way nothing spills off the paper.
+    placed = placed.cropped(to: canvas)
 
     guard let art else {
         return placed.composited(over: paper)

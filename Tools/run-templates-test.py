@@ -174,10 +174,21 @@ wiring("Templates is its own tab, not a row inside Tools",
        and "case .templates:" in develop_code)
 wiring("there is a way to import a drawing",
        "func importTemplateFromDisk()" in develop_code and "NSOpenPanel()" in develop_code)
-wiring("choosing a template follows the PAIR, as step 4's sync will",
-       "briefShowTemplateForPhoto(" in develop_code)
-wiring("a fresh template starts centred rather than inheriting the last one's framing",
-       "settings.templatePlacement = .centred" in develop_code)
+# ⚠️ CHANGED 20.09. Clicking a tile used to follow the pair — click the
+# horizontal frame on an upright photograph and the vertical half arrived —
+# and the client read that as the tiles not swapping. The pair rule stays, but
+# it belongs to the sync, where nobody is clicking anything.
+apply_body = develop_code.split("private func applyTemplate(", 1)[-1].split("\n    }", 1)[0]
+wiring("clicking a tile uses THAT template, whatever way up the photo is",
+       "settings.templateID = template.id" in apply_body
+       and "briefShowTemplateForPhoto(" not in apply_body)
+wiring("but it says which one would have fitted",
+       "func orientationNote(" in develop_code and "pairID" in develop_code)
+wiring("the pair rule is still there for the sync to use",
+       "briefShowTemplateForPhoto(" in templates_source)
+wiring("a first template starts centred; swapping keeps the framing being compared",
+       "settings.templatePlacement = .centred" in apply_body
+       and "if swapping {" in apply_body)
 wiring("the note does not follow the client onto the next photograph",
        "templateNote = nil" in develop_code.split("private func selectPhoto(", 1)[-1].split("\n    }", 1)[0])
 # Step 3 — the photograph is moved and zoomed inside its opening.

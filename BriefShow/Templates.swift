@@ -418,6 +418,26 @@ func briefShowPhotoRectInSlot(photoWidth: Double,
     return CGRect(x: centreX - width / 2, y: centreY - height / 2, width: width, height: height)
 }
 
+/// THE rectangle the photograph occupies on the canvas, in TOP-LEFT pixels.
+///
+/// ⚠️ ONE FUNCTION, ON PURPOSE, and it exists because there were two. The
+/// composition worked the placement out against a slot already flipped into
+/// Core Image's bottom-up coordinates, while the selection outline on the
+/// canvas worked it out against the screen's top-down ones — so a positive
+/// `offsetY` moved the picture UP in the print and the outline DOWN over it.
+/// The client saw the result immediately: *„zasto ovaj selection ne prati
+/// ivice slike??"*.
+///
+/// Now both ask this, and the renderer flips the answer at the last moment.
+func briefShowPhotoRectOnCanvas(photoWidth: Double, photoHeight: Double,
+                                slot: NormalizedRect,
+                                canvasWidth: Double, canvasHeight: Double,
+                                placement: SlotPlacement) -> CGRect {
+    let slotRect = briefShowSlotPixelRect(slot, canvasWidth: canvasWidth, canvasHeight: canvasHeight)
+    return briefShowPhotoRectInSlot(photoWidth: photoWidth, photoHeight: photoHeight,
+                                    slot: slotRect, placement: placement)
+}
+
 /// Does this photograph, placed like this, leave any of the slot uncovered?
 /// The export asks before it writes: a print with a transparent sliver down
 /// one edge is a reprint.
@@ -945,11 +965,6 @@ func briefShowComposeTemplate(photo: CIImage,
                         height: (printed.height * canvasScale).rounded())
     guard canvas.width > 1, canvas.height > 1 else { return photo }
 
-    let slot = briefShowSlotPixelRect(template.slot.rect,
-                                      canvasWidth: canvas.width,
-                                      canvasHeight: canvas.height,
-                                      flipped: true)
-
     // The paper. Anything the photograph does not cover and the drawing does
     // not paint is white, not transparent: a PNG with a hole in it exported
     // over nothing is a picture with a hole in it.
@@ -958,10 +973,19 @@ func briefShowComposeTemplate(photo: CIImage,
     let extent = photo.extent
     var placed = photo
     if extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite {
-        let target = briefShowPhotoRectInSlot(photoWidth: extent.width,
-                                              photoHeight: extent.height,
-                                              slot: slot,
-                                              placement: placement)
+        // Worked out the way the screen sees it — the same call the selection
+        // outline makes — and turned over only here, because Core Image counts
+        // its rows from the bottom.
+        let onCanvas = briefShowPhotoRectOnCanvas(photoWidth: Double(extent.width),
+                                                  photoHeight: Double(extent.height),
+                                                  slot: template.slot.rect,
+                                                  canvasWidth: Double(canvas.width),
+                                                  canvasHeight: Double(canvas.height),
+                                                  placement: placement)
+        let target = CGRect(x: onCanvas.minX,
+                            y: canvas.height - onCanvas.maxY,
+                            width: onCanvas.width,
+                            height: onCanvas.height)
         var transform = CGAffineTransform(translationX: target.midX, y: target.midY)
         if placement.rotationDegrees != 0 {
             // ⚠️ MINUS, and it is the difference between the knob and the

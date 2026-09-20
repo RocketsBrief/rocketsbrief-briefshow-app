@@ -703,6 +703,32 @@ let heldOnPaper = briefShowComposeTemplate(photo: photo, template: canvasTemplat
 check("the canvas is still the canvas, however far the photo was pushed",
       heldOnPaper.extent.width == 2400 && heldOnPaper.extent.height == 1800)
 
+// ⚠️ THE OUTLINE AND THE PICTURE, MEASURED AGAINST EACH OTHER. This is the
+// fault the client saw: a positive offsetY moved the photograph UP in the
+// print (Core Image counts rows from the bottom) while the selection outline,
+// drawn in screen coordinates, moved DOWN — so the frame sat off the picture
+// by twice the offset. Both now ask briefShowPhotoRectOnCanvas, and what it
+// says is where the pixels are.
+var down = SlotPlacement(); down.mode = .fit; down.zoom = 0.5; down.offsetY = 0.25
+let movedDown = briefShowComposeTemplate(photo: photo, template: canvasTemplate, art: nil,
+                                         placement: down, artOverPhoto: false)
+let downRect = briefShowPhotoRectOnCanvas(photoWidth: 6000, photoHeight: 4000,
+                                          slot: canvasTemplate.slot.rect,
+                                          canvasWidth: 2400, canvasHeight: 1800,
+                                          placement: down)
+check("a positive offsetY puts the picture DOWN the page, where the outline draws it",
+      isNear(colour(movedDown, atX: Int(downRect.midX), y: Int(downRect.midY)), (255, 0, 0)),
+      "rect says \(downRect)")
+check("and just above the outline there is paper, not picture",
+      isNear(colour(movedDown, atX: Int(downRect.midX), y: Int(downRect.minY) - 30), (255, 255, 255)))
+check("just inside its bottom edge there is picture",
+      isNear(colour(movedDown, atX: Int(downRect.midX), y: Int(downRect.maxY) - 30), (255, 0, 0)))
+check("and just below it, paper again",
+      isNear(colour(movedDown, atX: Int(downRect.midX), y: Int(downRect.maxY) + 30), (255, 255, 255)))
+check("the same for the left edge — the outline is the picture's own rectangle",
+      isNear(colour(movedDown, atX: Int(downRect.minX) - 30, y: Int(downRect.midY)), (255, 255, 255)) &&
+      isNear(colour(movedDown, atX: Int(downRect.minX) + 30, y: Int(downRect.midY)), (0, 255, 0)))
+
 // ⚠️ WHICH WAY A TURN GOES, measured rather than reasoned about. The knob on
 // the canvas reads CLOCKWISE, like the layer knob beside it, and Core Image
 // counts its rows from the bottom — so the composition has to turn the other

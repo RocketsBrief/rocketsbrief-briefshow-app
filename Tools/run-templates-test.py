@@ -242,9 +242,16 @@ wiring("and resized from its corners, by the RATIO of two distances",
        "func resizeTemplatePhoto(" in develop_code and "start.zoom * Double(distance / start.distance)" in develop_code)
 wiring("resizing keeps the photo's proportions — it goes through the zoom, never a stretch",
        "setTemplateZoom(start.zoom" in develop_code)
-wiring("the outline is drawn from the SAME rectangle the renderer places",
-       "briefShowPhotoRectInSlot(" in
-       develop_code.split("func templatePhotoRectOnScreen(", 1)[-1].split("\n    }", 1)[0])
+# ⚠️ ONE function for both, by name. Two of them is what put the outline off
+# the picture by twice the offset: the renderer worked in Core Image's
+# bottom-up coordinates and the outline in the screen's top-down ones.
+outline_body = develop_code.split("func templatePhotoRectOnScreen(", 1)[-1].split("\n    }", 1)[0]
+compose_body = templates_source.split("func briefShowComposeTemplate(photo: CIImage,\n                              template: PrintTemplate,\n                              art: CIImage?", 1)[-1]
+wiring("the outline asks for the photo's rectangle by the shared function",
+       "briefShowPhotoRectOnCanvas(" in outline_body)
+wiring("and so does the renderer, instead of working it out its own way",
+       "briefShowPhotoRectOnCanvas(" in compose_body
+       and "flipped: true" not in compose_body)
 wiring("the drag is measured in a named canvas space, so the outline cannot shake",
        'coordinateSpace: .named(Self.templateCanvasSpace)' in develop_code)
 wiring("a turn is stored clockwise and the composition turns the other way to match",

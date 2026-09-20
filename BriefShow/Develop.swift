@@ -18009,15 +18009,16 @@ struct DevelopView: View {
     /// opinion about it.
     private func templatePhotoRectOnScreen(_ template: PrintTemplate, frame: CGRect) -> CGRect? {
         guard let photo = templatePhotoPixelSize else { return nil }
-        let slot = briefShowSlotPixelRect(template.slot.rect,
-                                          canvasWidth: Double(frame.width),
-                                          canvasHeight: Double(frame.height))
-        let inFrame = CGRect(x: frame.minX + slot.minX, y: frame.minY + slot.minY,
-                             width: slot.width, height: slot.height)
-        return briefShowPhotoRectInSlot(photoWidth: Double(photo.width),
-                                        photoHeight: Double(photo.height),
-                                        slot: inFrame,
-                                        placement: settings.templatePlacement)
+        // ⚠️ The SAME call the renderer makes — see briefShowPhotoRectOnCanvas
+        // for what having two of these cost: the outline sat where the picture
+        // was not, by twice the offset, and the client saw it at once.
+        let onCanvas = briefShowPhotoRectOnCanvas(photoWidth: Double(photo.width),
+                                                  photoHeight: Double(photo.height),
+                                                  slot: template.slot.rect,
+                                                  canvasWidth: Double(frame.width),
+                                                  canvasHeight: Double(frame.height),
+                                                  placement: settings.templatePlacement)
+        return onCanvas.offsetBy(dx: frame.minX, dy: frame.minY)
     }
 
     /// The picture in the template: drag it, turn it, resize it — and see that

@@ -21565,3 +21565,48 @@ fotografijom.
 
 **Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
 i pokrenuto. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.7 — okvir selekcije nije pratio sliku: dva pravougaonika umesto jednog (20. septembar 2026)
+
+Klijent, sa snimkom: *„ali zasto ovaj selection ne prati ivice slike?? kada
+selektujem sliku to je to mora da prati jer je slika selektovana!"*
+
+### Uzrok — znak po visini, i dva mesta koja su ga računala
+
+Kompozicija je pomeraj računala nad slotom **već okrenutim** u Core Image
+koordinate (redovi se broje **odozdo**), a okvir selekcije nad ekranskim
+(redovi **odozgo**). Posledica: `offsetY > 0` je sliku u otisku pomerao
+**NAGORE**, a okvir preko nje **NADOLE** — razmak između njih je bio **dvostruki
+pomeraj**. Dok je slika stajala na sredini (pomeraj 0) ništa se nije videlo;
+čim je klijent povukao sliku, okvir je ostao gde jeste.
+
+### Popravka: jedan pravougaonik, jedna funkcija
+
+`briefShowPhotoRectOnCanvas` vraća pravougaonik slike na platnu u **gornje-levim**
+pikselima, onako kako ekran gleda. Njega sada zovu **oba**:
+
+- **renderer**, koji ga okreće naopako tek na kraju (`y = visina − maxY`), jer
+  Core Image tako broji;
+- **okvir selekcije**, koji ga samo pomeri za položaj platna na ekranu.
+
+⛔ **Dve funkcije koje računaju isto mesto su ovde koštale vidljivo.** Pravilo za
+dalje: gde god okvir na ekranu opisuje nešto što renderer crta, pravougaonik se
+traži **od jedne funkcije**, a pretvaranje u koordinate se radi na jednom mestu.
+
+### Čime je zaključano
+
+Pet novih merenja **na pikselima**, sa slikom pomerenom za četvrtinu slota
+nadole i smanjenom na 0,5×: sredina pravougaonika koji okvir crta **jeste**
+slika; 30 px iznad njegove gornje ivice je **papir**; 30 px unutar donje ivice
+je slika; 30 px ispod nje papir; i isto za levu ivicu (papir spolja, zeleni rub
+slike unutra). Uz to dve provere iz izvora: i okvir i renderer zovu **istu**
+funkciju, i u kompoziciji više nema `flipped: true`.
+
+**Negativna kontrola:** vraćen stari način (kompozicija računa preko okrenutog
+slota) obara **tri** merenja piksela i jednu proveru iz izvora — tj.
+reprodukuje tačno ono što je klijent slikao.
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+i pokrenuto. **NIJE OBJAVLJENO.**

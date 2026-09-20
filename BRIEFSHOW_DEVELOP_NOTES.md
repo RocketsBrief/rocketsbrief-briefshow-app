@@ -21651,3 +21651,52 @@ filmstripu; premeštena grana ispred sloja obara proveru o redosledu.
 
 **Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
 i pokrenuto. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.9 — Flatten je gubio template (20. septembar 2026)
+
+Klijent, sa snimkom: *„kada sam isao flatten photo desilo se ovo nema template-a
+a treba da je sa templatom jer sam vec ubacio template za tu sliku"*.
+
+### Uzrok — i nije bilo pečenje, nego bacanje
+
+Flatten renderuje sa `applyCrop: false`, a platno se komponuje **unutar te iste
+grane** (v. 198.2). Dakle flatten **nikad nije ispekao okvir** — slika na disku
+je fotografija, ne otisak. Ali posle pečenja zapis se briše na „prazno + crop",
+pa je `templateID` nestajao. Okvir nije završio u pikselima; jednostavno je
+obrisan.
+
+### Popravka: template preživljava flatten, isto kao crop
+
+`cleared` sada nosi **`templateID`, `templatePlacement` i `templateArtOverPhoto`**
+pored `crop`-a, na **oba** mesta gde se zapis čisti posle pečenja — i za otvorenu
+sliku i za batch (portretni recepti).
+
+⛔ **I to je bolja polovina pogodbe.** Template je **raspored**, kao crop, ne
+gradacija. Ostavljen živ, posle flatten-a se i dalje može pomerati, menjati i
+skinuti, a sledeća gradacija radi nad **fotografijom**, ne nad paspartuom oko
+nje. Da se pekao u piksele, klijent bi posle flatten-a imao otisak kao „sliku"
+i svaka sledeća izmena bi dirala i mat.
+
+⚠️ **Dugme Flatten se više ne pali za sliku kojoj je jedina izmena okvir.**
+`hasUnbakedEdits` izuzima template iz istog razloga iz kog već izuzima crop:
+nema šta da ispeče, a pečenje ipak prepisuje fajl na disku.
+
+### Čime je zaključano
+
+Pet provera iz izvora: da **oba** mesta za čišćenje nose sva tri polja
+template-a, da crop i dalje stoji uz njih, i da `hasUnbakedEdits` izuzima okvir.
+
+**Negativne kontrole, dve:** ispražnjeno nošenje template-a na otvorenoj slici
+obara proveru baš za to mesto; vraćen `hasUnbakedEdits` bez template-a obara
+proveru o nepotrebnom pečenju.
+
+⚠️ **Ispravka merača, opet ista vrsta:** prva verzija provere je mesta nalazila
+**brojanjem** pojava `var cleared = PhotoEditSettings()`, pa je sa ispražnjenim
+jednim mestom prijavila kvar pod **imenom drugog**. Sada se svako mesto traži po
+onome **čime se završava** (`settings = cleared`, odnosno
+`outcome.settingsByURL[url] = cleared`).
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+i pokrenuto. **NIJE OBJAVLJENO.**

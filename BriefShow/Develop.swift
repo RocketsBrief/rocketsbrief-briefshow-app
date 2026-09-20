@@ -6851,10 +6851,14 @@ enum PortraitRecipeService {
                     continue
                 }
 
-                // Everything is in the pixels now. The crop is the one thing
-                // kept, because it was not baked — same rule as flattenPhoto.
+                // Everything is in the pixels now. The crop and the print
+                // template are what is kept, because neither was baked —
+                // same rule as flattenPhoto.
                 var cleared = PhotoEditSettings()
                 cleared.crop = photoSettings.crop
+                cleared.templateID = photoSettings.templateID
+                cleared.templatePlacement = photoSettings.templatePlacement
+                cleared.templateArtOverPhoto = photoSettings.templateArtOverPhoto
                 outcome.settingsByURL[url] = cleared
             }
 
@@ -19951,10 +19955,26 @@ struct DevelopView: View {
                     completion?()
                     return
                 }
-                // Everything is in the pixels now. The crop is the one thing
-                // kept, because it was not baked.
+                // Everything is in the pixels now — except the two things
+                // that were never baked, and both survive as settings.
+                //
+                // ⚠️ THE TEMPLATE IS ONE OF THEM, and leaving it out is what
+                // the client hit: *„kada sam isao flatten photo desilo se ovo
+                // nema template-a a treba da je sa templatom"*. The flatten
+                // renders with `applyCrop: false`, and the canvas is composed
+                // inside that same branch — so the baked pixels are the
+                // PHOTOGRAPH, never the print. Dropping the id therefore did
+                // not bake the frame, it threw it away.
+                //
+                // Keeping it live is also the better half of the bargain: the
+                // template is a layout, like the crop, so after a flatten it
+                // can still be moved, swapped or taken off, and a later grade
+                // works on the picture rather than on the mat around it.
                 var cleared = PhotoEditSettings()
                 cleared.crop = cropToKeep
+                cleared.templateID = settingsSnapshot.templateID
+                cleared.templatePlacement = settingsSnapshot.templatePlacement
+                cleared.templateArtOverPhoto = settingsSnapshot.templateArtOverPhoto
                 settings = cleared
                 pendingCrop = cropToKeep ?? .full
                 selectedLocalAdjustmentID = nil
@@ -20001,10 +20021,21 @@ struct DevelopView: View {
     /// so a photo carrying nothing but a crop has nothing to flatten — and
     /// after a flatten the crop is exactly what is left behind, which would
     /// otherwise leave the button lit up forever offering to bake nothing.
+    /// Is there anything a flatten would actually bake?
+    ///
+    /// ⚠️ The crop and the TEMPLATE are excluded, and for the same reason:
+    /// neither is baked. The flatten renders with `applyCrop: false`, and the
+    /// print canvas is composed inside that branch, so both come through the
+    /// flatten as settings. Counting them here would light Flatten up on a
+    /// photo whose only edit is the frame it is printed in — a bake with
+    /// nothing to bake, which still rewrites the file on disk.
     private var hasUnbakedEdits: Bool {
-        var cropOnly = PhotoEditSettings()
-        cropOnly.crop = settings.crop
-        return settings != cropOnly
+        var keptByFlatten = PhotoEditSettings()
+        keptByFlatten.crop = settings.crop
+        keptByFlatten.templateID = settings.templateID
+        keptByFlatten.templatePlacement = settings.templatePlacement
+        keptByFlatten.templateArtOverPhoto = settings.templateArtOverPhoto
+        return settings != keptByFlatten
     }
 
     private var flattenSection: some View {

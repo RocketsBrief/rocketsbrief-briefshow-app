@@ -282,6 +282,25 @@ wiring("and it goes through the same clamp as the drag",
 wiring("⇧ makes the step ten, as it does for a layer",
        'flags == .shift ? 10 : 1' in develop_code)
 
+# ⚠️ FLATTEN. The bake renders with applyCrop: false and the canvas is composed
+# inside that branch, so a flatten never bakes the frame — which means dropping
+# the id does not bake it either, it throws it away. Reported 20.09: „kada sam
+# isao flatten photo desilo se ovo nema template-a".
+# ⚠️ Each site is found by what CLOSES it, not by counting occurrences: the
+# first version split on "var cleared = …" and, with one site emptied out,
+# reported the fault against the other one's name.
+for anchor, label in (("settings = cleared", "the open photo"),
+                      ("outcome.settingsByURL[url] = cleared", "a batch flatten")):
+    body = develop_code.split(anchor, 1)[0][-900:]
+    wiring(f"a flatten keeps the template on {label}",
+           "cleared.templateID" in body and "cleared.templatePlacement" in body
+           and "cleared.templateArtOverPhoto" in body)
+
+wiring("and the crop is still kept beside it",
+       develop_code.count("cleared.crop = ") == 2)
+wiring("a photo whose only edit is its frame is not offered a bake",
+       "keptByFlatten.templateID = settings.templateID" in develop_code)
+
 wiring("deleting a template takes it off this photo first",
        "func deleteTemplate(" in develop_code and "removeTemplateFromPhoto()" in develop_code)
 

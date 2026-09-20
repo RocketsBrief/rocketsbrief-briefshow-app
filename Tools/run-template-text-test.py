@@ -30,6 +30,11 @@ Two halves.
        flatten and the export draw these prints with no window anywhere.
 
 Negative controls, RUN rather than assumed (20.09 and 21.09):
+  - the typing plate drawn in the app's own theme, which is the fault the
+    client reported: 3 checks fail, black reading 1.3:1 against it. The same
+    checks also caught the FIRST fix — near-white/near-black plates chosen by a
+    luminance threshold — where the tan #B89973 came out at 2.5:1, readable on
+    neither;
   - the hue wrap removed from `briefShowColor(from:)`: "a hue below zero wraps
     round the circle" fails, reading #FF0080 instead of the purple at 0.75.
     ⚠️ The check written first — "1.0 is the same red as 0.0" — passed under
@@ -280,7 +285,11 @@ wiring("what is typed is drawn at the size it will print",
        and "briefShowPhotoPixelsPerInch(" in field
        and "briefShowPixelsPerInch(template:" in field)
 wiring("and on a plate, so it is not typed over its own drawn copy",
-       "AppColors.background.opacity(0.94)" in field)
+       "briefShowEditingPlate(for: item.color)" in field)
+wiring("the plate follows the TEXT's colour, never the app's theme",
+       "AppColors.background" not in field and "AppColors.panel" not in field)
+wiring("and the caret is the text's colour too",
+       ".tint(Color(nsColor: NSColor(srgbRed: item.color.red" in field)
 
 # The colour picker, 21.09: *„ovo za boju texta mora da bude u themi app-a"*.
 wiring("nothing opens the system's Colors window any more",

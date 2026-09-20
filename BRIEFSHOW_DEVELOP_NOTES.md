@@ -22591,3 +22591,58 @@ se petlja **nikad ne izvrši**. Sada **broji** (7) i pada ako ih nije toliko.
 
 **Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; svi srodni testovi
 prolaze; app instaliran i pokrenut. ⚠️ **Nije viđeno na ekranu** — keychain.
+
+---
+
+## KORAK 203 — dok se kuca, tekst se mora VIDETI (21. septembar 2026)
+
+Klijent, uz snimak: *„ovde dok pisem text lepo se i ne vidi text"*. Na snimku se
+vidi tamna ploča i crno „DATE:" na njoj — crno na tamnom.
+
+### Uzrok, i on je bio u KORAKU 201
+
+Ploču sam nacrtao u **temi app-a** (`AppColors.background`, u tamnoj temi skoro
+crna), a slova su u **boji teksta** — a tekst na otisku je po pravilu crn. Dve
+boje koje nemaju nikakve veze jedna s drugom, pa je crno palo na crno: **1,3:1**.
+
+⛔ **Ploča prati BOJU TEKSTA, nikad temu app-a.** To je sada i provera nad
+izvorom: u polju za kucanje ne sme da se pojavi nijedna `AppColors` boja.
+
+### Prvi pokušaj popravke je TAKOĐE pao — i lenjir ga je uhvatio
+
+Prvo sam stavio prag po svetlini: ispod 0,35 → skoro bela ploča, iznad → skoro
+crna. Mereno na svih 46 boja (12 iz palete, 21 siva, 13 čistih nijansi):
+**#B89973 (bež) je izašao na 2,5:1** — nečitljiv ni na jednoj.
+
+Sada se ploča bira **merenjem**: izračunaju se oba kontrasta i uzme bolji, a
+ploče su **čisto bela i čisto crna**, jer dalje od toga sRGB ne ide. Najgore
+što ijedna boja može da uradi protiv boljeg od ta dva je **4,58:1** — na
+svetlini 0,179, gde su obe jednako loše. To je svojstvo aritmetike, ne izbora
+boja, i provereno je i nezavisnim računom.
+
+| boja teksta | ploča | kontrast |
+|---|---|---|
+| crna | bela | **21:1** |
+| bela | crna | **21:1** |
+| bež #B89973 | crna (bolja od bele za nju) | **≥ 4,58:1** |
+| bilo koja | bolja od dve | **nikad ispod 4,5:1** |
+
+Kursor je isto u boji teksta — sistemska akcentna boja preko svetle ploče je
+druga boja koja ništa ne govori.
+
+### Čime je zaključano
+
+Merenje je **kontrast**, ne „da li je ploča svetla": `briefShowRelativeLuminance`
+(WCAG, kanali linearizovani pa težinski — ⚠️ **ne prosek**, jer zasićeno plavo i
+zasićeno žuto imaju isti prosek a nisu ni nalik) i `briefShowContrastRatio`.
+
+Uz to stoji provera koja namerno tvrdi **kvar**: „crno na tamnom panelu app-a
+NIJE čitljivo" (1,3:1). Ako ona ikad prestane da pada, provera iznad nje je
+prestala da meri.
+
+**Negativna kontrola, ODVOŽENA:** ploča vraćena na temu app-a → padaju **3**
+provere, crna čita **1,3:1**.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; `run-template-text-test.py`
+**all passed / all good**; app instaliran i pokrenut. ⚠️ **Nije viđeno na
+ekranu** — keychain.

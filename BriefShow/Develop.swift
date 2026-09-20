@@ -19472,14 +19472,30 @@ struct DevelopView: View {
                                                     green: item.color.green,
                                                     blue: item.color.blue,
                                                     alpha: 1)))
+            // The caret in the text's own colour too — the system's accent
+            // over a pale plate is a second colour saying nothing.
+            .tint(Color(nsColor: NSColor(srgbRed: item.color.red, green: item.color.green,
+                                         blue: item.color.blue, alpha: 1)))
             .frame(width: max(box.width, 40))
             // A PLATE, and it is not decoration: the line being edited is
             // already drawn into the picture underneath, so without something
             // opaque over it the client would be typing into a double image of
             // his own text.
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-            .background(RoundedRectangle(cornerRadius: 3).fill(AppColors.background.opacity(0.94)))
+            //
+            // ⚠️ ITS COLOUR FOLLOWS THE TEXT, NOT THE THEME. Drawn in the
+            // app's own background it was near-black, so a line written in
+            // black was typed black on black — reported 21.09 with a
+            // screenshot. See briefShowEditingPlate.
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color(nsColor: {
+                        let plate = briefShowEditingPlate(for: item.color)
+                        return NSColor(srgbRed: plate.red, green: plate.green,
+                                       blue: plate.blue, alpha: 0.97)
+                    }()))
+            )
             .overlay(RoundedRectangle(cornerRadius: 3)
                 .stroke(layerSelectionColor, lineWidth: 1.4))
             .position(x: box.midX, y: box.midY)

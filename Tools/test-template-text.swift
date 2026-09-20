@@ -508,5 +508,73 @@ do {
           briefShowTextSwatches.first == .black && briefShowTextSwatches[4] == .white)
 }
 
+// MARK: - Seeing what you type
+
+print("\nthe plate a line is typed on")
+
+do {
+    // The report, 21.09: black text typed on the app's own near-black plate.
+    // So the measurement is the one that describes it — contrast, not "is the
+    // plate light".
+    check("black on its plate is readable",
+          briefShowContrastRatio(.black, briefShowEditingPlate(for: .black)) > 9,
+          String(format: "%.1f:1", briefShowContrastRatio(.black, briefShowEditingPlate(for: .black))))
+    check("white on its plate is readable",
+          briefShowContrastRatio(.white, briefShowEditingPlate(for: .white)) > 9,
+          String(format: "%.1f:1", briefShowContrastRatio(.white, briefShowEditingPlate(for: .white))))
+
+    // ⚠️ THE FAULT ITSELF: the app's dark theme background under black text.
+    // If this ever stops failing, the check above has stopped measuring.
+    let theme = TemplateTextColor(red: 0.12, green: 0.12, blue: 0.13)
+    check("black on the app's own dark panel is NOT readable — which is the bug",
+          briefShowContrastRatio(.black, theme) < 2,
+          String(format: "%.1f:1", briefShowContrastRatio(.black, theme)))
+
+    // Every colour the picker offers, and the greys in between, has to be
+    // typeable. 4.5:1 is the usual floor for text.
+    var worst = 21.0
+    var worstColour = TemplateTextColor.black
+    var tried = 0
+    for swatch in briefShowTextSwatches {
+        let ratio = briefShowContrastRatio(swatch, briefShowEditingPlate(for: swatch))
+        if ratio < worst { worst = ratio; worstColour = swatch }
+        tried += 1
+    }
+    for step in 0...20 {
+        let grey = Double(step) / 20
+        let swatch = TemplateTextColor(red: grey, green: grey, blue: grey)
+        let ratio = briefShowContrastRatio(swatch, briefShowEditingPlate(for: swatch))
+        if ratio < worst { worst = ratio; worstColour = swatch }
+        tried += 1
+    }
+    for step in 0...12 {
+        let swatch = briefShowColor(from: TemplateTextHSB(hue: Double(step) / 12,
+                                                          saturation: 1, brightness: 1))
+        let ratio = briefShowContrastRatio(swatch, briefShowEditingPlate(for: swatch))
+        if ratio < worst { worst = ratio; worstColour = swatch }
+        tried += 1
+    }
+    // ⚠️ 4.5 is the floor, and the number that comes back should be about
+    // 4.58 — the worst ANY colour can do against the better of white and
+    // black, which happens at luminance 0.179 where the two are equally bad.
+    // A first attempt used near-white and near-black plates chosen by a
+    // threshold and this check caught it: the tan #B89973 read 2.5:1.
+    check("all \(tried) colours tried, none below 4.5:1",
+          tried == 46 && worst >= 4.5,
+          String(format: "worst was %@ at %.1f:1", briefShowHexString(worstColour), worst))
+
+    // Luminance is weighted, not averaged — a blue and a yellow that average
+    // the same are nothing alike to look at, and a plate chosen on the average
+    // would be wrong for one of them.
+    let yellow = TemplateTextColor(red: 1, green: 1, blue: 0)
+    let blue = TemplateTextColor(red: 0, green: 0, blue: 1)
+    check("yellow and blue are not the same brightness",
+          briefShowRelativeLuminance(yellow) > 5 * briefShowRelativeLuminance(blue),
+          String(format: "%.3f against %.3f",
+                 briefShowRelativeLuminance(yellow), briefShowRelativeLuminance(blue)))
+    check("so they get different plates",
+          briefShowEditingPlate(for: yellow) != briefShowEditingPlate(for: blue))
+}
+
 print(failures == 0 ? "\nall passed\n" : "\n\(failures) FAILED\n")
 exit(failures == 0 ? 0 : 1)

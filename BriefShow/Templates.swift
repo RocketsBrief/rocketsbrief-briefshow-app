@@ -1692,3 +1692,51 @@ let briefShowTextSwatches: [TemplateTextColor] = [
     TemplateTextColor(red: 0.40, green: 0.25, blue: 0.60),
     TemplateTextColor(red: 0.72, green: 0.60, blue: 0.45)
 ]
+
+// MARK: - The plate a line is typed on
+
+/// Relative luminance, the way contrast is actually defined (WCAG): the
+/// channels linearised out of sRGB first, then weighted by how much the eye
+/// gets from each.
+///
+/// ⚠️ NOT the average of the three. A saturated blue and a saturated yellow
+/// average the same and are nothing alike to look at.
+func briefShowRelativeLuminance(_ colour: TemplateTextColor) -> Double {
+    func linear(_ channel: Double) -> Double {
+        let value = min(max(channel, 0), 1)
+        return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+    }
+    return 0.2126 * linear(colour.red) + 0.7152 * linear(colour.green) + 0.0722 * linear(colour.blue)
+}
+
+/// How far apart two colours are to the eye, 1 (identical) to 21 (black on
+/// white). 4.5 is the usual floor for body text.
+func briefShowContrastRatio(_ a: TemplateTextColor, _ b: TemplateTextColor) -> Double {
+    let first = briefShowRelativeLuminance(a)
+    let second = briefShowRelativeLuminance(b)
+    return (max(first, second) + 0.05) / (min(first, second) + 0.05)
+}
+
+/// The plate the client types a line ON.
+///
+/// ⚠️ IT FOLLOWS THE TEXT, NOT THE APP'S THEME, and that is the whole point.
+/// Drawn in the theme's own background it was near-black — so a line written in
+/// black was typed black on black, which is exactly what the client reported on
+/// 21.09 with a screenshot: *„ovde dok pisem text lepo se i ne vidi text"*.
+///
+/// Light under a dark line, dark under a light one — decided by MEASURING both
+/// and taking the better, not by a threshold.
+///
+/// ⚠️ A threshold does not work, and it was measured failing: with the plates
+/// set at 0.97 and 0.11 grey and the line drawn at luminance 0.35, the tan
+/// swatch #B89973 came out at **2.5:1** — readable on neither. The two plates
+/// are therefore WHITE and BLACK, which is as far apart as sRGB goes, and the
+/// worst any colour can do against the better of those two is **4.58:1** — at
+/// luminance 0.179, where they are equally bad. That is above the 4.5 floor,
+/// and it is a property of the arithmetic rather than of the colours chosen.
+func briefShowEditingPlate(for colour: TemplateTextColor) -> TemplateTextColor {
+    let light = TemplateTextColor.white
+    let dark = TemplateTextColor.black
+    return briefShowContrastRatio(colour, light) >= briefShowContrastRatio(colour, dark)
+        ? light : dark
+}

@@ -30,6 +30,13 @@ Two halves.
        flatten and the export draw these prints with no window anywhere.
 
 Negative controls, RUN rather than assumed (20.09 and 21.09):
+  - the `gap >= 0` dropped from the second-click decision: "a clock that goes
+    backwards opens nothing" fails — NTP or a sleep/wake would open a line for
+    typing on a single click;
+  - the id not cleared before the write in commitCanvasText: "submit and
+    focus-loss together cannot write twice" fails. ⚠️ It first CRASHED the
+    ruler instead of failing it (`str.index` on a string that was no longer
+    there), which is a ruler that cannot report — now it measures;
   - the canvas offset dropped when laying text on a PHOTOGRAPH: "a cropped
     photo has its text in the same place" fails — a cropped photo's extent does
     not start at zero, so the writing lands off the picture entirely;
@@ -87,13 +94,23 @@ print("\ncompiling the real Templates.swift with the test")
 sdk = subprocess.run(["xcrun", "--show-sdk-path", "--sdk", "macosx"],
                      capture_output=True, text=True, check=True).stdout.strip()
 
+# The click decision lives in Develop.swift, which cannot be compiled on its
+# own — so it is pasted in, the same way run-delete-key-test.py does it.
+click = body(develop, "func briefShowIsSecondTextClick(previous: (id: UUID, at: Date)?,")
+if not click:
+    sys.exit("briefShowIsSecondTextClick not found in Develop.swift — renamed or moved?")
+
 with tempfile.TemporaryDirectory() as tmp:
     work = pathlib.Path(tmp)
     binary = work / "template-text"
     # swiftc allows top-level code only in main.swift, so the test is copied
     # under that name rather than written under it.
     main = work / "main.swift"
-    shutil.copy(TEST, main)
+    anchor = "// ---- the real click decision, pasted in by the extractor at run time ------"
+    test = TEST.read_text(encoding="utf-8")
+    if anchor not in test:
+        sys.exit("marker line missing from test-template-text.swift")
+    main.write_text(test.replace(anchor, anchor + "\n" + click, 1), encoding="utf-8")
     build = subprocess.run(
         ["swiftc", "-O", "-swift-version", "5", "-sdk", sdk,
          "-target", "arm64-apple-macos13.0",
@@ -228,6 +245,37 @@ wiring("a text names a family and a face, the shape step 6 needs",
 wiring("a face that the new family does not have is replaced, not carried",
        "briefShowFontFaces(in: family)" in develop
        and "settings.templateTexts[index].fontFace = faces.first" in develop)
+
+# Typing on the canvas — client, 21.09.
+field = body(develop, "    private func canvasTextField(_ item: TemplateText, box: CGRect, frame: CGRect) -> some View {")
+overlay_edit = body(develop, "    private func templateTextBoxOverlay(_ item: TemplateText, frame: CGRect) -> some View {")
+commit = body(develop, "    private func commitCanvasText() {")
+
+wiring("a second click on the canvas opens the line for typing",
+       "briefShowIsSecondTextClick(" in overlay_edit and "beginEditingText(item)" in overlay_edit)
+wiring("and it is not a count-2 gesture, which would hold the first click",
+       "onTapGesture(count: 2)" not in overlay_edit)
+wiring("while typing, the box carries no drag and no tap",
+       "if isEditing {" in overlay_edit and "} else {" in overlay_edit)
+wiring("the field writes into the SAME record the panel writes into",
+       "settings.templateTexts[index].text = editingTextValue" in commit)
+wiring("Esc throws the typing away, as it does on a folder row",
+       "onExitCommand" in field and "editingTextID = nil" in field)
+wiring("and losing focus to anything keeps it",
+       "onChange(of: canvasTextFieldFocused)" in field and "commitCanvasText()" in field)
+# ⚠️ `find`, not `index`: with the line removed the ruler THREW instead of
+# reporting, which is a ruler that cannot fail — it only crashes.
+cleared_at = commit.find("editingTextID = nil")
+writes_at = commit.find("firstIndex(where:")
+wiring("submit and focus-loss together cannot write twice",
+       cleared_at != -1 and writes_at != -1 and cleared_at < writes_at,
+       f"cleared at {cleared_at}, writes at {writes_at}")
+wiring("what is typed is drawn at the size it will print",
+       "item.sizeInches * pixelsPerInch" in field
+       and "briefShowPhotoPixelsPerInch(" in field
+       and "briefShowPixelsPerInch(template:" in field)
+wiring("and on a plate, so it is not typed over its own drawn copy",
+       "AppColors.background.opacity(0.94)" in field)
 
 print()
 if compiled != 0:

@@ -22472,3 +22472,71 @@ ima okvir i tačke), i **dve od njih su prvo pale zbog greške u samom lenjiru**
 ⚠️ **Ništa od ovoga nije viđeno na ekranu** — app stoji na keychain lozinki,
 koja je klijentova i odavde se ne dira. Prijave 1–4 su o **izgledu**, pa ih on
 potvrđuje jednim pogledom; ostalo je mereno kroz isporučeni pipeline.
+
+---
+
+## KORAK 201 — tekst se kuca i na samoj slici, duplim klikom (21. septembar 2026)
+
+Klijent, uz snimak natpisa „Date:" na otisku: *„jel mozes ovo da napravis da
+mogu i ovde da promenim text … ako kliknem dva puta recimo na text … da bude na
+dve strane i ovde direktno i sa desne strane"*.
+
+**Dupli klik na natpis otvara polje tačno tamo gde natpis stoji.** Polje sa
+desne strane ostaje i radi isto — ⛔ **to su dva polja nad JEDNIM zapisom**, ne
+dve kopije teksta: oba pišu u `settings.templateTexts[i].text`, pa se slika
+precrtava dok se kuca i undo (⌘Z) radi kao i za sve ostalo.
+
+### ⛔ Nije `onTapGesture(count: 2)` — i ovo je treći put
+
+`count: 2` iznad `count: 1` tera SwiftUI da **zadrži prvi klik** dok ne vidi da
+li stiže drugi. Klijent je to već dvaput prijavio kao lag (ćelija fotografije,
+pa red foldera u KORAKU 197). Zato klik odgovara odmah — bira natpis — a **šta
+je značio** računa `briefShowIsSecondTextClick` iz vremena od prethodnog klika
+na **isti** natpis.
+
+| slučaj | šta se dešava |
+|---|---|
+| drugi klik na isti natpis unutar `NSEvent.doubleClickInterval` | **otvara kucanje** |
+| drugi klik na **drugi** natpis | samo ga bira |
+| spor drugi klik | samo ga bira |
+| sat koji ide unazad (NTP, sleep/wake) | **ne otvara ništa** |
+
+### Tri stvari koje bi bile kvar da nisu namerno rešene
+
+- ⚠️ **Dok je polje otvoreno, kutija ne nosi ni drag ni tap ni kursor.** Na
+  macOS-u drag na istom view-u **uzima klik** polju za tekst unutar njega —
+  klijent bi pritisnuo u polje i počeo da vuče natpis umesto da kuca. Isti kvar
+  i isti lek kao kod preimenovanja foldera (KORAK 197).
+- ⚠️ **Polje ima neprovidnu podlogu.** Natpis je već iscrtan u samoj slici ispod
+  njega; bez podloge bi klijent kucao preko duple slike sopstvenog teksta.
+- ⚠️ **Piše se JEDNOM.** Enter i gubitak fokusa stižu zajedno, pa
+  `commitCanvasText` **prvo briše** `editingTextID` — svaki sledeći poziv pada
+  kroz `guard`. Isti oblik kao `commitGridRename`.
+
+**Esc baca otkucano, klik sa strane ga čuva** — isti par koji je KORAK 197
+utvrdio za preimenovanje; da oba rade isto, jedno bi bilo suvišno.
+
+Kuca se **u veličini u kojoj će se i štampati** (inč se čita sa platna kao i
+svuda), pa ništa ne skoči kad se polje zatvori.
+
+### Čime je zaključano
+
+`run-template-text-test.py` sada **kompajlira i pravu odluku o kliku** (vađenu
+iz `Develop.swift`) i vozi je: šest slučajeva iz tabele gore.
+
+**Negativne kontrole, ODVOŽENE:**
+
+| šta je pokvareno | šta padne |
+|---|---|
+| izbačeno `gap >= 0` | „a clock that goes backwards opens nothing" |
+| `editingTextID` se ne briše pre upisa | „submit and focus-loss together cannot write twice" |
+
+⚠️ **Druga kontrola je prvo SRUŠILA lenjir umesto da ga obori** — provera je
+koristila `str.index` na tekstu kog više nema, pa je python pukao i nijedan
+„FAIL" se nije ispisao. Prepravljeno na `find`: lenjir koji se ruši ne prijavljuje.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; devet testova prolazi,
+uključujući `run-double-click-test.py` i `run-folder-rename-test.py` (druge dve
+putanje koje dele isto pravilo o kliku). App instaliran i pokrenut.
+
+⚠️ **Nije viđeno na ekranu** — keychain lozinka.

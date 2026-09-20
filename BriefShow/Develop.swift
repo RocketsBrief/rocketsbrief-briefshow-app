@@ -8590,6 +8590,25 @@ func briefShowScrollWheelAction(commandHeld: Bool,
     return steps == 0 ? .swallow : .resizeTool(steps: steps)
 }
 
+/// A second click on the SAME piece of text, close enough in time to count.
+///
+/// ⚠️ ONE gesture, not two, and this document has already paid for the other
+/// way twice (the photo cell, then the folder row in KORAK 197): a `count: 2`
+/// tap stacked over a `count: 1` makes SwiftUI HOLD the first click while it
+/// waits to see whether a second arrives — which the client reported as lag.
+/// So the click answers at once, and what it MEANT is worked out from the time
+/// since the last one.
+///
+/// A clock that goes backwards (NTP, sleep/wake) opens nothing.
+func briefShowIsSecondTextClick(previous: (id: UUID, at: Date)?,
+                                id: UUID,
+                                at now: Date,
+                                interval: TimeInterval) -> Bool {
+    guard let previous, previous.id == id else { return false }
+    let gap = now.timeIntervalSince(previous.at)
+    return gap >= 0 && gap <= interval
+}
+
 struct DevelopView: View {
     /// The photos in the filmstrip.
     ///
@@ -9099,6 +9118,13 @@ struct DevelopView: View {
     /// fixed point rather than accumulating — the same reason
     /// `templateDragStart` exists for the photograph.
     @State private var templateTextDragStart: NormalizedRect?
+    /// Typing ON the canvas — client, 21.09: *„ako kliknem dva puta recimo na
+    /// text … da bude na dve strane i ovde direktno i sa desne strane"*.
+    /// Which line is being typed, and what has been typed so far.
+    @State private var editingTextID: UUID?
+    @State private var editingTextValue = ""
+    @State private var lastTextClick: (id: UUID, at: Date)?
+    @FocusState private var canvasTextFieldFocused: Bool
     /// The font browser — what is on this Mac, and the Google catalogue.
     @State private var showFontBrowser = false
     @State private var fontBrowserShowsGoogle = true
@@ -19126,7 +19152,12 @@ struct DevelopView: View {
         let width = max(box.width, 12)
         let height = max(box.height, 12)
 
+        let isEditing = item.id == editingTextID
+
         return ZStack {
+            if isEditing {
+                canvasTextField(item, box: box, frame: frame)
+            } else {
             Color.clear
                 .contentShape(Rectangle())
                 .frame(width: width, height: height)
@@ -19144,8 +19175,20 @@ struct DevelopView: View {
                     }
                 }
                 .onTapGesture {
+                    // One click picks it up; a second one on the SAME line,
+                    // soon enough, starts typing right here. See
+                    // briefShowIsSecondTextClick for why it is not a count-2
+                    // gesture.
+                    let now = Date()
+                    let second = briefShowIsSecondTextClick(previous: lastTextClick,
+                                                            id: item.id, at: now,
+                                                            interval: NSEvent.doubleClickInterval)
+                    lastTextClick = (item.id, now)
                     selectedTemplateTextID = item.id
                     templatePhotoSelected = false
+                    if second {
+                        beginEditingText(item)
+                    }
                 }
                 .gesture(
                     DragGesture(minimumDistance: 1,
@@ -19169,8 +19212,9 @@ struct DevelopView: View {
                             scheduleRefinedRender()
                         }
                 )
+            }
 
-            if isSelected {
+            if isSelected, !isEditing {
                 // ⚠️ SELECTED HAS TO LOOK SELECTED — *„kada se selektira text
                 // kao layer, da se vidi da je selektovan"*. A dashed hairline
                 // was not enough on a busy photograph, so this is what a
@@ -19236,6 +19280,99 @@ struct DevelopView: View {
             && activeSelection == nil
             && selectedLayerIndex == nil
             && !isSpaceHeld
+    }
+
+    /// Typing on the picture itself.
+    ///
+    /// ⚠️ IT IS THE SAME TEXT, not a second copy of it. The field writes into
+    /// the same record the panel on the right writes into, which is what the
+    /// client asked for: *„da bude na dve strane i ovde direktno i sa desne
+    /// strane"*. Two fields, one line of text, and the render redraws as it is
+    /// typed.
+    ///
+    /// ⚠️ While it is up, the box carries NO drag, no tap and no cursor. On
+    /// macOS a drag gesture on the same view TAKES the click away from a text
+    /// field inside it — the client would press into the field and start
+    /// dragging the line instead of typing in it. That is the fault KORAK 197
+    /// had to unpick on the folder row, written up there in the same words.
+    private func canvasTextField(_ item: TemplateText, box: CGRect, frame: CGRect) -> some View {
+        // Drawn at the size it will PRINT, brought down to the canvas as
+        // drawn — so what is typed sits at the size it will be, not at a
+        // form-field size that jumps when the field closes.
+        let template = templateLibrary.template(id: settings.templateID)
+        let pixelsPerInch = template.map {
+            briefShowPixelsPerInch(template: $0, canvasWidth: Double(frame.width))
+        } ?? briefShowPhotoPixelsPerInch(canvasWidth: Double(frame.width),
+                                         canvasHeight: Double(frame.height))
+        let onScreen = max(6, item.sizeInches * pixelsPerInch)
+        let alignment: TextAlignment
+        switch item.alignment {
+        case .left: alignment = .leading
+        case .center: alignment = .center
+        case .right: alignment = .trailing
+        }
+
+        return TextField("", text: $editingTextValue, axis: .vertical)
+            .textFieldStyle(.plain)
+            .focused($canvasTextFieldFocused)
+            .font(.custom(item.fontFamily, size: onScreen))
+            .multilineTextAlignment(alignment)
+            .foregroundColor(Color(nsColor: NSColor(srgbRed: item.color.red,
+                                                    green: item.color.green,
+                                                    blue: item.color.blue,
+                                                    alpha: 1)))
+            .frame(width: max(box.width, 40))
+            // A PLATE, and it is not decoration: the line being edited is
+            // already drawn into the picture underneath, so without something
+            // opaque over it the client would be typing into a double image of
+            // his own text.
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 3).fill(AppColors.background.opacity(0.94)))
+            .overlay(RoundedRectangle(cornerRadius: 3)
+                .stroke(layerSelectionColor, lineWidth: 1.4))
+            .position(x: box.midX, y: box.midY)
+            .onSubmit { commitCanvasText() }
+            .onExitCommand {
+                // Esc throws the typing away; clicking elsewhere keeps it.
+                // Exactly the pair KORAK 197 settled for renaming a folder —
+                // if both did the same thing one of them would be pointless.
+                editingTextID = nil
+                canvasTextFieldFocused = false
+            }
+            .onChange(of: canvasTextFieldFocused) { focused in
+                // Focus lost to anything at all — the panel, a menu, another
+                // window — writes what is there. Four places a click can land,
+                // one rule, as the folder row has.
+                if !focused, editingTextID != nil {
+                    commitCanvasText()
+                }
+            }
+    }
+
+    /// Opens the field on this line, with what it already says.
+    private func beginEditingText(_ item: TemplateText) {
+        editingTextValue = item.text
+        editingTextID = item.id
+        selectedTemplateTextID = item.id
+        // A frame late, because the field does not exist yet when this runs.
+        DispatchQueue.main.async { canvasTextFieldFocused = true }
+    }
+
+    /// Writes what was typed into the record — once.
+    ///
+    /// ⚠️ The id is cleared FIRST, so a second call (submit and focus-loss
+    /// arrive together) falls through the guard rather than writing twice.
+    /// Same shape as commitGridRename in ContentView, and for the same reason.
+    private func commitCanvasText() {
+        guard let id = editingTextID else { return }
+        editingTextID = nil
+        canvasTextFieldFocused = false
+        guard let index = settings.templateTexts.firstIndex(where: { $0.id == id }),
+              settings.templateTexts[index].text != editingTextValue else {
+            return
+        }
+        settings.templateTexts[index].text = editingTextValue
     }
 
     /// Moves the text by the drag, measured from where the box was when the

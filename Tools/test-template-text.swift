@@ -18,6 +18,8 @@ import CoreGraphics
 import CoreImage
 import CoreText
 
+// ---- the real click decision, pasted in by the extractor at run time ------
+
 var failures = 0
 
 func check(_ label: String, _ passed: Bool, _ detail: String = "") {
@@ -397,6 +399,35 @@ do {
               String(format: "%.4f,%.4f against %.4f,%.4f",
                      atOrigin.x, atOrigin.y, moved.x, moved.y))
     }
+}
+
+// MARK: - Typing on the picture itself
+
+print("\na second click on the same line opens it for typing")
+
+do {
+    let one = UUID(), two = UUID()
+    let now = Date()
+    let interval = 0.5
+
+    check("a second click on the same line, soon enough, opens it",
+          briefShowIsSecondTextClick(previous: (one, now.addingTimeInterval(-0.2)),
+                                     id: one, at: now, interval: interval))
+    check("a slow second click does not",
+          !briefShowIsSecondTextClick(previous: (one, now.addingTimeInterval(-2)),
+                                      id: one, at: now, interval: interval))
+    check("a second click on ANOTHER line does not",
+          !briefShowIsSecondTextClick(previous: (two, now.addingTimeInterval(-0.2)),
+                                      id: one, at: now, interval: interval))
+    check("and neither does the very first click",
+          !briefShowIsSecondTextClick(previous: nil, id: one, at: now, interval: interval))
+    // NTP, sleep/wake: a clock that jumps backwards must not open anything.
+    check("a clock that goes backwards opens nothing",
+          !briefShowIsSecondTextClick(previous: (one, now.addingTimeInterval(0.3)),
+                                      id: one, at: now, interval: interval))
+    check("exactly on the interval still counts",
+          briefShowIsSecondTextClick(previous: (one, now.addingTimeInterval(-interval)),
+                                     id: one, at: now, interval: interval))
 }
 
 print(failures == 0 ? "\nall passed\n" : "\n\(failures) FAILED\n")

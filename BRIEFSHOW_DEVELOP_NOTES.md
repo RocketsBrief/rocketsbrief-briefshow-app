@@ -22872,3 +22872,27 @@ mata je unija, klik bira a dupli otvara tab, i fotografija je red i bez okvira.
 
 ⚠️ **Nije viđeno na ekranu** — keychain lozinka. Spajanje People+Background je
 mereno kroz pravilo i kroz izvor; **sam rezultat na slici klijent vidi prvi**.
+
+---
+
+## KORAK 207 — ⌘-klik nije radio, pa layer dobija kvačicu (21. septembar 2026)
+
+Klijent, odmah posle 206: *„alo kako da ih selektujem oba, ja drzim cmd ali
+nece??"*.
+
+⚠️ **Red nosi `.onDrag` za preuređivanje, a na macOS-u izvor prevlačenja uzme
+klik sa modifikatorom pre nego što ga dugme ispod uopšte vidi.** Isti kvar je
+ovaj dokument već zapisao za obične tapove na redu (zato je ime layera `Button`,
+a ne `onTapGesture`) — samo što je ovog puta pogodio ⌘.
+
+**Popravka je vidljiva, ne prečica:** svaki red layera sada ima **krug na levoj
+strani** koji se klikne — pun i u akcentnoj boji kad je layer izabran za merge.
+Dugme za sebe se **ne guta** (oko i kanta pored njega oduvek rade), a držani
+taster se ne vidi nikad. ⌘ i ⇧ ostaju za onog ko po njih posegne.
+
+⚠️ **Prvi klik na krug povlači i layer na kom su slajderi.** Bez toga bi klijent
+štiklirao jedan, kliknuo desno i dobio „izaberi dva ili više" gledajući u dva
+osvetljena reda.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; `run-layer-merge-test.py`
+**all good**; app instaliran i pokrenut. ⚠️ **Nije viđeno na ekranu** — keychain.

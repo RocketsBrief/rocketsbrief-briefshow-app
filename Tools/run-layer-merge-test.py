@@ -149,6 +149,18 @@ wiring("the menu prints the reason when it cannot",
        "Text(refusal)" in menu and ".disabled(refusal != nil)" in menu)
 wiring("right-clicking a layer outside the set means that layer",
        "? layerMergeTargets" in menu and ": [layer]" in menu)
+# ⚠️ The circle, because the held key was not enough on the real machine.
+row = extract("    private func layerRow(_ layer: ImageLayer) -> some View {")
+toggle = extract("    private func toggleLayerInMergeSet(_ id: UUID) {")
+wiring("every layer row carries a circle that picks it for a merge",
+       "toggleLayerInMergeSet(layer.id)" in row
+       and "checkmark.circle.fill" in row)
+wiring("and it is a button of its own, which the row's drag cannot swallow",
+       ".buttonStyle(.plain)" in row)
+wiring("picking one circle brings the selected layer in with it",
+       "multiSelectedLayerIDs.insert(selectedLayerID)" in toggle)
+wiring("and unpicking the last one leaves nothing picked",
+       "multiSelectedLayerIDs = []" in toggle)
 wiring("⌘ adds one and ⇧ takes the run between",
        "multiSelectedLayerIDs.insert(id)" in extend
        and "Set(settings.layers[range].map(\\.id))" in extend)

@@ -20360,6 +20360,28 @@ struct DevelopView: View {
         return settings.layers.filter { ids.contains($0.id) }
     }
 
+    /// The circle on the row: in or out of the merge.
+    ///
+    /// ⚠️ The layer the editor is on joins the set the first time anything is
+    /// picked. Without that, picking one circle would merge that layer with
+    /// itself — the client would tick one, right-click, and be told to select
+    /// two or more while looking at two highlighted rows.
+    private func toggleLayerInMergeSet(_ id: UUID) {
+        if multiSelectedLayerIDs.isEmpty, let selectedLayerID, selectedLayerID != id {
+            multiSelectedLayerIDs.insert(selectedLayerID)
+        }
+        if multiSelectedLayerIDs.contains(id) {
+            multiSelectedLayerIDs.remove(id)
+        } else {
+            multiSelectedLayerIDs.insert(id)
+        }
+        // Nothing is picked any more, so the set is empty rather than holding
+        // the anchor on its own.
+        if multiSelectedLayerIDs.count == 1, multiSelectedLayerIDs.first == selectedLayerID {
+            multiSelectedLayerIDs = []
+        }
+    }
+
     /// ⌘ adds one to the set; ⇧ takes the whole run between it and the layer
     /// the editor is on.
     private func extendLayerSelection(to id: UUID, shift: Bool) {
@@ -20461,6 +20483,27 @@ struct DevelopView: View {
         let isInMergeSet = multiSelectedLayerIDs.contains(layer.id)
 
         return HStack(spacing: 8) {
+            // ⚠️ A CIRCLE YOU CAN CLICK, because ⌘-click on the row was not
+            // enough. Reported 21.09: *„alo kako da ih selektujem oba, ja
+            // drzim cmd ali nece"*. The row carries `.onDrag` for reordering,
+            // and on macOS a drag source takes the modifier-click before the
+            // button under it ever sees it — the same swallowing this file
+            // already records for plain taps on the row.
+            //
+            // A button of its own is not swallowed (the eye and the trash
+            // beside it have always worked), and it is visible, which a held
+            // key never is. ⌘ and ⇧ still work for anyone who reaches for them.
+            Button {
+                toggleLayerInMergeSet(layer.id)
+            } label: {
+                Image(systemName: isInMergeSet ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 11))
+                    .foregroundColor(isInMergeSet ? Color.accentColor : AppColors.muted.opacity(0.6))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Pick this layer for a merge — choose two or more, then right-click and Merge Layers.")
+
             // Grip glyph, not the old stack-of-layers icon: the row is now
             // draggable and this is the only thing that says so.
             Image(systemName: "line.3.horizontal")

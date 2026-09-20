@@ -784,6 +784,56 @@ enum TemplateImporter {
     }
 }
 
+// MARK: - Reading a photograph's orientation without decoding it
+
+/// Which way up a photograph is, from its metadata alone.
+///
+/// ⚠️ THE EXIF TAG DECIDES, not the pixel counts. A camera held upright writes
+/// the sensor's own landscape pixels and a tag saying "turn this"; tags 5…8
+/// are the quarter turns. Reading width against height and stopping there
+/// would file every portrait frame from this client's Nikon as a landscape,
+/// and the sync would then print them all sideways — quietly, which is the
+/// part that matters.
+func briefShowOrientationFromMetadata(pixelWidth: Int, pixelHeight: Int,
+                                      exifOrientation: Int?) -> TemplateOrientation {
+    var width = pixelWidth
+    var height = pixelHeight
+    if let exifOrientation, (5...8).contains(exifOrientation) {
+        swap(&width, &height)
+    }
+    return TemplateOrientation.ofPhoto(width: width, height: height)
+}
+
+/// The same, read off a file — properties only, no decode. A sync across a
+/// hundred photographs asks this a hundred times, and decoding a hundred RAWs
+/// to learn which way up they are is the kind of thing that turns a click into
+/// a minute.
+func briefShowPhotoOrientation(at url: URL) -> TemplateOrientation? {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? Int,
+          let height = properties[kCGImagePropertyPixelHeight] as? Int else { return nil }
+    return briefShowOrientationFromMetadata(pixelWidth: width, pixelHeight: height,
+                                            exifOrientation: properties[kCGImagePropertyOrientation] as? Int)
+}
+
+/// The template a SYNC should write onto one target photograph.
+///
+/// ⚠️ This is where the pair earns its keep. A click on a tile uses exactly
+/// what was clicked (see applyTemplate); a sync has nobody clicking, so an
+/// upright photograph in a run of landscapes has to be given the other half of
+/// the pair — or nothing at all. `nil` means "this one cannot take it", and the
+/// caller has to SAY so rather than print a portrait sideways.
+func briefShowSyncedTemplate(_ template: PrintTemplate,
+                             forPhotoOrientation orientation: TemplateOrientation,
+                             catalogue: [PrintTemplate]) -> PrintTemplate? {
+    if template.orientation == orientation || template.orientation == .square { return template }
+    guard let pairID = template.pairID,
+          let partner = catalogue.first(where: { $0.id == pairID }),
+          partner.orientation == orientation || partner.orientation == .square else { return nil }
+    return partner
+}
+
 // MARK: - Pairing
 
 /// Join a horizontal and a vertical drawing of the same format, so step 4's

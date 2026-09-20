@@ -421,6 +421,59 @@ check("a square photograph counts as landscape and keeps the chosen template",
       briefShowTemplateForPhoto(width: 4000, height: 4000, chosen: paired,
                                 catalogue: catalogue)?.id == h.id)
 
+// MARK: - The sync across a mixed selection
+
+print("\nsyncing a template across a run of photographs")
+
+// ⚠️ THE EXIF TAG, not the pixel counts. A camera held upright writes the
+// sensor's own landscape pixels plus a tag saying "turn this"; 5…8 are the
+// quarter turns. Reading width against height alone files every portrait frame
+// from the client's Nikon as a landscape — and the sync would print them all
+// sideways, quietly.
+check("a landscape file with no tag is landscape",
+      briefShowOrientationFromMetadata(pixelWidth: 6000, pixelHeight: 4000,
+                                       exifOrientation: nil) == .horizontal)
+check("the same pixels tagged 6 are an UPRIGHT photograph",
+      briefShowOrientationFromMetadata(pixelWidth: 6000, pixelHeight: 4000,
+                                       exifOrientation: 6) == .vertical)
+check("and tagged 8 as well — the other quarter turn",
+      briefShowOrientationFromMetadata(pixelWidth: 6000, pixelHeight: 4000,
+                                       exifOrientation: 8) == .vertical)
+for tag in 1...4 {
+    check("tag \(tag) leaves the frame the way its pixels lie",
+          briefShowOrientationFromMetadata(pixelWidth: 6000, pixelHeight: 4000,
+                                           exifOrientation: tag) == .horizontal)
+}
+check("a portrait file tagged 7 reads back as landscape",
+      briefShowOrientationFromMetadata(pixelWidth: 4000, pixelHeight: 6000,
+                                       exifOrientation: 7) == .horizontal)
+
+// The plan's own acceptance case: five landscapes and three uprights, one
+// click, and not one photograph in a template of the wrong orientation.
+var run = [h, v]
+run = briefShowPairTemplates(h, v, in: run)
+let landscapeFrame = run.first { $0.id == h.id }!
+let selection: [TemplateOrientation] = [.horizontal, .horizontal, .horizontal, .horizontal,
+                                        .horizontal, .vertical, .vertical, .vertical]
+let written = selection.map {
+    briefShowSyncedTemplate(landscapeFrame, forPhotoOrientation: $0, catalogue: run)
+}
+check("five landscapes get the horizontal frame",
+      written.prefix(5).allSatisfy { $0?.id == h.id })
+check("three uprights get the vertical half of the pair",
+      written.suffix(3).allSatisfy { $0?.id == v.id })
+check("and NOT ONE photograph gets a template the wrong way up",
+      zip(selection, written).allSatisfy { $0.1?.orientation == $0.0 })
+
+// ⚠️ Without the pair it hands back nothing, and the caller has to say so —
+// „sync radi samo za slike te orijentacije i kaže zašto".
+check("with no pair, an upright photograph gets nothing rather than a sideways print",
+      briefShowSyncedTemplate(h, forPhotoOrientation: .vertical, catalogue: [h]) == nil)
+check("while the landscapes in the same run still get theirs",
+      briefShowSyncedTemplate(h, forPhotoOrientation: .horizontal, catalogue: [h])?.id == h.id)
+check("a square template takes either way up",
+      briefShowSyncedTemplate(square, forPhotoOrientation: .vertical, catalogue: [square])?.id == square.id)
+
 // MARK: - What gets written down
 
 print("\nwhat a template carries when it is stored")

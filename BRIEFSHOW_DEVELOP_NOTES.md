@@ -21760,3 +21760,73 @@ flatten-u; bake nacrtan na veličini otiska obara tri merenja o rezoluciji.
 
 **Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
 i pokrenuto. **NIJE OBJAVLJENO.**
+
+---
+
+## KORAK 198.11 — sync template-a na celu selekciju (20. septembar 2026)
+
+Klijent: *„kako sada sa syncujem ovo sa templateom da sve slike tako budu koje su
+selektirane"*. Ovo je **korak 4 iz plana**.
+
+### Kako se radi
+
+1. U filmstrip-u se izabere više slika (otvorena je izvor).
+2. **Synchronize Settings** → nov odeljak **Template**, red **Print Template**.
+3. Sync upisuje **template, mesto slike u njemu i prekidač ispod/iznad**.
+
+Red se pali (tačkica) samo kad otvorena slika **ima** template. Ako ga nema a red
+je čekiran, sync ga **skida** sa ciljeva — isto kao što sinhronizovana nula briše
+bilo koju drugu kontrolu.
+
+### ⛔ Pravilo orijentacije — i gde se ono čita
+
+Za **svaku ciljnu sliku posebno** se pročita njena orijentacija i tek onda bira
+polovina para:
+
+| šta je cilj | šta dobija |
+|---|---|
+| vodoravna slika | template koji je izabran |
+| **uspravna** slika | **vertikalna polovina para** |
+| uspravna, a para nema | **ništa** — i sync to kaže |
+
+⚠️ **Slika koja ne može da primi okvir zadržava sve ostalo** što je čekirano —
+izuzima se samo template, ne ceo sync.
+
+⚠️ **Poruka posle sync-a broji:** *„Synced to 9 — 3 the other way up, and this
+template has no pair."* Plan je tražio da sync „kaže zašto"; broj bez razloga i
+razlog bez broja su oboje beskorisni.
+
+### ⚠️ Orijentacija se čita iz EXIF-a, ne iz broja piksela
+
+Fotoaparat držan uspravno upisuje **senzorske, vodoravne** piksele i oznaku
+„okreni ovo" (EXIF 5–8). Poređenje širine i visine bi svaki portret sa
+klijentovog Nikona svrstalo među vodoravne — i sync bi ih **tiho** sve
+naštampao položeno. Zato se čita `kCGImagePropertyOrientation`, i to **samo
+svojstva fajla, bez dekodiranja**: sync preko sto slika pita sto puta, a sto
+dekodiranih RAW-ova pretvara klik u minut.
+
+⛔ **`layers` i dalje nema svoj bit u sync-u, i razlog stoji pored template-ovog:**
+sloj je komad iseckan iz **jedne određene** fotografije, a template je **izbor
+izgleda** — isti za ceo niz. Ta dva se ne „pojednostavljuju" u jedno pravilo.
+
+### Čime je zaključano
+
+**14 novih merenja**: svih osam EXIF oznaka (uključujući 6, 7 i 8 koje menjaju
+odgovor), i **slučaj iz plana** — 5 vodoravnih + 3 uspravne, jedan klik, pa
+provera da **nijedna** slika nije dobila okvir pogrešne orijentacije. Plus 8
+provera iz izvora: da red postoji i da se pali samo kad ima šta, da se
+orijentacija čita sa **cilja**, da ostatak sync-a preživi, da poruka broji, i da
+se čita iz metapodataka.
+
+**Negativne kontrole, tri:** ignorisan EXIF obara tri merenja; sync koji ignoriše
+par obara tri (među njima i „nijedna slika naopako"); a cilj koji zbog okvira
+izgubi ceo sync obara proveru iz izvora.
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+i pokrenuto. **NIJE OBJAVLJENO.**
+
+### Gde je plan sada
+
+Koraci 1–4 su urađeni (model, dugme i uvoz, rad u slotu, sync). Ostaju **5**
+(tekst na template-u), **6** (Google fontovi na zahtev) i **7** (izvoz na 300
+dpi kroz `exportPhotos`).

@@ -385,6 +385,8 @@ struct SyncItem: OptionSet {
     static let vignette = SyncItem(rawValue: 1 << 19)     // + midpoint/feather/roundness
     // Masks
     static let masks = SyncItem(rawValue: 1 << 20)
+    // Print template — see Templates.swift
+    static let template = SyncItem(rawValue: 1 << 21)
 
     /// One row of the dialog: one control, one checkbox.
     struct Row: Identifiable {
@@ -444,6 +446,15 @@ struct SyncItem: OptionSet {
         Section(title: "Masks", icon: "circle.lefthalf.filled", rows: [
             Row(item: .masks, title: "Masks", carries: "every mask on this photo"),
         ]),
+        // ⚠️ Its own section, and its own bit. `layers` deliberately has
+        // neither, because a layer is pixel content cut out of one particular
+        // photograph — but a template is a CHOICE OF LOOK, the same for every
+        // frame in a run, which is exactly what a sync is for. The two must not
+        // be "simplified" into one rule later.
+        Section(title: "Template", icon: "rectangle.on.rectangle.angled", rows: [
+            Row(item: .template, title: "Print Template",
+                carries: "where the photo sits in it — and upright photos get the pair's other half"),
+        ]),
     ]
 
     static let all: SyncItem = sections.reduce(into: SyncItem()) { $0.formUnion($1.mask) }
@@ -477,6 +488,7 @@ struct SyncItem: OptionSet {
         case .softGlow: return settings.softGlow != 0
         case .vignette: return settings.vignette != 0
         case .masks: return !settings.localAdjustments.isEmpty
+        case .template: return settings.templateID != nil
         default: return false
         }
     }
@@ -20569,12 +20581,40 @@ struct DevelopView: View {
             return
         }
 
+        // How many photographs could not take the template, and why — the
+        // plan's own words: if the pair is not there, the sync works for
+        // photos of that orientation only and SAYS why.
+        var skippedForOrientation = 0
+
         if !items.isEmpty {
+            let sourceTemplate = templateLibrary.template(id: settings.templateID)
             for target in targets {
+                var itemsForTarget = items
+                var templateForTarget: PrintTemplate?
+
+                if items.contains(.template), let sourceTemplate {
+                    // ⚠️ Read off the TARGET, not off the open photo. This is
+                    // the whole rule: an upright frame in a run of landscapes
+                    // gets the pair's vertical half, and if there is no pair it
+                    // gets nothing — never a portrait printed sideways.
+                    let orientation = briefShowPhotoOrientation(at: target)
+                        ?? sourceTemplate.orientation
+                    templateForTarget = briefShowSyncedTemplate(sourceTemplate,
+                                                                forPhotoOrientation: orientation,
+                                                                catalogue: templateLibrary.templates)
+                    if templateForTarget == nil {
+                        // Everything else the client ticked still goes; only
+                        // the frame is left off this one.
+                        itemsForTarget.remove(.template)
+                        skippedForOrientation += 1
+                    }
+                }
+
                 let merged = Self.mergedSyncSettings(
                     source: settings,
                     target: PhotoEditStore.settings(for: target),
-                    items: items
+                    items: itemsForTarget,
+                    templateForTarget: templateForTarget
                 )
                 PhotoEditStore.setSettings(merged, for: target)
             }
@@ -20590,7 +20630,12 @@ struct DevelopView: View {
             return
         }
 
-        showTransientStatus("Synced to \(targets.count)")
+        if skippedForOrientation > 0 {
+            let count = targets.count - skippedForOrientation
+            showTransientStatus("Synced to \(count) — \(skippedForOrientation) the other way up, and this template has no pair")
+        } else {
+            showTransientStatus("Synced to \(targets.count)")
+        }
     }
 
     // Starts from the TARGET's own settings (so anything not in `items` is
@@ -20604,7 +20649,13 @@ struct DevelopView: View {
     private static func mergedSyncSettings(
         source: PhotoEditSettings,
         target: PhotoEditSettings,
-        items: SyncItem
+        items: SyncItem,
+        /// Which template THIS target should get — already resolved through
+        /// the pair by the caller, which is the only one that knows which way
+        /// up the target photograph is. nil with `.template` ticked means the
+        /// source has no template, and the row then CLEARS it on the target,
+        /// the same way syncing a zero clears any other control.
+        templateForTarget: PrintTemplate? = nil
     ) -> PhotoEditSettings {
         var result = target
 
@@ -20670,6 +20721,11 @@ struct DevelopView: View {
         }
 
         // Masks
+        if items.contains(.template) {
+            result.templateID = templateForTarget?.id
+            result.templatePlacement = source.templatePlacement
+            result.templateArtOverPhoto = source.templateArtOverPhoto
+        }
         if items.contains(.masks) {
             result.localAdjustments = source.localAdjustments
         }

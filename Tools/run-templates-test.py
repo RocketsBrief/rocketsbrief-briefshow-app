@@ -315,6 +315,32 @@ wiring("the batch bake, which composes no canvas, keeps the template instead",
 wiring("a photo laid into a frame HAS something to bake",
        "keptByFlatten.templateID" not in develop_code)
 
+# Step 4 — the sync across a selection.
+sync_body = develop_code.split("private func syncSettingsToSelection(", 1)[-1].split("\n    //", 1)[0]
+wiring("the sync has a row of its own",
+       "static let template = SyncItem(rawValue: 1 << 21)" in develop_code
+       and 'Row(item: .template, title: "Print Template"' in develop_code)
+wiring("the row lights up only when the open photo has a template",
+       "case .template: return settings.templateID != nil" in develop_code)
+
+# ⚠️ Read off the TARGET. This is the rule: an upright frame in a run of
+# landscapes gets the pair's vertical half, and if there is no pair it gets
+# nothing — never a portrait printed sideways.
+wiring("each target's own orientation decides which half it gets",
+       "briefShowPhotoOrientation(at: target)" in sync_body
+       and "briefShowSyncedTemplate(" in sync_body)
+wiring("a photo that cannot take it keeps everything else that was ticked",
+       "itemsForTarget.remove(.template)" in sync_body)
+wiring("and the sync says how many were left out, and why",
+       "skippedForOrientation" in sync_body and "has no pair" in develop)
+wiring("orientation is read from metadata, without decoding the file",
+       "CGImageSourceCopyPropertiesAtIndex(" in templates_source
+       and "kCGImagePropertyOrientation" in templates_source)
+wiring("the EXIF tag decides, not the pixel counts",
+       "(5...8).contains(exifOrientation)" in templates_source)
+wiring("layers still have no sync bit, and the reason is written beside the template's",
+       "static let layers = SyncItem" not in develop_code)
+
 wiring("deleting a template takes it off this photo first",
        "func deleteTemplate(" in develop_code and "removeTemplateFromPhoto()" in develop_code)
 

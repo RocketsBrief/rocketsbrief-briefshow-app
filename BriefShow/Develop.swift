@@ -19401,7 +19401,10 @@ struct DevelopView: View {
     // (syncSettingsToSelection).
     private var syncDialogView: some View {
         let targetCount = selectedURL.map { multiSelectedURLs.subtracting([$0]).count } ?? 0
-        let modified = SyncItem.modified(in: settings)
+        // Read through syncSourceSettings so the Template row still shows its
+        // dot after the open photo has been flattened — the frame is in the
+        // snapshot, and the sync can still carry it.
+        let modified = SyncItem.modified(in: syncSourceSettings)
 
         return VStack(alignment: .leading, spacing: 14) {
             Text("Synchronize Settings")
@@ -20572,6 +20575,34 @@ struct DevelopView: View {
     // and histogram will simply reflect the synced settings next time each
     // is actually opened, same as any other out-of-editor PhotoEditStore
     // write (Presets, Export All Edited's own settings lookups, etc).
+    /// The open photo's settings AS A SYNC SHOULD READ THEM.
+    ///
+    /// ⚠️ A flattened photo's record is empty by design — that is what KORAK
+    /// 198.10 settled, and it is why the frame cannot be dragged any more. But
+    /// the frame it was printed in is not gone: it is in the snapshot Unflatten
+    /// would restore. Without this, flattening the first photo and then syncing
+    /// wrote nothing onto the rest, which is exactly what the client hit:
+    /// *„sync nije dodao frames na ostale slike kada je frame slika
+    /// flattenovana"*.
+    ///
+    /// ⚠️ ONLY the template is taken from the snapshot. Everything else in
+    /// there IS in the flattened pixels — syncing that exposure onto another
+    /// photo would apply it twice on this one's own look and once on a picture
+    /// that never had it.
+    private var syncSourceSettings: PhotoEditSettings {
+        var source = settings
+        guard source.templateID == nil,
+              let selectedURL,
+              let baked = FlattenedImageStore.snapshot(for: selectedURL),
+              baked.templateID != nil else {
+            return source
+        }
+        source.templateID = baked.templateID
+        source.templatePlacement = baked.templatePlacement
+        source.templateArtOverPhoto = baked.templateArtOverPhoto
+        return source
+    }
+
     private func syncSettingsToSelection(items: SyncItem, recipes: Set<PortraitRecipe> = []) {
         guard let selectedURL, !items.isEmpty || !recipes.isEmpty else {
             return
@@ -20587,7 +20618,8 @@ struct DevelopView: View {
         var skippedForOrientation = 0
 
         if !items.isEmpty {
-            let sourceTemplate = templateLibrary.template(id: settings.templateID)
+            let source = syncSourceSettings
+            let sourceTemplate = templateLibrary.template(id: source.templateID)
             for target in targets {
                 var itemsForTarget = items
                 var templateForTarget: PrintTemplate?
@@ -20611,7 +20643,7 @@ struct DevelopView: View {
                 }
 
                 let merged = Self.mergedSyncSettings(
-                    source: settings,
+                    source: source,
                     target: PhotoEditStore.settings(for: target),
                     items: itemsForTarget,
                     templateForTarget: templateForTarget

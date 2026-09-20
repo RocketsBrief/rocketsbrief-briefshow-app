@@ -338,6 +338,21 @@ wiring("orientation is read from metadata, without decoding the file",
        and "kCGImagePropertyOrientation" in templates_source)
 wiring("the EXIF tag decides, not the pixel counts",
        "(5...8).contains(exifOrientation)" in templates_source)
+# ⚠️ A flattened photo's record is EMPTY — that is what 198.10 settled — so a
+# sync from it used to write no frame at all. Reported 20.09: „sync nije dodao
+# frames na ostale slike kada je frame slika flattenovana".
+source_body = develop_code.split("private var syncSourceSettings: PhotoEditSettings {", 1)[-1].split("\n    }", 1)[0]
+wiring("a sync can still carry the frame off a flattened photo",
+       "FlattenedImageStore.snapshot(for: selectedURL)" in source_body)
+wiring("and takes ONLY the template from that snapshot — the rest is in the pixels",
+       "source.templateID = baked.templateID" in source_body
+       and "source.exposure" not in source_body and "source.crop" not in source_body)
+wiring("it only reaches for the snapshot when the live record has no template",
+       "source.templateID == nil," in source_body)
+wiring("both the dialog's dot and the sync itself read through it",
+       "SyncItem.modified(in: syncSourceSettings)" in develop_code
+       and "let source = syncSourceSettings" in develop_code)
+
 wiring("layers still have no sync bit, and the reason is written beside the template's",
        "static let layers = SyncItem" not in develop_code)
 

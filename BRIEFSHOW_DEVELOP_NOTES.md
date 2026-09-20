@@ -21830,3 +21830,53 @@ i pokrenuto. **NIJE OBJAVLJENO.**
 Koraci 1–4 su urađeni (model, dugme i uvoz, rad u slotu, sync). Ostaju **5**
 (tekst na template-u), **6** (Google fontovi na zahtev) i **7** (izvoz na 300
 dpi kroz `exportPhotos`).
+
+---
+
+## KORAK 198.12 — sync sa PEČENE slike: okvir se čita iz snimka (20. septembar 2026)
+
+Klijent: *„sync nije dodao frames na ostale slike kada je frame slika
+flattenovana.. mislio sam da budu takve ostale.. i kad se zavrsi sync one su sve
+faltenovane.. jel tako treba da bude?"*
+
+### Prvi deo je bio kvar, i to posledica 198.10
+
+Pečena slika ima **prazan zapis** — to je ono što je 198.10 i tražilo (ništa se
+više ne hvata). Ali sync čita zapis, pa sa pečene slike nije imao **šta** da
+prenese: red Print Template je bio prazan i ciljevi nisu dobili ništa.
+
+**Popravka:** `syncSourceSettings` — ako živi zapis nema template, gleda se
+**snimak koji Unflatten vraća** (`FlattenedImageStore.snapshot`), i odatle se
+uzima okvir. Isti izvor čita i tačkica u dijalogu, pa red više ne izgleda prazan.
+
+⛔ **IZ SNIMKA SE UZIMA SAMO TEMPLATE.** Sve ostalo u njemu **jeste** u pečenim
+pikselima: sinhronizovana ekspozicija odatle bi na ovoj slici bila primenjena
+dvaput, a na ciljevima jednom — tiho i pogrešno.
+
+### Drugi deo je pitanje, i odgovor je NE
+
+*„kad se zavrsi sync one su sve faltenovane.. jel tako treba da bude?"* — ne,
+i namerno nije:
+
+- **pečenje je nepovratno** osim kroz Unflatten, a sync preko 40 slika bi ih sve
+  prepisao na disku odjednom;
+- **traje**: svaka slika je pun render plus upis, a mašina ima 8 GB;
+- **ne treba za posao koji sledi** — ciljevi dobiju okvir kao **živo**
+  podešavanje, pa se svaka može doterati (pomeriti sliku u okviru, zameniti
+  okvir) pre nego što se išta ispeče.
+
+Dakle: posle sync-a ostale slike **imaju okvir i vide ga**, ali nisu pečene.
+Kad klijent bude hteo da ih zapeče sve odjednom, to je posebno dugme koje ovde
+**još ne postoji** — i to je sledeća stvar koju treba da kaže hoće li.
+
+### Čime je zaključano
+
+Četiri provere iz izvora: da se okvir uzima iz snimka, da se iz snimka uzima
+**samo** okvir, da se snimku pristupa **samo** kad živi zapis nema template, i
+da i dijalog i sam sync čitaju kroz isti izvor.
+
+**Negativne kontrole, dve:** vraćeno čitanje samo živog zapisa obara tri
+provere; uzet ceo snimak umesto samo okvira obara onu o „samo template".
+
+**Stanje:** Debug i Release (`arm64 x86_64`) → **BUILD SUCCEEDED**; instalirano
+i pokrenuto. **NIJE OBJAVLJENO.**

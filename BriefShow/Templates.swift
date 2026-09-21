@@ -1047,6 +1047,201 @@ func briefShowComposeTemplate(photo: CIImage,
                              canvasScale: canvasScale)
 }
 
+/// The crop, as the renderer takes it: the kept rectangle in Core Image
+/// coordinates, and — for a turned frame — the turn applied to the picture
+/// first. `x`, `y`, `width`, `height` are the record's fractions, top-down.
+///
+/// ⚠️ Shared with Merge Layers for the reason the placement is: a kept layer
+/// has to be cut by exactly the rectangle that cut the picture under it.
+func briefShowCropGeometry(x: Double, y: Double, width: Double, height: Double,
+                           angleDegrees: Double,
+                           extent: CGRect) -> (turn: CGAffineTransform?, rect: CGRect) {
+    let rect = CGRect(
+        x: extent.origin.x + x * extent.width,
+        y: extent.origin.y + (1 - y - height) * extent.height,
+        width: width * extent.width,
+        height: height * extent.height
+    ).integral
+
+    // A TURNED crop frame is rendered by turning the PICTURE the other
+    // way about the frame's own centre, and then taking the ordinary
+    // upright rectangle. The two are the same thing: what comes out is
+    // the tilted frame's contents, upright, at exactly the frame's own
+    // size. Doing it this way means `rect` below is untouched — the
+    // centre is the one point a rotation about the centre leaves where
+    // it is, and the size does not change.
+    //
+    // ⚠️ Sign checked against the straighten path in the renderer, not
+    // guessed. There, a POSITIVE straightenDegrees turns the picture
+    // clockwise through `rotationAngle: -radians`; so `+radians` turns
+    // it counter-clockwise, which is what stands the frame back up when
+    // the frame itself is turned clockwise. A rotation that goes the
+    // wrong way is the kind of thing that gets "fixed" twice.
+    guard angleDegrees != 0 else { return (nil, rect) }
+    let radians = CGFloat(angleDegrees * .pi / 180)
+    let centre = CGPoint(x: rect.midX, y: rect.midY)
+    let turn = CGAffineTransform(translationX: centre.x, y: centre.y)
+        .rotated(by: radians)
+        .translatedBy(x: -centre.x, y: -centre.y)
+    return (turn, rect)
+}
+
+// MARK: - Merge Layers: Image + Template (KORAK 208)
+//
+// The client, 21.09: *„samo se ta dva merguju a treci ostane jer nije bio
+// selektovan"* — and then, asked whether the frame and the photo should merge
+// for real: yes. Merging the two bakes the print into the photograph's file;
+// every layer he did NOT tick has to stay live and look exactly as it did.
+//
+// ⚠️ THAT IS THE WHOLE DIFFICULTY. A layer lives in the photograph's own
+// coordinates, under the crop and inside the frame. Once the print is the
+// picture, the same layer has to be re-drawn in the PRINT's coordinates: cut by
+// the crop that cut the photo, placed where the photo was placed, and hidden
+// where the frame's drawing covered it. The three calls below are the ones the
+// print itself is drawn with — nothing here is a second copy of that geometry.
+
+/// A picture drawn in the photograph's own space (uncropped, before the
+/// template), put exactly where it lands on the print.
+///
+/// `image` is transparent wherever it has nothing — a layer's pixels, or a
+/// matte as alpha. What comes back is on the print's canvas: cut by the crop,
+/// placed like the photograph, clipped to the paper, and — when the drawing is
+/// over the photo — hidden under it by the drawing's own alpha.
+///
+/// ⚠️ With the photograph on top of the drawing this is exact: "over" does not
+/// care how it is grouped. With the drawing on top it is exact wherever the
+/// drawing is opaque or clear, and off only along a SEMI-transparent edge of
+/// the drawing, by less than the edge's own softness — measured in the test,
+/// not assumed.
+func briefShowPhotoSpaceOnPrint(_ image: CIImage,
+                                photoExtent: CGRect,
+                                crop: (x: Double, y: Double, width: Double, height: Double,
+                                       angleDegrees: Double)?,
+                                template: PrintTemplate,
+                                art: CIImage?,
+                                placement: SlotPlacement,
+                                artOverPhoto: Bool,
+                                canvasScale: Double) -> CIImage {
+    let printed = template.canvasPixels
+    let canvas = CGRect(x: 0, y: 0,
+                        width: (printed.width * canvasScale).rounded(),
+                        height: (printed.height * canvasScale).rounded())
+
+    // Nothing of a layer outside the photograph was ever drawn — the
+    // renderer's blend crops every layer to the picture.
+    var output = image.cropped(to: photoExtent)
+    var photoRect = photoExtent
+    if let crop {
+        let geometry = briefShowCropGeometry(x: crop.x, y: crop.y,
+                                             width: crop.width, height: crop.height,
+                                             angleDegrees: crop.angleDegrees,
+                                             extent: photoExtent)
+        if let turn = geometry.turn {
+            output = output.transformed(by: turn)
+        }
+        output = output.cropped(to: geometry.rect)
+        photoRect = geometry.rect
+    }
+
+    // ⚠️ Placed by the PHOTOGRAPH's rectangle, not by this image's own
+    // extent — see briefShowPhotoPlacementTransform.
+    if let transform = briefShowPhotoPlacementTransform(photoExtent: photoRect,
+                                                        template: template,
+                                                        placement: placement,
+                                                        canvas: canvas) {
+        output = output.transformed(by: transform)
+    }
+    output = output.cropped(to: canvas)
+
+    if artOverPhoto, let drawn = briefShowArtOnCanvas(art, canvas: canvas) {
+        // Source-out: this image, only where the drawing is not.
+        let knockOut = CIFilter(name: "CISourceOutCompositing")
+        knockOut?.setValue(output, forKey: kCIInputImageKey)
+        knockOut?.setValue(drawn, forKey: kCIInputBackgroundImageKey)
+        output = (knockOut?.outputImage ?? output).cropped(to: canvas)
+    }
+    return output
+}
+
+/// A line of text that was on the print, re-measured for a photograph.
+///
+/// ⚠️ The record keeps a size in INCHES, and what an inch is differs: on a
+/// print it is the paper's inch, on a photograph the long edge is read as eight
+/// inches (`briefShowPhotoLongEdgeInches`). After Image + Template are merged
+/// the print IS the photograph, so the same letters need a different number to
+/// stay the same number of pixels. The box is a fraction of the canvas, and the
+/// canvas is the same one, so it does not move.
+func briefShowTextOffPrint(_ text: TemplateText, template: PrintTemplate,
+                           canvasWidth: Double, canvasHeight: Double) -> TemplateText {
+    let onPrint = briefShowPixelsPerInch(template: template, canvasWidth: canvasWidth)
+    let onPhoto = briefShowPhotoPixelsPerInch(canvasWidth: canvasWidth, canvasHeight: canvasHeight)
+    guard onPrint > 0, onPhoto > 0 else { return text }
+    var moved = text
+    moved.sizeInches = text.sizeInches * onPrint / onPhoto
+    return moved
+}
+
+/// The template's drawing stretched over the paper, or nil when there is none.
+///
+/// One place, for the same reason as the placement below: Merge Layers uses
+/// the drawing's alpha to hide the part of a kept layer that the frame covers.
+func briefShowArtOnCanvas(_ art: CIImage?, canvas: CGRect) -> CIImage? {
+    guard let art else { return nil }
+    let artExtent = art.extent
+    guard artExtent.width > 0, artExtent.height > 0,
+          artExtent.width.isFinite, artExtent.height.isFinite else { return nil }
+    return art
+        .transformed(by: CGAffineTransform(translationX: -artExtent.minX, y: -artExtent.minY))
+        .transformed(by: CGAffineTransform(scaleX: canvas.width / artExtent.width,
+                                           y: canvas.height / artExtent.height))
+}
+
+/// Where the photograph goes on the paper, as one transform.
+///
+/// ⚠️ ONE PLACE FOR THIS, and that is the point of it being a function. The
+/// print draws the photograph with it, and Merge Layers (Image + Template,
+/// KORAK 208) draws every layer the client kept live with it — a layer that
+/// went through a copy of this arithmetic would sit a pixel off the picture it
+/// was on the day the copy drifted.
+///
+/// `photoExtent` is the PHOTOGRAPH's, never the extent of whatever is being
+/// moved: a layer on the picture is smaller than the picture, and scaling it by
+/// its own size would stretch it to fill the frame.
+func briefShowPhotoPlacementTransform(photoExtent extent: CGRect,
+                                      template: PrintTemplate,
+                                      placement: SlotPlacement,
+                                      canvas: CGRect) -> CGAffineTransform? {
+    guard extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite else {
+        return nil
+    }
+    // Worked out the way the screen sees it — the same call the selection
+    // outline makes — and turned over only here, because Core Image counts
+    // its rows from the bottom.
+    let onCanvas = briefShowPhotoRectOnCanvas(photoWidth: Double(extent.width),
+                                              photoHeight: Double(extent.height),
+                                              slot: template.slot.rect,
+                                              canvasWidth: Double(canvas.width),
+                                              canvasHeight: Double(canvas.height),
+                                              placement: placement)
+    let target = CGRect(x: onCanvas.minX,
+                        y: canvas.height - onCanvas.maxY,
+                        width: onCanvas.width,
+                        height: onCanvas.height)
+    var transform = CGAffineTransform(translationX: target.midX, y: target.midY)
+    if placement.rotationDegrees != 0 {
+        // ⚠️ MINUS, and it is the difference between the knob and the
+        // picture turning the same way. `rotationDegrees` is CLOCKWISE,
+        // because that is what the rotate knob on the canvas reads and
+        // what the layer knob beside it has always meant. Core Image
+        // counts its rows from the bottom, so a positive angle there comes
+        // out anti-clockwise on screen.
+        transform = transform.rotated(by: CGFloat(-placement.rotationDegrees * .pi / 180))
+    }
+    return transform
+        .scaledBy(x: target.width / extent.width, y: target.height / extent.height)
+        .translatedBy(x: -extent.midX, y: -extent.midY)
+}
+
 /// The same composition with the drawing handed in.
 ///
 /// ⚠️ The split is what makes this measurable. The wrapper above reaches into
@@ -1070,35 +1265,11 @@ func briefShowComposeTemplate(photo: CIImage,
     // over nothing is a picture with a hole in it.
     let paper = CIImage(color: CIColor.white).cropped(to: canvas)
 
-    let extent = photo.extent
     var placed = photo
-    if extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite {
-        // Worked out the way the screen sees it — the same call the selection
-        // outline makes — and turned over only here, because Core Image counts
-        // its rows from the bottom.
-        let onCanvas = briefShowPhotoRectOnCanvas(photoWidth: Double(extent.width),
-                                                  photoHeight: Double(extent.height),
-                                                  slot: template.slot.rect,
-                                                  canvasWidth: Double(canvas.width),
-                                                  canvasHeight: Double(canvas.height),
-                                                  placement: placement)
-        let target = CGRect(x: onCanvas.minX,
-                            y: canvas.height - onCanvas.maxY,
-                            width: onCanvas.width,
-                            height: onCanvas.height)
-        var transform = CGAffineTransform(translationX: target.midX, y: target.midY)
-        if placement.rotationDegrees != 0 {
-            // ⚠️ MINUS, and it is the difference between the knob and the
-            // picture turning the same way. `rotationDegrees` is CLOCKWISE,
-            // because that is what the rotate knob on the canvas reads and
-            // what the layer knob beside it has always meant. Core Image
-            // counts its rows from the bottom, so a positive angle there comes
-            // out anti-clockwise on screen.
-            transform = transform.rotated(by: CGFloat(-placement.rotationDegrees * .pi / 180))
-        }
-        transform = transform
-            .scaledBy(x: target.width / extent.width, y: target.height / extent.height)
-            .translatedBy(x: -extent.midX, y: -extent.midY)
+    if let transform = briefShowPhotoPlacementTransform(photoExtent: photo.extent,
+                                                        template: template,
+                                                        placement: placement,
+                                                        canvas: canvas) {
         placed = photo.transformed(by: transform)
     }
 
@@ -1120,17 +1291,9 @@ func briefShowComposeTemplate(photo: CIImage,
             : briefShowComposeTemplateTexts(texts, over: print, template: template, canvas: canvas)
     }
 
-    guard let art else {
+    guard let drawn = briefShowArtOnCanvas(art, canvas: canvas) else {
         return finished(placed.composited(over: paper))
     }
-    let artExtent = art.extent
-    guard artExtent.width > 0, artExtent.height > 0 else {
-        return finished(placed.composited(over: paper))
-    }
-    let drawn = art
-        .transformed(by: CGAffineTransform(translationX: -artExtent.minX, y: -artExtent.minY))
-        .transformed(by: CGAffineTransform(scaleX: canvas.width / artExtent.width,
-                                           y: canvas.height / artExtent.height))
 
     // The client's switch, and the whole reason the template is a canvas: one
     // order of two images, not two different mechanisms.

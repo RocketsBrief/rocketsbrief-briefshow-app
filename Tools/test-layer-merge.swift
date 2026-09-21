@@ -152,5 +152,30 @@ do {
             .map { $0.alphaInfo != .none } == true)
 }
 
+// MARK: - Merging INTO the photograph (KORAK 208)
+
+print("\nthe rule for Image + Template")
+do {
+    let bottom = piece("Bottom"), middle = piece("Middle"), top = piece("Top")
+    let stack = [bottom, middle, top]   // bottom to top, as settings.layers stores it
+    func refusal(_ image: Bool, _ template: Bool, _ ids: [UUID]) -> String? {
+        briefShowPhotoMergeRefusal(imagePicked: image, templatePicked: template,
+                                   pickedLayerIDs: Set(ids), layers: stack)
+    }
+    check("Image + Template merge", refusal(true, true, []) == nil)
+    check("Image + Template + the bottom layer merge", refusal(true, true, [bottom.id]) == nil)
+    check("Image + the two lowest layers merge", refusal(true, false, [bottom.id, middle.id]) == nil)
+    check("the frame alone is refused, and says to tick Image",
+          refusal(false, true, [])?.contains("tick Image") == true)
+    check("Image alone is refused — nothing to merge into it", refusal(true, false, []) != nil)
+    // ⚠️ The one that would change the picture: a ticked layer with an
+    // unticked one under it would be pulled beneath it into the photo.
+    let skipped = refusal(true, true, [middle.id])
+    check("a ticked layer above an unticked one is refused", skipped != nil)
+    check("  and the reason names both layers",
+          skipped?.contains("Middle") == true && skipped?.contains("Bottom") == true, skipped ?? "nil")
+    check("nothing ticked says what to tick", refusal(false, false, []) != nil)
+}
+
 print(failures == 0 ? "\nall passed\n" : "\n\(failures) FAILED\n")
 exit(failures == 0 ? 0 : 1)

@@ -254,9 +254,13 @@ outline_body = develop_code.split("func templatePhotoRectOnScreen(", 1)[-1].spli
 compose_body = templates_source.split("func briefShowComposeTemplate(photo: CIImage,\n                              template: PrintTemplate,\n                              art: CIImage?", 1)[-1]
 wiring("the outline asks for the photo's rectangle by the shared function",
        "briefShowPhotoRectOnCanvas(" in outline_body)
+# KORAK 208 moved the placement into briefShowPhotoPlacementTransform, which
+# Merge Layers shares; the renderer reaches the same function through it.
+placement_body = templates_source.split("func briefShowPhotoPlacementTransform(", 1)[-1].split("\n}\n", 1)[0]
 wiring("and so does the renderer, instead of working it out its own way",
-       "briefShowPhotoRectOnCanvas(" in compose_body
-       and "flipped: true" not in compose_body)
+       "briefShowPhotoPlacementTransform(" in compose_body
+       and "briefShowPhotoRectOnCanvas(" in placement_body
+       and "flipped: true" not in compose_body and "flipped: true" not in placement_body)
 wiring("the drag is measured in a named canvas space, so the outline cannot shake",
        'coordinateSpace: .named(Self.templateCanvasSpace)' in develop_code)
 wiring("a turn is stored clockwise and the composition turns the other way to match",

@@ -246,8 +246,15 @@ wiring("an inch is read off the CANVAS, not off the dpi constant",
 
 # Text is topmost and it is not a switch — checked in the render above, and
 # the reason is here so a later session does not "add the option".
+# Every way out of the composition goes through finished(). Counted as "all of
+# them", not as a number: KORAK 208 folded two of the early returns into one
+# (briefShowArtOnCanvas), and a fixed count would have called that a fault.
+_compose = templates.split("func briefShowComposeTemplate(photo: CIImage,\n                              template: PrintTemplate,\n                              art: CIImage?", 1)[-1]
+_compose = _compose.split("\n}\n", 1)[0].split("func finished(", 1)[-1]
+_returns = [line.strip() for line in _compose.splitlines() if line.strip().startswith("return")]
 wiring("the composition lays the text through one way out",
-       "func finished(" in templates and templates.count("return finished(") == 3)
+       "func finished(" in templates and len(_returns) >= 2
+       and all(r.startswith("return finished(") for r in _returns), str(_returns))
 
 # The file still draws prints with no window anywhere.
 wiring("Templates.swift knows nothing about AppKit or SwiftUI",

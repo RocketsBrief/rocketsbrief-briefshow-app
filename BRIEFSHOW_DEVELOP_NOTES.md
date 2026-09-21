@@ -22896,3 +22896,94 @@ osvetljena reda.
 
 **Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; `run-layer-merge-test.py`
 **all good**; app instaliran i pokrenut. ⚠️ **Nije viđeno na ekranu** — keychain.
+
+---
+
+## KORAK 208 — Image i Template se stvarno spajaju, a ono što nije štiklirano ostaje živo (21. septembar 2026)
+
+Klijent: *„vidim da postoje kruzici ali samo na subjects i background, ne i na
+temple i image itself?"* — i na pitanje da li okvir i slika treba stvarno da se
+spoje: **da**. To je njegova rečenica iz 205, *„samo se ta dva merguju a treci
+ostane jer nije bio selektovan"*.
+
+⚠️ **Ovo POVLAČI odbijanje iz 206.** Do sada je desni klik na Image/Template
+uvek bio siv sa porukom da ih peče samo Flatten Photo. Sada je to pravi merge.
+
+### Šta radi
+
+Kružić stoji i na **Image** i na **Template**. Merge u fotografiju traži Image
+plus bar još jedan štiklirani red; **isti meni je na svakom redu** čim je Image
+ili Template štikliran.
+
+| štiklirano | šta se ispeče | šta ostaje živo |
+|---|---|---|
+| **Image + Template** (+ layeri) | otisak, tačno kao Flatten Photo, i štiklirani layeri | svaki neštiklirani layer, **preračunat na otisak**; sav tekst, **preračunat u inče fotografije** |
+| **Image + layeri** (bez Template) | fotografija sa gradom, maskama i štikliranim layerima | crop, okvir, vignette, tekst — kao podešavanja; neštiklirani layeri se **ne pomeraju** |
+
+Pravilo (`briefShowPhotoMergeRefusal`, čista funkcija, meni čita nju):
+- samo Template → *„tick Image as well"*;
+- **štiklirani layer iznad neštikliranog se odbija**, sa imenima oba. Merge u
+  fotografiju stavlja štiklirano na DNO; neštiklirani People/Background ispod bi
+  ga onda tonirao — slika bi se promenila, a merge to ne sme.
+
+### ⛔ Suština: layer koji nije štikliran mora izgledati ISTO
+
+Layer živi u koordinatama fotografije, ispod crop-a i unutar okvira. Kad otisak
+postane slika, isti layer se crta u koordinatama OTISKA: isečen crop-om koji je
+sekao sliku, smešten kao slika, sakriven ispod crteža okvira gde ga je okvir
+pokrivao. `briefShowPhotoSpaceOnPrint` to radi **istim funkcijama kojima se
+otisak crta** — nema druge kopije te geometrije:
+
+| deljeno | ko ga koristi |
+|---|---|
+| `briefShowCropGeometry` | renderer (crop) **i** merge |
+| `briefShowPhotoPlacementTransform` | `briefShowComposeTemplate` **i** merge |
+| `briefShowArtOnCanvas` | `briefShowComposeTemplate` **i** merge |
+
+Renderer i `briefShowComposeTemplate` su prepravljeni da zovu te funkcije — ista
+matematika, izvučena, ne prepisana.
+
+Pomera se **samo geometrija** (`PhotoEditRenderer.layerOnPrint`): opacity, blend,
+slajderi layera, oko — ostaju podešavanja. Blur se preračunava da isti broj
+piksela bude zamućen. People/Background: mata se preračuna i sakrije ispod okvira.
+Ako se ijedan layer ne može preneti, **merge se ne radi** — bolje ništa nego
+izgubljen layer.
+
+Undo je kao za Flatten: **Unflatten** vraća na pre prvog pečenja.
+
+### Izmereno — `Tools/run-print-merge-test.py`
+
+Kompajlira pravi `Templates.swift`; otisak sa živim layerom naspram ispečenog
+otiska + preračunatog layera preko njega:
+
+| slučaj | najveća razlika | pikseli > 8 nivoa |
+|---|---|---|
+| okvir preko slike, bez crop-a | **0** | 0 % |
+| okvir preko slike, zarotiran crop, slika pomerena + zumirana + zarotirana | **0** | 0 % |
+| slika preko okvira, isto | 27 | 0,019 % (ivica layera, resampling) |
+| okvir sa MEKOM ivicom otvora (jedini neprecizan slučaj, u kodu napisano) | 35 | 0,043 % |
+
+**Negativne kontrole, puštaju se svaki put:** layer ostavljen preko okvira,
+layer smešten po sopstvenoj veličini umesto po slici, layer koji je preskočio
+crop — sva tri **uhvaćena**. Tekst: isti broj piksela pre i posle, kutija na istom
+mestu.
+
+Dopunjeno: `run-layer-merge-test.py` (8 provera pravila), a dve provere koje su
+čitale stari oblik koda (`run-templates-test.py`, `run-template-text-test.py`)
+sada proveravaju istu nameru kroz deljene funkcije.
+
+### ⚠️ Poznate male razlike, svesno prihvaćene
+
+- People/Background sa **temperaturom na RAW-u**: posle merge-a baza je TIFF, pa
+  temperatura ide kroz lokalni lanac, ne kroz RAW dekoder.
+- Slajderi layera koji gledaju komšiluk (Clarity, Dehaze) blizu ivice slike sada
+  vide i paspartu.
+
+**Stanje:** `xcodebuild … Debug` → **BUILD SUCCEEDED**; prolaze
+`run-print-merge-test.py`, `run-layer-merge-test.py`, `run-templates-test.py`,
+`run-template-edge-test.py`, `run-template-text-test.py`, `run-print-export-test.py`,
+`run-layer-reorder-test.py`, `run-layer-eraser-test.py`, `run-layer-outline-test.py`,
+`run-layer-pixel-store-test.py`, `run-editsettings-decode-test.py`. App instaliran
+u `/Applications/C4S Suite.app` i pokrenut.
+⚠️ **Nije viđeno na ekranu** — macOS je pri startu tražio dozvolu za Desktop
+folder, a to odobrava klijent, ne ja.

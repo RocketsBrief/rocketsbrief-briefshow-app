@@ -3580,33 +3580,15 @@ enum PhotoEditRenderer {
             guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
                 return output
             }
-            let rect = CGRect(
-                x: extent.origin.x + crop.x * extent.width,
-                y: extent.origin.y + (1 - crop.y - crop.height) * extent.height,
-                width: crop.width * extent.width,
-                height: crop.height * extent.height
-            ).integral
-
-            // A TURNED crop frame is rendered by turning the PICTURE the other
-            // way about the frame's own centre, and then taking the ordinary
-            // upright rectangle. The two are the same thing: what comes out is
-            // the tilted frame's contents, upright, at exactly the frame's own
-            // size. Doing it this way means `rect` below is untouched — the
-            // centre is the one point a rotation about the centre leaves where
-            // it is, and the size does not change.
-            //
-            // ⚠️ Sign checked against the straighten path twenty lines up, not
-            // guessed. There, a POSITIVE straightenDegrees turns the picture
-            // clockwise through `rotationAngle: -radians`; so `+radians` turns
-            // it counter-clockwise, which is what stands the frame back up when
-            // the frame itself is turned clockwise. A rotation that goes the
-            // wrong way is the kind of thing that gets "fixed" twice.
-            if crop.angle != 0 {
-                let radians = CGFloat(crop.angle * .pi / 180)
-                let centre = CGPoint(x: rect.midX, y: rect.midY)
-                let turn = CGAffineTransform(translationX: centre.x, y: centre.y)
-                    .rotated(by: radians)
-                    .translatedBy(x: -centre.x, y: -centre.y)
+            // The arithmetic lives in briefShowCropGeometry (Templates.swift),
+            // shared with Merge Layers so a kept layer is cut by exactly the
+            // rectangle that cut the picture under it. The turned-frame and
+            // sign notes are there with it.
+            let geometry = briefShowCropGeometry(x: crop.x, y: crop.y,
+                                                 width: crop.width, height: crop.height,
+                                                 angleDegrees: crop.angle, extent: extent)
+            let rect = geometry.rect
+            if let turn = geometry.turn {
                 output = output.transformed(by: turn)
             }
 
@@ -5690,6 +5672,110 @@ enum PhotoEditRenderer {
         cut.backgroundImage = CIImage.empty().cropped(to: extent)
         cut.maskImage = matte
         return cut.outputImage?.cropped(to: extent)
+    }
+
+    /// A layer the client did NOT tick, re-drawn for a photo whose print has
+    /// just been merged into it (KORAK 208) — or nil if nothing of it is left
+    /// on the print.
+    ///
+    /// ⚠️ ONLY GEOMETRY MOVES. Opacity, blend, the layer's own sliders, its
+    /// blur and its eye are the client's settings on the layer, and they come
+    /// across untouched — they are applied at render time, exactly as before.
+    /// What is re-drawn is WHERE its pixels (or its matte) are: through the
+    /// crop, onto the paper, under the frame's drawing — all by
+    /// `briefShowPhotoSpaceOnPrint`, the print's own geometry.
+    ///
+    /// The result covers the whole canvas (x 0, y 0, 1 × 1), which is what a
+    /// merged layer already does — see `mergeSelectedLayers`.
+    static func layerOnPrint(_ layer: ImageLayer,
+                             photoExtent: CGRect,
+                             crop: EditCropRect?,
+                             template: PrintTemplate,
+                             placement: SlotPlacement,
+                             artOverPhoto: Bool,
+                             canvasScale: Double) -> ImageLayer? {
+        guard photoExtent.width >= 1, photoExtent.height >= 1 else { return nil }
+        let art = TemplateArtCache.image(for: template.artRef)
+        let cropTuple = crop.map { (x: $0.x, y: $0.y, width: $0.width, height: $0.height,
+                                    angleDegrees: $0.angle) }
+        func onPrint(_ image: CIImage) -> CIImage {
+            briefShowPhotoSpaceOnPrint(image, photoExtent: photoExtent, crop: cropTuple,
+                                       template: template, art: art, placement: placement,
+                                       artOverPhoto: artOverPhoto, canvasScale: canvasScale)
+        }
+        let printed = template.canvasPixels
+        let canvas = CGRect(x: 0, y: 0,
+                            width: (printed.width * canvasScale).rounded(),
+                            height: (printed.height * canvasScale).rounded())
+        guard canvas.width >= 1, canvas.height >= 1 else { return nil }
+        let clear = CIImage(color: .clear).cropped(to: canvas)
+
+        var moved = layer
+        moved.x = 0
+        moved.y = 0
+        moved.width = 1
+        moved.height = 1
+        moved.rotationDegrees = 0
+
+        if let maskData = layer.maskData {
+            // The matte, stretched over the photograph exactly as
+            // compositeDerivedLayer stretches it, read as ALPHA so the frame's
+            // drawing can hide it, and turned back into grey on black — the
+            // shape every stored matte has.
+            guard let stored = CIImage(data: maskData),
+                  stored.extent.width > 0, stored.extent.height > 0 else { return nil }
+            let scaled = stored
+                .transformed(by: CGAffineTransform(scaleX: photoExtent.width / stored.extent.width,
+                                                   y: photoExtent.height / stored.extent.height))
+            let matte = scaled
+                .transformed(by: CGAffineTransform(translationX: photoExtent.origin.x - scaled.extent.origin.x,
+                                                   y: photoExtent.origin.y - scaled.extent.origin.y))
+                .cropped(to: photoExtent)
+            let asAlpha = matte.applyingFilter("CIMaskToAlpha")
+            let grey = onPrint(asAlpha)
+                .composited(over: CIImage(color: .black).cropped(to: canvas))
+                .cropped(to: canvas)
+            guard let data = maskPNG(grey, extent: canvas) else { return nil }
+            moved.maskData = data
+            return moved
+        }
+
+        // A pixel layer: its pixels put where compositeLayers puts them, and
+        // nothing else — full opacity, no sliders, no blur, Normal — so that
+        // only the geometry is baked and every one of those still applies live.
+        var geometryOnly = layer
+        geometryOnly.opacity = 1
+        geometryOnly.blendMode = .normal
+        geometryOnly.adjustments = LocalAdjustmentSettings()
+        geometryOnly.blur = 0
+        geometryOnly.isEnabled = true
+        let onPhoto = compositeLayers([geometryOnly],
+                                      onto: CIImage(color: .clear).cropped(to: photoExtent))
+        let placed = onPrint(onPhoto).composited(over: clear).cropped(to: canvas)
+        guard let data = pngData(for: placed, pixelRect: canvas) else { return nil }
+        moved.imageData = data
+
+        // ⚠️ Blur is a fraction of the PIECE's shorter side (see layerBlur),
+        // and the piece is now the whole canvas. Scaled so the same number of
+        // pixels is blurred as before.
+        if layer.blur > 0, let source = decodedLayerImage(layer),
+           let transform = briefShowPhotoPlacementTransform(
+               photoExtent: crop.map { briefShowCropGeometry(x: $0.x, y: $0.y, width: $0.width,
+                                                             height: $0.height, angleDegrees: $0.angle,
+                                                             extent: photoExtent).rect } ?? photoExtent,
+               template: template, placement: placement, canvas: canvas) {
+            // σ is taken in the piece's own pixels, which are then scaled onto
+            // the photograph and again onto the paper.
+            let scale = Double(hypot(transform.a, transform.b))
+            let pieceShortSide = min(layer.width * photoExtent.width,
+                                     layer.height * photoExtent.height) * scale
+            let sourceShort = Double(min(source.extent.width, source.extent.height))
+            let sigmaBefore = min(max(layer.blur, 0), 1) * 0.02 * sourceShort
+            let sigmaOnPrint = sourceShort > 0 ? sigmaBefore * pieceShortSide / sourceShort : 0
+            let canvasShort = Double(min(canvas.width, canvas.height))
+            moved.blur = canvasShort > 0 ? min(1, sigmaOnPrint / (0.02 * canvasShort)) : layer.blur
+        }
+        return moved
     }
 
     private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage,
@@ -8756,6 +8842,39 @@ func briefShowLayerMergeRefusal(_ layers: [ImageLayer]) -> String? {
     return nil
 }
 
+/// Why this can not be merged INTO THE PHOTOGRAPH, or nil when it can — the
+/// merge that the Image and Template circles start (KORAK 208).
+///
+/// `layers` is the stack bottom to top, as `settings.layers` stores it.
+///
+/// ⚠️ Pure, and the menu reads it for its label, its grey state and its
+/// reason — the same rule as `briefShowLayerMergeRefusal` above, for the same
+/// reason.
+func briefShowPhotoMergeRefusal(imagePicked: Bool, templatePicked: Bool,
+                                pickedLayerIDs: Set<UUID>,
+                                layers: [ImageLayer]) -> String? {
+    guard imagePicked else {
+        return templatePicked
+            ? "The frame is merged onto the photo — tick Image as well."
+            : "Tick Image, and the rows to merge into it."
+    }
+    let picked = layers.filter { pickedLayerIDs.contains($0.id) }
+    guard templatePicked || !picked.isEmpty else {
+        return "Tick Template or a layer to merge into the photo."
+    }
+    // ⚠️ ONLY LAYERS STRAIGHT ON THE PHOTO. A merge into the photograph puts
+    // what it takes at the BOTTOM of the stack — it becomes the picture. A
+    // ticked layer with an unticked one under it would be pulled beneath that
+    // one, and an unticked People or Background layer would then tint it: the
+    // picture would change, which a merge must not do.
+    if let firstKept = layers.firstIndex(where: { !pickedLayerIDs.contains($0.id) }),
+       let above = layers[firstKept...].first(where: { pickedLayerIDs.contains($0.id) }) {
+        return "“\(above.name)” sits above “\(layers[firstKept].name)”, which is not ticked — "
+             + "tick that one too, or drag it above."
+    }
+    return nil
+}
+
 struct DevelopView: View {
     /// The photos in the filmstrip.
     ///
@@ -9233,6 +9352,15 @@ struct DevelopView: View {
     /// Client, 21.09: *„da mogu da recimo selektujem vise od jednog layera …
     /// i desni click da mi pokaze option merge layers"*.
     @State private var multiSelectedLayerIDs: Set<UUID> = []
+    /// The circles on the Image and Template rows — KORAK 208.
+    ///
+    /// ⚠️ Their own flags, not ids in the set above: those two rows are not
+    /// layers in `settings.layers`, and a merge that includes the photograph is
+    /// a different operation (it bakes into the file) from one that only joins
+    /// layers. Cleared in `loadImages`, the one place every change of picture
+    /// passes through, so a tick never follows the client onto another photo.
+    @State private var imagePickedForMerge = false
+    @State private var templatePickedForMerge = false
     /// Is the frame's row picked? ⚠️ Its own flag: clicking that row must
     /// SELECT it, not walk off to another tab — reported 21.09, *„kada kliknem
     /// na layer template on me baca na template seciju umesto samo da se
@@ -20228,6 +20356,13 @@ struct DevelopView: View {
     /// makes, not a second copy of it.
     private func templateLayerRow(_ template: PrintTemplate) -> some View {
         HStack(spacing: 8) {
+            // KORAK 208 — the frame can be ticked for a merge like any layer;
+            // with Image it bakes the print into the photo.
+            mergeCircle(isOn: templatePickedForMerge,
+                        help: "Pick the frame for a merge — tick Image too, then right-click and Merge Layers.") {
+                templatePickedForMerge.toggle()
+            }
+
             Image(systemName: "rectangle.on.rectangle.angled")
                 .font(.system(size: 10))
                 .foregroundColor(AppColors.muted.opacity(0.7))
@@ -20294,6 +20429,13 @@ struct DevelopView: View {
     /// then work on it.
     private func templatePhotoLayerRow() -> some View {
         HStack(spacing: 8) {
+            // KORAK 208 — the photograph as a merge target: what else is
+            // ticked is baked into it, and everything not ticked stays live.
+            mergeCircle(isOn: imagePickedForMerge,
+                        help: "Pick the photo for a merge — tick what goes into it, then right-click and Merge Layers.") {
+                imagePickedForMerge.toggle()
+            }
+
             Image(systemName: "photo")
                 .font(.system(size: 10))
                 .foregroundColor(AppColors.muted.opacity(0.7))
@@ -20334,19 +20476,17 @@ struct DevelopView: View {
         .contextMenu { printRowMergeMenuItem() }
     }
 
-    /// What a right click on the frame or the photograph offers.
+    /// What a right click on the frame or the photograph offers: the merge
+    /// into the photograph, with its reason in the menu when it cannot run.
     ///
-    /// ⚠️ It offers the same item as every other row and REFUSES it, with the
-    /// reason in the menu. The frame and the photograph are not two pieces to
-    /// be stuck together — the print IS the two of them, and baking it is what
-    /// Flatten Photo does, which is the client's own rule: *„jedino kada idem
-    /// na dugme flatten image onda da se naravne sve flatenuje"*. An item that
-    /// simply was not there would leave him clicking and finding nothing.
+    /// ⚠️ KORAK 208 REVERSED THE REFUSAL that stood here. Until then this item
+    /// was always grey and said the frame and the photo could only be baked
+    /// together by Flatten Photo. Asked on 21.09 whether they should merge for
+    /// real, the client said yes — with every unticked row staying live, which
+    /// is his original *„samo se ta dva merguju a treci ostane"*.
     @ViewBuilder
     private func printRowMergeMenuItem() -> some View {
-        Button("Merge Layers (2)") { }
-            .disabled(true)
-        Text("The frame and the photo are the print itself — Flatten Photo bakes them together.")
+        photoMergeMenuItem()
     }
 
     /// Which layers a merge would act on, in STACK order (bottom to top).
@@ -20367,7 +20507,11 @@ struct DevelopView: View {
     /// itself — the client would tick one, right-click, and be told to select
     /// two or more while looking at two highlighted rows.
     private func toggleLayerInMergeSet(_ id: UUID) {
-        if multiSelectedLayerIDs.isEmpty, let selectedLayerID, selectedLayerID != id {
+        // ⚠️ Not when the photo or the frame is ticked: that merge takes
+        // exactly the rows with a tick, and pulling in the layer the sliders
+        // happen to be on would bake something the client did not pick.
+        if !imagePickedForMerge, !templatePickedForMerge,
+           multiSelectedLayerIDs.isEmpty, let selectedLayerID, selectedLayerID != id {
             multiSelectedLayerIDs.insert(selectedLayerID)
         }
         if multiSelectedLayerIDs.contains(id) {
@@ -20377,7 +20521,8 @@ struct DevelopView: View {
         }
         // Nothing is picked any more, so the set is empty rather than holding
         // the anchor on its own.
-        if multiSelectedLayerIDs.count == 1, multiSelectedLayerIDs.first == selectedLayerID {
+        if !imagePickedForMerge, !templatePickedForMerge,
+           multiSelectedLayerIDs.count == 1, multiSelectedLayerIDs.first == selectedLayerID {
             multiSelectedLayerIDs = []
         }
     }
@@ -20409,6 +20554,17 @@ struct DevelopView: View {
 
     @ViewBuilder
     private func layerMergeMenuItem(clickedOn layer: ImageLayer) -> some View {
+        if imagePickedForMerge || templatePickedForMerge {
+            // Once the photo or the frame is ticked, the merge is INTO the
+            // photograph — the same item on every row (KORAK 208).
+            photoMergeMenuItem()
+        } else {
+            layerOnlyMergeMenuItem(clickedOn: layer)
+        }
+    }
+
+    @ViewBuilder
+    private func layerOnlyMergeMenuItem(clickedOn layer: ImageLayer) -> some View {
         // Right-clicking a layer that is not in the set means THAT layer, the
         // way right-click works everywhere else in this app.
         let targets = layerMergeTargets.contains(where: { $0.id == layer.id })
@@ -20476,6 +20632,194 @@ struct DevelopView: View {
         settings.layers = kept
         multiSelectedLayerIDs = []
         selectedLayerID = kept[insertAt].id
+    }
+
+    // MARK: Merge into the photograph — Image + Template (KORAK 208)
+
+    /// How many rows the merge into the photograph would take.
+    private var photoMergeCount: Int {
+        (imagePickedForMerge ? 1 : 0)
+            + (templatePickedForMerge && settings.templateID != nil ? 1 : 0)
+            + settings.layers.filter { multiSelectedLayerIDs.contains($0.id) }.count
+    }
+
+    private var photoMergeRefusal: String? {
+        briefShowPhotoMergeRefusal(imagePicked: imagePickedForMerge,
+                                   templatePicked: templatePickedForMerge && settings.templateID != nil,
+                                   pickedLayerIDs: multiSelectedLayerIDs,
+                                   layers: settings.layers)
+    }
+
+    /// The right-click item once the Image or Template circle is ticked — on
+    /// every row, so the client never has to find the one row that knows.
+    @ViewBuilder
+    private func photoMergeMenuItem() -> some View {
+        let refusal = photoMergeRefusal
+        Button("Merge Layers (\(photoMergeCount))") {
+            mergeIntoPhoto()
+        }
+        .disabled(refusal != nil || isFlattening)
+        if let refusal {
+            Text(refusal)
+        }
+    }
+
+    /// The circle on the Image and Template rows — the same look as a layer's.
+    private func mergeCircle(isOn: Bool, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 11))
+                .foregroundColor(isOn ? Color.accentColor : AppColors.muted.opacity(0.6))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    /// Bakes the ticked rows into the photograph, and leaves every other row
+    /// live and looking exactly as it did.
+    ///
+    /// The client, 21.09: *„samo se ta dva merguju a treci ostane jer nije bio
+    /// selektovan.. e jedino kada idem na dugme flatten image onda da se
+    /// naravne sve flatenuje"*. So this is Flatten Photo with one difference —
+    /// what was not ticked survives it.
+    ///
+    /// Two shapes:
+    /// - **Template ticked** — the print is baked, exactly as Flatten Photo
+    ///   bakes it, and every kept layer is re-drawn in the print's coordinates
+    ///   (`PhotoEditRenderer.layerOnPrint`); every line of text stays live,
+    ///   re-measured for a photograph (`briefShowTextOffPrint`).
+    /// - **Only layers** — they go into the photograph's pixels with the grade;
+    ///   the crop, the frame, the vignette and the text stay live settings,
+    ///   and the kept layers do not move at all.
+    ///
+    /// ⚠️ It is a flatten, and it is undone the way a flatten is: Unflatten
+    /// goes back to before the first bake. The undo stack is cleared for the
+    /// same reason flattenPhoto clears it — its entries describe the file
+    /// that is no longer under the photo.
+    private func mergeIntoPhoto() {
+        guard photoMergeRefusal == nil, let selectedURL, let fullBaseImage else { return }
+        let snapshot = settings
+        let photoAtActionTime = selectedURL
+        let picked = multiSelectedLayerIDs
+        let template = templatePickedForMerge ? templateLibrary.template(id: snapshot.templateID) : nil
+        let bakesTemplate = template != nil
+        let artOverPhoto = template.map { snapshot.templateArtOverPhoto ?? $0.artOverPhoto } ?? false
+
+        // What goes into the pixels: the photograph, its grade and masks, and
+        // ONLY the ticked layers. Never the text — it stays live either way.
+        var bake = snapshot
+        bake.layers = snapshot.layers.filter { picked.contains($0.id) }
+        bake.templateTexts = []
+        if !bakesTemplate {
+            // The vignette is drawn after the layers; left live, it keeps
+            // darkening the kept ones exactly as it did.
+            bake.vignette = 0
+        }
+        let kept = snapshot.layers.filter { !picked.contains($0.id) }
+
+        let bakeScale: Double = {
+            guard let template else { return 1 }
+            let extent = fullBaseImage.extent
+            guard extent.width > 0, extent.height > 0 else { return 1 }
+            var width = Double(extent.width), height = Double(extent.height)
+            if snapshot.rotationQuarterTurns % 2 != 0 { swap(&width, &height) }
+            if let crop = snapshot.crop { width *= crop.width; height *= crop.height }
+            return briefShowBakeCanvasScale(photoWidth: width, photoHeight: height,
+                                            template: template,
+                                            placement: snapshot.templatePlacement)
+        }()
+
+        isFlattening = true
+        isFlatteningOpenPhoto = true
+        flattenErrorMessage = nil
+
+        developRenderQueue.async(qos: .userInitiated) {
+            let rendered = PhotoEditRenderer.render(bake, on: fullBaseImage,
+                                                    applyCrop: bakesTemplate,
+                                                    templateCanvasScale: bakeScale)
+            var movedLayers = kept
+            var movedTexts = snapshot.templateTexts
+            if let template {
+                // The photograph's own extent, before crop and frame — the
+                // space every layer is placed in.
+                var bare = snapshot
+                bare.layers = []
+                bare.templateTexts = []
+                let photoExtent = PhotoEditRenderer.render(bare, on: fullBaseImage,
+                                                           applyCrop: false).extent
+                movedLayers = kept.compactMap {
+                    PhotoEditRenderer.layerOnPrint($0, photoExtent: photoExtent,
+                                                   crop: snapshot.crop, template: template,
+                                                   placement: snapshot.templatePlacement,
+                                                   artOverPhoto: artOverPhoto,
+                                                   canvasScale: bakeScale)
+                }
+                let canvas = rendered.extent
+                movedTexts = snapshot.templateTexts.map {
+                    briefShowTextOffPrint($0, template: template,
+                                          canvasWidth: Double(canvas.width),
+                                          canvasHeight: Double(canvas.height))
+                }
+            }
+
+            var failure: String?
+            if bakesTemplate && movedLayers.count != kept.count {
+                // A kept layer that could not be re-drawn would be lost —
+                // better no merge than a merge that deletes something.
+                failure = "A layer could not be moved onto the print, so nothing was merged."
+            } else {
+                do {
+                    try FlattenedImageStore.flatten(rendered, settings: snapshot,
+                                                    for: photoAtActionTime,
+                                                    context: briefEditsCIContext)
+                } catch {
+                    failure = error.localizedDescription
+                }
+            }
+
+            DispatchQueue.main.async {
+                isFlattening = false
+                isFlatteningOpenPhoto = false
+                guard selectedURL == photoAtActionTime else { return }
+                if let failure {
+                    flattenErrorMessage = failure
+                    return
+                }
+                var merged = PhotoEditSettings()
+                merged.layers = movedLayers
+                merged.templateTexts = movedTexts
+                if !bakesTemplate {
+                    // The print was not touched: it stays exactly as it was.
+                    merged.crop = snapshot.crop
+                    merged.cropAspect = snapshot.cropAspect
+                    merged.templateID = snapshot.templateID
+                    merged.templatePlacement = snapshot.templatePlacement
+                    merged.templateArtOverPhoto = snapshot.templateArtOverPhoto
+                    merged.vignette = snapshot.vignette
+                    merged.vignetteMidpoint = snapshot.vignetteMidpoint
+                    merged.vignetteFeather = snapshot.vignetteFeather
+                    merged.vignetteRoundness = snapshot.vignetteRoundness
+                }
+                settings = merged
+                imagePickedForMerge = false
+                templatePickedForMerge = false
+                multiSelectedLayerIDs = []
+                templatePhotoSelected = false
+                templateRowSelected = false
+                pendingCrop = merged.crop ?? .full
+                selectedLocalAdjustmentID = nil
+                activeSelection = nil
+                selectedLayerID = nil
+                clearRemovalMask()
+                undoStack = []
+                redoStack = []
+                lastCommittedSettings = merged
+                PhotoEditStore.setSettings(merged, for: photoAtActionTime)
+                PhotoEditStore.flushNow()
+                loadImages(for: photoAtActionTime)
+            }
+        }
     }
 
     private func layerRow(_ layer: ImageLayer) -> some View {
@@ -23579,6 +23923,8 @@ struct DevelopView: View {
 
     private func loadImages(for url: URL) {
         isLoadingPreview = true
+        imagePickedForMerge = false
+        templatePickedForMerge = false
         // ⚠️ HERE, not in selectPhoto — this is the one place every path that
         // replaces the base image goes through: a photo switch, a flatten, an
         // unflatten, a reload after a bake. The held decode belongs to the

@@ -101,6 +101,7 @@ pasted = "\n\n".join([
     extract("func briefShowNextMergedLayerNumber(in layers: [ImageLayer]) -> Int {"),
     extract("func briefShowPNGData(_ image: CGImage) -> Data? {"),
     extract("func briefShowLayerMergeRefusal(_ layers: [ImageLayer]) -> String? {"),
+    extract("func briefShowPhotoMergeRefusal(imagePicked: Bool, templatePicked: Bool,"),
 ])
 
 test = TEST.read_text(encoding="utf-8")
@@ -127,7 +128,7 @@ print("\nwhat the source says, which no unit test can reach")
 merge = extract("    private func mergeSelectedLayers() {")
 targets = extract("    private var layerMergeTargets: [ImageLayer] {")
 composite = extract("    static func mergedLayerImage(_ layers: [ImageLayer], extent: CGRect) -> CIImage? {")
-menu = extract("    private func layerMergeMenuItem(clickedOn layer: ImageLayer) -> some View {")
+menu = extract("    private func layerOnlyMergeMenuItem(clickedOn layer: ImageLayer) -> some View {")
 extend = extract("    private func extendLayerSelection(to id: UUID, shift: Bool) {")
 
 wiring("a merge refuses whatever the rule refuses",
@@ -210,8 +211,11 @@ wiring("clicking the frame's row selects it",
 wiring("and only a DOUBLE click opens the tab",
        "if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {" in template_row
        and "panelTab = .templates" in template_row)
-wiring("the frame and the photo both say why they cannot merge",
-       "printRowMergeMenuItem()" in template_row and "printRowMergeMenuItem()" in photo_row)
+# KORAK 208: this used to hold that the two REFUSE a merge. They merge now —
+# the menu on both rows is the merge into the photograph, reason included.
+wiring("the frame and the photo both offer the merge into the photo",
+       "printRowMergeMenuItem()" in template_row and "printRowMergeMenuItem()" in photo_row
+       and "photoMergeMenuItem()" in extract("    private func printRowMergeMenuItem() -> some View {"))
 
 # The photograph is always in the list.
 wiring("the photograph is a row even with no frame on the photo",

@@ -8852,15 +8852,31 @@ func briefShowLayerMergeRefusal(_ layers: [ImageLayer]) -> String? {
 /// reason.
 func briefShowPhotoMergeRefusal(imagePicked: Bool, templatePicked: Bool,
                                 pickedLayerIDs: Set<UUID>,
-                                layers: [ImageLayer]) -> String? {
+                                layers: [ImageLayer],
+                                pickedTextCount: Int = 0,
+                                hasTemplate: Bool = false) -> String? {
     guard imagePicked else {
-        return templatePicked
-            ? "The frame is merged onto the photo — tick Image as well."
-            : "Tick Image, and the rows to merge into it."
+        if templatePicked { return "The frame is merged onto the photo — tick Image as well." }
+        if pickedTextCount > 0 { return "Text is merged into the photo — tick Image as well." }
+        return "Tick Image, and the rows to merge into it."
     }
     let picked = layers.filter { pickedLayerIDs.contains($0.id) }
-    guard templatePicked || !picked.isEmpty else {
-        return "Tick Template or a layer to merge into the photo."
+    guard templatePicked || !picked.isEmpty || pickedTextCount > 0 else {
+        return "Tick Template, a layer or a line of text to merge into the photo."
+    }
+    if pickedTextCount > 0 {
+        // ⚠️ Text on a print is laid on the PAPER, above the frame. Baked
+        // without the frame it would have nowhere to be.
+        if hasTemplate && !templatePicked {
+            return "The text is written on the print — tick Template as well."
+        }
+        // ⚠️ TEXT IS ABOVE EVERY LAYER. Baked into the photo it goes to the
+        // bottom, and a layer left live would then be drawn OVER the letters
+        // it used to be under.
+        if let kept = layers.first(where: { !pickedLayerIDs.contains($0.id) }) {
+            return "Text sits above every layer, and “\(kept.name)” is not ticked — "
+                 + "tick the layers too, or leave the text out."
+        }
     }
     // ⚠️ ONLY LAYERS STRAIGHT ON THE PHOTO. A merge into the photograph puts
     // what it takes at the BOTTOM of the stack — it becomes the picture. A
@@ -8873,6 +8889,63 @@ func briefShowPhotoMergeRefusal(imagePicked: Bool, templatePicked: Bool,
              + "tick that one too, or drag it above."
     }
     return nil
+}
+
+/// One row of the Layers list, as the merge sees it (KORAK 208).
+enum MergeRowKey: Hashable {
+    case layer(UUID)
+    case text(UUID)
+    case image
+    case template
+}
+
+/// Which row a point in the list falls on, or nil between rows.
+///
+/// Pure, so the test can ask it without a window. A point on the line between
+/// two rows belongs to neither — the list has spacing, and guessing there
+/// would tick a row the client did not click.
+func briefShowMergeRow(at point: CGPoint, in frames: [MergeRowKey: CGRect]) -> MergeRowKey? {
+    frames.first(where: { $0.value.contains(point) })?.key
+}
+
+struct MergeRowFramesKey: PreferenceKey {
+    static var defaultValue: [MergeRowKey: CGRect] = [:]
+    static func reduce(value: inout [MergeRowKey: CGRect], nextValue: () -> [MergeRowKey: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+/// The Layers list's own NSView, held so the ⌘-click monitor can turn a
+/// window position into the list's coordinates.
+///
+/// ⚠️ A class held in `@State`, so the monitor's closure — installed once —
+/// reads whichever view is current rather than the one there was at install.
+final class MergeRowsSpace {
+    static let name = "mergeRows"
+    weak var view: NSView?
+}
+
+/// A view behind the list that is exactly the list's size and does nothing
+/// but exist. Flipped, so its coordinates run top-down like SwiftUI's; and it
+/// never takes a click (`hitTest` is nil), so every button in the list works
+/// as it did.
+struct MergeRowsSpaceView: NSViewRepresentable {
+    let space: MergeRowsSpace
+
+    final class Flipped: NSView {
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = Flipped()
+        space.view = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        space.view = nsView
+    }
 }
 
 struct DevelopView: View {
@@ -9361,6 +9434,15 @@ struct DevelopView: View {
     /// passes through, so a tick never follows the client onto another photo.
     @State private var imagePickedForMerge = false
     @State private var templatePickedForMerge = false
+    /// Lines of text ticked for the merge into the photograph (KORAK 208).
+    @State private var textsPickedForMerge: Set<UUID> = []
+    /// Where every row of the Layers list is, in that list's own space — read
+    /// by the ⌘-click monitor to know which row the pointer is on.
+    @State private var mergeRowFrames: [MergeRowKey: CGRect] = [:]
+    /// The list's own NSView, so a click's window position can be turned into
+    /// the list's space without guessing at title bars or scroll offsets.
+    @State private var mergeRowsSpace = MergeRowsSpace()
+    @State private var mergeClickMonitor: Any?
     /// Is the frame's row picked? ⚠️ Its own flag: clicking that row must
     /// SELECT it, not walk off to another tab — reported 21.09, *„kada kliknem
     /// na layer template on me baca na template seciju umesto samo da se
@@ -9838,6 +9920,7 @@ struct DevelopView: View {
         installShowOriginalKeyMonitor()
             installOptionKeyMonitor()
             installScrollWheelMonitor()
+            installMergeClickMonitor()
         }
         .onDisappear {
             removeEditingKeyMonitor()
@@ -9845,6 +9928,7 @@ struct DevelopView: View {
         removeShowOriginalKeyMonitor()
             removeOptionKeyMonitor()
             removeScrollWheelMonitor()
+            removeMergeClickMonitor()
         }
         .onReceive(NotificationCenter.default.publisher(for: .photoEditsChanged)) { note in
             guard let changed = note.userInfo?[photoEditsChangedURLsKey] as? Set<URL> else {
@@ -20204,6 +20288,7 @@ struct DevelopView: View {
             if !settings.templateTexts.isEmpty {
                 ForEach(settings.templateTexts.reversed()) { item in
                     textLayerRow(item)
+                        .background(mergeRowFrame(.text(item.id)))
                 }
 
                 if !settings.layers.isEmpty {
@@ -20225,10 +20310,14 @@ struct DevelopView: View {
                 let artOnTop = settings.templateArtOverPhoto ?? template.artOverPhoto
                 if artOnTop {
                     templateLayerRow(template)
+                        .background(mergeRowFrame(.template))
                     templatePhotoLayerRow()
+                        .background(mergeRowFrame(.image))
                 } else {
                     templatePhotoLayerRow()
+                        .background(mergeRowFrame(.image))
                     templateLayerRow(template)
+                        .background(mergeRowFrame(.template))
                 }
 
                 if !settings.layers.isEmpty {
@@ -20243,6 +20332,7 @@ struct DevelopView: View {
             // delegate reorders the real array.
             ForEach(Array(settings.layers.reversed())) { layer in
                 layerRow(layer)
+                    .background(mergeRowFrame(.layer(layer.id)))
                     .onDrag {
                         draggingLayerID = layer.id
                         return NSItemProvider(object: layer.id.uuidString as NSString)
@@ -20269,12 +20359,18 @@ struct DevelopView: View {
                     Divider()
                 }
                 templatePhotoLayerRow()
+                    .background(mergeRowFrame(.image))
             }
 
             if let index = selectedLayerIndex {
                 selectedLayerEditor(index: index)
             }
         }
+        // KORAK 208: the space the rows report their frames in, and the view
+        // the ⌘-click monitor measures clicks against — one and the same box.
+        .coordinateSpace(name: MergeRowsSpace.name)
+        .background(MergeRowsSpaceView(space: mergeRowsSpace))
+        .onPreferenceChange(MergeRowFramesKey.self) { mergeRowFrames = $0 }
     }
 
     /// A line of text, in the Layers panel, reading like the rows beside it.
@@ -20286,8 +20382,15 @@ struct DevelopView: View {
     /// nothing.
     private func textLayerRow(_ item: TemplateText) -> some View {
         let isSelected = selectedTemplateTextID == item.id
+        let isPicked = textsPickedForMerge.contains(item.id)
 
         return HStack(spacing: 8) {
+            // KORAK 208 — a line can be ticked and baked into the photo.
+            mergeCircle(isOn: isPicked,
+                        help: "Pick this line for a merge into the photo — tick Image too, then right-click and Merge Layers.") {
+                toggleMergePick(.text(item.id))
+            }
+
             // Where a layer row has its grip, a text row says what it is.
             Image(systemName: "textformat")
                 .font(.system(size: 10))
@@ -20339,13 +20442,15 @@ struct DevelopView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(AppColors.panelAlt.opacity(isSelected ? 1 : 0.5))
+        .background(AppColors.panelAlt.opacity(isSelected || isPicked ? 1 : 0.5))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(isSelected ? Color.accentColor : AppColors.border,
-                        lineWidth: isSelected ? 1.5 : 1)
+                .stroke(isSelected ? Color.accentColor
+                        : (isPicked ? layerSelectionColor.opacity(0.55) : AppColors.border),
+                        lineWidth: isSelected || isPicked ? 1.5 : 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contextMenu { photoMergeMenuItem() }
     }
 
     /// The frame, as a row in the Layers list.
@@ -20408,11 +20513,12 @@ struct DevelopView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-                .background(AppColors.panelAlt.opacity(templateRowSelected ? 1 : 0.5))
+                .background(AppColors.panelAlt.opacity(templateRowSelected || templatePickedForMerge ? 1 : 0.5))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(templateRowSelected ? layerSelectionColor : AppColors.border,
-                        lineWidth: templateRowSelected ? 1.5 : 1)
+                .stroke(templateRowSelected ? layerSelectionColor
+                        : (templatePickedForMerge ? layerSelectionColor.opacity(0.55) : AppColors.border),
+                        lineWidth: templateRowSelected || templatePickedForMerge ? 1.5 : 1)
         )
         .contextMenu { printRowMergeMenuItem() }
         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -20466,11 +20572,12 @@ struct DevelopView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(AppColors.panelAlt.opacity(templatePhotoSelected ? 1 : 0.5))
+        .background(AppColors.panelAlt.opacity(templatePhotoSelected || imagePickedForMerge ? 1 : 0.5))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(templatePhotoSelected ? layerSelectionColor : AppColors.border,
-                        lineWidth: templatePhotoSelected ? 1.5 : 1)
+                .stroke(templatePhotoSelected ? layerSelectionColor
+                        : (imagePickedForMerge ? layerSelectionColor.opacity(0.55) : AppColors.border),
+                        lineWidth: templatePhotoSelected || imagePickedForMerge ? 1.5 : 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contextMenu { printRowMergeMenuItem() }
@@ -20554,8 +20661,8 @@ struct DevelopView: View {
 
     @ViewBuilder
     private func layerMergeMenuItem(clickedOn layer: ImageLayer) -> some View {
-        if imagePickedForMerge || templatePickedForMerge {
-            // Once the photo or the frame is ticked, the merge is INTO the
+        if isPhotoMergePicked {
+            // Once the photo, the frame or a line of text is ticked, the merge is INTO the
             // photograph — the same item on every row (KORAK 208).
             photoMergeMenuItem()
         } else {
@@ -20641,13 +20748,22 @@ struct DevelopView: View {
         (imagePickedForMerge ? 1 : 0)
             + (templatePickedForMerge && settings.templateID != nil ? 1 : 0)
             + settings.layers.filter { multiSelectedLayerIDs.contains($0.id) }.count
+            + settings.templateTexts.filter { textsPickedForMerge.contains($0.id) }.count
     }
 
     private var photoMergeRefusal: String? {
         briefShowPhotoMergeRefusal(imagePicked: imagePickedForMerge,
                                    templatePicked: templatePickedForMerge && settings.templateID != nil,
                                    pickedLayerIDs: multiSelectedLayerIDs,
-                                   layers: settings.layers)
+                                   layers: settings.layers,
+                                   pickedTextCount: settings.templateTexts
+                                       .filter { textsPickedForMerge.contains($0.id) }.count,
+                                   hasTemplate: settings.templateID != nil)
+    }
+
+    /// Is anything ticked that makes this a merge INTO the photograph?
+    private var isPhotoMergePicked: Bool {
+        imagePickedForMerge || templatePickedForMerge || !textsPickedForMerge.isEmpty
     }
 
     /// The right-click item once the Image or Template circle is ticked — on
@@ -20661,6 +20777,71 @@ struct DevelopView: View {
         .disabled(refusal != nil || isFlattening)
         if let refusal {
             Text(refusal)
+        }
+    }
+
+    /// Tick or untick one row of the Layers list — from its circle, or from a
+    /// ⌘-click anywhere on it.
+    private func toggleMergePick(_ row: MergeRowKey) {
+        switch row {
+        case .layer(let id):
+            toggleLayerInMergeSet(id)
+        case .text(let id):
+            if textsPickedForMerge.contains(id) {
+                textsPickedForMerge.remove(id)
+            } else {
+                textsPickedForMerge.insert(id)
+            }
+        case .image:
+            imagePickedForMerge.toggle()
+        case .template:
+            templatePickedForMerge.toggle()
+        }
+    }
+
+    /// ⌘-click on a row of the Layers list ticks it — client, 21.09: *„da mogu
+    /// ne samo sa kruzicima da ih belezim vec da drzim cmd i selektujem misem
+    /// i da se vidi da su selektovani"*.
+    ///
+    /// ⚠️ WHY A MONITOR, and not a modifier on the row. A layer row carries
+    /// `.onDrag` for reordering, and on macOS the drag source takes a click
+    /// that has a modifier on it before any button or gesture on the row sees
+    /// it — which is exactly why ⌘-click did nothing in KORAK 207. A local
+    /// monitor sees the mouse-down FIRST, finds the row under the pointer from
+    /// the frames the rows report, ticks it, and swallows the click so no drag
+    /// starts. Anything else — no ⌘, another modifier, a click outside the
+    /// rows, another window — is handed back untouched.
+    private func installMergeClickMonitor() {
+        guard mergeClickMonitor == nil else { return }
+        mergeClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            guard modifiers == .command,
+                  event.window?.title == DevelopWindowController.windowTitle,
+                  let view = mergeRowsSpace.view, view.window === event.window else {
+                return event
+            }
+            let point = view.convert(event.locationInWindow, from: nil)
+            guard view.bounds.contains(point),
+                  let row = briefShowMergeRow(at: point, in: mergeRowFrames) else {
+                return event
+            }
+            toggleMergePick(row)
+            return nil
+        }
+    }
+
+    private func removeMergeClickMonitor() {
+        if let mergeClickMonitor {
+            NSEvent.removeMonitor(mergeClickMonitor)
+            self.mergeClickMonitor = nil
+        }
+    }
+
+    /// Reports this row's place in the Layers list, for the ⌘-click monitor.
+    private func mergeRowFrame(_ row: MergeRowKey) -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(key: MergeRowFramesKey.self,
+                                   value: [row: proxy.frame(in: .named(MergeRowsSpace.name))])
         }
     }
 
@@ -20702,15 +20883,20 @@ struct DevelopView: View {
         let snapshot = settings
         let photoAtActionTime = selectedURL
         let picked = multiSelectedLayerIDs
+        let pickedTextIDs = textsPickedForMerge
+        let pickedTexts = snapshot.templateTexts.filter { pickedTextIDs.contains($0.id) }
+        let keptTexts = snapshot.templateTexts.filter { !pickedTextIDs.contains($0.id) }
         let template = templatePickedForMerge ? templateLibrary.template(id: snapshot.templateID) : nil
         let bakesTemplate = template != nil
         let artOverPhoto = template.map { snapshot.templateArtOverPhoto ?? $0.artOverPhoto } ?? false
 
         // What goes into the pixels: the photograph, its grade and masks, and
-        // ONLY the ticked layers. Never the text — it stays live either way.
+        // ONLY the ticked layers and lines. On a print the ticked lines go in
+        // with it (they are on the paper); without one they are laid on after,
+        // see briefShowTextsIntoUncroppedPhoto.
         var bake = snapshot
         bake.layers = snapshot.layers.filter { picked.contains($0.id) }
-        bake.templateTexts = []
+        bake.templateTexts = bakesTemplate ? pickedTexts : []
         if !bakesTemplate {
             // The vignette is drawn after the layers; left live, it keeps
             // darkening the kept ones exactly as it did.
@@ -20735,11 +20921,17 @@ struct DevelopView: View {
         flattenErrorMessage = nil
 
         developRenderQueue.async(qos: .userInitiated) {
-            let rendered = PhotoEditRenderer.render(bake, on: fullBaseImage,
+            var rendered = PhotoEditRenderer.render(bake, on: fullBaseImage,
                                                     applyCrop: bakesTemplate,
                                                     templateCanvasScale: bakeScale)
+            if !bakesTemplate, !pickedTexts.isEmpty {
+                rendered = briefShowTextsIntoUncroppedPhoto(
+                    pickedTexts, over: rendered,
+                    crop: snapshot.crop.map { (x: $0.x, y: $0.y, width: $0.width, height: $0.height,
+                                               angleDegrees: $0.angle) })
+            }
             var movedLayers = kept
-            var movedTexts = snapshot.templateTexts
+            var movedTexts = keptTexts
             if let template {
                 // The photograph's own extent, before crop and frame — the
                 // space every layer is placed in.
@@ -20756,7 +20948,7 @@ struct DevelopView: View {
                                                    canvasScale: bakeScale)
                 }
                 let canvas = rendered.extent
-                movedTexts = snapshot.templateTexts.map {
+                movedTexts = keptTexts.map {
                     briefShowTextOffPrint($0, template: template,
                                           canvasWidth: Double(canvas.width),
                                           canvasHeight: Double(canvas.height))
@@ -20804,7 +20996,9 @@ struct DevelopView: View {
                 settings = merged
                 imagePickedForMerge = false
                 templatePickedForMerge = false
+                textsPickedForMerge = []
                 multiSelectedLayerIDs = []
+                selectedTemplateTextID = nil
                 templatePhotoSelected = false
                 templateRowSelected = false
                 pendingCrop = merged.crop ?? .full
@@ -23925,6 +24119,7 @@ struct DevelopView: View {
         isLoadingPreview = true
         imagePickedForMerge = false
         templatePickedForMerge = false
+        textsPickedForMerge = []
         // ⚠️ HERE, not in selectPhoto — this is the one place every path that
         // replaces the base image goes through: a photo switch, a flatten, an
         // unflatten, a reload after a bake. The held decode belongs to the

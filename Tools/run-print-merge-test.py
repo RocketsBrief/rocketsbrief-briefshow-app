@@ -94,7 +94,9 @@ wiring("  its opacity, blend and sliders are not baked into it",
 merge = body(develop, "    private func mergeIntoPhoto() {")
 wiring("only the ticked layers go into the pixels",
        "bake.layers = snapshot.layers.filter { picked.contains($0.id) }" in merge)
-wiring("text is never baked by it", "bake.templateTexts = []" in merge)
+wiring("only the TICKED lines of text are baked; the rest stay live",
+       "let pickedTexts = snapshot.templateTexts.filter { pickedTextIDs.contains($0.id) }" in merge
+       and "var movedTexts = keptTexts" in merge)
 wiring("a layer that cannot be moved stops the merge rather than being lost",
        "movedLayers.count != kept.count" in merge)
 wiring("without the frame ticked, the print stays a live setting",
@@ -105,6 +107,30 @@ wiring("the Image row has a circle", "isOn: imagePickedForMerge" in develop)
 wiring("the ticks are cleared when the picture changes",
        "private func loadImages(for url: URL) {\n        isLoadingPreview = true\n"
        "        imagePickedForMerge = false\n        templatePickedForMerge = false" in develop)
+
+monitor = body(develop, "    private func installMergeClickMonitor() {")
+wiring("⌘-click is caught before the row's drag can take it (a mouse-down monitor)",
+       ".leftMouseDown" in monitor)
+wiring("  only ⌘ alone — another modifier is handed back", "guard modifiers == .command," in monitor)
+wiring("  only in the Develop window", "DevelopWindowController.windowTitle" in monitor)
+wiring("  a click on no row is handed back, a click on a row is swallowed",
+       monitor.count("return event") >= 2 and "return nil" in monitor)
+wiring("the monitor is installed and removed with the scroll-wheel one",
+       "installScrollWheelMonitor()\n            installMergeClickMonitor()" in develop
+       and "removeScrollWheelMonitor()\n            removeMergeClickMonitor()" in develop)
+wiring("every kind of row reports where it is",
+       all(k in develop for k in [".background(mergeRowFrame(.text(item.id)))",
+                                  ".background(mergeRowFrame(.template))",
+                                  ".background(mergeRowFrame(.image))",
+                                  ".background(mergeRowFrame(.layer(layer.id)))"]))
+wiring("the list's view never takes a click", "override func hitTest(_ point: NSPoint) -> NSView? { nil }" in develop)
+text_row = body(develop, "    private func textLayerRow(_ item: TemplateText) -> some View {")
+wiring("a line of text has a circle and shows when it is ticked",
+       "mergeCircle(isOn: isPicked" in text_row and "isSelected || isPicked" in text_row)
+wiring("  and offers the merge on a right click", ".contextMenu { photoMergeMenuItem() }" in text_row)
+wiring("ticked text goes into the print with the frame, or onto the uncropped photo without it",
+       "bake.templateTexts = bakesTemplate ? pickedTexts : []" in merge
+       and "briefShowTextsIntoUncroppedPhoto(" in merge)
 
 flatten = body(develop, "    private func flattenPhoto(using snapshot: PhotoEditSettings? = nil,")
 wiring("Flatten Photo still bakes everything", "PhotoEditSettings()" in flatten

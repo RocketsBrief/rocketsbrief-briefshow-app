@@ -102,6 +102,8 @@ pasted = "\n\n".join([
     extract("func briefShowPNGData(_ image: CGImage) -> Data? {"),
     extract("func briefShowLayerMergeRefusal(_ layers: [ImageLayer]) -> String? {"),
     extract("func briefShowPhotoMergeRefusal(imagePicked: Bool, templatePicked: Bool,"),
+    extract("enum MergeRowKey: Hashable {"),
+    extract("func briefShowMergeRow(at point: CGPoint, in frames: [MergeRowKey: CGRect]) -> MergeRowKey? {"),
 ])
 
 test = TEST.read_text(encoding="utf-8")

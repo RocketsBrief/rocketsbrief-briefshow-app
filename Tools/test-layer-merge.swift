@@ -177,5 +177,43 @@ do {
     check("nothing ticked says what to tick", refusal(false, false, []) != nil)
 }
 
+print("\ntext in the merge into the photo")
+do {
+    let bottom = piece("Bottom"), top = piece("Top")
+    let stack = [bottom, top]
+    func refusal(_ image: Bool, _ template: Bool, _ ids: [UUID], texts: Int, hasTemplate: Bool) -> String? {
+        briefShowPhotoMergeRefusal(imagePicked: image, templatePicked: template,
+                                   pickedLayerIDs: Set(ids), layers: stack,
+                                   pickedTextCount: texts, hasTemplate: hasTemplate)
+    }
+    check("Image + text merge on a photo with no layers left out",
+          refusal(true, false, [bottom.id, top.id], texts: 1, hasTemplate: false) == nil)
+    check("Image + Template + text + every layer merge",
+          refusal(true, true, [bottom.id, top.id], texts: 2, hasTemplate: true) == nil)
+    check("text alone says to tick Image",
+          refusal(false, false, [], texts: 1, hasTemplate: false)?.contains("tick Image") == true)
+    check("text on a print without the frame says to tick Template",
+          refusal(true, false, [bottom.id, top.id], texts: 1, hasTemplate: true)?.contains("Template") == true)
+    // ⚠️ The one that changes the picture: baked text goes to the bottom, and
+    // a layer left live would be drawn over the letters.
+    let left = refusal(true, true, [bottom.id], texts: 1, hasTemplate: true)
+    check("text with a layer left live is refused, and names it",
+          left?.contains("Top") == true, left ?? "nil")
+}
+
+print("\nwhich row a ⌘-click lands on")
+do {
+    let id = UUID()
+    let frames: [MergeRowKey: CGRect] = [
+        .text(id): CGRect(x: 0, y: 0, width: 200, height: 30),
+        .template: CGRect(x: 0, y: 40, width: 200, height: 30),
+        .image: CGRect(x: 0, y: 80, width: 200, height: 30),
+    ]
+    check("a click on a text row is that line", briefShowMergeRow(at: CGPoint(x: 50, y: 10), in: frames) == .text(id))
+    check("a click on the frame's row is the frame", briefShowMergeRow(at: CGPoint(x: 150, y: 55), in: frames) == .template)
+    check("a click on the photo's row is the photo", briefShowMergeRow(at: CGPoint(x: 5, y: 100), in: frames) == .image)
+    check("a click in the gap between rows ticks nothing", briefShowMergeRow(at: CGPoint(x: 50, y: 35), in: frames) == nil)
+}
+
 print(failures == 0 ? "\nall passed\n" : "\n\(failures) FAILED\n")
 exit(failures == 0 ? 0 : 1)

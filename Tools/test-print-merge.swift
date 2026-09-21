@@ -209,5 +209,29 @@ check("the same letters are the same number of pixels", abs(before - after) < 1e
       "\(before) px vs \(after) px")
 check("and the box does not move", movedLine.box == line.box)
 
+print("\ntext baked into a photo whose crop stays live")
+do {
+    var line = TemplateText(text: "Merge", sizeInches: 0.6)
+    line.color = TemplateTextColor(red: 1, green: 1, blue: 1)
+    line.box = NormalizedRect(x: 0.05, y: 0.35, width: 0.9, height: 0.3)
+    // BEFORE: the renderer crops, then writes the text on the cropped photo.
+    let crop = tilted
+    let before = briefShowComposeTextsOnPhoto([line], over: cropped(photo, crop))
+    // AFTER: the text is baked into the UNCROPPED photo, and the same crop
+    // is applied to it afterwards.
+    let baked = briefShowTextsIntoUncroppedPhoto([line], over: photo, crop: crop)
+    let after = cropped(baked, crop)
+    let rect = before.extent.integral
+    let dd = difference(before, after, rect)
+    print(String(format: "        turned crop: worst %d levels, %.3f %% of pixels off by more than 8",
+                 dd.worst, dd.share * 100))
+    check("the letters land where they were, through a turned crop", dd.share <= 0.01)
+    // Negative control: the turn forgotten.
+    let wrong = cropped(briefShowComposeTextsOnPhoto([line], over: photo), crop)
+    let dw = difference(before, wrong, rect)
+    check("text baked without undoing the crop is caught", dw.share > 0.005,
+          String(format: "%.3f %%", dw.share * 100))
+}
+
 print(failures == 0 ? "\nall good" : "\n\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

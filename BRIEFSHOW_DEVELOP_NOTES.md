@@ -22987,3 +22987,46 @@ sada proveravaju istu nameru kroz deljene funkcije.
 u `/Applications/C4S Suite.app` i pokrenut.
 ⚠️ **Nije viđeno na ekranu** — macOS je pri startu tražio dozvolu za Desktop
 folder, a to odobrava klijent, ne ja.
+
+### 208, dopuna — tekst ima kružić, i ⌘-klik mišem štiklira bilo koji red
+
+Klijent, odmah posle: *„ali i text da ima kruzic da mogu i text da flattenujem i
+da mogu ne samo sa kruzicima da ih belezim vec da drzim cmd i selektujem misem i
+da se vidi da su selektovani i onda da mogu right click da ih mergeujem"*.
+
+**Tekst.** Red teksta ima kružić, osvetli se kad je štikliran, i desni klik nudi
+isti Merge. Pravilo (`briefShowPhotoMergeRefusal`, dopunjeno):
+
+| slučaj | ishod |
+|---|---|
+| tekst bez Image | *„tick Image as well"* |
+| tekst na otisku, bez Template | *„tick Template as well"* — tekst je na papiru |
+| tekst dok neki layer ostaje živ | **odbija, sa imenom layera** — tekst je iznad svih layera, a ispečen ide na dno; zadržani layer bi se crtao PREKO slova |
+
+Sa okvirom, štiklirani tekst ide u otisak (`bake.templateTexts = pickedTexts`).
+Bez okvira crop ostaje živ, pa se tekst crta na isečenoj slici i **vraća
+obrnutim okretom crop-a** u neisečenu (`briefShowTextsIntoUncroppedPhoto`) —
+izmereno kroz zarotiran crop: 0,001 % piksela, a negativna kontrola (bez
+vraćanja) uhvaćena.
+
+⚠️ Poznato: bez okvira vignette ostaje živ i sada pada i PREKO ispečenog teksta u
+uglovima; ranije je tekst bio iznad njega.
+
+**⌘-klik.** ⛔ **Monitor, ne modifikator na redu.** Layer red nosi `.onDrag`, a
+izvor prevlačenja na macOS-u uzme klik sa modifikatorom pre bilo kog dugmeta ili
+gesta — zato ⌘ u 207 nije radio. `installMergeClickMonitor` vidi mouse-down
+PRVI: samo ⌘ bez drugih tastera, samo u Develop prozoru; nađe red ispod
+pokazivača po okvirima koje redovi javljaju (`MergeRowFramesKey`, u prostoru same
+liste), štiklira ga i proguta klik da prevlačenje ne krene. Sve ostalo vraća
+netaknuto. Tačka između redova ne štiklira ništa (`briefShowMergeRow`, test).
+
+Prostor liste je `MergeRowsSpaceView`: NSView iza liste, iste veličine,
+**flipped** (koordinate odozgo, kao SwiftUI) i **nikad ne uzima klik**
+(`hitTest` → nil), pa svako dugme u listi radi kao pre.
+
+Štiklirani Image, Template i tekst se osvetle **istom bojom** kao štiklirani layer.
+
+**Stanje:** BUILD SUCCEEDED; svih 11 testova za layere/template/export prolazi
+(`run-print-merge-test.py` i `run-layer-merge-test.py` dopunjeni za tekst i ⌘-klik).
+App instaliran i pokrenut. ⚠️ **⌘-klik NIJE viđen na ekranu** — pri startu je
+iskočila keychain lozinka, koju unosi klijent.

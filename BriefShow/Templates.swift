@@ -1181,6 +1181,28 @@ func briefShowTextOffPrint(_ text: TemplateText, template: PrintTemplate,
     return moved
 }
 
+/// Lines of text baked into a photograph that is being merged WITHOUT its crop
+/// (Image + text, no frame — KORAK 208).
+///
+/// ⚠️ The crop stays a live setting after such a merge, so the pixels are the
+/// UNCROPPED photograph — but the text was laid out on the CROPPED one. It is
+/// drawn on the cropped rectangle, exactly as the renderer draws it, and then
+/// turned back by the crop's own turn, so that cropping the baked photo again
+/// puts every letter where it was.
+func briefShowTextsIntoUncroppedPhoto(_ texts: [TemplateText], over photo: CIImage,
+                                      crop: (x: Double, y: Double, width: Double, height: Double,
+                                             angleDegrees: Double)?) -> CIImage {
+    guard !texts.isEmpty else { return photo }
+    guard let crop else { return briefShowComposeTextsOnPhoto(texts, over: photo) }
+    let geometry = briefShowCropGeometry(x: crop.x, y: crop.y, width: crop.width, height: crop.height,
+                                         angleDegrees: crop.angleDegrees, extent: photo.extent)
+    var drawn = briefShowComposeTextsOnPhoto(texts, over: CIImage(color: .clear).cropped(to: geometry.rect))
+    if let turn = geometry.turn {
+        drawn = drawn.transformed(by: turn.inverted())
+    }
+    return drawn.composited(over: photo).cropped(to: photo.extent)
+}
+
 /// The template's drawing stretched over the paper, or nil when there is none.
 ///
 /// One place, for the same reason as the placement below: Merge Layers uses

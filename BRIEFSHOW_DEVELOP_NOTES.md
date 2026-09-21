@@ -23030,3 +23030,9 @@ Prostor liste je `MergeRowsSpaceView`: NSView iza liste, iste veličine,
 (`run-print-merge-test.py` i `run-layer-merge-test.py` dopunjeni za tekst i ⌘-klik).
 App instaliran i pokrenut. ⚠️ **⌘-klik NIJE viđen na ekranu** — pri startu je
 iskočila keychain lozinka, koju unosi klijent.
+
+### ✅ 208 POTVRĐENO UŽIVO — 21. septembar 2026
+
+Klijent, posle probe na ekranu: *„super radi"*. Kružići na Image, Template i
+tekstu, ⌘-klik mišem na redove, i Merge Layers na desni klik — viđeno i
+potvrđeno. Commit-ovi `22d1377` i `b4aa073`.

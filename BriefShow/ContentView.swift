@@ -376,6 +376,12 @@ private func buildOrigamiPagePlans(
 }
 
 struct ContentView: View {
+    /// How wide a hover bubble may get. A constant, and it has to be: the clamp
+    /// that keeps a bubble on screen reads it, and measuring instead is what
+    /// span the app at 100% CPU on 23.09 — see the overlay that uses it.
+    private static let hoverTooltipMaxWidth: CGFloat = 340
+
+
     // Photos handed off from the Welcome screen's BriefShow square, if
     // that's how this window was reached — imported automatically on
     // first appear, same as picking them by hand.
@@ -716,18 +722,45 @@ struct ContentView: View {
                 GeometryReader { proxy in
                     ForEach(items) { item in
                         let rect = proxy[item.anchor]
+                        // ⚠️ KEPT INSIDE THE WINDOW. Reported 23.09 with a
+                        // screenshot: the 4K pill sits near the right edge, and a
+                        // bubble centred on it ran off the screen with half its
+                        // sentence cut off.
+                        //
+                        // ⛔ AND IT IS CLAMPED WITHOUT MEASURING, WHICH IS THE
+                        // WHOLE POINT OF THIS COMMENT. The first version measured
+                        // each bubble with a GeometryReader and wrote the width
+                        // into @State. That state belongs to the same view that
+                        // PRODUCES this preference, so every write invalidated the
+                        // body, which recomputed the preference, which rebuilt this
+                        // overlay, which measured and wrote again. The app span at
+                        // 100% CPU on the main thread; `sample` caught it in
+                        // _NativeDictionary.setValue inside ContentView.body.
+                        //
+                        // Nothing inside an overlayPreferenceValue may write state
+                        // the enclosing body reads. So the half-width is a constant
+                        // instead: these bubbles are capped at 340pt by the frame
+                        // below, so near an edge the clamp is exact, and anywhere
+                        // else rect.midX is already inside the range and nothing
+                        // moves at all.
+                        let half = Self.hoverTooltipMaxWidth / 2
+                        let lowest = half + 12
+                        let highest = max(lowest, proxy.size.width - half - 12)
+                        let x = min(max(rect.midX, lowest), highest)
+
                         HoverTooltipBubble(
                             label: item.label,
                             textColor: AppColors.ink,
                             arrowEdge: item.placement == .above ? .bottom : .top
                         )
+                        .frame(maxWidth: Self.hoverTooltipMaxWidth)
                         // Anchored by the arrow-tip edge (not the bubble's center) via a
                         // zero-height frame, so bubbles of different text length (e.g. the
                         // short 30/60fps labels vs. the longer 1080p one) all line up at the
                         // same distance from their button instead of drifting with height.
                         .frame(height: 0, alignment: item.placement == .above ? .bottom : .top)
                         .position(
-                            x: rect.midX,
+                            x: x,
                             y: item.placement == .above ? rect.minY - 6 : rect.maxY + 6
                         )
                     }
@@ -12864,6 +12897,7 @@ struct LeftImportPanel: View {
                     .font(.custom("Figtree", size: 12).weight(.medium))
             }
             .foregroundColor(hasPhotos ? AppColors.ink : AppColors.muted.opacity(0.5))
+            .growsOnHover()
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
@@ -12874,7 +12908,7 @@ struct LeftImportPanel: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 14))
         }
-        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.02, scalesLabel: false))
         .disabled(!hasPhotos)
         .padding(.top, 2)
     }
@@ -13513,6 +13547,7 @@ struct MagazineCropEditorSheet: View {
                                     Image(systemName: "exclamationmark.triangle.fill")
                                         .font(.system(size: 9, weight: .bold))
                                         .foregroundColor(.white)
+                                        .growsOnHover()
                                         .padding(3)
                                         .background(Circle().fill(Color.orange))
                                         .padding(3)
@@ -13524,7 +13559,7 @@ struct MagazineCropEditorSheet: View {
                                 }
                             }
                     }
-                    .buttonStyle(PlainHoverButtonStyle())
+                    .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
                 }
             }
         }
@@ -19764,7 +19799,15 @@ struct PreviewRenderModeButtons: View {
                 .frame(width: 26, height: 20)
         }
         .buttonStyle(PlainHoverButtonStyle())
-        .foregroundColor(isActive ? AppColors.panel : AppColors.inkSecondary)
+        // ⚠️ The pill's chrome is drawn OUT HERE, on the button rather than
+        // inside its label, so the style's scale already reaches only the glyph
+        // and the ring does not move. What was missing is the tint: asked for on
+        // 23.09, *„da se isto text uvelica i pobeli"*. The active pill keeps its
+        // inverted colour — it is already the brightest thing in the row.
+        .foregroundColor(isActive
+                         ? AppColors.panel
+                         : (isHovered.wrappedValue ? AppColors.hoverInk : AppColors.inkSecondary))
+        .animation(.linear(duration: 0.1), value: isHovered.wrappedValue)
         .background(isActive ? AppColors.ink : AppColors.panel)
         .clipShape(RoundedRectangle(cornerRadius: 999))
         .overlay(
@@ -20056,6 +20099,27 @@ struct CenterPreviewPanel: View {
                             Text("Preparing photo previews… \(preparedPhotoCount) / \(photoCount)")
                                 .font(.custom("Figtree", size: 13).weight(.semibold))
                                 .foregroundColor(.white)
+
+                            // ⚠️ A BAR, asked for on 23.09 the same way the grid's
+                            // was: the count says where it is, the bar says how much
+                            // is left, and on a hundred photographs that is the
+                            // question being asked. The spinner above stays — it is
+                            // what says the work has not stalled.
+                            //
+                            // Indeterminate until the total is known, rather than
+                            // sitting at an invented zero: the same rule the model
+                            // download, the flatten pass and the grid all follow.
+                            Group {
+                                if photoCount > 0 {
+                                    ProgressView(value: Double(min(preparedPhotoCount, photoCount)),
+                                                 total: Double(photoCount))
+                                } else {
+                                    ProgressView()
+                                }
+                            }
+                            .progressViewStyle(.linear)
+                            .tint(.white)
+                            .frame(width: 260)
 
                             Text("Optimizing images for smooth playback.")
                                 .font(.custom("Figtree", size: 13).weight(.medium))
@@ -20546,6 +20610,7 @@ struct RightExportPanel: View {
                             .foregroundColor(Color(red: 0.390, green: 0.220, blue: 0.200).opacity(0.86))
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    .growsOnHover()
                     .padding(.horizontal, 11)
                     .padding(.vertical, 9)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -20583,7 +20648,7 @@ struct RightExportPanel: View {
                     Button("Cancel") {
                         isShowingExportConfirmation = false
                     }
-                    .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
+                    .buttonStyle(PlainHoverButtonStyle(scale: 1.02, scalesLabel: false))
                     .font(.custom("Figtree", size: 11).weight(.medium))
                     .foregroundColor(AppColors.muted.opacity(0.78))
                     .padding(.horizontal, 13)
@@ -20598,6 +20663,7 @@ struct RightExportPanel: View {
                         Text(isExporting ? "Exporting…" : "Export Video")
                             .font(.custom("Figtree", size: 11).weight(.medium))
                             .foregroundColor(AppColors.ink)
+                            .growsOnHover()
                             .padding(.horizontal, 13)
                             .padding(.vertical, 8)
                             .background(AppColors.panel)
@@ -20607,7 +20673,7 @@ struct RightExportPanel: View {
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 999))
                     }
-                    .buttonStyle(PlainHoverButtonStyle())
+                    .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
                     .disabled(!canExport || isExporting)
                 }
             }
@@ -21669,14 +21735,35 @@ enum MachineBudget {
 struct PlainHoverButtonStyle: ButtonStyle {
     var scale: CGFloat = 1.08
 
+    /// ⚠️ `false` when the LABEL draws its own border or background.
+    ///
+    /// Reported 23.09, on Create's tool rail and on the Vista account button:
+    /// *„uvelica celo dugme sa borderom a ne treba tako, samo treba da se uvelica
+    /// text sa ikonicom u tom dugmetu"*. He is right, and ShowHeaderButtonStyle
+    /// — the one he named as correct, the Create / BriefShow / Back row — has
+    /// always done it that way: its `scaleEffect` sits BEFORE the padding and
+    /// before the border overlay, so the text grows inside a frame that does not
+    /// move.
+    ///
+    /// A style cannot reach inside a label that was handed to it already
+    /// padded and outlined. So when this is `false` the style scales nothing and
+    /// publishes the scale into the environment instead, and the call site puts
+    /// `.growsOnHover()` exactly where it belongs — around the text and the icon,
+    /// before its own padding. The hover is still detected out here, across the
+    /// whole button, so the pointer does not have to find the glyph.
+    var scalesLabel: Bool = true
+
     func makeBody(configuration: Configuration) -> some View {
-        PlainHoverButtonLabel(configuration: configuration, hoverScale: scale)
+        PlainHoverButtonLabel(configuration: configuration,
+                              hoverScale: scale,
+                              scalesLabel: scalesLabel)
     }
 }
 
 private struct PlainHoverButtonLabel: View {
     let configuration: ButtonStyle.Configuration
     let hoverScale: CGFloat
+    let scalesLabel: Bool
 
     // A disabled button must not answer the pointer: the app dims those to 0.35
     // and explains itself in a tooltip, and a dimmed control that still grows
@@ -21684,14 +21771,56 @@ private struct PlainHoverButtonLabel: View {
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovered = false
 
+    private var currentScale: CGFloat {
+        if configuration.isPressed { return 0.98 }
+        return isHovered && isEnabled ? hoverScale : 1
+    }
+
     var body: some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.98 : (isHovered && isEnabled ? hoverScale : 1))
+            // Exactly one of the two applies it, never both.
+            .environment(\.hoverGrowScale, scalesLabel ? 1 : currentScale)
+            .scaleEffect(scalesLabel ? currentScale : 1)
             .animation(.linear(duration: 0.1), value: isHovered)
             .animation(.linear(duration: 0.08), value: configuration.isPressed)
             .onHover { hovering in
                 isHovered = hovering && isEnabled
             }
+    }
+}
+
+private struct HoverGrowScaleKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 1
+}
+
+extension EnvironmentValues {
+    /// What a label's own content should be scaled by right now. Set by
+    /// PlainHoverButtonStyle; read by `growsOnHover()`.
+    var hoverGrowScale: CGFloat {
+        get { self[HoverGrowScaleKey.self] }
+        set { self[HoverGrowScaleKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Grows with the button's hover, wherever the call site puts it.
+    ///
+    /// Goes around the text and the icon and BEFORE the padding, so the border
+    /// drawn after it stays exactly where it is. Outside a
+    /// `PlainHoverButtonStyle(scalesLabel: false)` it does nothing at all, which
+    /// is what the default of 1 is for.
+    func growsOnHover() -> some View {
+        modifier(HoverGrowInner())
+    }
+}
+
+private struct HoverGrowInner: ViewModifier {
+    @Environment(\.hoverGrowScale) private var scale
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(scale)
+            .animation(.linear(duration: 0.1), value: scale)
     }
 }
 
@@ -23230,6 +23359,7 @@ struct PhotoShowSheet: View {
                             .foregroundColor(AppColors.muted)
                     }
                     .foregroundColor(AppColors.ink)
+                    .growsOnHover()
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -23237,7 +23367,7 @@ struct PhotoShowSheet: View {
                         RoundedRectangle(cornerRadius: 6)
                             .fill(AppColors.panelAlt))
                 }
-                .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.02, scalesLabel: false))
                 .padding(.horizontal, 10)
             }
         }

@@ -614,6 +614,7 @@ struct ShortcutsView: View {
                     .font(.custom("Figtree", size: 12).weight(.medium))
                     .foregroundColor(isRecording ? AppColors.background : AppColors.ink)
                     .frame(minWidth: 92)
+                    .growsOnHover()
                     .padding(.vertical, 4)
                     .padding(.horizontal, 8)
                     .background(
@@ -626,7 +627,7 @@ struct ShortcutsView: View {
                     )
                     .contentShape(Rectangle())
             }
-            .buttonStyle(PlainHoverButtonStyle())
+            .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
         }
         .padding(.vertical, 3)
         .id(revision)

@@ -175,9 +175,10 @@ struct ProfileSettingsModal: View {
                             Image(systemName: "xmark")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundColor(AppColors.muted)
+                                .growsOnHover()
                                 .padding(6)
                         }
-                        .buttonStyle(PlainHoverButtonStyle())
+                        .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -328,9 +329,10 @@ struct ProfileSettingsModal: View {
                                             .font(.custom("Figtree", size: 12).weight(.semibold))
                                         Spacer()
                                     }
+                                    .growsOnHover()
                                     .padding(.vertical, 9)
                                 }
-                                .buttonStyle(PlainHoverButtonStyle())
+                                .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
                                 .foregroundColor(.white)
                                 .background(Color(red: 0.620, green: 0.180, blue: 0.160))
                                 .clipShape(RoundedRectangle(cornerRadius: 999))
@@ -878,9 +880,10 @@ struct LockedAccessOverlay: View {
             Text(title)
                 .font(.custom("Figtree", size: 12.5).weight(.semibold))
                 .frame(maxWidth: .infinity)
+                .growsOnHover()
                 .padding(.vertical, 8)
         }
-        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.02, scalesLabel: false))
         .foregroundColor(mode == target ? AppColors.hoverInk : AppColors.muted)
         .background(mode == target ? AppColors.panel : Color.clear)
         .overlay(

@@ -722,6 +722,21 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 23. septembar 2026, veče — KORAK 212 (NIJE OBJAVLJENO, commit lokalan)
+
+| | |
+|---|---|
+| **212** | uvećava se **tekst i ikonica, ne dugme sa okvirom** (5 stilova + Create traka + 18 plain dugmadi); Create ikonica na **1,22**; pilule 30/60/4K pobele na hover; hover kartica ostaje u prozoru; natpis ispod Create trake je **kartica u dva reda**; traka na „Preparing photo previews" |
+| ⛔ **212** | **app je zamrzao, i kriv je bio kod iz KORAKA 211.** `GeometryReader` unutar `overlayPreferenceValue` upisivao je u `@State` koji isto telo čita → beskonačna petlja na glavnoj niti, 100% CPU. Nađeno sa `sample`, popravljeno uklanjanjem merenja |
+
+- ⚠️ **Pouka upisana u kod:** ništa unutar `overlayPreferenceValue` ne sme da piše stanje koje spoljno
+  telo čita. Plus ispravka sopstvenog očitavanja: „brojka napreduje" ne znači da glavna nit radi.
+- BriefShow nije diran, na klijentov zahtev.
+- ⚠️ Live provera i dalje ista kao kod 211 i **nije urađena**.
+
+---
+
+
 ### GDE SMO STALI — 23. septembar 2026 — KORAK 211 (NIJE OBJAVLJENO, commit lokalan)
 
 | | |
@@ -23312,3 +23327,84 @@ BriefShow-a.
 merenjem**: premeštanje 100 fajlova **6 ms**, `refreshFolderTree()` nad pravim Desktop-om **64 ms**,
 pregled pri vuči je već ograničen na dve kartice. Ostaje isti koren — grid koji se gradio ceo — a to
 je sada rešeno. **Ne tvrdi se da je zatvoreno dok klijent ne proba.**
+
+---
+
+## KORAK 212 — uvećava se tekst i ikonica, a ne dugme; i jedan bag koji je ova sesija sama napravila (23. septembar 2026)
+
+### ⛔ NAJVAŽNIJE: APP JE ZAMRZAO, I KRIV JE BIO KOD IZ OVE SESIJE
+
+Klijent: *„ajde vidi sto je zamrzlo… jel neki bug"*. `ps` je pokazao **100% CPU, stanje `R`** —
+dakle ne čekanje nego **vrtenje u prazno**. `sample` je uhvatio glavnu nit doslovno:
+
+    closure #1 in ... ContentView.body.getter      ContentView.swift:748
+      _NativeDictionary.setValue(_:forKey:isUnique:)
+      _NativeDictionary.copy()  ×5
+
+To je bilo merenje širine hover kartice, dodato **sat ranije u istoj sesiji**. `GeometryReader`
+unutar `overlayPreferenceValue` upisivao je izmerenu širinu u `@State` rečnik — a taj rečnik pripada
+**istom pogledu koji tu preference proizvodi.** Svaki upis poništi telo → telo ponovo izračuna
+preference → preference ponovo napravi overlay → overlay ponovo izmeri i upiše. Beskonačna petlja.
+
+⚠️ **PRAVILO, upisano u kod:** ništa unutar `overlayPreferenceValue` ne sme da piše stanje koje
+spoljno telo čita.
+
+⚠️ **I POGREŠNO OČITAVANJE, upisano jer je ponovljivo.** Prvi put je rečeno klijentu da **nije**
+zamrznuto nego da je to priprema pregleda — jer je brojka išla 15 → 37 i CPU je bio na 100%, što za
+dekodiranje 108 fotografija izgleda normalno. Brojka je napredovala zato što taj posao teče na
+**pozadinskim** nitima, dok je glavna vrtela u prazno. **Dva tačna signala poklopila su se u presudu
+koja liči na odgovor** — ista porodica greške koju dokument već beleži kod merača.
+
+**Popravka:** kartica se **više ne meri uopšte.** Maksimalna širina je konstanta (340pt) i po njoj se
+računa granica. Uz ivicu je tačna; u sredini `rect.midX` ionako upada u opseg pa se ništa ne pomera.
+
+### ⛔ Uvećanje je bilo na pogrešnom mestu u redosledu
+
+Klijent, sa snimkom: *„uvelica celo dugme sa borderom a ne treba tako, samo treba da se uvelica text
+sa ikonicom u tom dugmetu… uzmi za primer create dugme, briefshow dugme, back dugme"*.
+
+**Bio je u pravu, i uzrok je red modifikatora.** `ShowHeaderButtonStyle` — ona koju je imenovao kao
+ispravnu — nosi `scaleEffect` **pre** padding-a i pre border overlay-a, pa tekst raste unutar okvira
+koji se ne miče. KORAK 211 je isti taj poziv stavio **na kraj**, posle okvira.
+
+| | |
+|---|---|
+| 5 stilova u `Develop.swift` | uvećanje pomereno pre `padding`/`frame`/`overlay` |
+| Create traka (`headerBarCell`) | `.growsOnHover()` oko glifa, pre kvadrata i okvira |
+| 18 plain dugmadi koja sama crtaju okvir | isto, mehanički |
+| 45 golih dugmadi | tu je skaliranje već bilo ispravno — nemaju okvir u sebi |
+
+Tamo gde stil **ne može** da dopre do sadržaja (okvir je nacrtan unutar label-a na pozivu),
+`PlainHoverButtonStyle(scalesLabel: false)` ne skalira ništa nego objavljuje vrednost kroz
+environment, a poziv je primeni sa `.growsOnHover()` tačno gde treba. **Hover se i dalje hvata na
+celom dugmetu** — ne mora da se pogodi mišem baš slovo.
+
+**Create ikonica ide na 1,22, ne 1,08.** Tamo su glifovi od 14pt u kvadratu od 30pt; osam posto na
+tako malom glifu je promena koju niko ne vidi, dok je istih osam posto na natpisu dugačkom reč
+sasvim dovoljno.
+
+### Ostalo iz iste runde
+
+- **Pilule 30/60/4K** — okvir im se nije ni pomerao (crta se izvan dugmeta); nedostajala je boja.
+  Tekst sada pobeli na hover. Aktivna pilula zadržava invertovanu boju, već je najsvetlija u redu.
+- **Natpis ispod Create trake postaje kartica**, sa **dva reda**: „Tools - Patch, Select Subjects,
+  Dodge & Burn, Cut, Erase and r…" se sekao na jednom.
+  ⚠️ Visina je **fiksirana na dva reda i kad rečenica traži jedan** — starije pravilo koje se ne
+  krši: linija koja menja visinu pomera svaku sekciju ispod sebe dok pointer prelazi preko trake.
+- **Traka na „Preparing photo previews… N / M"** — ista linearna kao na gridu. Spinner ostaje, on
+  govori da posao nije stao.
+- **BriefShow nije diran** — klijent: *„mozes da ostavis kako jeste sada, svidja mi se"*.
+
+### Čime je zaključano
+
+`run-grid-shape-test.py` i dalje 34 provere, uz proveru da nijedan `ButtonStyle` ni plain dugme nije
+ostalo bez hover animacije. Zeleni i `header-bar`, `layer-merge`, `thumbnail-cache`, `templates`,
+`template-text`, `theme-picker`, `slideshow-cards`, `slideshow-layout`.
+
+**Stanje:** BUILD SUCCEEDED, instalirano i pokrenuto, CPU miran (8–27%), glavna nit miruje na run
+loop-u, `_NativeDictionary.setValue` **0 puta** u uzorku.
+
+⚠️ **I DALJE NEPOTVRĐENO UŽIVO** (nepromenjeno od KORAKA 211): duga sesija kroz više foldera, folder
+sa 250+ slika, prevlačenje više slika, ulaz i izlaz iz BriefShow-a.
+⚠️ **12 mesta** nije mehanički prešlo na uvećanje sadržaja (birač boje, fontovi, par panela u
+`Develop.swift`) — nisu među imenovanima, doteruju se kad se primete.

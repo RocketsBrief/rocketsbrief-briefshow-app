@@ -6519,6 +6519,7 @@ private struct CardButtonStyle: ButtonStyle {
         configuration.label
             .font(.custom("Figtree", size: 12).weight(isProminent ? .semibold : .medium))
             .foregroundColor(isEnabled ? AppColors.ink : AppColors.muted)
+            .hoverGrow(isPressed: configuration.isPressed)
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .background(
@@ -6530,7 +6531,6 @@ private struct CardButtonStyle: ButtonStyle {
                     .stroke(AppColors.border.opacity(isProminent ? 0.9 : 0.6),
                             lineWidth: isProminent ? 1.4 : 1)
             )
-            .hoverGrow(isPressed: configuration.isPressed)
             .contentShape(Rectangle())
     }
 }
@@ -12225,10 +12225,11 @@ struct DevelopView: View {
                                 .font(.custom("Figtree", size: 11))
                         }
                         .frame(maxWidth: .infinity)
+                        .growsOnHover()
                         .padding(.vertical, 5)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
+                    .buttonStyle(PlainHoverButtonStyle(scale: 1.02, scalesLabel: false))
                     .foregroundColor(AppColors.muted)
                     .overlay(
                         RoundedRectangle(cornerRadius: 5)
@@ -12529,6 +12530,7 @@ struct DevelopView: View {
                     .lineLimit(1)
             }
             .foregroundColor(isActive ? AppColors.ink : AppColors.muted)
+            .growsOnHover()
             .padding(.horizontal, 10 * scale)
             .padding(.vertical, 6 * scale)
             .background(
@@ -12545,7 +12547,7 @@ struct DevelopView: View {
             // and the aspect-ratio row, see BRIEFSHOW_DEVELOP_NOTES.md.
             .contentShape(Rectangle())
         }
-        .buttonStyle(PlainHoverButtonStyle())
+        .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
         .disabled(!live)
         .opacity(live ? 1 : 0.35)
         // On a disabled button the tooltip is the ONLY way the reason can
@@ -12814,6 +12816,11 @@ struct DevelopView: View {
         }
         .foregroundColor(item.isActive ? AppColors.hoverInk : AppColors.ink)
         .opacity(item.isDisabled ? 0.35 : 1)
+        // ⚠️ BEFORE the square and before the border: the glyph grows, the tile
+        // does not move. Reported 23.09 on this very rail — *„samo vidi kad
+        // udjemo u create, e tamo da se namesti da text i ikonica uvelicava na
+        // hover"* — and this is the order ShowHeaderButtonStyle has always used.
+        .growsOnHover()
         // A SQUARE, fixed both ways. It used to be `maxWidth: .infinity` so a
         // row of cells divided the panel between them; that is what turned
         // into one button per line the moment there were thirteen of them —
@@ -12838,7 +12845,13 @@ struct DevelopView: View {
                 Button(action: action) {
                     face
                 }
-                .buttonStyle(PlainHoverButtonStyle())
+                // ⚠️ 1.22, not the 1.08 the rest of the app uses. Asked for on
+                // 23.09: *„da ikonica bude jos malo veca da se bolje vidi kao
+                // animacija"*. These are 14pt glyphs in a 30pt square — eight
+                // percent of a glyph that small is a change nobody sees, while
+                // the same eight percent on a word-long label is plenty. The
+                // square does not move, so there is room for it to grow into.
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.22, scalesLabel: false))
                 .disabled(item.isDisabled)
 
             case .holdForOriginal:
@@ -12855,7 +12868,7 @@ struct DevelopView: View {
                 } label: {
                     face
                 }
-                .buttonStyle(PlainHoverButtonStyle())
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.22, scalesLabel: false))
                 .popover(isPresented: $showPresetsPopover, arrowEdge: .bottom) {
                     presetsPopover
                 }
@@ -12890,13 +12903,45 @@ struct DevelopView: View {
     private var headerHoverCaption: some View {
         let hovered = headerBarItems.first { $0.id == hoveredHeaderItemID }
 
+        // ⚠️ A CARD, not a bare line. Asked for on 23.09: *„kao i ovaj dole
+        // text sto opisuje sta je koje dugme da bude u nekoj vrsti kartice na
+        // tom mestu, ne samo text vec kartica i text u njoj"*.
+        //
+        // ⚠️ It still holds its place when nothing is hovered, and that is the
+        // older rule this must not break: a line that comes and goes moves every
+        // section under it up and down as the pointer crosses the bar. So the
+        // card is always laid out and only its paint fades — the height is fixed
+        // either way.
         return Text(hovered?.help ?? " ")
             .font(.custom("Figtree", size: 10.5).weight(.medium))
-            .foregroundColor(AppColors.muted)
-            .lineLimit(1)
-            .truncationMode(.tail)
+            .foregroundColor(AppColors.ink)
+            // ⚠️ TWO LINES, and the height is fixed at two whether the sentence
+            // needs them or not. Asked for on 23.09 with a screenshot of
+            // "Tools - Patch, Select Subjects, Dodge & Burn, Cut, Erase and r…":
+            // one line was cutting the longer ones in half.
+            //
+            // Fixed rather than grown-to-fit, because the older rule here still
+            // holds: this line must never change height. A card that is one line
+            // for Crop and two for Tools moves every section under it up and down
+            // as the pointer crosses the bar, which is the very thing the fixed
+            // height was put here to stop.
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 13)
+            .frame(height: 28, alignment: .top)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(AppColors.panelAlt)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(AppColors.border.opacity(0.7), lineWidth: 1)
+            )
+            .opacity(hovered == nil ? 0 : 1)
+            .animation(.linear(duration: 0.1), value: hoveredHeaderItemID)
     }
 
     private var panelHeaderActionBar: some View {
@@ -16914,6 +16959,7 @@ struct DevelopView: View {
                                 .weight(isSelected ? .semibold : .regular))
                         .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
                         .frame(maxWidth: .infinity)
+                        .growsOnHover()
                         .padding(.vertical, 5)
                         .background(
                             RoundedRectangle(cornerRadius: 5)
@@ -16921,7 +16967,7 @@ struct DevelopView: View {
                         )
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.02, scalesLabel: false))
             }
         }
         .padding(2)
@@ -17097,6 +17143,7 @@ struct DevelopView: View {
                         Text("\(Int(currentKelvin(asShot: asShot).rounded())) K")
                             .font(.custom("Figtree", size: 11).weight(.medium))
                             .foregroundColor(AppColors.ink)
+                            .growsOnHover()
                             .padding(.horizontal, 7)
                             .padding(.vertical, 2)
                             .overlay(
@@ -17105,7 +17152,7 @@ struct DevelopView: View {
                             )
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(PlainHoverButtonStyle())
+                    .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
                     .help("Click to type a colour temperature in Kelvin, and "
                           + "the slider moves to match.")
                 }
@@ -17229,10 +17276,11 @@ struct DevelopView: View {
                         .frame(width: 4, height: 4)
                         .offset(y: 6)
                 }
+                .growsOnHover()
                 .padding(.bottom, 6)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(PlainHoverButtonStyle())
+        .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
         .help(band.title)
     }
 
@@ -18954,6 +19002,7 @@ struct DevelopView: View {
                 // the recipe card: inherited, these came out near-black in the
                 // dark theme and read as a mistake.
                 .foregroundColor(isSelected ? AppColors.ink : AppColors.inkSecondary)
+                .growsOnHover()
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 .background(
@@ -18966,7 +19015,7 @@ struct DevelopView: View {
                                 lineWidth: isSelected ? 1.5 : 1)
                 )
             }
-            .buttonStyle(PlainHoverButtonStyle())
+            .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
 
             Button {
                 removeTemplateText(item.id)
@@ -19018,12 +19067,13 @@ struct DevelopView: View {
                         .font(.system(size: 9))
                 }
                 .foregroundColor(AppColors.ink)
+                .growsOnHover()
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 .background(RoundedRectangle(cornerRadius: 4).fill(AppColors.panelAlt))
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1))
             }
-            .buttonStyle(PlainHoverButtonStyle())
+            .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
             .popover(isPresented: $showFontBrowser, arrowEdge: .leading) {
                 templateFontBrowser(index: index)
             }
@@ -19245,13 +19295,14 @@ struct DevelopView: View {
                         .foregroundColor(Color.accentColor)
                 }
             }
+            .growsOnHover()
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .contentShape(Rectangle())
             .background(RoundedRectangle(cornerRadius: 4)
                 .fill(isChosen ? Color.accentColor.opacity(0.14) : Color.clear))
         }
-        .buttonStyle(PlainHoverButtonStyle())
+        .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
     }
 
     private func googleFontRow(_ family: GoogleFontFamily, index: Int) -> some View {
@@ -25207,6 +25258,10 @@ private struct EditToolButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 13, weight: .medium))
             .foregroundColor(isActive ? AppColors.hoverInk : AppColors.ink)
+            // ⚠️ BEFORE the frame and the border: only the glyph grows, the tile
+            // stays exactly where it is. Reported 23.09 - the first version of
+            // this scaled the whole button, border and all.
+            .hoverGrow(isPressed: configuration.isPressed, pressedScale: 0.94)
             .frame(width: 30, height: 30)
             .background(
                 RoundedRectangle(cornerRadius: 6)
@@ -25216,7 +25271,6 @@ private struct EditToolButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
             )
-            .hoverGrow(isPressed: configuration.isPressed, pressedScale: 0.94)
             // Same fix as maskAddButton/PanelActionButtonStyle above (see
             // their doc comments) — without an explicit content shape, a
             // Button's hit-test area can fall back to just its rendered
@@ -25243,11 +25297,11 @@ private struct MaskAddButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundColor(AppColors.ink)
+            .hoverGrow(isPressed: configuration.isPressed, pressedScale: 0.94)
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
             )
-            .hoverGrow(isPressed: configuration.isPressed, pressedScale: 0.94)
     }
 }
 
@@ -25268,6 +25322,7 @@ private struct PanelActionButtonStyle: ButtonStyle {
         configuration.label
             .font(.custom("Figtree", size: 12).weight(isProminent ? .semibold : .medium))
             .foregroundColor(AppColors.ink)
+            .hoverGrow(isPressed: configuration.isPressed)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
@@ -25279,7 +25334,6 @@ private struct PanelActionButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 7)
                     .stroke(AppColors.border.opacity(isProminent ? 0.9 : 0.6), lineWidth: isProminent ? 1.4 : 1)
             )
-            .hoverGrow(isPressed: configuration.isPressed)
             .contentShape(Rectangle())
     }
 }
@@ -25294,6 +25348,7 @@ private struct AspectRatioButtonStyle: ButtonStyle {
         configuration.label
             .font(.custom("Figtree", size: 11).weight(.medium))
             .foregroundColor(isActive ? AppColors.hoverInk : AppColors.ink)
+            .hoverGrow(isPressed: configuration.isPressed, pressedScale: 0.94)
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .background(
@@ -25304,7 +25359,6 @@ private struct AspectRatioButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
             )
-            .hoverGrow(isPressed: configuration.isPressed, pressedScale: 0.94)
             // Same fix as EditToolButtonStyle just above — see its doc
             // comment.
             .contentShape(Rectangle())

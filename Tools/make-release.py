@@ -25,6 +25,29 @@ package ships arm64 only (the trap of KORAK 108).
 ⚠️ GitHub's asset limit is 2 GiB and the big package is within ~60 MB of it. The
 script fails rather than uploading something that will be rejected.
 
+⚠️ SPEED MEASURED ON THIS MACHINE DOES NOT TRAVEL WITH THE PACKAGE. Since
+KORAK 211 (23.09.2026) not one worker count in the app is a written-down
+number; all six go through MachineBudget in ContentView.swift:
+
+    byCores  = max(2, min(activeProcessorCount - 2, 6))
+    byMemory = physicalMemory <= 8 GB ? 4 : 6
+    decodeWorkers = min(byCores, byMemory)
+
+which gives 4 on the machine this is usually built on (M2, 8 cores, 8 GB), 2 on
+an old two-core Intel, 2 at 4 GB, 6 at 16 GB and up. The package is universal
+and runs on all of them, so "it feels fast here" says nothing about the client's
+Intel — a different number of workers is running there. Measured over 80 JPEGs
+at 420px: 1 worker 1118 ms, 2 → 573, 3 → 412, 4 → 327, 6 → 256, 8 → 240.
+
+If anyone ever proposes putting a fixed number back, that is a regression on old
+hardware and run-grid-shape-test.py fails on it.
+
+⚠️ WORTH RUNNING BEFORE PACKAGING, both cheap:
+
+    python3 Tools/run-grid-shape-test.py      the memory bounds and the workers
+    python3 Tools/run-thumbnail-cache-test.py the quality rule (the loupe and
+                                              LumenoLab stay at full size)
+
 Every check in KORAK 116's table runs here, on the PACKAGES, not on the project.
 """
 import argparse

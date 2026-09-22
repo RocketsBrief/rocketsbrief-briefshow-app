@@ -47,8 +47,12 @@ sequence = [a or ("tab." + b) for a, b in order]
 wanted = ["grid", "original", "ai", "crop", "tab.edit"]
 check(sequence[:5] == wanted,
       "the bar opens with %s (found %s)" % (" → ".join(wanted), " → ".join(sequence[:5])))
-check(sequence[-3:] == ["tab.retouch", "tab.layers", "tab.templates"],
-      "Retouch, Layers and Templates close the bar (found %s)" % " → ".join(sequence[-3:]))
+# ⚠️ Text joined the bar in KORAK 200 (21.09), when text left the template and
+# got a tab of its own, and this expectation was not moved with it - so this
+# check had been failing for two days before anyone read it. The order is the
+# client's, confirmed by him on 23.09: Retouch, Layers, Templates, Text.
+check(sequence[-4:] == ["tab.retouch", "tab.layers", "tab.templates", "tab.text"],
+      "Retouch, Layers, Templates and Text close the bar (found %s)" % " → ".join(sequence[-4:]))
 
 actions = items_body.count("HeaderBarItem(id: \"")
 # ⚠️ EVERY case of the tab enum, not a list of three names. This line used to

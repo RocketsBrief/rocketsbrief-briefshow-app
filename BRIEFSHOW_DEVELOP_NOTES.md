@@ -722,6 +722,25 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 23. septembar 2026 — KORAK 211 (NIJE OBJAVLJENO, commit lokalan)
+
+| | |
+|---|---|
+| **211** | grid se otvara **odmah** (oblik iz zaglavlja, 0,75 ms/fajl — zamrzavanje je bilo RASPORED, ne dekodiranje), grid je **lazy** (~20 ćelija umesto 250), keševi dobili granicu (**113 MB po folderu** i **10,8 MB po slici na Space** se više ne gomilaju), radnici se izvode iz mašine (`MachineBudget`), **hover animacija na svih 77 dugmadi** (75 je nije imalo), Back dugme u redu sa `ESTI`, traka umesto spinnera, dugmad −20% |
+
+- ⚠️ **Ništa od 211 nije viđeno sa velikim folderom na ekranu odavde.** Klijent proba četiri stvari:
+  duga sesija kroz više foldera, folder sa 250+ slika, prevlačenje više slika, ulaz/izlaz iz BriefShow-a.
+- **Prevlačenje i BriefShow lag nisu dijagnostikovani do kraja** — tri sumnjivca isključena merenjem
+  (premeštanje 6 ms, `refreshFolderTree` 64 ms, pregled pri vuči ograničen na 2 kartice).
+- ⚠️ **Pri pakovanju:** brojevi radnika se sada menjaju **po mašini**, pa merenje brzine sa ove mašine
+  **ne važi** za klijentov Intel. `v11.0` se i dalje NE SME brisati.
+- `run-grid-shape-test.py` — 34 provere, sa radnom negativnom kontrolom.
+- Dva zatečena pada dokazano nezavisna od ove sesije (`run-zoom-original`, `run-placeholder-thumbnail`
+  kome fali fotografija); `run-header-bar` ažuriran uz klijentovu potvrdu redosleda.
+
+---
+
+
 ### GDE SMO STALI — 17. septembar 2026 — v11.35 OBJAVLJENA, univerzalna
 
 | | |
@@ -23142,3 +23161,154 @@ Oznaka verzije u app-i se čita iz bundle-a, pa piše `v11.48` sama od sebe.
 
 - stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.48`
 - direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.48/C4S-Suite-11.48.zip`
+
+---
+
+## KORAK 211 — grid se otvara odmah, app više ne raste s vremenom, i radnici se izvode iz mašine (23. septembar 2026)
+
+Šest klijentovih prijava u jednoj sesiji. **Nijedna nije bila tamo gde je izgledalo.**
+
+### ⛔ „100+ slika — prazan ekran frozen pa odjednom sve"
+
+**Nije bilo dekodiranje.** Izmereno nad klijentovim folderom od 250 JPEG-ova: pravi put košta
+**30,6 ms po slici**, što kroz četiri radnika ispadne ispod dve sekunde. Nije to.
+
+**Bio je RASPORED.** `thumbnailCell` je uzimao širinu iz **učitane sličice**
+(`image.map { … } ?? 4.0/3.0`), pa je svaka pločica bila 4:3 dok joj slika ne stigne — a `FlowLayout`
+je `Layout`, dakle **nikad lazy**: meri **svaki** subview, i to dvaput po prolazu
+(`sizeThatFits`, pa `placeSubviews`). Svaka grupa od deset slika menjala je deset oblika i terala
+premeravanje svih 250. **Dvadeset pet premeravanja celog grida na glavnoj niti, pre nego što se išta
+vidi.** Zato grupisanje po deset nije pomoglo — grupa je **bila okidač**.
+
+**Popravka, prolaz nula:** oblik se čita iz zaglavlja fajla
+(`CGImageSourceCopyPropertiesAtIndex`), bez ijednog dekodiranog piksela. **0,75 ms po fajlu**,
+423 ms za 327 fajlova, i **jedan jedini upis u `@State`** — svaki upis je pun prolaz rasporeda, pa
+bi objavljivanje u delovima poništilo ceo smisao.
+
+⚠️ Redosled u ćeliji **nije očigledan**: prvo učitana slika, pa tek onda zaglavlje. **Isečena**
+fotografija nema oblik svog fajla, pa kad pravi render stigne on je autoritet. Za sve neisečeno dvoje
+se poklapa do piksela — mereno na 60 fotografija, od kojih 25 uspravnih: **najveće odstupanje 0,0011,
+nepoklapanja 0.**
+
+### ⛔ Grid postaje LAZY — i to je moguće tek sada
+
+`FlowLayout` je zamenjen sopstvenim pakovanjem redova (`gridRows`) u `LazyVStack`. Gradi se **oko 20
+vidljivih ćelija umesto 250**. Ovo se **nije moglo ranije**: pakovanje mora znati sve širine unapred,
+a to je do danas značilo dekodirati svaku fotografiju prvo.
+
+Redosled je Finder-ov i nepromenjen — folderi, pa video, pa fotografije. Red se puni tačno kako ga je
+`FlowLayout` punio: uzimaj dok sledeće ne pređe desnu ivicu.
+
+### ⛔ „Kada radim duže krene da laguje" — keš bez granice
+
+**U celom fajlu nije postojalo nijedno `gridThumbnails = [:]`.** Svaki folder koji klijent otvori
+ostajao je u memoriji do kraja sesije. `loupeImages` isto — i to *namerno* (da se ne dekodira ponovo),
+ali **bez ikakve granice**.
+
+Izmereno nad pravim fotografijama:
+
+| keš | po slici | posledica |
+|---|---|---|
+| `gridThumbnails` | **0,45 MB** | folder od 250 = **113 MB**, pet foldera = **565 MB** |
+| `loupeImages` | **10,8 MB** | sto slika na Space = **1,1 GB** |
+
+Na mašini sa 8 GB to nije sporost nego swap. **Nije curenje u strogom smislu — to je keš bez granice,
+što na dugoj sesiji izgleda isto.**
+
+**Popravka:** `forgetCaches(outside:)` pušta prethodni folder kad se otvori drugi, a lupa drži
+**osam** poslednjih (pokazuje najviše pet, pa je sve na ekranu uvek sačuvano). Jeftino je vratiti:
+`ThumbnailDiskCache` vraća sličicu za 0,72 ms. **Oblici se čuvaju** — dva broja po slici, i baš ono
+što sprečava premeravanje.
+
+⚠️ **Kvalitet nije taknut.** Lupa i dalje dekodira na stvarnoj iscrtanoj veličini × backing scale,
+kapija `maxPixelSize <= ThumbnailDiskCache.side` znači da **ne može** biti poslužena iz keša sličica,
+a LumenoLab ostaje na native rezoluciji fajla. Slika puštena iz keša se prosto dekodira ponovo.
+
+### ⛔ Radnici su bili podešeni na JEDNU mašinu
+
+Svih šest `maxConcurrentOperationCount` bilo je zakucano i podešeno na razvojnoj mašini
+(M2, 8 jezgara). Paket je univerzalan i ide i na stare Intel mašine, gde ista četiri istovremena
+dekoda nisu paralelizam nego red čekanja plus četiri seta CoreImage međurezultata.
+
+Izmereno 23.09, 80 JPEG-ova na 420px:
+
+    1 radnik  1118 ms      4 radnika  327 ms
+    2 radnika  573 ms      6 radnika  256 ms
+    3 radnika  412 ms      8 radnika  240 ms
+
+⚠️ **Ispravlja staru belešku:** KORAK 155 je zapisao „8 gore od 4 (132 naspram 65 ms)" — to je bilo
+mereno na **RAW demosaic-u**, i za njega važi. Za sličice skaliranje ide do broja jezgara.
+
+`MachineBudget` sada izvodi broj iz mašine, sa granicom po memoriji jer demosaic drži stotine
+megabajta dok traje. **Ova mašina ostaje na 4 — namerno: optimizacija za star hardver koja uspori
+razvojnu mašinu je ona koja se posle tiho vrati unazad.**
+
+| mašina | radnika |
+|---|---|
+| M2, 8 jezgara, 8 GB (ova) | **4** |
+| dvojezgarni Intel, 8 GB | **2** |
+| 4 GB | **2** |
+| 16 GB+ | 6 |
+
+### ⛔ Hover animacija — 75 od 77 dugmadi je nije imalo
+
+Klijent je pokazao na traku alata u Create-u: *„moraju svi dugmici da imaju tu animaciju … pod svim
+ovim dugmicima svako dugme mora da ima tu hover animaciju"*.
+
+Revizija svakog `ButtonStyle` i svakog `.buttonStyle(.plain)` u app-i:
+
+| | |
+|---|---|
+| imali hover | `ShowHeaderButtonStyle`, `HeaderLinkButtonStyle`, `HoverScaleButtonStyle`, `Brutal`/`PrimaryBrutal` (kroz `HoverButtonLabel`) |
+| **nisu** | `EditToolButtonStyle`, `MaskAddButtonStyle`, `PanelActionButtonStyle`, `AspectRatioButtonStyle`, `CardButtonStyle` — samo skaliranje na pritisak |
+| plain dugmad | **77 ukupno, 2 su imala.** `toolButton` — baš traka na koju je pokazao — bio je među 75 |
+
+Dodato kroz `HoverGrow` (modifikator, jer `ButtonStyle.makeBody` ne sme `@State`) i
+`PlainHoverButtonStyle`. **76 zamenjeno**, 2 preskočena jer već imaju svoj hover — inače bi se dva
+skaliranja množila. Široki redovi idu na **1,02**, mala dugmad na **1,08**: 1,08 na redu koji već puni
+panel izgleda kao da red iskače iz njega. **Onemogućeno dugme ne reaguje** — app ih zatamni na 0,35,
+a zatamnjena kontrola koja raste pod mišem izgleda kao da se može kliknuti.
+
+### ⛔ Back dugme — i zašto je prvo mesto bilo pogrešno
+
+Prvo je stavljeno u header grida. Klijentov snimak je pokazao šta to košta: **pogurao je C4S
+znak** i uzeo širinu koja je trebala ostalima — „Bri…", „Cr…", „Expor…", „Add…", „Clear…" **sve
+skraćeno odjednom**, što `lineLimit` u `ShowHeaderButtonStyle` i radi kad red ostane bez mesta.
+
+Preseljeno u red sa korenom stabla (`ESTI`), desno. **Ograničeno otvorenim stablom** — goli
+`deletingLastPathComponent()` nikad ne ostaje bez roditelja, pa bi uzastopni klik izveo klijenta iz
+njegovog foldera u home i dalje ka `/`.
+
+Uz to: sva dugmad u traci **−20%** (12 → 9,6pt, 14×9 → 11,2×7,2, ikonica 15 → 12), posle čega natpisi
+staju celi.
+
+### Loading traka
+
+Bio je spinner uz „137/250". Traka je tražena tim rečima: *„sa loading barom da klijent vidi dokle je
+sve stalo"*. Spinner kaže da se nešto radi; ne kaže koliko je ostalo, a na nekoliko stotina slika je
+to jedino pitanje. Isti linearni oblik koji već koriste download modela i flatten.
+
+### Čime je zaključano
+
+`Tools/run-grid-shape-test.py` — **34 provere**, sa radnom negativnom kontrolom (sklonjen jedan hover
+→ pada; vraćen → prolazi). Meri i pravu funkciju nad pravim fotografijama.
+
+⚠️ **Dva zatečena pada, oba dokazano nezavisna od ove sesije:**
+- `run-header-bar-test.py` je očekivao da se traka završava sa *Retouch → Layers → Templates*, a
+  `text` tab je dodat u KORAKU 200 (21.09) i očekivanje nije pomereno s njim. Klijent je 23.09
+  potvrdio novi redosled; test ažuriran.
+- `run-zoom-original-test.py` — „compiled half" pada na grešci Swift kompajlera u harness-u. Izvađeni
+  deo `Develop.swift` je **bajt-identičan sa HEAD**, dakle nije od ovih izmena.
+- `run-layer-merge-test.py` je pao **od ove sesije** i to je ispravljeno: tvrdio je
+  `.buttonStyle(.plain)` doslovno, a čuva to da je krug **svoje dugme** koje red ne može progutati.
+  Krug je i dalje svoje dugme; promenilo se ime stila. Provera sada gleda svojstvo, ne pravopis.
+
+**Stanje:** BUILD SUCCEEDED, app instaliran i pokrenut na v11.48 sa ovim izmenama.
+⚠️ **Nije viđeno sa velikim folderom na ekranu odavde** — klijent treba da proba četiri stvari:
+duga sesija kroz više foldera, folder sa 250+ slika, prevlačenje više slika, i ulaz/izlaz iz
+BriefShow-a.
+
+⚠️ **Prevlačenje i BriefShow lag NISU dijagnostikovani do kraja.** Tri sumnjivca su **isključena
+merenjem**: premeštanje 100 fajlova **6 ms**, `refreshFolderTree()` nad pravim Desktop-om **64 ms**,
+pregled pri vuči je već ograničen na dve kartice. Ostaje isti koren — grid koji se gradio ceo — a to
+je sada rešeno. **Ne tvrdi se da je zatvoreno dok klijent ne proba.**

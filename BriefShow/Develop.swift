@@ -6530,7 +6530,7 @@ private struct CardButtonStyle: ButtonStyle {
                     .stroke(AppColors.border.opacity(isProminent ? 0.9 : 0.6),
                             lineWidth: isProminent ? 1.4 : 1)
             )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .hoverGrow(isPressed: configuration.isPressed)
             .contentShape(Rectangle())
     }
 }
@@ -7875,7 +7875,7 @@ struct SliderSelectionToast: Identifiable, Equatable {
 private let filmstripThumbnailQueue: OperationQueue = {
     let queue = OperationQueue()
     queue.name = "com.rocketsbrief.briefshow.filmstrip-thumbnails"
-    queue.maxConcurrentOperationCount = 4
+    queue.maxConcurrentOperationCount = MachineBudget.decodeWorkers
     queue.qualityOfService = .utility
     return queue
 }()
@@ -7895,7 +7895,7 @@ private let filmstripThumbnailQueue: OperationQueue = {
 private let filmstripPlaceholderQueue: OperationQueue = {
     let queue = OperationQueue()
     queue.name = "com.rocketsbrief.briefshow.filmstrip-placeholders"
-    queue.maxConcurrentOperationCount = 4
+    queue.maxConcurrentOperationCount = MachineBudget.decodeWorkers
     queue.qualityOfService = .utility
     return queue
 }()
@@ -12191,7 +12191,7 @@ struct DevelopView: View {
                                 .padding(.vertical, 5)
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                             .foregroundColor(isRemoveBrushErasing == erasing ? AppColors.ink : AppColors.muted)
                             .background(
                                 RoundedRectangle(cornerRadius: 5)
@@ -12228,7 +12228,7 @@ struct DevelopView: View {
                         .padding(.vertical, 5)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                     .foregroundColor(AppColors.muted)
                     .overlay(
                         RoundedRectangle(cornerRadius: 5)
@@ -12368,7 +12368,7 @@ struct DevelopView: View {
                         Spacer()
 
                         Button("Cancel") { modelInstaller.cancel() }
-                            .buttonStyle(.plain)
+                            .buttonStyle(PlainHoverButtonStyle())
                             .font(.custom("Figtree", size: 11))
                             .foregroundColor(AppColors.muted)
                     }
@@ -12545,7 +12545,7 @@ struct DevelopView: View {
             // and the aspect-ratio row, see BRIEFSHOW_DEVELOP_NOTES.md.
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
         .disabled(!live)
         .opacity(live ? 1 : 0.35)
         // On a disabled button the tooltip is the ONLY way the reason can
@@ -12838,7 +12838,7 @@ struct DevelopView: View {
                 Button(action: action) {
                     face
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle())
                 .disabled(item.isDisabled)
 
             case .holdForOriginal:
@@ -12855,7 +12855,7 @@ struct DevelopView: View {
                 } label: {
                     face
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle())
                 .popover(isPresented: $showPresetsPopover, arrowEdge: .bottom) {
                     presetsPopover
                 }
@@ -16921,7 +16921,7 @@ struct DevelopView: View {
                         )
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
             }
         }
         .padding(2)
@@ -16964,7 +16964,7 @@ struct DevelopView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                 // Double-click is the Finder gesture for renaming and costs no
                 // space in the row; the pencil is there so it can be found
                 // without knowing that.
@@ -16979,7 +16979,7 @@ struct DevelopView: View {
                         .font(.system(size: 11))
                         .foregroundColor(AppColors.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                 .help("Rename this preset")
 
                 // Export sits BEFORE the trash on purpose: the two are next
@@ -16991,7 +16991,7 @@ struct DevelopView: View {
                         .font(.system(size: 11))
                         .foregroundColor(AppColors.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                 .help("Export \"\(preset.name)\" as an .xmp preset file")
 
                 Button {
@@ -17001,7 +17001,7 @@ struct DevelopView: View {
                         .font(.system(size: 11))
                         .foregroundColor(AppColors.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                 .help("Delete this preset")
             }
         }
@@ -17105,7 +17105,7 @@ struct DevelopView: View {
                             )
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle())
                     .help("Click to type a colour temperature in Kelvin, and "
                           + "the slider moves to match.")
                 }
@@ -17173,7 +17173,7 @@ struct DevelopView: View {
                             .padding(.vertical, 3)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle())
                     .foregroundColor(AppColors.muted)
                     .overlay(
                         RoundedRectangle(cornerRadius: 5)
@@ -17232,7 +17232,7 @@ struct DevelopView: View {
                 .padding(.bottom, 6)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
         .help(band.title)
     }
 
@@ -17504,7 +17504,7 @@ struct DevelopView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
 
             Button {
                 toggleMaskEnabled(adjustment.id)
@@ -17513,7 +17513,7 @@ struct DevelopView: View {
                     .font(.system(size: 11))
                     .foregroundColor(AppColors.muted)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
 
             Button {
                 deleteLocalAdjustment(adjustment.id)
@@ -17522,7 +17522,7 @@ struct DevelopView: View {
                     .font(.system(size: 11))
                     .foregroundColor(AppColors.muted)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -17806,7 +17806,7 @@ struct DevelopView: View {
                             .padding(.vertical, 5)
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                         .foregroundColor(isRemoveBrushErasing == erasing ? AppColors.ink : AppColors.muted)
                         .background(
                             RoundedRectangle(cornerRadius: 5)
@@ -18932,7 +18932,7 @@ struct DevelopView: View {
                     .foregroundColor(AppColors.muted)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
             .help(item.isVisible ? "Hide this line." : "Show this line.")
 
             Button {
@@ -18966,7 +18966,7 @@ struct DevelopView: View {
                                 lineWidth: isSelected ? 1.5 : 1)
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
 
             Button {
                 removeTemplateText(item.id)
@@ -18975,7 +18975,7 @@ struct DevelopView: View {
                     .font(.system(size: 10))
                     .foregroundColor(AppColors.muted)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
             .help("Remove this text.")
         }
     }
@@ -19023,7 +19023,7 @@ struct DevelopView: View {
                 .background(RoundedRectangle(cornerRadius: 4).fill(AppColors.panelAlt))
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
             .popover(isPresented: $showFontBrowser, arrowEdge: .leading) {
                 templateFontBrowser(index: index)
             }
@@ -19251,7 +19251,7 @@ struct DevelopView: View {
             .background(RoundedRectangle(cornerRadius: 4)
                 .fill(isChosen ? Color.accentColor.opacity(0.14) : Color.clear))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
     }
 
     private func googleFontRow(_ family: GoogleFontFamily, index: Int) -> some View {
@@ -19298,7 +19298,7 @@ struct DevelopView: View {
                     }
                 }
                 .font(.custom("Figtree", size: 10))
-                .buttonStyle(.borderless)
+                .buttonStyle(PlainHoverButtonStyle())
                 .foregroundColor(Color.accentColor)
                 .disabled(fontLibrary.downloading != nil)
             }
@@ -19710,7 +19710,7 @@ struct DevelopView: View {
                 .frame(width: 44, height: 24)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppColors.border, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
         .help("The colour of this text.")
         .popover(isPresented: $showTextColourPicker, arrowEdge: .leading) {
             textColourPicker(index: index)
@@ -19811,7 +19811,7 @@ struct DevelopView: View {
                                 .stroke(isChosen ? Color.accentColor : AppColors.border,
                                         lineWidth: isChosen ? 2 : 1))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle())
                 }
             }
 
@@ -20241,7 +20241,7 @@ struct DevelopView: View {
                         .padding(.vertical, 3)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle())
                     .foregroundColor(AppColors.muted)
                     .overlay(
                         RoundedRectangle(cornerRadius: 5)
@@ -20421,7 +20421,7 @@ struct DevelopView: View {
                     .foregroundColor(AppColors.muted)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
             .help(item.isVisible ? "Hide this line." : "Show this line.")
 
             Button {
@@ -20443,7 +20443,7 @@ struct DevelopView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
             .help("Click to pick this line up on the photo; double-click to edit it.")
 
             Button {
@@ -20453,7 +20453,7 @@ struct DevelopView: View {
                     .font(.system(size: 11))
                     .foregroundColor(AppColors.muted)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -20513,7 +20513,7 @@ struct DevelopView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
             .help("Click to pick the frame; double-click to open the Templates tab.")
 
             Button {
@@ -20523,7 +20523,7 @@ struct DevelopView: View {
                     .font(.system(size: 11))
                     .foregroundColor(AppColors.muted)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
             .help("Take the frame off this photo. The text stays.")
         }
         .padding(.horizontal, 8)
@@ -20582,7 +20582,7 @@ struct DevelopView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
             .help("Pick the photo up in the frame — then drag it, zoom it, or nudge it with the arrows.")
         }
         .padding(.horizontal, 8)
@@ -20868,7 +20868,7 @@ struct DevelopView: View {
                 .foregroundColor(isOn ? Color.accentColor : AppColors.muted.opacity(0.6))
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
         .help(help)
     }
 
@@ -21054,7 +21054,7 @@ struct DevelopView: View {
                     .foregroundColor(isInMergeSet ? Color.accentColor : AppColors.muted.opacity(0.6))
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
             .help("Pick this layer for a merge — choose two or more, then right-click and Merge Layers.")
 
             // Grip glyph, not the old stack-of-layers icon: the row is now
@@ -21073,7 +21073,7 @@ struct DevelopView: View {
                     .foregroundColor(AppColors.muted)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
 
             if renamingLayerID == layer.id {
                 TextField("Layer name", text: $layerNameDraft)
@@ -21114,7 +21114,7 @@ struct DevelopView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
             }
 
             Button {
@@ -21124,7 +21124,7 @@ struct DevelopView: View {
                     .font(.system(size: 11))
                     .foregroundColor(AppColors.muted)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -21298,7 +21298,7 @@ struct DevelopView: View {
                                 .padding(.vertical, 5)
                                 .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                         .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
                         .background(
                             RoundedRectangle(cornerRadius: 5)
@@ -21425,7 +21425,7 @@ struct DevelopView: View {
                             .padding(.vertical, 3)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle())
                     .foregroundColor(AppColors.muted)
                     .overlay(
                         RoundedRectangle(cornerRadius: 5)
@@ -21489,7 +21489,7 @@ struct DevelopView: View {
             .padding(.vertical, 5)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         .foregroundColor(isOn ? AppColors.ink : AppColors.muted)
         .background(
             RoundedRectangle(cornerRadius: 5)
@@ -21788,7 +21788,7 @@ struct DevelopView: View {
                     // see BRIEFSHOW_DEVELOP_NOTES.md.
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle())
                 .help("Click to control \(title) with the − / + keys")
 
                 Spacer()
@@ -22132,7 +22132,7 @@ struct DevelopView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
 
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(section.rows) { row in
@@ -22180,7 +22180,7 @@ struct DevelopView: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
     }
 
     // Shared by the header's "Reset" and the footer's "Reset All" so the two
@@ -23521,7 +23521,7 @@ struct DevelopView: View {
                         }
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle())
                     .help(recipe.help)
                 }
             }
@@ -25154,6 +25154,52 @@ private struct GradientTrackSlider: View {
     }
 }
 
+/// The hover every button in this app has: its label grows a little while the
+/// pointer is over it and settles back linearly.
+///
+/// ⚠️ Asked for on 23.09: *„proveri sva dugmica i koje nema dodaj tu animaciju"*.
+/// An audit of every ButtonStyle in the app found four that had it — the header
+/// button, the header link, the Brutal pair through HoverButtonLabel, and the
+/// sidebar's new small style — and five in this file that had only a PRESS
+/// scale: the edit tools, the mask add row, the panel actions, the aspect ratio
+/// chips and the cards. Those five are the ones a client is in all day.
+///
+/// A ViewModifier rather than five more copies, and it owns its own `isHovered`
+/// because a ButtonStyle's `makeBody` cannot hold `@State` — which is exactly
+/// why every style that already had this needed a separate Label view.
+///
+/// ⚠️ It replaces the `.scaleEffect` that was there and keeps that line's
+/// position, so `.contentShape(Rectangle())` still comes AFTER it. Three
+/// separate bugs in this file were the missing content shape; moving it is not
+/// worth a hover animation.
+private struct HoverGrow: ViewModifier {
+    let isPressed: Bool
+    var pressedScale: CGFloat = 0.98
+    var hoverScale: CGFloat = 1.08
+
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isPressed ? pressedScale : (isHovered ? hoverScale : 1))
+            .animation(.linear(duration: 0.1), value: isHovered)
+            .animation(.linear(duration: 0.08), value: isPressed)
+            .onHover { hovering in
+                isHovered = hovering
+            }
+    }
+}
+
+private extension View {
+    func hoverGrow(isPressed: Bool,
+                   pressedScale: CGFloat = 0.98,
+                   hoverScale: CGFloat = 1.08) -> some View {
+        modifier(HoverGrow(isPressed: isPressed,
+                           pressedScale: pressedScale,
+                           hoverScale: hoverScale))
+    }
+}
+
 private struct EditToolButtonStyle: ButtonStyle {
     var isActive: Bool = false
 
@@ -25170,7 +25216,7 @@ private struct EditToolButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
             )
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .hoverGrow(isPressed: configuration.isPressed, pressedScale: 0.94)
             // Same fix as maskAddButton/PanelActionButtonStyle above (see
             // their doc comments) — without an explicit content shape, a
             // Button's hit-test area can fall back to just its rendered
@@ -25201,7 +25247,7 @@ private struct MaskAddButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
             )
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .hoverGrow(isPressed: configuration.isPressed, pressedScale: 0.94)
     }
 }
 
@@ -25233,7 +25279,7 @@ private struct PanelActionButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 7)
                     .stroke(AppColors.border.opacity(isProminent ? 0.9 : 0.6), lineWidth: isProminent ? 1.4 : 1)
             )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .hoverGrow(isPressed: configuration.isPressed)
             .contentShape(Rectangle())
     }
 }
@@ -25258,7 +25304,7 @@ private struct AspectRatioButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(AppColors.border.opacity(0.6), lineWidth: 1)
             )
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .hoverGrow(isPressed: configuration.isPressed, pressedScale: 0.94)
             // Same fix as EditToolButtonStyle just above — see its doc
             // comment.
             .contentShape(Rectangle())

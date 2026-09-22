@@ -158,8 +158,15 @@ toggle = extract("    private func toggleLayerInMergeSet(_ id: UUID) {")
 wiring("every layer row carries a circle that picks it for a merge",
        "toggleLayerInMergeSet(layer.id)" in row
        and "checkmark.circle.fill" in row)
+# ⚠️ What this guards is that the circle is its OWN Button with its OWN style,
+# so the row's drag gesture cannot swallow the tap. It used to name
+# `.buttonStyle(.plain)` literally, and on 23.09 every plain button in the app
+# was given PlainHoverButtonStyle so it would answer the pointer like the rest.
+# The circle is still its own button; only the style's name changed. Checking
+# for "a style of its own" rather than for one spelling, so the next such change
+# does not read as this button losing its handler.
 wiring("and it is a button of its own, which the row's drag cannot swallow",
-       ".buttonStyle(.plain)" in row)
+       ".buttonStyle(.plain)" in row or ".buttonStyle(PlainHoverButtonStyle" in row)
 wiring("picking one circle brings the selected layer in with it",
        "multiSelectedLayerIDs.insert(selectedLayerID)" in toggle)
 wiring("and unpicking the last one leaves nothing picked",

@@ -12192,7 +12192,7 @@ struct HeaderView: View {
                         } label: {
                             ProfileBadge(session: session)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PlainHoverButtonStyle())
                     }
                 }
             }
@@ -12874,7 +12874,7 @@ struct LeftImportPanel: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 14))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         .disabled(!hasPhotos)
         .padding(.top, 2)
     }
@@ -13432,7 +13432,7 @@ struct MagazineCropEditorSheet: View {
                             .font(.custom("Figtree", size: 11.5).weight(.medium))
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle())
                 .foregroundColor(AppColors.hoverInk)
             }
 
@@ -13483,7 +13483,7 @@ struct MagazineCropEditorSheet: View {
             Button("Reset") {
                 selectedCrop.wrappedValue = .default
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
             .font(.custom("Figtree", size: 11.5).weight(.medium))
             .foregroundColor(AppColors.hoverInk)
         }
@@ -13524,7 +13524,7 @@ struct MagazineCropEditorSheet: View {
                                 }
                             }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle())
                 }
             }
         }
@@ -13855,7 +13855,7 @@ struct ThemePickerOption: View {
             .background(isSelected ? AppColors.panelAlt : AppColors.panel)
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         .disabled(isLocked)
         .onHover { hovering in
             withAnimation(.linear(duration: 0.10)) {
@@ -14025,7 +14025,7 @@ struct ThemePickerLayoutOption: View {
             .clipShape(RoundedRectangle(cornerRadius: 11))
             .scaleEffect(isHot ? 1.015 : 1)
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         .onHover { hovering in
             withAnimation(.linear(duration: 0.10)) {
                 hoveredLayout = hovering ? layout : (hoveredLayout == layout ? nil : hoveredLayout)
@@ -14284,7 +14284,7 @@ struct FullScreenPreviewSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 999))
                 .shadow(color: Color.black.opacity(0.34), radius: 8, x: 0, y: 3)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
         .keyboardShortcut(.escape, modifiers: [])
     }
 
@@ -14467,7 +14467,7 @@ private struct FullscreenIconButton: View {
                 .frame(width: 34, height: 34)
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
         .disabled(isDisabled)
         .onHover { hovering in
             isHovered = hovering && !isDisabled
@@ -19763,7 +19763,7 @@ struct PreviewRenderModeButtons: View {
             label()
                 .frame(width: 26, height: 20)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
         .foregroundColor(isActive ? AppColors.panel : AppColors.inkSecondary)
         .background(isActive ? AppColors.ink : AppColors.panel)
         .clipShape(RoundedRectangle(cornerRadius: 999))
@@ -20291,7 +20291,7 @@ private struct PreviewIconButton: View {
                 .clipShape(Circle())
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.55 : 1)
         .animation(.linear(duration: 0.10), value: isHovered)
@@ -20583,7 +20583,7 @@ struct RightExportPanel: View {
                     Button("Cancel") {
                         isShowingExportConfirmation = false
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                     .font(.custom("Figtree", size: 11).weight(.medium))
                     .foregroundColor(AppColors.muted.opacity(0.78))
                     .padding(.horizontal, 13)
@@ -20607,7 +20607,7 @@ struct RightExportPanel: View {
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 999))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle())
                     .disabled(!canExport || isExporting)
                 }
             }
@@ -20829,7 +20829,7 @@ private let timelineThumbnailCache: NSCache<NSURL, NSImage> = {
 private let timelineThumbnailQueue: OperationQueue = {
     let queue = OperationQueue()
     queue.name = "com.rocketsbrief.briefshow.timeline-thumbnails"
-    queue.maxConcurrentOperationCount = 2
+    queue.maxConcurrentOperationCount = MachineBudget.headerWorkers
     queue.qualityOfService = .utility
     return queue
 }()
@@ -20968,7 +20968,7 @@ struct SlideshowActionBar: View {
             .background(isHot ? AppColors.panelAlt : AppColors.panel)
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         .disabled(!enabled)
         // Where this button is, for the card it opens. A background reader adds
         // nothing to the layout and cannot change the row.
@@ -21168,7 +21168,7 @@ struct FloatingCard<Content: View>: View {
                         .background(AppColors.panelAlt)
                         .clipShape(Circle())
                 }
-                .buttonStyle(PlainButtonStyle())
+                .buttonStyle(PlainHoverButtonStyle())
             }
             // The whole header is the drag handle, so a card is moved the way a
             // window is - by its title, not by hunting for a grip.
@@ -21601,6 +21601,97 @@ struct SettingRow: View {
                 .font(.custom("Figtree", size: 12).weight(.regular))
                 .foregroundColor(AppColors.ink)
         }
+    }
+}
+
+/// The hover animation for every button that was written as `.buttonStyle(PlainHoverButtonStyle())`.
+///
+/// ⚠️ Asked for on 23.09, pointing at the Create tool rail: *„moraju svi dugmici
+/// da imaju tu animaciju … pod svim ovim dugmicima svako dugme mora da ima tu
+/// hover animaciju"*. An audit found 77 plain buttons in the app and exactly two
+/// of them animated on hover. The tool rail the client pointed at — `toolButton`
+/// in Develop.swift, thirteen icons — was one of the 75 that did not.
+///
+/// `.plain` draws no chrome of its own, and neither does this: every one of
+/// those buttons styles its own label, and none of that is touched. All this
+/// adds is the grow, the linear settle, and the press.
+///
+/// ⚠️ A STYLE, not a modifier on each call site, for the reason this file has
+/// written down twice already: a shared style is what stops the next button from
+/// quietly being the one that forgot. A ButtonStyle cannot hold `@State`, so the
+/// hover lives in the label view below it, exactly as ShowHeaderButtonStyle does.
+///
+/// ⚠️ `scale` exists because a full-width row is not a chip. 1.08 on a small
+/// control reads as a lift; the same on a row that already fills its panel reads
+/// as the row breaking out of it. Rows take 1.02, which is visible and stays in.
+/// What this particular Mac can be asked to do at once.
+///
+/// ⚠️ Asked for on 23.09: *„mora da bude bas optimizovan … za slabije mac-ove"*.
+/// Every worker count in this app was a written-down number, and every one of
+/// them was tuned on the machine it was written on — an 8-core M2. An older
+/// two-core Intel gets the same four concurrent decodes, which on it is not
+/// parallelism but queueing plus four sets of CoreImage intermediates.
+///
+/// Measured 23.09 on this machine, 80 JPEGs at 420px:
+///
+///     1 worker  1118 ms      4 workers  327 ms
+///     2 workers  573 ms      6 workers  256 ms
+///     3 workers  412 ms      8 workers  240 ms
+///
+/// It keeps scaling to the core count, so the old note that "8-wide is worse
+/// than 4-wide" (KORAK 155) is true of the RAW demosaic it measured and not of
+/// this. Hence: derive from the cores, then clamp by memory, because a demosaic
+/// holds hundreds of megabytes while it runs and four at once on an 8 GB machine
+/// is the pressure this app already measured on 8.09 (2.4 GB over 200 photos).
+///
+/// ⚠️ The clamp is chosen so THIS machine keeps the 4 it was measured at — an
+/// optimization for old hardware that slows the developer's own machine down is
+/// how a number like this gets quietly reverted later.
+enum MachineBudget {
+    /// Photographs that may be decoded at the same time.
+    static var decodeWorkers: Int {
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+        let gigabytes = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+
+        // Two left for the main thread and whatever else the client is running.
+        let byCores = max(2, min(cores - 2, 6))
+        let byMemory = gigabytes <= 8 ? 4 : 6
+        return min(byCores, byMemory)
+    }
+
+    /// Header reads: no decoding, so this is bounded by the disk and not by the
+    /// machine. Two is enough to hide the latency of one.
+    static var headerWorkers: Int {
+        min(2, decodeWorkers)
+    }
+}
+
+struct PlainHoverButtonStyle: ButtonStyle {
+    var scale: CGFloat = 1.08
+
+    func makeBody(configuration: Configuration) -> some View {
+        PlainHoverButtonLabel(configuration: configuration, hoverScale: scale)
+    }
+}
+
+private struct PlainHoverButtonLabel: View {
+    let configuration: ButtonStyle.Configuration
+    let hoverScale: CGFloat
+
+    // A disabled button must not answer the pointer: the app dims those to 0.35
+    // and explains itself in a tooltip, and a dimmed control that still grows
+    // under the mouse reads as clickable when it is not.
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    var body: some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.98 : (isHovered && isEnabled ? hoverScale : 1))
+            .animation(.linear(duration: 0.1), value: isHovered)
+            .animation(.linear(duration: 0.08), value: configuration.isPressed)
+            .onHover { hovering in
+                isHovered = hovering && isEnabled
+            }
     }
 }
 
@@ -22294,6 +22385,39 @@ struct PhotoShowSheet: View {
     @State private var photoURLs: [URL] = []
     @State private var gridThumbnails: [URL: NSImage] = [:]
 
+    /// ⚠️ THE SHAPE OF EVERY TILE, READ FROM THE FILE HEADER AND NEVER DECODED.
+    ///
+    /// Reported 23.09: *„kad ulazim u folder gde ima vise od 100 slika one se ne
+    /// pojave … vec prazan ekran frozen i odjenom sve se pojave"*. Measured, and
+    /// it is not the decoding: 250 JPEGs cost 30.6 ms each through the real path,
+    /// which across four workers is under two seconds.
+    ///
+    /// It is the LAYOUT. `thumbnailCell` took its width from the loaded
+    /// thumbnail (`image.map { … } ?? 4.0/3.0`), so every tile was 4:3 until its
+    /// picture arrived — and each batch of ten that landed changed ten shapes and
+    /// made FlowLayout, which is not lazy, measure all 250 subviews twice over.
+    /// Twenty-five reflows of the whole grid, on the main thread, before anything
+    /// was on screen. Batching by ten could not help: the batch WAS the trigger.
+    ///
+    /// `CGImageSourceCopyPropertiesAtIndex` answers the only question the layout
+    /// has — how wide is this photo — without decoding a pixel. Measured on the
+    /// client's own 327-file folder: **1.29 ms a file, 423 ms for all of them**,
+    /// off the main thread, paid once. The grid then lays out ONCE and the
+    /// pictures drop into tiles that are already the right shape.
+    ///
+    /// A cropped photo is the one case where the file's shape is not the tile's,
+    /// so the loaded thumbnail still wins when it is there — see thumbnailCell.
+    @State private var gridAspectRatios: [URL: CGFloat] = [:]
+
+    /// How much room a row of the grid actually has, measured from the scroll
+    /// view rather than guessed. Feeds gridRows.
+    ///
+    /// ⚠️ Zero until it has been measured, and gridRows hands back nothing at
+    /// zero ON PURPOSE: packing against a guessed width would lay the folder out
+    /// once wrongly and then again correctly, which is one more full pass than
+    /// the old code did and the opposite of the point.
+    @State private var gridContentWidth: CGFloat = 0
+
     /// Identity for this window's own file-change posts, so it can ignore
     /// them coming back — see PhotoFileChangeBroadcast.
     @State private var fileChangeSender = PhotoFileChangeSender()
@@ -22311,6 +22435,12 @@ struct PhotoShowSheet: View {
     /// real renders these would arrive after the pictures they stand in for.
     /// Cancelled together with it when another folder is opened.
     @State private var gridPlaceholderQueue = OperationQueue()
+
+    /// Where the tile SHAPES are read — headers only, no decoding. Its own queue
+    /// for the same reason the other two have theirs: a client clicking through
+    /// five folders must not leave five of these racing to reshape the grid he is
+    /// actually looking at. See gridAspectRatios.
+    @State private var gridAspectQueue = OperationQueue()
     // How wide the folder tree on the left is. @AppStorage, so a client who
     // works with deeply nested job folders sets it once and it is still that
     // wide next launch — the whole point of the request was that names like
@@ -22359,6 +22489,16 @@ struct PhotoShowSheet: View {
     // photo ever gets — loupeImages survives the loupe being closed, so a
     // plain "already loaded?" check would never re-decode after a resize.
     @State private var loupeImagePixelSizes: [URL: CGFloat] = [:]
+
+    /// The order loupe images were loaded in, oldest first, so the oldest can be
+    /// let go of once there are more than a handful.
+    ///
+    /// ⚠️ `loupeImages` surviving the loupe being closed is DELIBERATE — the
+    /// comment above says why — but it was also unbounded, and a loupe image is
+    /// the screen-sized decode: measured at **10.8 MB a photograph**, so a client
+    /// who pressed Space on a hundred of them was carrying 1.1 GB. Bounded here
+    /// rather than dropped, so the behaviour that comment describes is kept.
+    @State private var loupeImageOrder: [URL] = []
     @State private var likedURLs: Set<URL> = []
     // Lightroom's reject flag. Deliberately NOT "deleted": a rejected photo
     // stays in the folder and in the grid, it just carries a mark and is
@@ -23097,7 +23237,7 @@ struct PhotoShowSheet: View {
                         RoundedRectangle(cornerRadius: 6)
                             .fill(AppColors.panelAlt))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                 .padding(.horizontal, 10)
             }
         }
@@ -23225,8 +23365,10 @@ struct PhotoShowSheet: View {
                     // Hand-drawn: SF Symbols has no flask at all on macOS 13,
                     // and none of its versions has one with a sun cut in
                     // behind it. See CreateMark.
+                    // 15 → 12, the same 20% the label took, or the flask would
+                    // stand a head above the text beside it.
                     CreateMark()
-                        .frame(width: 15, height: 15)
+                        .frame(width: 12, height: 12)
                     Text("Create")
                 }
             }
@@ -23315,7 +23457,7 @@ struct PhotoShowSheet: View {
                 } label: {
                     ProfileBadge(session: session)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle())
                 .padding(.leading, 10)
             } else {
                 Button {
@@ -23540,10 +23682,16 @@ struct PhotoShowSheet: View {
         VStack {
             Spacer()
 
-            HStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-
+            // ⚠️ A BAR, not a spinner, and asked for in those words on 23.09:
+            // *„sa loading barom da klijent vidi dokle je sve stalo"*. A spinner
+            // turning next to "137/250" says work is happening; it does not say
+            // how much is left, and on a folder of a few hundred that is the
+            // only question being asked.
+            //
+            // The same linear bar the model download and the flatten pass use,
+            // including the rule they follow: when the total is not known yet
+            // the bar is indeterminate rather than sitting at an invented zero.
+            VStack(alignment: .leading, spacing: 6) {
                 Text(
                     photoURLs.isEmpty
                         ? "Loading images…"
@@ -23551,6 +23699,19 @@ struct PhotoShowSheet: View {
                 )
                 .font(.custom("Figtree", size: 12.5).weight(.medium))
                 .foregroundColor(AppColors.ink)
+
+                if photoURLs.isEmpty {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(accentColor)
+                        .frame(width: 210)
+                } else {
+                    ProgressView(value: Double(min(loadedThumbnailCount, photoURLs.count)),
+                                 total: Double(max(photoURLs.count, 1)))
+                        .progressViewStyle(.linear)
+                        .tint(accentColor)
+                        .frame(width: 210)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -23653,19 +23814,29 @@ struct PhotoShowSheet: View {
     private var thumbnailGrid: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                FlowLayout(spacing: 16, lineSpacing: 26) {
-                    // Folders first, then videos, then photographs — Finder's
-                    // "folders on top" order, so a subfolder is never buried
-                    // at the end of a few hundred frames.
-                    ForEach(gridFolderURLs, id: \.self) { url in
-                        folderCell(for: url)
-                    }
-                    ForEach(gridVideoURLs, id: \.self) { url in
-                        videoCell(for: url)
-                    }
-                    ForEach(photoURLs, id: \.self) { url in
-                        thumbnailCell(for: url)
-                            .id(url)
+                // ⚠️ LazyVStack, and the rows are packed by gridRows rather than
+                // by a Layout. A `Layout` cannot be lazy — it is handed every
+                // subview before it may ask any of them for a size — so the old
+                // FlowLayout built all 250 cells on every pass. See gridRows.
+                //
+                // Folders first, then videos, then photographs — Finder's
+                // "folders on top" order, so a subfolder is never buried at the
+                // end of a few hundred frames. The packing keeps that order.
+                LazyVStack(alignment: .leading, spacing: 26) {
+                    ForEach(gridRows(availableWidth: gridContentWidth)) { row in
+                        HStack(alignment: .top, spacing: 16) {
+                            ForEach(row.items, id: \.self) { item in
+                                switch item {
+                                case .folder(let url):
+                                    folderCell(for: url)
+                                case .video(let url):
+                                    videoCell(for: url)
+                                case .photo(let url):
+                                    thumbnailCell(for: url)
+                                        .id(url)
+                                }
+                            }
+                        }
                     }
                 }
                 .padding(24)
@@ -23675,6 +23846,18 @@ struct PhotoShowSheet: View {
                 // down the right edge that the ScrollView won't scroll on.
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
+            // The row width, measured. `.background` of the ScrollView is the
+            // ScrollView's own size, so this is the width a row may use once the
+            // 24pt padding on each side is taken off.
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { gridContentWidth = geo.size.width - 48 }
+                        .onChange(of: geo.size.width) { width in
+                            gridContentWidth = width - 48
+                        }
+                }
+            )
             // On the ScrollView itself, not a background layer behind it —
             // a ScrollView claims hit-testing for its ENTIRE frame (that's
             // how it can start a scroll-drag from anywhere in it, not just
@@ -23708,6 +23891,104 @@ struct PhotoShowSheet: View {
                 }
             }
         }
+    }
+
+    /// One thing in the grid: a subfolder, a film, or a photograph. The grid
+    /// packs these into rows itself — see gridRows.
+    private enum GridItem: Hashable {
+        case folder(URL)
+        case video(URL)
+        case photo(URL)
+
+        var url: URL {
+            switch self {
+            case .folder(let u), .video(let u), .photo(let u): return u
+            }
+        }
+    }
+
+    /// A row of the grid, already packed. Identified by its first item rather
+    /// than by an index, so inserting a photograph does not renumber every row
+    /// below it and make SwiftUI rebuild all of them.
+    private struct GridRow: Identifiable {
+        let items: [GridItem]
+        var id: URL { items.first?.url ?? URL(fileURLWithPath: "/") }
+    }
+
+    /// How wide a thing is drawn, without drawing it.
+    ///
+    /// This is the same arithmetic each cell does for itself; it is here as well
+    /// because the packing has to know the widths BEFORE the cells exist, which
+    /// is the whole point of packing rows ourselves.
+    private func gridItemWidth(_ item: GridItem) -> CGFloat {
+        switch item {
+        case .folder:
+            return thumbnailSize * (4.0 / 3.0)
+        case .video(let url):
+            let ratio = gridVideoThumbnails[url]
+                .map { max(0.2, $0.size.width / max(1, $0.size.height)) } ?? (16.0 / 9.0)
+            return thumbnailSize * ratio
+        case .photo(let url):
+            // Exactly the order thumbnailCell uses, or a tile would be packed at
+            // one width and drawn at another.
+            let ratio = gridThumbnails[url]
+                .map { max(0.2, $0.size.width / max(1, $0.size.height)) }
+                ?? gridAspectRatios[url]
+                ?? (4.0 / 3.0)
+            return thumbnailSize * ratio
+        }
+    }
+
+    /// ⚠️ THE GRID PACKS ITS OWN ROWS, so it can be LAZY.
+    ///
+    /// Asked for on 23.09: *„mora da bude bas optimizovan sto se tice smooth
+    /// celog appa za slabije mac-ove"*. FlowLayout is a `Layout`, and a Layout
+    /// is never lazy — SwiftUI builds every subview it is given before it can
+    /// ask any of them how big they are. A folder of 250 photographs built 250
+    /// cells, each with its own overlays, context menu and gestures, every time
+    /// the grid was laid out: on open, on coming back from BriefShow, and after
+    /// every move.
+    ///
+    /// Rows computed here go into a LazyVStack, which builds only the rows near
+    /// the viewport — about twenty cells instead of two hundred and fifty.
+    ///
+    /// This is only possible BECAUSE the shapes are known before the pictures
+    /// are (see gridAspectRatios): packing needs every width up front, and that
+    /// used to mean decoding every photograph first.
+    ///
+    /// ⚠️ Folders first, then films, then photographs — Finder's order, and the
+    /// order FlowLayout was given them in. A row is packed exactly as FlowLayout
+    /// filled one: take items until the next one would cross the right edge.
+    private func gridRows(availableWidth: CGFloat) -> [GridRow] {
+        let items: [GridItem] = gridFolderURLs.map { .folder($0) }
+            + gridVideoURLs.map { .video($0) }
+            + photoURLs.map { .photo($0) }
+        guard !items.isEmpty else { return [] }
+
+        let spacing: CGFloat = 16
+        // Not measured yet. One item per row for a frame and then a reflow is
+        // exactly the churn this replaces, so it waits instead.
+        guard availableWidth > 50 else { return [] }
+        let maxWidth = availableWidth
+
+        var rows: [GridRow] = []
+        var current: [GridItem] = []
+        var x: CGFloat = 0
+
+        for item in items {
+            let width = gridItemWidth(item)
+            if !current.isEmpty, x + width > maxWidth {
+                rows.append(GridRow(items: current))
+                current = []
+                x = 0
+            }
+            current.append(item)
+            x += width + spacing
+        }
+        if !current.isEmpty {
+            rows.append(GridRow(items: current))
+        }
+        return rows
     }
 
     // A subfolder of the open folder. Double-click opens it, exactly as
@@ -23917,7 +24198,15 @@ struct PhotoShowSheet: View {
         let isPreviewSelected = previewSelectedURLs.contains(url)
         let selectionBorderColor: Color = isPreviewSelected ? accentColor : .white
         let image = gridThumbnails[url]
-        let aspectRatio = image.map { max(0.2, $0.size.width / max(1, $0.size.height)) } ?? (4.0 / 3.0)
+        // ⚠️ THE PICTURE FIRST WHEN THERE IS ONE, THE FILE HEADER OTHERWISE, and
+        // 4:3 only for a file that answered neither. The order matters and it is
+        // not the obvious one: a CROPPED photo's tile is not the shape of its
+        // file, so once the real thumbnail is here it is the authority. For
+        // everything uncropped the two agree to the pixel, which is exactly why
+        // the grid stops reflowing — see gridAspectRatios for the measurement.
+        let aspectRatio = image.map { max(0.2, $0.size.width / max(1, $0.size.height)) }
+            ?? gridAspectRatios[url]
+            ?? (4.0 / 3.0)
         let cellWidth = thumbnailSize * aspectRatio
 
         return VStack(spacing: 10) {
@@ -24309,7 +24598,7 @@ struct PhotoShowSheet: View {
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 999))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle())
                     .padding(24)
                 }
 
@@ -25598,6 +25887,33 @@ struct PhotoShowSheet: View {
     /// settled on for the flatten preview — decode small, never scale a small
     /// decode up afterwards — applied to the one place in ShowGrid that was
     /// still doing the opposite.
+    /// Keeps the most recent loupe images and lets the older ones go.
+    ///
+    /// ⚠️ The cap is 8, and the loupe shows at most 5 — so everything on screen
+    /// is always kept, and so is the handful behind it that arrow keys walk back
+    /// through. What is let go of is the hundred photographs from earlier in the
+    /// session, which is where the 1.1 GB measured on 23.09 was sitting.
+    ///
+    /// A photograph re-opened after being let go of decodes again, at the size
+    /// the loupe is actually drawn at — the quality rule is untouched, only the
+    /// memory is. See loupeImageOrder.
+    private func rememberLoupeImage(_ url: URL) {
+        loupeImageOrder.removeAll { $0 == url }
+        loupeImageOrder.append(url)
+
+        let cap = 8
+        while loupeImageOrder.count > cap {
+            let oldest = loupeImageOrder.removeFirst()
+            // Never the ones on screen right now.
+            guard !previewSelectedURLs.contains(oldest) else {
+                loupeImageOrder.append(oldest)
+                continue
+            }
+            loupeImages.removeValue(forKey: oldest)
+            loupeImagePixelSizes.removeValue(forKey: oldest)
+        }
+    }
+
     private func loadLoupeImages(for urls: [URL], cellSize: CGSize) {
         let scale = ShowGridWindowController.shared.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
@@ -25632,6 +25948,7 @@ struct PhotoShowSheet: View {
                 DispatchQueue.main.async {
                     if let image {
                         loupeImages[url] = image
+                        rememberLoupeImage(url)
                     } else {
                         // Give the claim back, or a photo that failed once is
                         // never attempted again for as long as the window
@@ -25837,8 +26154,42 @@ struct PhotoShowSheet: View {
         }
 
         photoURLs = sortedURLs
+        // ⚠️ THE FOLDER JUST LEFT IS LET GO OF, and this is the fix for
+        // *„kada radim duze da ne krene da laguje"* (23.09).
+        //
+        // Neither of these caches was ever emptied - there was no
+        // `gridThumbnails = [:]` anywhere in the file - so every folder a client
+        // opened stayed in memory for the rest of the session. Measured on real
+        // photographs: a grid tile is 0.45 MB, so a 250-photo folder is 113 MB
+        // and five of them is 565 MB, on a machine this app is expected to run
+        // on with 8 GB. That is not a leak in the strict sense; it is a cache
+        // with no bound, which on a long working session looks exactly the same.
+        //
+        // Dropping them is nearly free to undo: ThumbnailDiskCache holds the
+        // small sizes on disk and hands one back in 0.72 ms, so walking back
+        // into the previous folder re-fills the grid from disk rather than
+        // re-rendering it. The shapes (gridAspectRatios) are kept on purpose -
+        // they are two numbers a photo, and they are what stops the reflow.
+        forgetCaches(outside: Set(sortedURLs))
         applyPersistedLabels(for: sortedURLs)
         loadGridThumbnails(for: sortedURLs)
+    }
+
+    /// Lets go of every cached picture for a photograph that is not in `keep`.
+    ///
+    /// Called when a different folder opens. See the call site for the
+    /// measurements; the short version is that a grid tile costs 0.45 MB and a
+    /// loupe image 10.8 MB, and nothing used to release either one.
+    private func forgetCaches(outside keep: Set<URL>) {
+        gridThumbnails = gridThumbnails.filter { keep.contains($0.key) }
+        loupeImages = loupeImages.filter { keep.contains($0.key) }
+        loupeImagePixelSizes = loupeImagePixelSizes.filter { keep.contains($0.key) }
+        loupeImageOrder.removeAll { !keep.contains($0) }
+        // Shapes are cheap and are what keeps the grid from reflowing, so a
+        // folder walked back into lays out at once. Two numbers a photograph.
+        if gridAspectRatios.count > 20_000 {
+            gridAspectRatios = gridAspectRatios.filter { keep.contains($0.key) }
+        }
     }
 
     // Restores each photo's liked/starred state from PhotoLabelStore —
@@ -25991,8 +26342,38 @@ struct PhotoShowSheet: View {
         loadedThumbnailCount = 0
 
         gridThumbnailQueue.cancelAllOperations()
-        gridThumbnailQueue.maxConcurrentOperationCount = 4
+        gridThumbnailQueue.maxConcurrentOperationCount = MachineBudget.decodeWorkers
         gridThumbnailQueue.qualityOfService = .userInitiated
+
+        // PASS ZERO — the shape of every tile, out of the file headers, before a
+        // single pixel is decoded. This is what stops the grid from measuring all
+        // 250 subviews again every time ten pictures land; the reasoning and the
+        // numbers are on gridAspectRatios.
+        //
+        // ⚠️ ONE write to @State, not one per photo and not one per batch. Every
+        // write here is a full FlowLayout pass, so the whole point would be lost
+        // by publishing this in pieces — 423 ms of reading buys exactly one
+        // reflow. Photos already measured are skipped, so reopening a folder or
+        // dropping files into one costs nothing.
+        gridAspectQueue.cancelAllOperations()
+        gridAspectQueue.maxConcurrentOperationCount = MachineBudget.headerWorkers
+        gridAspectQueue.qualityOfService = .userInitiated
+        let unmeasured = urls.filter { gridAspectRatios[$0] == nil }
+        if !unmeasured.isEmpty {
+            gridAspectQueue.addOperation {
+                var shapes: [URL: CGFloat] = [:]
+                for url in unmeasured {
+                    guard let ratio = photoAspectRatioFromHeader(url) else { continue }
+                    shapes[url] = ratio
+                }
+                guard !shapes.isEmpty else { return }
+                DispatchQueue.main.async {
+                    for (shapeURL, ratio) in shapes where gridAspectRatios[shapeURL] == nil {
+                        gridAspectRatios[shapeURL] = ratio
+                    }
+                }
+            }
+        }
 
         // PASS ONE — the camera's own preview out of each RAW, so a folder
         // opened for the first time shows photographs in under two seconds
@@ -26004,7 +26385,7 @@ struct PhotoShowSheet: View {
         // paint over the folder he is actually looking at, which is the same
         // mistake KORAK 145 fixed for the real renders.
         gridPlaceholderQueue.cancelAllOperations()
-        gridPlaceholderQueue.maxConcurrentOperationCount = 4
+        gridPlaceholderQueue.maxConcurrentOperationCount = MachineBudget.decodeWorkers
         gridPlaceholderQueue.qualityOfService = .userInitiated
 
         // Both passes hand the grid whole batches rather than single tiles;
@@ -26592,6 +26973,28 @@ private struct FolderTreeSidebar: View {
     // listi ili u gridu jednom i sackam jednu sekundu sledeci klik treba da
     // aktivira renameing… a ako kliknem brzo dva puta onda otvara folder"* — the
     // same rule the grid follows, decided by the same briefShowFolderClickAction.
+    /// The folder one level up, or nil when Back has nowhere to go. See the
+    /// root row, which draws it.
+    ///
+    /// ⚠️ Bounded BY THE OPEN TREE, and that bound is the whole of it. A bare
+    /// `deletingLastPathComponent()` never runs out of parents, so a client who
+    /// kept clicking would leave his own folder and walk up through his home
+    /// directory and out to `/`. Here the parent has to be the root or live
+    /// inside it, so Back stops exactly where the client's folder started.
+    private var parentOfSelection: URL? {
+        guard let current = selectedURL else { return nil }
+        let currentPath = current.standardizedFileURL.path
+        let rootPath = rootNode.url.standardizedFileURL.path
+        guard currentPath != rootPath else { return nil }
+
+        let parent = current.deletingLastPathComponent().standardizedFileURL
+        let parentPath = parent.path
+        guard parentPath == rootPath || parentPath.hasPrefix(rootPath + "/") else {
+            return nil
+        }
+        return parent
+    }
+
     @State private var renamingURL: URL?
     @State private var renameText: String = ""
     @State private var lastClickURL: URL?
@@ -26615,13 +27018,43 @@ private struct FolderTreeSidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(rootNode.name.uppercased())
-                .font(.custom("Figtree", size: 11).weight(.bold))
-                .tracking(1.1)
-                .foregroundColor(AppColors.muted.opacity(0.7))
-                .padding(.horizontal, 18)
-                .padding(.top, 20)
-                .padding(.bottom, 10)
+            // ⚠️ BACK LIVES HERE, on the root's own row, and it was tried in the
+            // grid header first — where it pushed the C4S wordmark aside and,
+            // worse, took the width the rest of the row needed: Bri…, Cr…,
+            // Expor…, Add… and Clear… all truncated at once, which is what
+            // ShowHeaderButtonStyle's lineLimit does when the header runs out of
+            // space. Asked for here instead, *„u istom redu gde pise esti, samo
+            // sa desne strane do border linije"*.
+            //
+            // Its own small style rather than ShowHeaderButtonStyle: this row is
+            // an 11pt tracked label, and a header-sized button next to it would
+            // be the tallest thing in the sidebar.
+            HStack(spacing: 8) {
+                Text(rootNode.name.uppercased())
+                    .font(.custom("Figtree", size: 11).weight(.bold))
+                    .tracking(1.1)
+                    .foregroundColor(AppColors.muted.opacity(0.7))
+
+                Spacer(minLength: 6)
+
+                if let parent = parentOfSelection {
+                    Button {
+                        selectedURL = parent
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("Back")
+                        }
+                    }
+                    .buttonStyle(SidebarSmallButtonStyle())
+                    .help("Go up one folder")
+                    .keyboardShortcut("[", modifiers: .command)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 20)
+            .padding(.bottom, 10)
 
             if let selectedURL {
                 currentlyOpenRow(for: selectedURL)
@@ -27152,6 +27585,35 @@ private struct OpenFolderShape: Shape {
 // image) for a grid that may hold 50-200+ photos at once.
 // Not `private` — Develop.swift's filmstrip reuses this same fast
 // thumbnail generator rather than duplicating it.
+/// How wide a photograph is against its height, read out of the file's header
+/// and nothing else — no decode, no demosaic, no CoreImage.
+///
+/// This exists so the grid can lay a folder out before it has any pictures. The
+/// orientation flag is applied here, or every portrait frame would be measured
+/// on its side and the grid would reflow the moment the real thumbnail (which
+/// ImageIO rotates for us) arrived — which is the very cost this avoids.
+///
+/// Measured on a 327-file folder: 1.29 ms a file. A file whose header does not
+/// answer returns nil and its tile keeps the 4:3 default, exactly as before.
+func photoAspectRatioFromHeader(_ url: URL) -> CGFloat? {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = props[kCGImagePropertyPixelWidth] as? Int,
+          let height = props[kCGImagePropertyPixelHeight] as? Int,
+          width > 0, height > 0 else {
+        return nil
+    }
+
+    // 5 through 8 are the quarter-turns; in those the stored width is the
+    // displayed height.
+    let orientation = (props[kCGImagePropertyOrientation] as? Int) ?? 1
+    let ratio = orientation >= 5
+        ? CGFloat(height) / CGFloat(width)
+        : CGFloat(width) / CGFloat(height)
+
+    return max(0.2, ratio)
+}
+
 func makeShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> NSImage? {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
         return nil
@@ -27171,6 +27633,52 @@ func makeShowGridThumbnail(from url: URL, maxPixelSize: CGFloat = 420) -> NSImag
     return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
 }
 
+/// The header button's hover, at sidebar size.
+///
+/// ⚠️ Asked for on 23.09: *„proveri sva dugmica i koje nema dodaj tu
+/// animaciju"*. Every button in this app grows its text on hover and takes the
+/// hover ink; the Back button in the folder tree was written with
+/// `.buttonStyle(PlainHoverButtonStyle())` and had neither, which is exactly the odd-one-out this
+/// note is about.
+///
+/// A style rather than modifiers on the one button, so the next small button in
+/// the sidebar inherits the behaviour instead of forgetting it again — the same
+/// reasoning that made ShowHeaderButtonStyle shared across 37 call sites.
+///
+/// The numbers are the header's: scale 1.1, hover ink, linear 0.1s, and the
+/// content shape AFTER the padding so the whole button is clickable and not just
+/// the glyphs. Only the metrics are smaller.
+struct SidebarSmallButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SidebarSmallButtonLabel(configuration: configuration)
+    }
+}
+
+private struct SidebarSmallButtonLabel: View {
+    @ObservedObject private var themeManager = ThemeManager.shared
+    let configuration: ButtonStyle.Configuration
+    @State private var isHovered = false
+
+    var body: some View {
+        configuration.label
+            .font(.custom("Figtree", size: 10).weight(.semibold))
+            .lineLimit(1)
+            .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink)
+            .scaleEffect(configuration.isPressed ? 0.98 : (isHovered ? 1.1 : 1))
+            .animation(.linear(duration: 0.1), value: isHovered)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(AppColors.border.opacity(0.7), lineWidth: 1)
+            )
+            .onHover { hovering in
+                isHovered = hovering
+            }
+    }
+}
+
 struct ShowHeaderButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         ShowHeaderButtonLabel(configuration: configuration)
@@ -27184,7 +27692,12 @@ private struct ShowHeaderButtonLabel: View {
 
     var body: some View {
         configuration.label
-            .font(.custom("Figtree", size: 12).weight(.semibold))
+            // ⚠️ 20% SMALLER THAN IT WAS, asked for on 23.09 with the header
+            // truncating: 12 → 9.6pt, 14/9 padding → 11.2/7.2. A row of eight
+            // buttons plus the zoom slider is what this header now holds, and
+            // every point saved here is a point of label that does NOT turn
+            // into "Expor…".
+            .font(.custom("Figtree", size: 9.6).weight(.semibold))
             // "Create" was wrapping to "LumenoLa / b" once the header
             // had one more control in it. A button label that wraps reads
             // as a rendering fault, so it stays on one line. Shared style,
@@ -27208,8 +27721,8 @@ private struct ShowHeaderButtonLabel: View {
             .foregroundColor(isHovered ? AppColors.hoverInk : AppColors.ink)
             .scaleEffect(configuration.isPressed ? 0.98 : (isHovered ? 1.1 : 1))
             .animation(.linear(duration: 0.1), value: isHovered)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 11.2)
+            .padding(.vertical, 7.2)
             // ⚠️ AFTER the padding, and that position is the whole fix.
             //
             // Reported as *„moram da pritisnem nekoliko puta na crop da bi

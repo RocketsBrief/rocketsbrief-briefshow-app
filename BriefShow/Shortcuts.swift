@@ -599,7 +599,7 @@ struct ShortcutsView: View {
                         .font(.system(size: 10))
                         .foregroundColor(AppColors.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle())
                 .help("Back to the default")
             }
 
@@ -626,7 +626,7 @@ struct ShortcutsView: View {
                     )
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
         }
         .padding(.vertical, 3)
         .id(revision)
@@ -695,7 +695,7 @@ struct ShortcutsView: View {
                             .font(.system(size: 11))
                             .foregroundColor(AppColors.muted)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)

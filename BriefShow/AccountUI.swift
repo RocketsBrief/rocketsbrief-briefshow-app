@@ -46,7 +46,7 @@ struct ProfileSettingsRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         .scaleEffect(isHovered ? 1.012 : 1)
         .background(rowBackground)
         .overlay(
@@ -177,7 +177,7 @@ struct ProfileSettingsModal: View {
                                 .foregroundColor(AppColors.muted)
                                 .padding(6)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PlainHoverButtonStyle())
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -330,7 +330,7 @@ struct ProfileSettingsModal: View {
                                     }
                                     .padding(.vertical, 9)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(PlainHoverButtonStyle())
                                 .foregroundColor(.white)
                                 .background(Color(red: 0.620, green: 0.180, blue: 0.160))
                                 .clipShape(RoundedRectangle(cornerRadius: 999))
@@ -386,7 +386,7 @@ struct ProfileSettingsModal: View {
                             .stroke(key == currentKey ? AppColors.hoverInk : AppColors.border, lineWidth: key == currentKey ? 2 : 1.2)
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle())
             }
         }
         .padding(12)
@@ -597,7 +597,7 @@ struct UpdateRequiredOverlay: View {
                 .font(.custom("Figtree", size: 11.5).weight(.medium))
                 .foregroundColor(AppColors.muted)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainHoverButtonStyle())
 
             if showInstallGuide {
                 // Six steps plus the closing note are taller than most
@@ -736,7 +736,7 @@ struct LockedAccessOverlay: View {
                                 .foregroundColor(AppColors.muted)
                                 .padding(6)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PlainHoverButtonStyle())
                     }
                 }
 
@@ -880,7 +880,7 @@ struct LockedAccessOverlay: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.02))
         .foregroundColor(mode == target ? AppColors.hoverInk : AppColors.muted)
         .background(mode == target ? AppColors.panel : Color.clear)
         .overlay(

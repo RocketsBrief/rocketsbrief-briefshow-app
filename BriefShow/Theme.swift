@@ -202,7 +202,7 @@ struct ThemeToggleButton: View {
                 .scaleEffect(isHovered ? 1.12 : (isActive ? 1.05 : 1.0))
                 .shadow(color: Color.black.opacity(isHovered ? 0.28 : 0.18), radius: isHovered ? 4 : 2, y: 1.5)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle())
         .onHover { hovering in
             withAnimation(.linear(duration: 0.12)) {
                 isHovered = hovering

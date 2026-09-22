@@ -153,6 +153,14 @@ final class LaMaInpaintPipeline {
 
 extension InpaintPipeline {
 
+    /// How far a mask is grown before an AI erase, as a fraction of the
+    /// photo's long edge. One pair for both buttons, so "Flyaway Hair" cannot
+    /// mean one width on Quick and another on Generative.
+    static let ordinaryGrowth = 0.0025
+    /// 31px on a 5176px NEF — past the 30px where the strand test came out
+    /// clean. See `aiRemoval`'s `flyawayHair`.
+    static let flyawayHairGrowth = 0.006
+
     /// The LaMa counterpart to `aiRemoval`, returning the same `Removal` so the
     /// two AI buttons are interchangeable at every call site.
     ///
@@ -162,11 +170,16 @@ extension InpaintPipeline {
         from image: CIImage,
         context: CIContext,
         feather: Double = SDInpaintPipeline.defaultFeather,
+        /// Same "Flyaway Hair" as Generative — same flag, same growth. See
+        /// `aiRemoval`'s parameter of the same name for the measurement, which
+        /// was made on THIS pipeline (Tools/run-hair-strand-test.py).
+        flyawayHair: Bool = false,
         shouldContinue: @escaping () -> Bool = { true }
     ) throws -> Removal? {
         let extent = image.extent
         guard extent.width >= 8, extent.height >= 8 else { return nil }
-        let grownMask = SubjectMasker.grown(mask, by: max(extent.width, extent.height) * 0.0025)
+        let growth = flyawayHair ? flyawayHairGrowth : ordinaryGrowth
+        let grownMask = SubjectMasker.grown(mask, by: max(extent.width, extent.height) * growth)
         guard let maskBox = maskBoundingBox(grownMask, extent: extent, context: context),
               let region = squareRegion(around: maskBox, in: extent) else {
             return nil

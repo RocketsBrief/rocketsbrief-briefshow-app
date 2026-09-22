@@ -650,6 +650,11 @@ final class SDInpaintPipeline: ObservableObject {
     /// the full-resolution Core Image render before and after the 512 buffer,
     /// and at the cold weight load (43 s cold against 2 s warm, measured in
     /// the same sweep). Those are the parts he is actually waiting on.
+    ///
+    /// ⚠️ 22.09 — 8 was tried again for a few minutes with SD alone (KORAK
+    /// 209), and sent back the same day: *„isto je sporo"*, then *„stavi SD na
+    /// 1 da radi sam"* — full strength, all twelve. Second time 8 was tried
+    /// and returned; leave it.
     static let defaultSteps = 12
 
     /// How far the repaired patch fades into the photo at its edge, 0...1.
@@ -717,6 +722,12 @@ final class SDInpaintPipeline: ObservableObject {
     ///           conscious decision, asked for and given.
     ///   * 12.09 *„Ai Generative Clean Up is inviting (halucinating) something
     ///           in the spot instead to remove the selected area!"*
+    ///   * 22.09 `false` AGAIN, his explicit choice after being shown this
+    ///           history and the car/stone measurements: *„da odvojimo SD
+    ///           Generative clean up da bude samo SD bez pocetnog koraka
+    ///           lame"* — offered a neutral-fill base or a local-only test,
+    ///           he picked plain SD from noise. If invention comes back, the
+    ///           way back is this one word, and 1400/0.5 come back with it.
     ///
     /// That last line is the failure KORAK 39 measured and KORAK 40 was built
     /// to prevent, reported from his side of the screen. With `false`, SD
@@ -751,10 +762,10 @@ final class SDInpaintPipeline: ObservableObject {
     /// **on an empty prompt SD put a CAR in an 828px hole.**
     ///
     /// ⚠️ The geometry is deliberately UNTOUCHED either way — `imageSide` is
-    /// still 512 and `defaultSteps` still 12. *„ne povecavaj SD"*. The car
+    /// still 512 and `defaultSteps` never raised (12, 8 since 22.09). *„ne povecavaj SD"*. The car
     /// comes from the size of the hole, so enlarging the canvas here would be
     /// feeding the very failure being answered.
-    static let generativeUsesLaMaBase = true
+    static let generativeUsesLaMaBase = false
 
     /// nil hands SD an empty hole and the full schedule; 0.5 hands it LaMa's
     /// fill and the last half of the schedule. NOT changed by the switch —
@@ -1514,8 +1525,11 @@ extension InpaintPipeline {
         stage: ((SDRemovalStage) -> Void)? = nil,
         /// ⚠️ ADDS a wider mask growth for a thin, wispy selection — a
         /// flyaway hair, not the default behaviour for everything else
-        /// Generative Clean Up does. Does NOT touch `quickAIRemoval` or the
-        /// 0.0025 growth every other Generative erase still uses.
+        /// Generative Clean Up does. Does not touch the 0.0025 growth every
+        /// other erase still uses. Since 22.09 `quickAIRemoval` takes the SAME
+        /// flag and the SAME `flyawayHairGrowth` (KORAK 209): *„obavezno da ima
+        /// ono kada i LaMa i SD"* — and the measurement below was made on LaMa
+        /// in the first place.
         ///
         /// WHY GROWTH, NOT THE PROMPT OR THE MODEL: reported — *"AI generative
         /// clean hair nije lepo ocistio odradio je kao quick clean up"* — a
@@ -1557,7 +1571,7 @@ extension InpaintPipeline {
         let extent = image.extent
         guard extent.width >= 8, extent.height >= 8 else { return nil }
 
-        let growth = flyawayHair ? 0.006 : 0.0025
+        let growth = flyawayHair ? flyawayHairGrowth : ordinaryGrowth
         let grownMask = SubjectMasker.grown(mask, by: max(extent.width, extent.height) * growth)
         guard let maskBox = maskBoundingBox(grownMask, extent: extent, context: context) else {
             return nil

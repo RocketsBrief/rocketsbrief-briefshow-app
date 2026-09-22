@@ -48,16 +48,18 @@ uses_lama = match.group(1) == "true"
 
 print(f"\ngenerativeUsesLaMaBase is {str(uses_lama).lower()}")
 
-# The shipping answer to the client's report of 12.09. Written as a check rather
-# than a comment because the flag is a one-word edit and this is the sentence
-# that says which word is the tested one.
-check("LaMa fills the hole before SD touches it", uses_lama,
+# The shipping answer. 12.09 set it to `true` on his report of invention; 22.09
+# he chose `false` again, knowingly (plain SD from noise). Written as a check so
+# the flag cannot move by accident in either direction without this line moving.
+SHIPPING_USES_LAMA = False
+check("the switch is where the client last put it (22.09: SD alone, no LaMa)",
+      uses_lama == SHIPPING_USES_LAMA,
       "false means SD starts from noise with an empty prompt, which is the "
-      "configuration that invents")
+      "configuration that invents — only change with his word")
 
 check("the measured refine strength is bypassed by the switch, never rewritten",
-      "generativeUsesLaMaBase ? 0.4 : nil" in SD,
-      "0.4 is KORAK 150/151's measurement — at 0.55 a whole palm appeared")
+      "generativeUsesLaMaBase ? 0.5 : nil" in SD,
+      "0.5 is his choice of 17.09 (KORAK 194); at 0.55 a whole palm appeared")
 
 check("the oversize threshold follows the switch",
       "SDInpaintPipeline.generativeUsesLaMaBase ? 1400 : 600" in DEVELOP,
@@ -79,8 +81,14 @@ check("and it sits behind the switch, not in front of it",
 # answered: *„ne povecavaj SD"*, and the car comes from the size of the hole.
 check("the SD canvas is still 512", "static let imageSide = 512" in SD
       or re.search(r"imageSide\s*=\s*512", SD) is not None)
+# 8 was tried and sent back twice (9.09 and 22.09) — twelve it is.
 check("and the step count is still 12",
       re.search(r"defaultSteps\s*=\s*12", SD) is not None)
+LAMA = (ROOT / "BriefShow" / "DevelopLaMaInpaint.swift").read_text()
+check("Flyaway Hair reaches Quick (LaMa) too, not only Generative",
+      "flyawayHair: flyawayHair)" in DEVELOP
+      and "flyawayHair ? flyawayHairGrowth : ordinaryGrowth" in LAMA
+      and "flyawayHair ? flyawayHairGrowth : ordinaryGrowth" in SD)
 
 print()
 if failures:

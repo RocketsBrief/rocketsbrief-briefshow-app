@@ -9649,7 +9649,7 @@ struct DevelopView: View {
     @AppStorage("develop.aiRemove.feather")
     private var aiRemoveFeather: Double = SDInpaintPipeline.defaultFeather
 
-    /// "Flyaway Hair" — Generative Clean Up only. See the long comment on
+    /// "Flyaway Hair" — both Clean Up buttons (Generative only until 22.09). See the long comment on
     /// `InpaintPipeline.aiRemoval`'s `flyawayHair` parameter for the
     /// mechanism and the measurement behind it. Off by default: widening the
     /// mask is right for a thin wisp and wrong for a normal object, so it
@@ -12235,6 +12235,20 @@ struct DevelopView: View {
                             .stroke(AppColors.border, lineWidth: 1)
                     )
                 }
+
+                // ⚠️ The SAME setting as the checkbox in `removeSection`
+                // (one @AppStorage), shown here too because this is the panel
+                // the client actually cleans up in — he could not find it
+                // (22.09, KORAK 209). Applies to Quick and Generative alike.
+                // The label is a Text with the panel's own grey: a bare string
+                // label took the system's black and ignored the theme.
+                Toggle(isOn: $aiRemoveFlyawayHair) {
+                    Text("Flyaway Hair")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+                }
+                    .toggleStyle(.checkbox)
+                    .help("Grows the selection further before Quick or Generative Clean Up erases it, so a thin stray hair against sky or background doesn't leave a faint trace. Leave off for anything that isn't a wisp of hair — a wider erase on a real object removes more of what's around it than it should.")
 
                 // The Clean Up tool's commentary. It was briefly drawn over the
                 // picture, which kept it out of the layout but put text on the
@@ -17869,13 +17883,13 @@ struct DevelopView: View {
                 // the lever for a thin strand, and for the measurement behind
                 // 0.006.
                 //
-                // Generative only: reported specifically against that button,
-                // and Quick's own LaMa fill is the thing being compared
-                // against, so widening it too would erase the comparison.
+                // Both buttons since 22.09 (KORAK 209): *„obavezno da ima ono
+                // kada i LaMa i SD"*. It used to be Generative only, to keep
+                // Quick as the thing compared against; he asked for both.
                 Toggle("Flyaway Hair", isOn: $aiRemoveFlyawayHair)
                     .toggleStyle(.checkbox)
                     .font(.custom("Figtree", size: 11))
-                    .help("Grows the selection further before Generative Clean Up erases it, so a thin stray hair against sky or background doesn't leave a faint trace. Leave off for anything that isn't a wisp of hair — a wider erase on a real object removes more of what's around it than it should.")
+                    .help("Grows the selection further before Quick or Generative Clean Up erases it, so a thin stray hair against sky or background doesn't leave a faint trace. Leave off for anything that isn't a wisp of hair — a wider erase on a real object removes more of what's around it than it should.")
 
                 // The patch is generated, not copied, so its tone lands a hair
                 // off the photo's and a hard edge shows as a rectangle. This is
@@ -18478,7 +18492,8 @@ struct DevelopView: View {
                     switch engine {
                     case .quick:
                         removal = try InpaintPipeline.quickAIRemoval(
-                            mask: jobMask, from: full, context: briefEditsCIContext, feather: feather)
+                            mask: jobMask, from: full, context: briefEditsCIContext, feather: feather,
+                            flyawayHair: flyawayHair)
                     case .generative:
                         removal = try InpaintPipeline.aiRemoval(
                             mask: jobMask, from: full, context: briefEditsCIContext,

@@ -45,6 +45,10 @@ rešenje, ili se prvo pita korisnik.
 
 - **Generative kreće od LaMine popune, ne od šuma** (KORAK 40). Start od šuma je
   meren i izmišlja cele objekte.
+  ⚠️ **22.09 (KORAK 209) klijent je ovo IZRIČITO poništio**: Generative je sada
+  čist SD od šuma (`generativeUsesLaMaBase = false`). Pokazana mu je istorija i
+  automobil/kamen, ponuđena neutralna osnova — izabrao je čist SD. Nazad je
+  jedna reč, i 1400 / 0,5 se vraćaju sami.
 - **`toneMatch` napušta korekciju kad prsten nije merljiv** — donja granica
   clamp-a (0,85) se čita kao signal, ne zaokružuje (KORAK 41).
 - **`toneMatch` odbija nekonačan fit**, i **`byteFromModel` odbija nekonačan
@@ -23036,3 +23040,105 @@ iskočila keychain lozinka, koju unosi klijent.
 Klijent, posle probe na ekranu: *„super radi"*. Kružići na Image, Template i
 tekstu, ⌘-klik mišem na redove, i Merge Layers na desni klik — viđeno i
 potvrđeno. Commit-ovi `22d1377` i `b4aa073`.
+
+---
+
+## KORAK 209 — Generative Clean Up je opet samo SD, bez LaMe (22. septembar 2026)
+
+Klijent: *„da odvojimo SD Generative clean up da bude samo SD bez pocetnog
+koraka lame.. i da vidim koje su trenutno jacine i same Lam-e i SD?"*
+
+Pre izmene mu je pokazana istorija prekidača (8.09 false → 9.09 zadržan → 12.09
+true zbog izmišljanja → 17.09 izabrao 0,5 preko LaMe) i merenje (auto u rupi od
+828 px, tamni kamen na C4S_7891). Ponuđeno: čist SD od šuma / SD od neutralne
+osnove / samo lokalni test. **Izabrao je čist SD od šuma.**
+
+`SDInpaintPipeline.generativeUsesLaMaBase` → **false**. Posledice, sve preko
+postojećeg prekidača (ništa drugo nije dirano):
+
+| | pre | sada |
+|---|---|---|
+| LaMa u Generative-u | puni rupu prvo | **ne poziva se** |
+| SD jačina | 0,5 (6 od 12 koraka preko LaMe) | **1,0** (svih 12 od šuma) |
+| upozorenje za veliku rupu | 1400 px | **600 px**, tekst kaže da može izmisliti |
+| platno / koraci / guidance | 512 / 12 / 7,5 | isto |
+
+LaMa sama nema jačinu — jedan prolaz; Quick AI Clean Up je nepromenjen.
+
+`Tools/run-generative-base-test.py`: provera sada drži **klijentov poslednji
+izbor** (`SHIPPING_USES_LAMA = False`), a provera jačine je bila **pala od 194**
+(tražila je 0,4 posle promene na 0,5) — ispravljena na 0,5.
+
+**Stanje:** `xcodebuild -scheme BriefShow -configuration Debug` → **BUILD
+SUCCEEDED**; test prolazi; app instaliran u `/Applications/C4S Suite.app` i
+pokrenut. ⚠️ **Nije viđeno na ekranu.** Ako se izmišljanje vrati, nazad je
+jedna reč u `DevelopSDInpaint.swift`.
+
+
+### 209, dopuna — 8 koraka probano i vraćeno, LaMa+1,0 izmereno, Flyaway Hair na oba dugmeta
+
+**8 koraka** (čist SD) stavljeno na klijentov zahtev kao test, vraćeno istog dana
+na **12**: *„isto je sporo"*, pa *„stavi SD na 1 da radi sam"*. Drugi put da je 8
+probano i vraćeno (prvi 9.09) — ne dirati.
+
+**Merenje na `C4S_0227.NEF`** (desno stablo iza para; `RAW Tests Images` više nije
+na Desktopu). ⚠️ Vremena NE važe — app je bio otvoren i držao svoj SD (1,6 GB) na
+8 GB mašini, pa su se dva procesa otimala; 1,0 je ispao brži od 0,5.
+
+| | stablo | trava |
+|---|---|---|
+| čist SD, 12 i 8 koraka | **nije obrisano** — tanje stablo + nov stub | izmišljeno |
+| LaMa sama | obrisano | mutna mrlja |
+| LaMa + 0,3 | obrisano | malo teksture, meko |
+| LaMa + 0,5 | obrisano | meko, tamna fleka |
+| LaMa + 1,0 | **nije obrisano** — isto kao čist SD | izmišljeno |
+
+LaMa + 1,0 nije brži od čistog SD-a (svih 12 koraka + LaMa prolaz) i izmišlja isto.
+Klijent je video tabelu i izabrao: **čist SD, 12 koraka.**
+
+**Flyaway Hair na oba dugmeta.** Klijent: *„obavezno da ima ono kada i LaMa i SD da
+kada hocu da obrisem kosu oko glave da prepozna da je kosa"*. Automatsko
+prepoznavanje kose **nikad nije postojalo** — postojala je samo kućica „Flyaway
+Hair" (širi masku 0,0025 → 0,006 dužeg ruba), i to samo za Generative. Sada
+`quickAIRemoval` prima isti `flyawayHair`, a oba puta čitaju iste konstante
+`InpaintPipeline.ordinaryGrowth` / `flyawayHairGrowth` (`DevelopLaMaInpaint.swift`),
+pa kućica ne može značiti dve širine. Merenje iza 0,006 je od početka rađeno na
+LaMi (`run-hair-strand-test.py`) — i dalje prolazi (30 px: pramen nestao).
+`run-generative-base-test.py` drži 12 koraka i to da kućica stiže do oba puta.
+
+**Stanje:** BUILD SUCCEEDED; `run-generative-base-test.py` i `run-hair-strand-test.py`
+prolaze; app instaliran i pokrenut. ⚠️ Nije viđeno na ekranu.
+
+### 209, dopuna 2 — Flyaway Hair u AI panelu, sivim slovima
+
+Klijent nije našao kućicu: bila je samo u `removeSection`, ne u AI panelu u kom
+čisti. Dodata i tamo (ista `@AppStorage`, ispod Clear AI Area). Natpis je bio crn
+— goli string ne prati temu — sada `Text` sa `AppColors.muted`. ✅ Klijent ju je
+video u app-u.
+
+---
+
+## KORAK 210 — RELEASE v11.48 (22. septembar 2026)
+
+`python3 Tools/make-release.py 11.48 --small-only` — sadrži sve od 197 do 209.
+Klijent je pre objave upozoren da je Generative čist SD koji je na C4S_0227
+izmislio stablo, i izabrao: **objavi, čist SD**.
+
+| | |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.48 / 48** |
+| `LaMa.mlmodelc` | unutra |
+| `SD15-Inpainting` | **nema** — dugme u app-i, `v11.0/SD15-Inpainting.aar` HTTP 200 |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| veličina | 116.553.113 bajta |
+| SHA-256 | `daf4612ed8830bdf91d9f6d29e5671b0da8ac7d50ce3be52d1ece6047ff64301` |
+
+Intel: `computeUnits = .all` pod `#if !arch(arm64)` već postoji — nije menjano.
+Oznaka verzije u app-i se čita iz bundle-a, pa piše `v11.48` sama od sebe.
+**`v11.0` se i dalje NE SME brisati.**
+
+- stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.48`
+- direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.48/C4S-Suite-11.48.zip`

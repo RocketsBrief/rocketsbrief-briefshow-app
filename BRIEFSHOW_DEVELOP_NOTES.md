@@ -23522,3 +23522,18 @@ Probano pa izbačeno istog dana, da se ne ponavlja:
   pa su trake bile preširoke.
 - **Malusov zakon** nije ni pravljen: polarizacija ekrana je u hardveru, a kamera telefona nema
   polarizacioni filter. Softver tu nema šta da uradi, pa prekidač ne bi radio ništa.
+
+---
+
+## KORAK 215 — BriefContact: ViewThem za veb, sa kamerom kao čuvarom (23. septembar 2026)
+
+Veb galerija za kupce, ime dao klijent. **Sve je u `BriefContact/`, a puna beleška je u
+`BriefContact/BRIEFCONTACT_NOTES.md`.** Kad se radi na BriefContact-u, čita se ta beleška, ne ova.
+
+Ukratko: crna mreža kao u app-i (Black ili Blurry, suprotna faza, preklop), baterijska lampa, dve slike
+po strani prikovane za ekran ispod kamere, čuvar na kameri u Web Worker-u (COCO-SSD za telefon,
+MoveNet za ruke, MediaPipe za lice sa proverom da lice izgleda kao lice), zacrnjenje cele stranice kad
+počinje screenshot ili browser izgubi fokus, i kartica saglasnosti za kameru. **Tekst saglasnosti mora
+da pregleda pravnik pre objave.**
+
+⚠️ Otvoreno: telefon postavljen vodoravno se prepoznaje lošije nego uspravno.

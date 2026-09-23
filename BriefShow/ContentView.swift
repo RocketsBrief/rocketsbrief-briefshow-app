@@ -21993,8 +21993,50 @@ struct FlowLayout: Layout {
 // ShowGrid square (before ContentView even exists) can open/refocus the
 // exact same window instead of each keeping their own separate
 // NSWindowController and potentially opening duplicates.
+/// ⚠️ THE GRID IS OFF WHILE CREATE IS OPEN.
+///
+/// Asked for on 23.09, after a real shoot took three times as long in C4S as
+/// in Lightroom: *„da se grid iskljuci skroz kad je klijent u create! E kad
+/// klijent klikne na grid button onda se gasi skroz create! I pali grid!"*.
+///
+/// What the grid was doing behind Create, all of it for a window nobody could
+/// see: re-rendering a thumbnail through the WHOLE edit pipeline every time an
+/// edit was written (`refreshEditedThumbnails`), keeping every tile's picture
+/// and every loupe decode in memory, and finishing whatever folder decode was
+/// still queued — all of it competing with Create for the same cores and the
+/// same RAM.
+///
+/// Suspended rather than closed: the window is ordered out and the grid view is
+/// taken out of the tree, its pictures dropped and its queues cancelled, but the
+/// folder, the selection and the tree stay in @State — so Grid lands the client
+/// exactly where they left, and resuming costs a disk-cache read of the tiles
+/// (the edited ones were invalidated by `PhotoEditStore.flushNow`, so they come
+/// back re-rendered).
+final class ShowGridSuspension: ObservableObject {
+    static let shared = ShowGridSuspension()
+    @Published private(set) var isSuspended = false
+    private init() {}
+
+    func suspend() {
+        guard !isSuspended else { return }
+        isSuspended = true
+        ShowGridWindowController.shared.orderOut()
+    }
+
+    func resume() {
+        guard isSuspended else { return }
+        isSuspended = false
+        ShowGridWindowController.shared.open()
+    }
+}
+
 final class ShowGridWindowController {
     static let shared = ShowGridWindowController()
+
+    /// Hides the grid without closing it — see ShowGridSuspension.
+    func orderOut() {
+        windowController?.window?.orderOut(nil)
+    }
 
     /// ⚠️ A CONSTANT, and the keyboard monitor reads it — see the guard that
     /// used to compare against a literal "C4S Suite".
@@ -22511,6 +22553,7 @@ struct PhotoShowSheet: View {
         self.onClose = onClose
     }
 
+    @ObservedObject private var gridSuspension = ShowGridSuspension.shared
     @State private var photoURLs: [URL] = []
     @State private var gridThumbnails: [URL: NSImage] = [:]
 
@@ -22885,7 +22928,11 @@ struct PhotoShowSheet: View {
                 VStack(spacing: 0) {
                     header
 
-                    if photoURLs.isEmpty && gridFolderURLs.isEmpty && gridVideoURLs.isEmpty {
+                    if gridSuspension.isSuspended {
+                        // Create is open: nothing is laid out here at all.
+                        // See ShowGridSuspension.
+                        Color.clear
+                    } else if photoURLs.isEmpty && gridFolderURLs.isEmpty && gridVideoURLs.isEmpty {
                         emptyState
                     } else {
                         thumbnailGrid
@@ -23163,6 +23210,22 @@ struct PhotoShowSheet: View {
             }
         }
         .onAppear { CameraBrowser.shared.start() }
+        .onChange(of: gridSuspension.isSuspended) { suspended in
+            if suspended {
+                gridThumbnailQueue.cancelAllOperations()
+                gridPlaceholderQueue.cancelAllOperations()
+                gridAspectQueue.cancelAllOperations()
+                gridThumbnails = [:]
+                loupeImages = [:]
+                loupeImagePixelSizes = [:]
+                loupeURLs = nil
+                isLoadingPhotos = false
+            } else if !photoURLs.isEmpty {
+                // Mostly disk-cache reads; what Create changed was
+                // invalidated there and is re-rendered.
+                loadGridThumbnails(for: photoURLs)
+            }
+        }
         // Create saves an edit, this grid shows it. Without this the grid
         // only picked up edits when the folder was re-opened, so a client
         // could finish retouching a photo, close the editor, and see the
@@ -23185,7 +23248,10 @@ struct PhotoShowSheet: View {
             guard !added.isEmpty else { return }
             photoURLs = insertingAddedPhotos(added, into: photoURLs)
             applyPersistedLabels(for: photoURLs)
-            loadGridThumbnails(for: added)
+            // Suspended: the tiles are loaded on resume, with the rest.
+            if !gridSuspension.isSuspended {
+                loadGridThumbnails(for: added)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .photoFilesRemoved)) { note in
             guard (note.object as AnyObject?) !== fileChangeSender else { return }
@@ -25070,9 +25136,14 @@ struct PhotoShowSheet: View {
                                      settings: PhotoEditStore.settings(for: $0))
         }
 
-        gridActionStatus = "Making black & white…"
+        // What AND how many, moving as each photo lands — see runBake in
+        // Develop.swift for the report.
+        gridActionStatus = "Making black & white 1 of \(jobs.count)…"
 
-        PhotoBakeService.bake(jobs, desaturate: true) { baked, failed in
+        PhotoBakeService.bake(jobs, desaturate: true, progress: { done, total in
+            guard done < total else { return }
+            gridActionStatus = "Making black & white \(done + 1) of \(total)…"
+        }) { baked, failed in
             showGridStatus(failed == 0
                            ? "\(baked.count) in black & white"
                            : "\(baked.count) in black & white, \(failed) failed")
@@ -25163,10 +25234,14 @@ struct PhotoShowSheet: View {
         // and never re-reads it — see PhotoFileChangeBroadcast.
         PhotoFileChangeBroadcast.added(created, from: fileChangeSender)
 
-        gridActionStatus = "Duplicating…"
+        let what = blackAndWhite ? "Duplicating in B&W" : "Duplicating"
+        gridActionStatus = "\(what) 1 of \(jobs.count)…"
 
         let copyFailures = failures
-        PhotoBakeService.bake(jobs, desaturate: blackAndWhite) { baked, bakeFailures in
+        PhotoBakeService.bake(jobs, desaturate: blackAndWhite, progress: { done, total in
+            guard done < total else { return }
+            gridActionStatus = "\(what) \(done + 1) of \(total)…"
+        }) { baked, bakeFailures in
             let total = copyFailures + bakeFailures
             let what = blackAndWhite ? "Duplicated \(baked.count) in B&W" : "Duplicated \(baked.count)"
             showGridStatus(total == 0 ? what : "\(what), \(total) failed")
@@ -26140,11 +26215,19 @@ struct PhotoShowSheet: View {
             ? message
             : "\(message)\n\n\(skipped) rejected photo\(skipped == 1 ? " is" : "s are") being skipped."
 
-        guard panel.runModal() == .OK, let destinationFolder = panel.url else {
-            return
+        // Not runModal, and not in the photos' own folder — see
+        // exportSelectedPhotos in Develop.swift for the freeze this was.
+        panel.directoryURL = ExportFolderMemory.lastFolder
+        panel.begin { response in
+            guard response == .OK, let destinationFolder = panel.url else {
+                return
+            }
+            ExportFolderMemory.lastFolder = destinationFolder
+            copyExport(photoURLs.filter { urlsToMatch.contains($0) }, to: destinationFolder, countingAs: kind)
         }
+    }
 
-        let urlsToExport = photoURLs.filter { urlsToMatch.contains($0) }
+    private func copyExport(_ urlsToExport: [URL], to destinationFolder: URL, countingAs kind: ExportCounter.Kind) {
 
         DispatchQueue.global(qos: .userInitiated).async {
             let fileManager = FileManager.default
@@ -26424,6 +26507,11 @@ struct PhotoShowSheet: View {
     // it is a 2000px render that only matters while the Space preview is open,
     // and it is rebuilt on demand the next time it is.
     private func refreshEditedThumbnails(_ changed: Set<URL>) {
+        // Behind Create this was a full edit-pipeline render per written
+        // edit, for a window nobody could see. Resuming reloads every tile.
+        guard !gridSuspension.isSuspended else {
+            return
+        }
         let mine = photoURLs.filter { changed.contains($0) }
         guard !mine.isEmpty else {
             return

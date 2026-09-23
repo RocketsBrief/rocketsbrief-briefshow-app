@@ -97,6 +97,7 @@ pasted = "\n\n".join([
     extract("struct ColorMixer:"),
     extract("enum LayerBlendMode:"),
     extract("struct LocalAdjustmentSettings:"),
+    extract("struct LayerSourceRect:"),
     extract("struct ImageLayer:"),
     extract("func briefShowNextMergedLayerNumber(in layers: [ImageLayer]) -> Int {"),
     extract("func briefShowPNGData(_ image: CGImage) -> Data? {"),

@@ -43,6 +43,12 @@ final class ExternalFolderOpen: ObservableObject {
 /// the drop and this is never called, and without this the drop is accepted and
 /// nothing happens.
 final class BriefShowAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        // Edits are encoded off the main thread now; quitting waits for them.
+        PhotoEditStore.waitForPendingWrites()
+        Diagnostics.shared.flushAtQuit()
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         // Only folders can actually arrive, since Info.plist declares only
         // public.folder — but filtered anyway rather than trusting that, because
@@ -114,6 +120,10 @@ struct BriefShowApp: App {
         // BriefShow editor, LumenoLab or a full-screen slideshow, and the
         // seat has to keep being verified in all four.
         Task { @MainActor in SeatManager.shared.start() }
+
+        // Freezes and memory over time, for the Macs the client works on —
+        // see Diagnostics. Sending is opt-in; the local log always runs.
+        Diagnostics.shared.start()
 
         // ⚠️ THE EARLIEST HONEST MOMENT to start loading the AI weights, and
         // the reason it moved here.

@@ -101,7 +101,17 @@ extension CameraBrowser: ICDeviceBrowserDelegate {
     func deviceBrowser(_ browser: ICDeviceBrowser, didAdd device: ICDevice, moreComing: Bool) {
         guard let camera = device as? ICCameraDevice else { return }
         let connected = ConnectedCamera(device: camera)
-        guard !cameras.contains(connected) else { return }
+        // ⚠️ The same body can come back as a NEW device object — plugged in
+        // while off, then switched on (reported 23.09, screenshot 1). If the
+        // new one arrives before the old one is removed, the list used to keep
+        // the OLD, dead object and refuse the live one as a duplicate. The
+        // newest object for an id is the one that answers.
+        if let index = cameras.firstIndex(of: connected) {
+            guard cameras[index].device !== camera else { return }
+            cameras[index] = connected
+            lastConnectedCamera = connected
+            return
+        }
         cameras.append(connected)
         lastConnectedCamera = connected
     }

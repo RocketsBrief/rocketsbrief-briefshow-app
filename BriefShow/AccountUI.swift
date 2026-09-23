@@ -123,6 +123,7 @@ struct ProfileSettingsModal: View {
     @ObservedObject var seatManager = SeatManager.shared
     let onClose: () -> Void
 
+    @AppStorage(Diagnostics.enabledKey) private var sendsDiagnostics = false
     @State private var isIconPickerExpanded = false
     @State private var isSendingPasswordReset = false
     @State private var passwordResetMessage: String?
@@ -266,6 +267,22 @@ struct ProfileSettingsModal: View {
                                 .foregroundColor(AppColors.muted)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                    }
+
+                    // Opt-in — see Diagnostics. Off unless switched on here.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle(isOn: $sendsDiagnostics) {
+                            Text("Send performance diagnostics")
+                                .font(.custom("Figtree", size: 12.5).weight(.semibold))
+                                .foregroundColor(AppColors.ink)
+                        }
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+
+                        Text("When C4S Suite freezes, sends how long, what was open and the file name to RocketsBrief, so it can be fixed. Never the photo itself.")
+                            .font(.custom("Figtree", size: 10.5).weight(.regular))
+                            .foregroundColor(AppColors.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     ProfileSettingsRow(icon: "rectangle.portrait.and.arrow.right", title: "Sign Out") {
@@ -971,6 +988,7 @@ enum UpdateQuit {
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            PhotoEditStore.waitForPendingWrites()
             UserDefaults.standard.synchronize()
             exit(0)
         }

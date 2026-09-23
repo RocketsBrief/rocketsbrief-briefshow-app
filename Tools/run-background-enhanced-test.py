@@ -202,7 +202,9 @@ check("then the flatten", "FlattenedImageStore.flatten" in service)
 # The crop is a description of the photo, not pixels — flattenPhoto keeps it and
 # so must this, or a cropped photo run through the recipe loses its crop.
 check("the crop survives the bake", "cleared.crop = photoSettings.crop" in service)
-check("it runs off the main thread", "developRenderQueue.async" in service)
+# developBatchQueue since 23.09 — its own queue, so the editor's refine
+# does not wait behind a batch. Still off the main thread either way.
+check("it runs off the main thread", "developBatchQueue.async" in service)
 check("the store is written and flushed before anyone is told",
       "PhotoEditStore.flushNow()" in service)
 

@@ -1442,6 +1442,30 @@ struct ImageLayer: Codable, Equatable, Identifiable {
     /// Rotation about the layer's own centre, in degrees.
     var rotationDegrees: Double = 0
 
+    /// ⚠️ WHERE IN THE PHOTO THIS CUT-OUT CAME FROM — set by Select People, and
+    /// what makes the People layer follow the photo.
+    ///
+    /// Reported 23.09: *„Kada odvojim subject i background Exposure pojacam do
+    /// karaja a selektovan je subject on malo doda svetlosti nad njim, kao da
+    /// sam malo pomerio … Takvi su svi slidebarovi"*. People was a frozen
+    /// copy of the frame as it stood when Select People finished, and the
+    /// photo's own sliders run BEFORE layers composite — so moving any of them
+    /// afterwards changed the photo UNDER the people and not the people
+    /// themselves, except through the soft edge of the cut-out. That edge is
+    /// the "malo svetlosti". Measured through the renderer: the layer's own
+    /// sliders were right all along (Exposure +1: photo +44.3, People +44.2
+    /// inside the person, Tools/run-people-layer-strength-test.py); the photo's
+    /// were cut off by the cut-out.
+    ///
+    /// With this set, the renderer takes the pixels from the CURRENT photo in
+    /// this rectangle (pre-crop unit space, top-down) and keeps only the
+    /// stored cut-out's ALPHA — so the shape, the Eraser's work and the
+    /// geometry (move, scale, rotate) are all still the layer's, and the
+    /// colour is always the photo's. nil for every other pixel layer (a paste,
+    /// a cut, a merge) and for People layers made before 23.09, which keep
+    /// their stored pixels exactly as before.
+    var liveSource: LayerSourceRect?
+
     /// ⚠️ VESTIGIAL, and kept on purpose. Sky replacement was removed on
     /// 2.09.2026 (see SKY_ARCHIVE/BRIEFSHOW_SKY_NOTES.md), but this key is in
     /// records already on the client's disk. Decoding it and carrying it means
@@ -1525,6 +1549,7 @@ struct ImageLayer: Codable, Equatable, Identifiable {
         }
         isSky = try c.decodeIfPresent(Bool.self, forKey: .isSky) ?? false
         rotationDegrees = try c.decodeIfPresent(Double.self, forKey: .rotationDegrees) ?? 0
+        liveSource = try c.decodeIfPresent(LayerSourceRect.self, forKey: .liveSource)
     }
 
     /// ⚠️ Hand-written so the pixels go to disk instead of into the record.
@@ -1575,13 +1600,23 @@ struct ImageLayer: Codable, Equatable, Identifiable {
 
         try c.encode(isSky, forKey: .isSky)
         try c.encode(rotationDegrees, forKey: .rotationDegrees)
+        try c.encodeIfPresent(liveSource, forKey: .liveSource)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, imageData, x, y, width, height, opacity, blendMode, isEnabled, adjustments
         case blur, maskData, isSky, rotationDegrees
-        case pixelRef, maskRef
+        case pixelRef, maskRef, liveSource
     }
+}
+
+/// A rectangle of the photograph in pre-crop unit space, top-down — the same
+/// space as a layer's own x/y/width/height. See `ImageLayer.liveSource`.
+struct LayerSourceRect: Codable, Equatable {
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
 }
 
 // DevelopView's in-memory Cut/Copy clipboard (see its `layerClipboard`
@@ -1650,6 +1685,16 @@ enum PhotoEditStore {
     private static var flushWorkItem: DispatchWorkItem?
     private static var pendingChangedURLs: Set<URL> = []
 
+    private static let writeQueue = DispatchQueue(label: "com.rocketsbrief.briefshow.editstore.write",
+                                                  qos: .utility)
+
+    /// Blocks until every queued write is on disk — at quit, so the last edit
+    /// cannot be lost to a background write the process never finished.
+    static func waitForPendingWrites() {
+        flushNow()
+        writeQueue.sync {}
+    }
+
     private static func scheduleFlush() {
         flushWorkItem?.cancel()
         let work = DispatchWorkItem { flushNow() }
@@ -1672,7 +1717,19 @@ enum PhotoEditStore {
         guard let snapshot else {
             return
         }
-        UserDefaults.standard.set(try? JSONEncoder().encode(snapshot), forKey: defaultsKey)
+        // ⚠️ OFF THE MAIN THREAD. Found 23.09 chasing *„ceo app koci posle
+        // nekog vremena"*: this is the WHOLE edit history — every photo ever
+        // edited, never pruned — JSON-encoded and handed to UserDefaults each
+        // time a slider or a brush stroke settles. 133 photos here are 237 KB;
+        // a working photographer's week is thousands, and JSONEncoder over
+        // megabytes is a hitch the app grows into by being used. Nothing reads
+        // the encoded copy while the app runs (reads go through
+        // `cachedSettings`), so it can land a moment later on its own queue.
+        // Serial, so the last flush is the one that stays; the app waits for
+        // it at quit (`waitForPendingWrites`).
+        writeQueue.async {
+            UserDefaults.standard.set(try? JSONEncoder().encode(snapshot), forKey: defaultsKey)
+        }
 
         guard !changed.isEmpty else {
             return
@@ -3572,7 +3629,11 @@ enum PhotoEditRenderer {
         // naturally clips whatever part of a layer falls outside the kept
         // area too, instead of needing separate clipping logic.
         if !settings.layers.isEmpty {
-            output = compositeLayers(settings.layers, onto: output, base: base, settings: settings)
+            // ⚠️ ONE rendered photo under every layer — see the note on
+            // `layerBase` in Tools/run-enhance-edge-test.py's findings (KORAK 218).
+            let layerBase = output
+            output = compositeLayers(settings.layers, onto: layerBase, base: base, settings: settings,
+                                     livePhoto: layerBase)
         }
 
         if applyCrop, let crop = settings.crop {
@@ -5915,9 +5976,14 @@ enum PhotoEditRenderer {
         return moved
     }
 
+    /// `livePhoto` is the photograph as edited, BEFORE any layer — where a
+    /// People layer's pixels come from (ImageLayer.liveSource). nil for a merge
+    /// or a print bake, which composite onto transparency and keep the stored
+    /// pixels.
     private static func compositeLayers(_ layers: [ImageLayer], onto image: CIImage,
                                         base: PhotoBaseImage? = nil,
-                                        settings: PhotoEditSettings? = nil) -> CIImage {
+                                        settings: PhotoEditSettings? = nil,
+                                        livePhoto: CIImage? = nil) -> CIImage {
         var output = image
         let extent = image.extent
         guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
@@ -5941,9 +6007,22 @@ enum PhotoEditRenderer {
                 continue
             }
 
-            guard let source = decodedLayerImage(layer), source.extent.width > 0, source.extent.height > 0 else {
+            guard let stored = decodedLayerImage(layer), stored.extent.width > 0, stored.extent.height > 0 else {
                 continue
             }
+
+            // A People layer still where Select People put it: cut straight out
+            // of the photo, in the photo's own coordinates. See livePlacedLayer
+            // for why the photo's graph must not be moved.
+            if let livePhoto, let placed = livePlacedLayer(layer, stored: stored, photo: livePhoto,
+                                                           extent: extent) {
+                output = blendLayer(placed, over: output, mode: layer.blendMode, extent: extent)
+                continue
+            }
+
+            let source = livePhoto.flatMap {
+                liveLayerPixels(stored, from: $0, rect: layer.liveSource, extent: extent)
+            } ?? stored
 
             // Scaled fresh against THIS image's own extent, never assumed
             // to match the piece's native resolution — the same cut/copied
@@ -6007,6 +6086,86 @@ enum PhotoEditRenderer {
         }
 
         return output
+    }
+
+    /// The photo's CURRENT pixels in the layer's source rectangle, cut by the
+    /// stored cut-out's alpha — see ImageLayer.liveSource. Same extent as the
+    /// stored image (origin 0,0, its own size), so everything downstream —
+    /// scale, rotate, place — is exactly what it was for stored pixels.
+    private static func liveLayerPixels(_ stored: CIImage, from photo: CIImage,
+                                        rect: LayerSourceRect?, extent: CGRect) -> CIImage? {
+        guard let rect, rect.width > 0, rect.height > 0 else { return nil }
+        let sourcePx = CGRect(x: extent.minX + rect.x * extent.width,
+                              y: extent.minY + (1 - rect.y - rect.height) * extent.height,
+                              width: rect.width * extent.width,
+                              height: rect.height * extent.height)
+        guard sourcePx.width >= 1, sourcePx.height >= 1 else { return nil }
+        let box = stored.extent
+        // The photo's rectangle, brought onto the stored image's own grid.
+        //
+        // ⚠️ Through an INTERMEDIATE first. Moving the edited photo's graph
+        // itself broke it: with Clarity on, the person came out like a negative
+        // (−48 levels inside the person, Tools/run-enhance-edge-test.py, ONLY=
+        // clarity PEOPLE_ONLY=1) — Core Image folds the move into the graph, and
+        // Clarity's CIEdgePreserveUpsampleFilter does not survive that. Rendered
+        // to an intermediate, the move samples finished pixels.
+        let pixels = photo.cropped(to: sourcePx).insertingIntermediate(cache: false)
+            .transformed(by: CGAffineTransform(translationX: -sourcePx.minX, y: -sourcePx.minY))
+            .transformed(by: CGAffineTransform(scaleX: box.width / sourcePx.width,
+                                               y: box.height / sourcePx.height))
+            .transformed(by: CGAffineTransform(translationX: box.minX, y: box.minY))
+            .cropped(to: box)
+        let cut = CIFilter.blendWithAlphaMask()
+        cut.inputImage = pixels
+        cut.backgroundImage = CIImage.empty()
+        cut.maskImage = stored
+        return cut.outputImage?.cropped(to: box)
+    }
+
+    /// A live People layer that has NOT been moved, scaled or rotated, finished
+    /// in the photo's own coordinates — or nil, and the general path runs.
+    ///
+    /// ⚠️ Only the stored cut-out (a plain decoded PNG) is transformed here,
+    /// never the photo: see liveLayerPixels for what moving the edited photo's
+    /// graph did. This is the case Background Enhanced and every ordinary
+    /// People edit are in, and it resamples nothing.
+    private static func livePlacedLayer(_ layer: ImageLayer, stored: CIImage, photo: CIImage,
+                                        extent: CGRect) -> CIImage? {
+        guard let rect = layer.liveSource, layer.rotationDegrees == 0,
+              abs(layer.x - rect.x) < 1e-9, abs(layer.y - rect.y) < 1e-9,
+              abs(layer.width - rect.width) < 1e-9, abs(layer.height - rect.height) < 1e-9 else {
+            return nil
+        }
+        let sourcePx = CGRect(x: extent.minX + rect.x * extent.width,
+                              y: extent.minY + (1 - rect.y - rect.height) * extent.height,
+                              width: rect.width * extent.width,
+                              height: rect.height * extent.height)
+        guard sourcePx.width >= 1, sourcePx.height >= 1 else { return nil }
+        let box = stored.extent
+        let alpha = stored
+            .transformed(by: CGAffineTransform(translationX: -box.minX, y: -box.minY))
+            .transformed(by: CGAffineTransform(scaleX: sourcePx.width / box.width,
+                                               y: sourcePx.height / box.height))
+            .transformed(by: CGAffineTransform(translationX: sourcePx.minX, y: sourcePx.minY))
+        let cut = CIFilter.blendWithAlphaMask()
+        cut.inputImage = photo.cropped(to: sourcePx)
+        cut.backgroundImage = CIImage.empty()
+        cut.maskImage = alpha
+        guard var placed = cut.outputImage?.cropped(to: sourcePx) else { return nil }
+
+        if !layer.adjustments.isNeutral {
+            placed = applyLocalToneColorDetail(layer.adjustments, to: placed)
+        }
+        if layer.blur > 0 {
+            placed = layerBlur(placed, amount: layer.blur, extent: sourcePx)
+        }
+        if layer.opacity < 1 {
+            let alphaScale = CIFilter.colorMatrix()
+            alphaScale.inputImage = placed
+            alphaScale.aVector = CIVector(x: 0, y: 0, z: 0, w: max(layer.opacity, 0))
+            placed = alphaScale.outputImage ?? placed
+        }
+        return placed
     }
 
     private static func blendLayer(_ top: CIImage, over bottom: CIImage, mode: LayerBlendMode, extent: CGRect) -> CIImage {
@@ -6448,6 +6607,20 @@ private let developPreviewRenderQueue = DispatchQueue(
 // correctness improvement for the non-RAW path too, not just RAW.
 private let developRenderQueue = DispatchQueue(label: "com.rocketsbrief.briefshow.develop.render")
 
+/// ⚠️ WORK OVER A SELECTION RUNS HERE, NOT ON developRenderQueue. Found 23.09
+/// behind *„quality slika se gubi posle mog kropa"*: the full-resolution
+/// refine of the photo on screen shares developRenderQueue, which is serial,
+/// with exports, Duplicate/B&W bakes and recipe batches — so while forty
+/// photos baked in the background, the sharp render after a crop waited
+/// behind all forty and the soft preview stayed up the whole time.
+///
+/// Everything sent here loads its OWN base image per photo
+/// (`loadBaseImage(from:)`), so it shares no CIRAWFilter with the editor —
+/// which is the one thing developRenderQueue's serial order protects. Serial
+/// itself, so batches do not pile onto each other in memory.
+private let developBatchQueue = DispatchQueue(label: "com.rocketsbrief.briefshow.develop.batch",
+                                              qos: .utility)
+
 /// Baking a photo's render in, and duplicating a photo beside itself.
 ///
 /// Lives here rather than inside `DevelopView` because BOTH menus need it —
@@ -6535,8 +6708,16 @@ enum PeopleLayerFactory {
             background: ImageLayer(name: backgroundName, imageData: Data(),
                                    x: 0, y: 0, width: 1, height: 1,
                                    maskData: backgroundMask),
-            people: ImageLayer(name: peopleName, imageData: peoplePNG,
-                               x: x, y: y, width: width, height: height)
+            people: {
+                var people = ImageLayer(name: peopleName, imageData: peoplePNG,
+                                        x: x, y: y, width: width, height: height)
+                // ⚠️ OFF until Clarity's alpha is fixed (KORAK 218, open):
+                // with Clarity on, a live cut-out comes out washed like a
+                // negative. Turn back on with the fix — see ImageLayer.liveSource.
+                // people.liveSource = LayerSourceRect(x: x, y: y, width: width, height: height)
+                _ = LayerSourceRect.self
+                return people
+            }()
         )
     }
 }
@@ -7308,7 +7489,7 @@ enum PortraitRecipeService {
             return
         }
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developBatchQueue.async {
             var restored: [URL: PhotoEditSettings] = [:]
             for url in targets {
                 if let settings = PortraitRecipeUndoStore.undo(url) {
@@ -7340,7 +7521,7 @@ enum PortraitRecipeService {
 
         let ordered = PortraitRecipe.allCases.filter { recipes.contains($0) }
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developBatchQueue.async {
             var outcome = Outcome()
 
             for (offset, url) in targets.enumerated() {
@@ -7502,22 +7683,28 @@ enum PhotoBakeService {
     /// to run on the main thread for a selection of forty. The completion
     /// runs on the main thread, after the store has been written and
     /// flushed, so a caller only has to reconcile its own view state.
+    /// `progress` is called on the main thread after each photo — done, total.
     static func bake(_ jobs: [BakeJob], desaturate: Bool,
+                     progress: ((_ done: Int, _ total: Int) -> Void)? = nil,
                      completion: @escaping (_ baked: [URL: PhotoEditSettings], _ failed: Int) -> Void) {
         guard !jobs.isEmpty else {
             completion([:], 0)
             return
         }
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developBatchQueue.async {
             var baked: [URL: PhotoEditSettings] = [:]
             var failed = 0
 
-            for job in jobs {
+            for (index, job) in jobs.enumerated() {
                 if let result = bakedSettings(for: job, desaturate: desaturate) {
                     baked[job.target] = result
                 } else {
                     failed += 1
+                }
+                if let progress {
+                    let done = index + 1
+                    DispatchQueue.main.async { progress(done, jobs.count) }
                 }
             }
 
@@ -7639,6 +7826,117 @@ private struct HistogramReader<Content: View>: View {
 /// A class so the one view that draws it can observe it on its own, without
 /// every write going through `DevelopView`'s `@State` and taking the whole
 /// editor's body with it. See `DevelopView.cropState`.
+/// See DevelopView.reloadOpenPhotoIfChangedElsewhere.
+/// Where the last export went — the folder picker opens there. See
+/// exportSelectedPhotos.
+enum ExportFolderMemory {
+    private static let key = "develop.export.lastFolder"
+    static var lastFolder: URL? {
+        get {
+            guard let path = UserDefaults.standard.string(forKey: key) else { return nil }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else { return nil }
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        set { UserDefaults.standard.set(newValue?.path, forKey: key) }
+    }
+}
+
+/// ⚠️ THE PRESET NAME IS TYPED INTO ITS OWN VIEW. Reported 23.09: *„Kad kucam
+/// novokreirani preset text je crn! I kasni dok mu dajem ime!"*.
+///
+/// Black: `.roundedBorder` is the system's field, drawn in the system's
+/// appearance, not the app's theme — the same trap the Flyaway Hair caption
+/// fell into (KORAK 209). Late: the text was @State of DevelopView, so every
+/// key press re-evaluated the whole editor. Here the text lives in this view
+/// and the editor hears only the finished name.
+struct PresetNameField: View {
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+    @State private var name: String
+    @FocusState private var focused: Bool
+
+    init(initial: String, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _name = State(initialValue: initial)
+    }
+
+    private var isEmpty: Bool { name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TextField("Preset name", text: $name)
+                .textFieldStyle(.plain)
+                .font(.custom("Figtree", size: 12))
+                .foregroundColor(AppColors.ink)
+                .tint(AppColors.ink)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(AppColors.background)
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(AppColors.border, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .focused($focused)
+                .onSubmit { if !isEmpty { onSave(name) } }
+                .onExitCommand { onCancel() }
+                .onAppear { focused = true }
+
+            Button("Save") { onSave(name) }
+                .buttonStyle(ShowHeaderButtonStyle())
+                .disabled(isEmpty)
+
+            Button("Cancel") { onCancel() }
+                .buttonStyle(ShowHeaderButtonStyle())
+        }
+    }
+}
+
+/// What the Sync sheet has ticked — see DevelopView.syncChoice.
+final class SyncChoice: ObservableObject {
+    @Published var items: SyncItem = .all
+    @Published var recipes: Set<PortraitRecipe> = []
+}
+
+/// Re-draws the Sync sheet — and only the sheet — when a box is ticked.
+struct SyncDialogHost<Content: View>: View {
+    @ObservedObject var choice: SyncChoice
+    @ViewBuilder let content: () -> Content
+    var body: some View { content() }
+}
+
+/// ⚠️ A ROW IN A LIST HOVERS WITHOUT MOVING ITS BOX. Reported 23.09 with a
+/// photo of the Sync sheet: *„kada hoverujem preko light-a sakriven je check
+/// point … hover ne treba da radi animaciju samo posvetljuje text i malo
+/// uveca nista vise"*. PlainHoverButtonStyle grows a label 8 % about its
+/// CENTRE, and a row as wide as the sheet grew its left end — the checkbox —
+/// out past the edge. Here the row grows 3 % from its LEADING edge, so the box
+/// stays exactly where it is, and brightens; no spring, nothing else moves.
+struct ChecklistRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        ChecklistRowLabel(configuration: configuration)
+    }
+}
+
+private struct ChecklistRowLabel: View {
+    let configuration: ButtonStyle.Configuration
+    @State private var isHovered = false
+
+    var body: some View {
+        configuration.label
+            .brightness(isHovered ? 0.12 : 0)
+            .scaleEffect(isHovered ? 1.03 : 1, anchor: .leading)
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .animation(.linear(duration: 0.08), value: isHovered)
+            .onHover { isHovered = $0 }
+    }
+}
+
+final class EditorWriteMark {
+    var url: URL?
+    var settings: PhotoEditSettings?
+}
+
 final class CropDragState: ObservableObject {
     @Published var crop: EditCropRect = .full
 }
@@ -7876,6 +8174,10 @@ final class DevelopWindowController {
         window.makeKeyAndOrderFront(nil)
         isOpening = false
 
+        // The grid goes off while Create is up — see ShowGridSuspension.
+        // After the editor is key, so the two windows never both vanish.
+        ShowGridSuspension.shared.suspend()
+
         // The card is taken down by DevelopView the moment the first photo is
         // actually drawn (see loadImages). This is the backstop for the case
         // where that never happens — an unreadable file, a decode that fails —
@@ -7898,6 +8200,8 @@ final class DevelopWindowController {
         windowController?.close()
         windowController = nil
         isOpening = false
+        // Grid, or the red button: the editor is gone, the grid comes back.
+        ShowGridSuspension.shared.resume()
     }
 }
 
@@ -9242,6 +9546,8 @@ struct DevelopView: View {
     // applyAutoFitCropIfNeeded / straightenBinding / commitCrop.
     @State private var cropIsAutoFitted = false
     @State private var exportStatusText: String?
+    /// 0…1 while a multi-photo export runs — the bar under the status line.
+    @State private var exportProgress: Double?
     @State private var renderWorkItem: DispatchWorkItem?
     // Bumped once per renderNow() call, read live (cross-thread, same
     // pattern as `selectedURL`/`photoAtRenderTime` below) from inside the
@@ -9456,12 +9762,24 @@ struct DevelopView: View {
     // Kept across openings of the dialog on purpose: syncing one control onto
     // a run of photos is done in batches, and re-ticking the same single box
     // for every batch is the kind of work a checklist is supposed to remove.
-    @State private var syncItems: SyncItem = .all
+    /// ⚠️ Held in a box the EDITOR does not observe — only the Sync sheet does
+    /// (SyncDialogHost). Reported 23.09: *„ja kliknem pa se ceka da se
+    /// chekinuje box"* — as @State here, every tick re-evaluated the whole
+    /// editor behind the sheet. Same values, same names, one fewer body pass
+    /// per click.
+    @State private var syncChoice = SyncChoice()
+    private var syncItems: SyncItem {
+        get { syncChoice.items }
+        nonmutating set { syncChoice.items = newValue }
+    }
     /// ⚠️ Empty by default, where the controls above are all ticked. A recipe
     /// is an ACTION on the target photograph — its own Select People, its own
     /// bake — not a number copied onto it, and an action must never be the
     /// thing that happens because somebody did not read a checklist.
-    @State private var syncRecipes: Set<PortraitRecipe> = []
+    private var syncRecipes: Set<PortraitRecipe> {
+        get { syncChoice.recipes }
+        nonmutating set { syncChoice.recipes = newValue }
+    }
 
     // Local adjustments (masks). `selectedLocalAdjustmentID` nil = editing
     // the global sliders as usual; non-nil = the on-canvas overlay shows
@@ -9585,6 +9903,10 @@ struct DevelopView: View {
     /// the list's space without guessing at title bars or scroll offsets.
     @State private var mergeRowsSpace = MergeRowsSpace()
     @State private var mergeClickMonitor: Any?
+    @State private var cropMouseUpMonitor: Any?
+    /// What this editor itself last wrote to the store for the open photo —
+    /// a box, so writing it on every render invalidates nothing.
+    @State private var editorWriteMark = EditorWriteMark()
     /// Is the frame's row picked? ⚠️ Its own flag: clicking that row must
     /// SELECT it, not walk off to another tab — reported 21.09, *„kada kliknem
     /// na layer template on me baca na template seciju umesto samo da se
@@ -10056,6 +10378,9 @@ struct DevelopView: View {
             if isOn { loadOriginalBaseIfNeeded() }
             renderNow()
         }
+        // What a diagnostics row says Create was doing — see Diagnostics.
+        .onChange(of: selectedURL) { Diagnostics.shared.setCreateFile($0) }
+        .onChange(of: activeHeaderCellID) { Diagnostics.shared.setCreateTool($0) }
         .onAppear {
             installEditingKeyMonitor()
             installSpaceKeyMonitor()
@@ -10063,6 +10388,7 @@ struct DevelopView: View {
             installOptionKeyMonitor()
             installScrollWheelMonitor()
             installMergeClickMonitor()
+            installCropMouseUpMonitor()
         }
         .onDisappear {
             removeEditingKeyMonitor()
@@ -10071,12 +10397,14 @@ struct DevelopView: View {
             removeOptionKeyMonitor()
             removeScrollWheelMonitor()
             removeMergeClickMonitor()
+            removeCropMouseUpMonitor()
         }
         .onReceive(NotificationCenter.default.publisher(for: .photoEditsChanged)) { note in
             guard let changed = note.userInfo?[photoEditsChangedURLsKey] as? Set<URL> else {
                 return
             }
             refreshFilmstripThumbnails(changed)
+            reloadOpenPhotoIfChangedElsewhere(changed)
         }
         // ⚠️ The card, not the recipe. Asked for on 12.09 — *„before enhance to
         // get small modul card with all slide bar setting … to show real alive
@@ -10114,7 +10442,7 @@ struct DevelopView: View {
             }
         )
         .sheet(isPresented: $showSyncDialog) {
-            syncDialogView
+            SyncDialogHost(choice: syncChoice) { syncDialogView }
         }
         .sheet(isPresented: $showExportAllOptions) {
             exportAllOptionsView
@@ -11040,6 +11368,7 @@ struct DevelopView: View {
 
     private var filmstrip: some View {
         HStack(spacing: 0) {
+            ScrollViewReader { strip in
             ScrollView(.horizontal) {
                 // LazyHStack, emphatically not HStack. A plain HStack inside a
                 // ScrollView builds and mounts EVERY child immediately, so
@@ -11060,6 +11389,21 @@ struct DevelopView: View {
                     }
                 }
                 .padding(10)
+            }
+            // ⚠️ The open photo is IN VIEW in the strip. Reported 23.09: a
+            // photo opened from the grid was open above, but the strip sat at
+            // the start of the folder, so its thumbnail was somewhere off to
+            // the right. Centred on open, and again whenever the open photo
+            // changes (arrow keys walk off the edge otherwise).
+            .onAppear {
+                if let selectedURL {
+                    DispatchQueue.main.async { strip.scrollTo(selectedURL, anchor: .center) }
+                }
+            }
+            .onChange(of: selectedURL) { url in
+                guard let url else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { strip.scrollTo(url, anchor: .center) }
+            }
             }
 
             // Select All / Deselect / Sync / Export All used to stand here,
@@ -11650,6 +11994,15 @@ struct DevelopView: View {
                     .foregroundColor(AppColors.muted)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            // A bar that FILLS, photo by photo — asked for 23.09: *„dobijem
+            // exporting u desnom uglu ali treba da bude i load bar da se
+            // popunjava u realnom vremenu"*.
+            if let exportProgress {
+                ProgressView(value: exportProgress)
+                    .progressViewStyle(.linear)
+                    .tint(accentColor)
+                    .animation(.linear(duration: 0.2), value: exportProgress)
             }
 
             // ONE bar, icon only, every cell the same size and no gap
@@ -14611,7 +14964,7 @@ struct DevelopView: View {
     /// its onEnded — the tool switched, the photograph changed under it — would
     /// otherwise leave the pointer invisible for the rest of the session.
     private func endCropMove() {
-        cropMoveGrab = nil
+        if cropMoveGrab != nil { cropMoveGrab = nil }
         guard isCropCursorHidden else { return }
         isCropCursorHidden = false
         NSCursor.unhide()
@@ -17017,24 +17370,13 @@ struct DevelopView: View {
             }
 
             if isAddingPreset {
-                HStack(spacing: 6) {
-                    TextField("Preset name", text: $newPresetName)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.custom("Figtree", size: 12))
-                        .onSubmit { saveCurrentAsPreset() }
-
-                    Button("Save") {
-                        saveCurrentAsPreset()
-                    }
-                    .buttonStyle(ShowHeaderButtonStyle())
-                    .disabled(newPresetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    Button("Cancel") {
-                        isAddingPreset = false
-                        newPresetName = ""
-                    }
-                    .buttonStyle(ShowHeaderButtonStyle())
-                }
+                PresetNameField(initial: "", onSave: { name in
+                    newPresetName = name
+                    saveCurrentAsPreset()
+                }, onCancel: {
+                    isAddingPreset = false
+                    newPresetName = ""
+                })
             } else {
                 Button {
                     newPresetName = ""
@@ -17157,18 +17499,10 @@ struct DevelopView: View {
                 // The row becomes the field, rather than opening a dialog over
                 // it: the name is already there to be corrected, and a sheet
                 // for one word is a sheet too many.
-                TextField("Preset name", text: $renamingPresetName)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.custom("Figtree", size: 12))
-                    .onSubmit { commitPresetRename() }
-
-                Button("Save") { commitPresetRename() }
-                    .buttonStyle(ShowHeaderButtonStyle())
-                    .disabled(renamingPresetName
-                                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                Button("Cancel") { cancelPresetRename() }
-                    .buttonStyle(ShowHeaderButtonStyle())
+                PresetNameField(initial: renamingPresetName, onSave: { name in
+                    renamingPresetName = name
+                    commitPresetRename()
+                }, onCancel: { cancelPresetRename() })
             } else {
                 Button {
                     applyPreset(preset)
@@ -21066,6 +21400,48 @@ struct DevelopView: View {
         }
     }
 
+    /// ⚠️ THE CROP THAT LOCKED UNTIL ESCAPE. Reported 23.09 from a real
+    /// shoot: *„posle nekoliko slika crop se ukoci dok kropujem moram escape i
+    /// onda kao radi"*.
+    ///
+    /// Every crop drag keeps its anchor in @State (`dragStartCrop`, the two
+    /// rotation starts, the handle, the hidden pointer and the drawn hand) and
+    /// clears it only in its gesture's `onEnded`. SwiftUI does NOT promise that
+    /// call: a drag cancelled because the view under it was rebuilt — the
+    /// photograph changed, the preview re-rendered, the pointer let go outside
+    /// the window — simply stops. The anchors then outlive the drag: the
+    /// pointer stays hidden behind a drawn hand that no longer moves, and the
+    /// NEXT drag starts from the old one's frame — on another photo, the
+    /// previous photo's crop. Escape tears the overlay down, which is the only
+    /// thing that cleared them. That is the report, step for step.
+    ///
+    /// A released mouse button ends every drag, so it clears them here — one
+    /// runloop turn later, after any `onEnded` that DID fire has run, which
+    /// makes this a no-op whenever SwiftUI behaved.
+    private func installCropMouseUpMonitor() {
+        guard cropMouseUpMonitor == nil else { return }
+        cropMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
+            DispatchQueue.main.async { resetCropDragState() }
+            return event
+        }
+    }
+
+    private func removeCropMouseUpMonitor() {
+        if let cropMouseUpMonitor {
+            NSEvent.removeMonitor(cropMouseUpMonitor)
+            self.cropMouseUpMonitor = nil
+        }
+    }
+
+    /// Everything a crop drag holds between its first and last event.
+    private func resetCropDragState() {
+        if dragStartCrop != nil { dragStartCrop = nil }
+        if rotateDragStartAngle != nil { rotateDragStartAngle = nil }
+        if rotateDragStartCrop != nil { rotateDragStartCrop = nil }
+        if activeCropHandle != nil { activeCropHandle = nil }
+        endCropMove()
+    }
+
     private func removeMergeClickMonitor() {
         if let mergeClickMonitor {
             NSEvent.removeMonitor(mergeClickMonitor)
@@ -22353,7 +22729,7 @@ struct DevelopView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(PlainHoverButtonStyle())
+            .buttonStyle(ChecklistRowButtonStyle())
 
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(section.rows) { row in
@@ -22401,7 +22777,7 @@ struct DevelopView: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(PlainHoverButtonStyle())
+        .buttonStyle(ChecklistRowButtonStyle())
     }
 
     // Shared by the header's "Reset" and the footer's "Reset All" so the two
@@ -22618,7 +22994,8 @@ struct DevelopView: View {
 
         let copyFailures = failures
         let copies = created
-        let busy = thenRecipe.map { "Duplicating for \($0.title)…" } ?? "Duplicating…"
+        let busy = thenRecipe.map { "Duplicating for \($0.title)…" }
+            ?? (blackAndWhite ? "Duplicating in B&W…" : "Duplicating…")
 
         runBake(jobs, desaturate: blackAndWhite, busyMessage: busy) { done, bakeFailures in
             let total = copyFailures + bakeFailures
@@ -22651,9 +23028,16 @@ struct DevelopView: View {
         let openPhoto = selectedURL
 
         isFlattening = true
-        exportStatusText = busyMessage
+        // ⚠️ WHAT and HOW MANY, always. Reported 23.09: *„Duplicating and BW
+        // samo pise Duplicating a ne pise koliko i sta! Mora za sve da pise
+        // koliko i sta!"*. The count moves as each photo finishes.
+        let what = busyMessage.hasSuffix("…") ? String(busyMessage.dropLast()) : busyMessage
+        exportStatusText = "\(what) 1 of \(jobs.count)…"
 
-        PhotoBakeService.bake(jobs, desaturate: desaturate) { baked, failed in
+        PhotoBakeService.bake(jobs, desaturate: desaturate, progress: { done, total in
+            guard isFlattening, done < total else { return }
+            exportStatusText = "\(what) \(done + 1) of \(total)…"
+        }) { baked, failed in
             isFlattening = false
 
             // Re-checked rather than remembered: the client can open a
@@ -23133,6 +23517,45 @@ struct DevelopView: View {
 
     // MARK: Actions
 
+    /// ⚠️ THE OPEN PHOTO, CHANGED FROM OUTSIDE THIS EDITOR, IS SHOWN AT ONCE.
+    ///
+    /// Reported 23.09: *„kad uradim neki enhance ili mono background … kad se
+    /// zavrsi ta otvorena slika ostaje ista dok ne promenim sliku pa se vratim
+    /// na nju a treba automatski cim se zavrsi"*. A recipe run on a selection
+    /// (filmstrip or grid), a Sync, a recipe Undo — each writes the store and
+    /// bakes a flattened base, and the only thing Create did on hearing it was
+    /// redraw the filmstrip tile. The editor kept its own `settings` and its
+    /// old base image until the photo was opened again, which is exactly
+    /// "change the photo and come back".
+    ///
+    /// Told apart from the editor's OWN writes by what it last wrote
+    /// (`editorWriteMark`, set in renderNow): the store holding that value
+    /// means the change is ours, and a slider being dragged is never pulled
+    /// out from under the hand. Anything else is somebody else's result, and
+    /// the store is the truth — reloaded the way opening the photo loads it,
+    /// minus the reset of zoom and tools.
+    private func reloadOpenPhotoIfChangedElsewhere(_ changed: Set<URL>) {
+        guard let url = selectedURL, changed.contains(url) else { return }
+        let stored = PhotoEditStore.settings(for: url)
+        if editorWriteMark.url == url, editorWriteMark.settings == stored { return }
+        guard stored != settings else { return }
+        settings = stored
+        pendingCrop = stored.crop ?? .full
+        if let id = selectedLayerID, !stored.layers.contains(where: { $0.id == id }) {
+            selectedLayerID = nil
+        }
+        if let id = selectedLocalAdjustmentID,
+           !stored.localAdjustments.contains(where: { $0.id == id }) {
+            selectedLocalAdjustmentID = nil
+        }
+        lastCommittedSettings = stored
+        editorWriteMark.url = url
+        editorWriteMark.settings = stored
+        // The base too: a recipe FLATTENS, so the pixels under the settings
+        // are new as well.
+        loadImages(for: url)
+    }
+
     private func selectPhoto(_ url: URL) {
         guard url != selectedURL else {
             return
@@ -23141,7 +23564,9 @@ struct DevelopView: View {
         selectedURL = url
         resetZoom()
         isCropping = false
-        dragStartCrop = nil
+        // All of it, not only dragStartCrop: a rotation start left behind
+        // here was the previous photo's crop waiting for the next drag.
+        resetCropDragState()
         showOriginal = false
         settings = PhotoEditStore.settings(for: url)
         pendingCrop = settings.crop ?? .full
@@ -24482,6 +24907,8 @@ struct DevelopView: View {
     private func renderNow() {
         if let selectedURL {
             PhotoEditStore.setSettings(settings, for: selectedURL)
+            editorWriteMark.url = selectedURL
+            editorWriteMark.settings = settings
         }
 
         guard let previewBaseImage else {
@@ -24908,13 +25335,27 @@ struct DevelopView: View {
         panel.message = "Choose a folder for the \(urls.count) selected photo\(urls.count == 1 ? "" : "s")"
             + rejectedSkipNotice(skippedRejected)
 
-        guard panel.runModal() == .OK, let destinationFolder = panel.url else {
-            return
+        panel.directoryURL = ExportFolderMemory.lastFolder
+        // ⚠️ NOT runModal. Reported 23.09: *„kliknem Export tada se zamrzne
+        // kruzic u boji kruzi i ceka se da se otvori folder"* — runModal holds
+        // the main thread for as long as the out-of-process panel takes to come
+        // up, and it came up in the photos' own folder, hundreds of RAWs to
+        // draw. `begin` returns at once; the panel opens in the last export
+        // folder (ExportFolderMemory).
+        panel.begin { response in
+            guard response == .OK, let destinationFolder = panel.url else {
+                return
+            }
+            ExportFolderMemory.lastFolder = destinationFolder
+            startExportSelected(urls, format: format, quality: quality, to: destinationFolder)
         }
+    }
 
+    private func startExportSelected(_ urls: [URL], format: ExportFormat, quality: Double, to destinationFolder: URL) {
         exportStatusText = "Exporting 0/\(urls.count)…"
+        exportProgress = 0
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developBatchQueue.async {
             var successCount = 0
 
             for (index, url) in urls.enumerated() {
@@ -24939,11 +25380,13 @@ struct DevelopView: View {
                 let completed = index + 1
                 DispatchQueue.main.async {
                     exportStatusText = "Exporting \(completed)/\(urls.count)…"
+                    exportProgress = Double(completed) / Double(urls.count)
                 }
             }
 
             DispatchQueue.main.async {
                 exportStatusText = "Exported \(successCount)/\(urls.count)"
+                exportProgress = nil
                 let dismissWorkItem = DispatchWorkItem { exportStatusText = nil }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: dismissWorkItem)
             }
@@ -24982,13 +25425,27 @@ struct DevelopView: View {
         panel.message = "Choose a folder for the \(editedURLs.count) edited photo\(editedURLs.count == 1 ? "" : "s")"
             + rejectedSkipNotice(skippedRejected)
 
-        guard panel.runModal() == .OK, let destinationFolder = panel.url else {
-            return
+        panel.directoryURL = ExportFolderMemory.lastFolder
+        // ⚠️ NOT runModal. Reported 23.09: *„kliknem Export tada se zamrzne
+        // kruzic u boji kruzi i ceka se da se otvori folder"* — runModal holds
+        // the main thread for as long as the out-of-process panel takes to come
+        // up, and it came up in the photos' own folder, hundreds of RAWs to
+        // draw. `begin` returns at once; the panel opens in the last export
+        // folder (ExportFolderMemory).
+        panel.begin { response in
+            guard response == .OK, let destinationFolder = panel.url else {
+                return
+            }
+            ExportFolderMemory.lastFolder = destinationFolder
+            startExportAll(editedURLs, format: format, quality: quality, to: destinationFolder)
         }
+    }
 
+    private func startExportAll(_ editedURLs: [URL], format: ExportFormat, quality: Double, to destinationFolder: URL) {
         exportStatusText = "Exporting 0/\(editedURLs.count)…"
+        exportProgress = 0
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developBatchQueue.async {
             var successCount = 0
 
             for (index, url) in editedURLs.enumerated() {
@@ -25022,11 +25479,13 @@ struct DevelopView: View {
                 let completed = index + 1
                 DispatchQueue.main.async {
                     exportStatusText = "Exporting \(completed)/\(editedURLs.count)…"
+                    exportProgress = Double(completed) / Double(editedURLs.count)
                 }
             }
 
             DispatchQueue.main.async {
                 exportStatusText = "Exported \(successCount)/\(editedURLs.count)"
+                exportProgress = nil
                 let dismissWorkItem = DispatchWorkItem { exportStatusText = nil }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: dismissWorkItem)
             }
@@ -25131,6 +25590,54 @@ enum EditSliderDrag {
     }
 }
 
+/// ⚠️ A SLIDER DRAG TALKS TO THE EDITOR 30 TIMES A SECOND, NOT ON EVERY MOUSE
+/// MOVE. Reported 23.09 after a real shoot: *„kada pomeram slidebar … U C4S sve
+/// laguje!"* against Lightroom. Every write to the binding lands in
+/// DevelopView's `settings`, and that re-evaluates the whole editor — panel,
+/// every slider, layers, filmstrip — once per mouse event, which a trackpad
+/// sends at 60–120 Hz. The render itself is already throttled to 20 ms
+/// (scheduleRender); the body passes were not.
+///
+/// The thumb is drawn from the slider's own `live` value, so it follows the
+/// pointer with no delay at all; only the hand-off is paced. Trailing, so the
+/// value where the pointer stops is sent even if it stops between ticks, and
+/// `finish` sends the last one exactly on release.
+final class SliderPush {
+    static let interval: TimeInterval = 1.0 / 30
+    private var last = Date.distantPast
+    private var pending: Double?
+    private var work: DispatchWorkItem?
+
+    func send(_ value: Double, to write: @escaping (Double) -> Void) {
+        pending = value
+        let wait = Self.interval - Date().timeIntervalSince(last)
+        if wait <= 0 {
+            fire(write)
+        } else if work == nil {
+            let item = DispatchWorkItem { [weak self] in self?.fire(write) }
+            work = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: item)
+        }
+    }
+
+    func finish(_ write: (Double) -> Void) {
+        work?.cancel()
+        work = nil
+        if let pending { write(pending) }
+        pending = nil
+        last = .distantPast
+    }
+
+    private func fire(_ write: (Double) -> Void) {
+        work?.cancel()
+        work = nil
+        guard let value = pending else { return }
+        pending = nil
+        last = Date()
+        write(value)
+    }
+}
+
 private struct EditTrackSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -25151,9 +25658,14 @@ private struct EditTrackSlider: View {
     /// Where this drag started, or nil when no drag is in flight. See
     /// EditSliderDrag for what it is for.
     @State private var grab: EditSliderDrag.Grab?
+    /// The thumb's position while a drag runs — drawn at once, handed to the
+    /// binding at most 30 times a second. See SliderPush.
+    @State private var live: Double?
+    @State private var push = SliderPush()
 
     var body: some View {
         GeometryReader { proxy in
+            let value = live ?? self.value
             // The thumb's LEADING edge travels across (width - thumbSize),
             // so its CENTRE stays inside the track at both ends instead of
             // hanging half-off — hence every conversion below goes through
@@ -25237,10 +25749,15 @@ private struct EditTrackSlider: View {
                             pressX: drag.startLocation.x, thumbX: thumbX,
                             thumbSize: thumbSize, usable: usable, range: range, value: value)
                         self.grab = grab
-                        value = EditSliderDrag.value(at: drag.location.x, grab: grab,
-                                                     usable: usable, range: range)
+                        let next = EditSliderDrag.value(at: drag.location.x, grab: grab,
+                                                        usable: usable, range: range)
+                        live = next
+                        push.send(next) { self.value = $0 }
                     }
                     .onEnded { _ in
+                        // The last value always lands, and exactly.
+                        push.finish { self.value = $0 }
+                        live = nil
                         grab = nil
                         onEditingChanged(false)
                     }
@@ -25281,9 +25798,14 @@ private struct GradientTrackSlider: View {
     /// Where this drag started, or nil when no drag is in flight. See
     /// EditSliderDrag for what it is for.
     @State private var grab: EditSliderDrag.Grab?
+    /// The thumb's position while a drag runs — drawn at once, handed to the
+    /// binding at most 30 times a second. See SliderPush.
+    @State private var live: Double?
+    @State private var push = SliderPush()
 
     var body: some View {
         GeometryReader { proxy in
+            let value = live ?? self.value
             // The thumb's LEADING edge travels across (width - thumbSize),
             // so its CENTER stays inside the track at both ends instead of
             // hanging half-off — hence every conversion below goes through
@@ -25352,10 +25874,15 @@ private struct GradientTrackSlider: View {
                             pressX: drag.startLocation.x, thumbX: usable * CGFloat(clamped),
                             thumbSize: thumbSize, usable: usable, range: range, value: value)
                         self.grab = grab
-                        value = EditSliderDrag.value(at: drag.location.x, grab: grab,
-                                                     usable: usable, range: range)
+                        let next = EditSliderDrag.value(at: drag.location.x, grab: grab,
+                                                        usable: usable, range: range)
+                        live = next
+                        push.send(next) { self.value = $0 }
                     }
                     .onEnded { _ in
+                        // The last value always lands, and exactly.
+                        push.finish { self.value = $0 }
+                        live = nil
                         grab = nil
                         onEditingChanged(false)
                     }

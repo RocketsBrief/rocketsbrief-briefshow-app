@@ -765,7 +765,11 @@ final class SDInpaintPipeline: ObservableObject {
     /// still 512 and `defaultSteps` never raised (12, 8 since 22.09). *„ne povecavaj SD"*. The car
     /// comes from the size of the hole, so enlarging the canvas here would be
     /// feeding the very failure being answered.
-    static let generativeUsesLaMaBase = false
+    ///
+    /// ⚠️ 23.09 back to `true`, the client again: *„Ipak vracamo lama da
+    /// uradi i posle SD na 0.4"* — after a real shoot with pure SD. 0.4 is
+    /// the strength furthest from invention that was measured (0.55 = palm).
+    static let generativeUsesLaMaBase = true
 
     /// nil hands SD an empty hole and the full schedule; 0.5 hands it LaMa's
     /// fill and the last half of the schedule. NOT changed by the switch —
@@ -778,7 +782,12 @@ final class SDInpaintPipeline: ObservableObject {
     /// lame 0.5"* over going back to noise. 0.55 is where a whole palm
     /// appeared (KORAK 150/151); 0.5 is the last step below it. If invention
     /// comes back, the answer is down toward 0.4, never to noise.
-    static let defaultRefineStrength: Float? = generativeUsesLaMaBase ? 0.5 : nil
+    ///
+    /// ⚠️ 0.5 → 0.4 on 23.09 with LaMa coming back (see the switch above):
+    /// *„posle SD na 0.4 (jel to okay jacina da se ne izmislja nikakav
+    /// predmet)"*. The known price of 0.4 is the one reported on 17.09 —
+    /// softer, smeared fill — not invention.
+    static let defaultRefineStrength: Float? = generativeUsesLaMaBase ? 0.4 : nil
 
     // Loading the 1.6 GB UNet is ~18 seconds of Neural Engine compilation, so
     // the models are loaded once and kept. `warmUp()` moves that cost to the

@@ -49,17 +49,18 @@ uses_lama = match.group(1) == "true"
 print(f"\ngenerativeUsesLaMaBase is {str(uses_lama).lower()}")
 
 # The shipping answer. 12.09 set it to `true` on his report of invention; 22.09
-# he chose `false` again, knowingly (plain SD from noise). Written as a check so
-# the flag cannot move by accident in either direction without this line moving.
-SHIPPING_USES_LAMA = False
-check("the switch is where the client last put it (22.09: SD alone, no LaMa)",
+# he chose `false` again, knowingly (plain SD from noise); 23.09, after a real
+# shoot, back to `true` at 0.4. Written as a check so the flag cannot move by
+# accident in either direction without this line moving.
+SHIPPING_USES_LAMA = True
+check("the switch is where the client last put it (23.09: LaMa, then SD 0.4)",
       uses_lama == SHIPPING_USES_LAMA,
       "false means SD starts from noise with an empty prompt, which is the "
       "configuration that invents — only change with his word")
 
 check("the measured refine strength is bypassed by the switch, never rewritten",
-      "generativeUsesLaMaBase ? 0.5 : nil" in SD,
-      "0.5 is his choice of 17.09 (KORAK 194); at 0.55 a whole palm appeared")
+      "generativeUsesLaMaBase ? 0.4 : nil" in SD,
+      "0.4 is his choice of 23.09 (0.5 on 17.09); at 0.55 a whole palm appeared")
 
 check("the oversize threshold follows the switch",
       "SDInpaintPipeline.generativeUsesLaMaBase ? 1400 : 600" in DEVELOP,

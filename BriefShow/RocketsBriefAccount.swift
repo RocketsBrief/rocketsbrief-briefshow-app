@@ -76,7 +76,10 @@ enum KeychainStore {
 final class AccountManager: ObservableObject {
     static let shared = AccountManager()
 
-    @Published private(set) var session: RocketsBriefSession?
+    @Published private(set) var session: RocketsBriefSession? {
+        // Tags diagnostics rows by account, so two studios never mix.
+        didSet { UserDefaults.standard.set(session?.email, forKey: Diagnostics.accountEmailKey) }
+    }
     @Published var isBusy = false
     @Published var errorMessage: String?
     @Published var pendingConfirmationEmail: String?
@@ -92,6 +95,7 @@ final class AccountManager: ObservableObject {
 
     private init() {
         session = KeychainStore.load()
+        UserDefaults.standard.set(session?.email, forKey: Diagnostics.accountEmailKey)
         if session != nil {
             Task { await refreshSessionIfNeeded() }
         }

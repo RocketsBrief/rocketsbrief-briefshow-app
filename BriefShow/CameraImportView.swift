@@ -143,6 +143,30 @@ struct CameraImportView: View {
         _destination = State(initialValue: Self.defaultDestination)
     }
 
+    /// The live device for this window's camera, if the browser has one that
+    /// is not the object this session is holding — the camera came back as a
+    /// new device after being switched on.
+    private func liveReplacement() -> ConnectedCamera? {
+        guard let current = source.camera else { return nil }
+        let cameras = CameraBrowser.shared.cameras
+        let match = cameras.first { $0.id == current.id }
+            ?? cameras.first { $0.name == current.name }
+        guard let match, match.device !== current.device else { return nil }
+        return match
+    }
+
+    /// Rebuilds the window against the source as it is NOW: the live camera
+    /// object if there is one, the same folder read again otherwise.
+    private func refreshSource() {
+        if let current = source.camera {
+            let cameras = CameraBrowser.shared.cameras
+            let live = liveReplacement() ?? cameras.first { $0.id == current.id } ?? cameras.first
+            onSourceChosen(.camera(live ?? current))
+        } else {
+            onSourceChosen(source)
+        }
+    }
+
     /// Points this window at a folder — a mounted SD card, or any folder.
     ///
     /// Opens where the volumes are, because a card reader is what this is for
@@ -208,6 +232,16 @@ struct CameraImportView: View {
             guard case .finished(_, let folder) = phase else { return }
             onImported(folder)
             onClose()
+        }
+        // The camera came back as a new device (switched on after being
+        // plugged in): move over to it by itself — but never in the middle of
+        // a copy, which has its own disconnect message to show.
+        .onReceive(CameraBrowser.shared.$cameras) { _ in
+            guard liveReplacement() != nil else { return }
+            switch session.phase {
+            case .importing, .finished: return
+            default: refreshSource()
+            }
         }
         // Sized to fit INSIDE the ShowGrid window, not to a fixed minimum.
         //
@@ -287,6 +321,22 @@ struct CameraImportView: View {
             .buttonStyle(BrutalButtonStyle())
             .padding(.horizontal, 12)
             .padding(.top, 8)
+
+            // Asked for 23.09: *„mozda dugme refresh u ovom prozoru da povuce
+            // opet import"* — a camera switched on after it was plugged in
+            // left this window on the dead device. It now rebinds by itself
+            // (onReceive below); this is the way to ask for it by hand.
+            Button {
+                refreshSource()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.clockwise")
+                    Text("Refresh")
+                }
+            }
+            .buttonStyle(BrutalButtonStyle())
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
 
             Text(statusLine)
                 .font(.custom("Figtree", size: 11))

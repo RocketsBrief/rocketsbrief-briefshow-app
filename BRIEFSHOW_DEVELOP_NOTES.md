@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 12. septembar 2026 (KORAK 179; **v11.20 je gore**).
+Beleška za nastavak rada. Poslednja izmena: 24. septembar 2026 (KORAK 218, nije objavljeno; **v11.51 je gore**).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -721,6 +721,54 @@ mogu videti na ekranu**: da prozor ostaje 834 posle promene teme, i hover
 animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 24. septembar 2026, noć — KORAK 218 (NIJE OBJAVLJENO, push-ovano na `briefshow-develop`)
+
+Klijentova proba sa pravog snimanja (3× sporije nego Lightroom) + 8 slika u `~/Desktop/C4S Problem Screenshots/`.
+**BUILD SUCCEEDED, lenjiri zeleni, ništa nije viđeno na ekranu kod klijenta.** `/Applications/C4S Suite.app` je i dalje v11.51.
+
+**Urađeno:**
+| | |
+|---|---|
+| Generative | nazad LaMa + SD **0,4** (`generativeUsesLaMaBase = true`) |
+| grid dok je Create otvoren | `ShowGridSuspension`: prozor sakriven, sličice puštene, redovi otkazani, nema re-rendera po izmeni; vraća se na Grid dugme/zatvaranje |
+| dijagnostika | `Diagnostics.swift`: zamrzavanja ≥0,25 s + heartbeat 5 min, lokalno u `Application Support/Diagnostics/diagnostics.jsonl`; slanje u Supabase je **opt-in** prekidač u profilu. ⚠️ **Tabela NIJE napravljena** — `Tools/diagnostics.sql` treba pokrenuti u Supabase SQL editoru (RocketsBrief), Chrome ekstenzija nije bila povezana |
+| crop se koči | puštanje miša uvek čisti stanje vučenja (`installCropMouseUpMonitor`, `resetCropDragState`), i promena slike takođe |
+| slika posle Enhance/Mono | `reloadOpenPhotoIfChangedElsewhere` — otvorena slika se ponovo učita kad je neko drugi promeni (`EditorWriteMark`) |
+| upis izmena | JSON cele baze sada van glavne niti (`writeQueue`), app čeka upis pri gašenju |
+| slajderi | `SliderPush` — editor dobija vrednost 30×/s, palac ide odmah |
+| export | `panel.begin` umesto `runModal`, otvara se u poslednjem export folderu (`ExportFolderMemory`), traka koja se puni (`exportProgress`) |
+| grupni poslovi | export/bake/recepti na `developBatchQueue` — refine posle crop-a više ne čeka iza njih |
+| natpisi | „Duplicating in B&W 3 of 12…", „Making black & white 3 of 12…" (Create i grid) |
+| preset ime | `PresetNameField` — boje teme, sopstveno stanje (bez kašnjenja) |
+| filmstrip | skroluje do otvorene slike |
+| Sync prozor | hover ne pomera kućicu (`ChecklistRowButtonStyle`), klik ne osvežava ceo editor (`SyncChoice`) |
+| kamera | Refresh dugme + sam se prebaci kad se upaljena kamera prijavi kao nov uređaj; browser zamenjuje mrtav uređaj živim |
+
+**NAĐEN UZROK tamne linije oko subjekta (slike 5, 6) — NIJE POPRAVLJENO:** Clarity (`applyClarity`) sabira
+kroz `CIAdditionCompositing`, koji sabira i ALFU → posle Clarity-ja alfa = 3. Na celoj slici se odseče na 1 i
+ne vidi se; kroz meku masku (isečak People) piksel postaje boja·m sa alfom 3m → odsečeno na 1 → ivica m puta
+tamnija. Izmereno: `Tools/run-enhance-edge-test.py` (FROZEN=1 ONLY=clarity PEOPLE_ONLY=1) prsten −16.
+Probano i ODBAČENO (Clarity lenjir pao): (1) nulirati alfu sabirka kroz CIColorMatrix — matrica radi na
+unpremultiplied, pa nestane i boja; (2) CIBlendWithMask sa maskom 1+k — maska se odseca na [0,1];
+(3) množenje (1,1,1,⅓) — pomera osvetljenost 7,9 nivoa. Clarity je VRAĆEN na staro.
+
+**„Subject prati slajdere slike" (ImageLayer.liveSource) — napisano pa ISKLJUČENO:** bez gornje popravke
+Clarity-ja živi isečak ispadne ispran kao negativ. Kod je unutra (`liveSource`, `livePlacedLayer`,
+`liveLayerPixels`), samo `PeopleLayerFactory` ne postavlja `liveSource` (zakomentarisano). Uključiti posle Clarity popravke.
+
+### PLAN ZA SUTRA (redom)
+1. **Clarity alfa** — ideja: mali `CIColorKernel` (`vec4(a.rgb + b.rgb, a.a)`) za sabiranje, ili računati detail
+   na neprovidnoj kopiji pa vratiti alfu sa `sourceIn`. Lenjiri: `run-clarity-test.py <NEF>` (mora ostati zelen),
+   `run-enhance-edge-test.py <NEF> 800` (FROZEN=1 i bez), `run-clarity-layer-test.py`.
+2. Uključiti `liveSource` u `PeopleLayerFactory`; `run-people-layer-strength-test.py <NEF>` mora dati 1,00 i kontrolu 0,00.
+3. **Dehaze na Intel-u** (slike 3, 7): crne mrlje / oblik na nebu. Proveriti alfu i deljenje sa t blizu 0; i slika 8 (pozadina uništena u sivo posle Enhance) je verovatno ista porodica.
+4. **Import sa kamere**: traka koja se puni sa brojevima (sada samo spinner + „9 of 155"), i pravilo „svako učitavanje ima traku sa brojevima".
+5. Iz prve liste: **⌘A** u Create-u i **lag četkice** — izmeriti `sample`-om u app-i, pa popraviti.
+6. Pokrenuti `Tools/diagnostics.sql` u Supabase.
+7. Rebuild, restart, klijent proba, pa jedan paket.
+
+---
 
 ### GDE SMO STALI — 23. septembar 2026, veče — KORAK 212 (NIJE OBJAVLJENO, commit lokalan)
 
@@ -23585,3 +23633,12 @@ menjano. Oznaka verzije u app-i se čita iz bundle-a.
 
 - stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.51`
 - direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.51/C4S-Suite-11.51.zip`
+
+
+---
+
+## KORAK 218 — proba sa pravog snimanja: grid, crop, export, slajderi, dijagnostika; uzrok linije oko subjekta nađen (23–24. septembar 2026)
+
+Detalji, šta je urađeno, šta je probano i odbačeno i plan za sutra: v. „GDE SMO STALI — 24. septembar" na vrhu.
+Novi lenjiri: `run-people-layer-strength-test.py`, `run-enhance-edge-test.py` (env: FROZEN, ONLY, PEOPLE_ONLY, DIAG),
+`run-clarity-layer-test.py`, `run-clarity-roi-test.py`. Svi primaju putanju do NEF-a sa ljudima (`BriefShow RAW Check/2026-09-01/C4S_9021.NEF`).

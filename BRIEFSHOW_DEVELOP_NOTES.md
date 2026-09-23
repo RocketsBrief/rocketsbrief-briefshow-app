@@ -23527,8 +23527,8 @@ Probano pa izbačeno istog dana, da se ne ponavlja:
 
 ## KORAK 215 — BriefContact: ViewThem za veb, sa kamerom kao čuvarom (23. septembar 2026)
 
-Veb galerija za kupce, ime dao klijent. **Sve je u `BriefContact/`, a puna beleška je u
-`BriefContact/BRIEFCONTACT_NOTES.md`.** Kad se radi na BriefContact-u, čita se ta beleška, ne ova.
+Veb galerija za kupce, ime dao klijent. ⚠️ **Više NIJE u ovom repozitorijumu, v. KORAK 216.** Kad se
+radi na BriefContact-u, čita se `~/Desktop/BriefContact/BRIEFCONTACT_NOTES.md`, ne ova beleška.
 
 Ukratko: crna mreža kao u app-i (Black ili Blurry, suprotna faza, preklop), baterijska lampa, dve slike
 po strani prikovane za ekran ispod kamere, čuvar na kameri u Web Worker-u (COCO-SSD za telefon,
@@ -23537,3 +23537,20 @@ počinje screenshot ili browser izgubi fokus, i kartica saglasnosti za kameru. *
 da pregleda pravnik pre objave.**
 
 ⚠️ Otvoreno: telefon postavljen vodoravno se prepoznaje lošije nego uspravno.
+
+---
+
+## KORAK 216 — BriefContact postaje zaseban projekat, a ViewThem izlazi iz app-e (23. septembar 2026)
+
+Klijent: *„napravi kao novi projekat ne kao briefshow granu!!!"*, pa *„u c4s suity skroz ukloni
+viewthem dugme i sve u vezi njega jer sad imamo BriefContact na git hubu"*.
+
+- **BriefContact** je sada svoj projekat: `~/Desktop/BriefContact`, GitHub
+  `https://github.com/RocketsBrief/BriefContact` (privatan, grana `main`). Njegova beleška je
+  `BRIEFCONTACT_NOTES.md` u tom folderu. Fascikla `BriefContact/` je **obrisana iz ovog repozitorijuma**
+  (bila je dodata u KORAKU 215 i jednom push-ovana; ostaje u istoriji).
+- **ViewThem je uklonjen iz C4S Suite-a:** dugme u headeru grida, `BriefShow/ViewThem.swift` i sačuvane
+  postavke (`viewThem.photoPaths`, `viewThem.allowCapture`) na ovoj mašini. KORAK 214 i njegova dopuna
+  ostaju u belešci kao istorija, jer iz njih je BriefContact nastao.
+
+**Stanje:** BUILD SUCCEEDED, `header-bar` i `grid-shape` zeleni, app instaliran i pokrenut bez ViewThem-a.

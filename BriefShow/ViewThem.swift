@@ -188,7 +188,7 @@ struct ViewThemBands {
     /// With Full black: the black bands blink instead of standing still — on in
     /// one frame, gone in the next, at the rhythm the picker sets. Asked for on
     /// 23.09: *„daj mi opciju da treperi da mogu da je ukljucim i iskljucim"*.
-    var flicker = false
+    var flicker = true
     /// How many times a second the black bands come and go when Flicker is on.
     ///
     /// ⚠️ Flipping on every display frame (the first version) is 30 a second on
@@ -198,11 +198,14 @@ struct ViewThemBands {
     /// skroz … daj mi isto da izaberem flicker brzinu"*. Now it is a rate you
     /// set, black for half of each cycle and picture for the other half. With
     /// Own rate each band runs at 1×, 1.5× or 2× of it.
-    var flickerSpeed: Double = 2
+    var flickerSpeed: Double = 14
     var strength: Double = 1.0
-    var count: Double = 14
-    var thickness: Double = 18
-    var speed: Double = 40
+    // The defaults the client settled on after the phone tests, 23.09:
+    // *„lines: 20, flicker speed: 14, ticknes: 10, Speed: 95. I sve ukljuceno
+    // full black, Vertical, i Flicker"*.
+    var count: Double = 20
+    var thickness: Double = 10
+    var speed: Double = 95
     var rhythm: Rhythm = .everyFrame
 }
 
@@ -463,28 +466,30 @@ struct ViewThemView: View {
     private var bandControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Picker("", selection: $bands.rhythm) {
-                    ForEach(ViewThemBands.Rhythm.allCases) { Text($0.rawValue).tag($0) }
+                HStack(spacing: 12) {
+                    Picker("", selection: $bands.rhythm) {
+                        ForEach(ViewThemBands.Rhythm.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+                    .labelsHidden()
+
+                    Toggle("Full black", isOn: $bands.fullBlack)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+
+                    Toggle("Vertical", isOn: $bands.vertical)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+
+                    Toggle("Flicker", isOn: $bands.flicker)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .disabled(!bands.fullBlack)
+
+                    benchSlider("Flicker speed", $bands.flickerSpeed, 0.5...30, "%.1f /s")
+                        .disabled(!bands.fullBlack || !bands.flicker)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 190)
-                .labelsHidden()
-
-                Toggle("Full black", isOn: $bands.fullBlack)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-
-                Toggle("Vertical", isOn: $bands.vertical)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-
-                Toggle("Flicker", isOn: $bands.flicker)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .disabled(!bands.fullBlack)
-
-                benchSlider("Flicker speed", $bands.flickerSpeed, 0.5...30, "%.1f /s")
-                    .disabled(!bands.fullBlack || !bands.flicker)
 
                 TimelineView(.periodic(from: .now, by: 0.5)) { _ in
                     Text(String(format: "%.0f fps", counter.fps))

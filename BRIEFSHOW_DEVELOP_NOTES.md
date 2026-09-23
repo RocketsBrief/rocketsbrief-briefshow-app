@@ -23509,3 +23509,16 @@ pre nego što ovo stigne do kupaca.
 
 **Lenjiri:** `header-bar`, `grid-shape` zeleni. **Stanje:** BUILD SUCCEEDED, instalirano i
 pokrenuto, klijent probao telefonom i potvrdio. Sledeće: Cloudflare verzija za veb.
+
+### 214, dopuna — početna podešavanja, i dva pokušaja koja su izbačena
+
+Početno, po klijentovom izboru posle probe telefonom: **Lines 20, Flicker speed 14, Thickness 10,
+Speed 95; Full black, Vertical i Flicker uključeni.**
+
+Probano pa izbačeno istog dana, da se ne ponavlja:
+- **Moaré** (fina rešetka 1–8 px pod uglom) — *„nije more nesto dobro"*.
+- **TV roll** (cela slika trepće crno, pa rolling shutter telefona pravi trake kao na TV-u) —
+  *„izbaci tv rol nije dobro!"*. Ekran menja sliku najviše 60 puta u sekundi, a TV stotinama puta,
+  pa su trake bile preširoke.
+- **Malusov zakon** nije ni pravljen: polarizacija ekrana je u hardveru, a kamera telefona nema
+  polarizacioni filter. Softver tu nema šta da uradi, pa prekidač ne bi radio ništa.

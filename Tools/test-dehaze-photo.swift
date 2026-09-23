@@ -174,7 +174,18 @@ for amount in [0.5, 1.0, -0.5, -1.0] {
     // down over the whole frame ON PURPOSE — a clear picture has no depth for
     // the prior to grade by, so flat is what atmosphere looks like there — and
     // measuring that against this line would be measuring a decision.
-    if amount > 0 && pulled(now, over: clearest) > 0.25 {
+    //
+    // ⚠️ PLUS THE LENS VEIL, since 23.09. Sun on the lens lays the same wash
+    // over the clearest content too, and taking it off is the point — *„da mogu
+    // da se borim kad je previse sunca na lens i bude pale image"*. What the
+    // veil alone accounts for at the clear end is `1/t' − 1`, with t' the veil
+    // folded through the slider exactly as the map is; the 0.25 stands on top
+    // of that, so a frame with NO veil is held to the old line unchanged.
+    let veilRead = PhotoEditRenderer.lensVeil(of: neutralImage, atmosphere: air) ?? 0
+    let veilTaken = min(max(veilRead - DehazeAtmosphere.lensVeilFloor, 0),
+                        DehazeAtmosphere.maximumLensVeil)
+    let veilAllowance = 1 / DehazeAtmosphere.scaledTransmission(1 - veilTaken, strength: amount) - 1
+    if amount > 0 && pulled(now, over: clearest) > 0.25 + veilAllowance {
         print("       FAIL: the clearest quarter of the frame was pulled more than a quarter of its distance from A — the model is acting on content it has no haze reading for.")
         failed = true
     }

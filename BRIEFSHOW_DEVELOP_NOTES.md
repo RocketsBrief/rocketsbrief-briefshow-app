@@ -23408,3 +23408,54 @@ loop-u, `_NativeDictionary.setValue` **0 puta** u uzorku.
 sa 250+ slika, prevlačenje više slika, ulaz i izlaz iz BriefShow-a.
 ⚠️ **12 mesta** nije mehanički prešlo na uvećanje sadržaja (birač boje, fontovi, par panela u
 `Develop.swift`) — nisu među imenovanima, doteruju se kad se primete.
+
+---
+
+## KORAK 213 — kartica ispod trake se otvara glatko, opisi u dva reda, i Dehaze skida koprenu od sunca (23. septembar 2026)
+
+### Kartica ispod Create trake
+
+Klijent: *„ovaj ovde prazan prostor da ne bude za karticu ako nista nije hoverovano … smoothly da se
+pogura histogram dole"*. **Poništava staro pravilo** da kartica uvek drži svoje mesto: sada ne zauzima
+ništa dok ništa nije pod mišem i otvara/zatvara se za 0,2 s. `captionItemID` zaostaje 0,15 s pri
+izlasku, pa prelazak preko razmaka između dva dugmeta ne zatvara karticu — histogram ne skače.
+
+### Opisi — tačno dva reda, svi
+
+*„maximum dva … po jedan red napravi dva … tri reda napravi dva skrati"*. AI opis sada imenuje ceo AI
+blok (Clean Up + Youthify, Subject Mono, Mono Background, Background Enhanced). Svih 15 tekstova je
+**izmereno** u Figtree 10,5 medium na 290/313/360 pt širine teksta — svaki izlazi na tačno dva reda.
+Novi tekst se meri isto, ne broji slova.
+
+### Dehaze i koprena od sunca na objektivu
+
+*„da mogu da se borim kad je previse sunca na lens i bude pale image"*, uz specifikaciju u stilu
+Lightroom-a. Model iz 187/189 je već bio ono što spec traži — **ali na mlečnom kadru nije radio
+skoro ništa**: mapa je relativna prema najčistijem delu kadra (189), a koprena leži preko CELOG
+kadra, pa se poništavala.
+
+1. **`lensVeil`** — pod dark channel-a (p0,5, na 256 px). Čist kadar ima nešto skoro crno; kadar sa
+   suncem na objektivu nema ništa. Mereno nad 108 kadrova `BriefShow RAW Check/2026-09-01`: medijana
+   0,003, p90 0,112, blede slike 0,17–0,29. Skida se samo iznad **0,10** (`lensVeilFloor`), najviše
+   0,4. Sa podom 0,08 sintetički bliski kraj je pomeren 2,9 (granica 2,85) — zato 0,10.
+2. **Boja iz originala, ton iz rekonstrukcije** (`recoveredColourShare = 0,4`). Bez toga je na
+   C4S_9021 koža postala rumena a sivi šorts ljubičast. Boja vazduha se PRE toga oduzima kroz mapu,
+   pa plava izmaglica i dalje odlazi; za belo A (tipično) oduzimanje je nula.
+3. **Alfa se vraća sa ulaza** — blend mode je pravio 100 providnih piksela na dnu
+   (`run-template-edge-test.py`, „everything at once"). Opaque pa `sourceIn` sa ulazom, pa isečen
+   layer zadržava oblik.
+
+Leva polovina (dodavanje magle) **nije dirana**.
+
+**Lenjiri:** `run-dehaze-test.py` zelen; na fotografijama zeleni 8928, 8984, 8974, 8956. **C4S_9021
+ima 4 pada koja postoje i na HEAD-u** — njegova „najmaglovitija četvrtina" je isečeno belo nebo, pa je
+rastojanje od A nula i odnos nema smisla. Granica „čista četvrtina ≤ 0,25" sada dodaje ono što sama
+koprena objašnjava (`1/t' − 1`); kadar bez koprene drži staru granicu. Zeleni i `template-edge`,
+`background-enhanced`, `effect-extraction`, `slider-parity`, `header-bar`. Cena na 5176×3448 ~120 ms.
+`Tools/dehaze-veil-scan.swift` ispisuje koprenu po kadru.
+
+⚠️ **Nelinearan odziv slajdera iz spec-a NIJE urađen** — menjao bi izgled svake već podešene slike.
+Ponuđeno klijentu, nije traženo dalje.
+
+**Stanje:** BUILD SUCCEEDED, instalirano i pokrenuto. Dehaze viđen na PNG-ovima istog koda, **ne u
+app-i**. Klijent je rekao „okay" i prešao dalje.

@@ -152,6 +152,27 @@ enum DehazeAtmosphere {
     static let clearEndPercentile = 0.90
     static let minimumClearEnd = 0.10
 
+    /// The percentile of the dark channel the lens veil is read off — see
+    /// `PhotoEditRenderer.lensVeil`.
+    static let veilPercentile = 0.005
+
+    /// The most veil the map is allowed to take out. Past this the floor of
+    /// the dark channel is more likely a frame with nothing dark in it at all —
+    /// a white wall, a high-key studio shot — than a lens with the sun on it.
+    static let maximumLensVeil = 0.4
+
+    /// How much veil is ignored — what an ordinary frame's darkest content reads
+    /// without any sun on the lens. Only what is ABOVE it is taken out, so a
+    /// clear frame, and the near end of a hazy one, keep the relative map's
+    /// promise of being left alone.
+    ///
+    /// Measured 23.09 over 108 frames of `BriefShow RAW Check/2026-09-01`:
+    /// median 0.003, 75th percentile 0.064, 90th 0.112; the sun-veiled frames
+    /// read 0.17–0.29. The synthetic plate's near end, laid down at a true t of
+    /// 0.93, reads about 0.07 — with no floor it was moved 10.2 levels where it
+    /// had been moved 2.4, and at a floor of 0.08 still 2.9.
+    static let lensVeilFloor = 0.10
+
     /// The long edge the clear end is read at — a percentile does not need the
     /// full frame any more than A does, and must not pay for one.
     static let clearEndSize = 256.0
@@ -201,6 +222,10 @@ enum DehazeAtmosphere {
     /// grow — the colour of a far-off roof can come back at three times the
     /// saturation it had. Small, and it only bites where the chroma is already
     /// high, so an ordinary scene is untouched.
+    /// How much of the recovery's OWN colour is kept; the rest takes the
+    /// photograph's colour under the recovered tone. See applyDehaze.
+    static let recoveredColourShare = 0.4
+
     static let chromaRelief = 0.22
     static let chromaReliefFrom = 0.10
 

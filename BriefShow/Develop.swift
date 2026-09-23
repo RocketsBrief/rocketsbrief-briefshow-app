@@ -4323,7 +4323,8 @@ enum PhotoEditRenderer {
     /// and then refined with the photograph as its guide so the map follows
     /// edges rather than blocking up in squares the size of the patch.
     static func transmissionMap(of image: CIImage,
-                                atmosphere: (r: Double, g: Double, b: Double)) -> CIImage? {
+                                atmosphere: (r: Double, g: Double, b: Double),
+                                lensVeil: Double = 0) -> CIImage? {
         let extent = image.extent
         let longEdge = max(extent.width, extent.height)
         guard longEdge.isFinite, longEdge > 0 else { return nil }
@@ -4396,9 +4397,21 @@ enum PhotoEditRenderer {
         // the whole difference when it is wrong.
         guard let clearEnd = clearEnd(of: refined) else { return refined }
 
+        // ⚠️ AND THE VEIL OVER THE WHOLE FRAME IS PUT BACK INTO IT, because
+        // dividing by the clear end throws exactly that away. Sun on the lens
+        // lifts EVERY pixel by the same wash, the clearest content included, so
+        // the clear end reads it as "this is what clear looks like here" and
+        // the map comes back at 1 — Dehaze +100 on a milky frame did almost
+        // nothing. Reported 23.09: *„da mogu da se borim kad je previse sunca
+        // na lens i bude pale image"*. The veil is read off the floor of the
+        // dark channel (see lensVeil), which a clear frame has at black and
+        // sand does not lift, so the relative map keeps its job on the beach.
+        let veilTaken = min(max(lensVeil - DehazeAtmosphere.lensVeilFloor, 0),
+                            DehazeAtmosphere.maximumLensVeil)
+        let veilKept = 1 - veilTaken
         let relative = CIFilter.colorMatrix()
         relative.inputImage = refined
-        let k = CGFloat(1 / clearEnd)
+        let k = CGFloat(veilKept / clearEnd)
         relative.rVector = CIVector(x: k, y: 0, z: 0, w: 0)
         relative.gVector = CIVector(x: 0, y: k, z: 0, w: 0)
         relative.bVector = CIVector(x: 0, y: 0, z: k, w: 0)
@@ -4463,6 +4476,57 @@ enum PhotoEditRenderer {
         return max(read, DehazeAtmosphere.minimumClearEnd)
     }
 
+    /// How far the darkest content in this frame has been lifted by a veil
+    /// laid over ALL of it — the milky wash of sun on the lens — as a share of
+    /// the way to the atmospheric light.
+    ///
+    /// A clear frame has something near black in some channel somewhere: a
+    /// shadow, hair, a dark jacket. Veiling glare adds the same light over every
+    /// pixel, so nothing in the frame reaches black any more, and the floor of
+    /// the dark channel is how much was added: with J ≈ 0 there,
+    /// `I/A = 1 − t`, so the floor IS `1 − t` of the veil.
+    ///
+    /// Read at 256 px like A is, off a low percentile rather than the minimum,
+    /// because the minimum is one black speck.
+    static func lensVeil(of image: CIImage,
+                         atmosphere: (r: Double, g: Double, b: Double)) -> Double? {
+        let extent = image.extent
+        let longEdge = max(extent.width, extent.height)
+        guard longEdge.isFinite, longEdge > 0 else { return nil }
+
+        let scale = min(DehazeAtmosphere.clearEndSize / Double(longEdge), 1)
+        let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let smallExtent = small.extent
+        let width = Int(smallExtent.width), height = Int(smallExtent.height)
+        guard width > 1, height > 1 else { return nil }
+
+        let normalise = CIFilter.colorMatrix()
+        normalise.inputImage = small
+        normalise.rVector = CIVector(x: CGFloat(1 / atmosphere.r), y: 0, z: 0, w: 0)
+        normalise.gVector = CIVector(x: 0, y: CGFloat(1 / atmosphere.g), z: 0, w: 0)
+        normalise.bVector = CIVector(x: 0, y: 0, z: CGFloat(1 / atmosphere.b), w: 0)
+        normalise.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        let minimum = CIFilter.minimumComponent()
+        minimum.inputImage = normalise.outputImage
+        guard let dark = minimum.outputImage?.cropped(to: smallExtent) else { return nil }
+
+        var pixels = [Float](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            briefEditsCIContext.render(dark, toBitmap: raw.baseAddress!, rowBytes: width * 16,
+                                       bounds: smallExtent, format: .RGBAf,
+                                       colorSpace: briefEditsSRGBColorSpace)
+        }
+        var values = [Float]()
+        values.reserveCapacity(width * height)
+        for index in stride(from: 0, to: width * height * 4, by: 4) { values.append(pixels[index]) }
+        guard !values.isEmpty else { return nil }
+        values.sort()
+
+        let rank = Int(Double(values.count - 1) * DehazeAtmosphere.veilPercentile)
+        let floor = Double(values[min(max(rank, 0), values.count - 1)])
+        return min(max(floor, 0), 1)
+    }
+
     /// Dehaze, for the photo, for a layer and for a mask alike.
     ///
     /// ⚠️ THE ONE PLACE, like the controls above it — the 🔴 MUST in
@@ -4492,8 +4556,11 @@ enum PhotoEditRenderer {
         let extent = image.extent
         guard extent.width > 1, extent.height > 1 else { return image }
 
+        // The veil only on the right half: the left half lays haze DOWN, and a
+        // frame that already has a veil does not need the map to say so twice.
         guard let atmosphere = atmosphericLight(of: image),
-              let transmission = transmissionMap(of: image, atmosphere: atmosphere)
+              let transmission = transmissionMap(of: image, atmosphere: atmosphere,
+                  lensVeil: dehaze > 0 ? (lensVeil(of: image, atmosphere: atmosphere) ?? 0) : 0)
         else { return image }
 
         let strength = min(max(abs(dehaze), 0), 1)
@@ -4540,7 +4607,77 @@ enum PhotoEditRenderer {
             addAir.biasVector = CIVector(x: CGFloat(atmosphere.r),
                                          y: CGFloat(atmosphere.g),
                                          z: CGFloat(atmosphere.b), w: 0)
-            guard let scene = addAir.outputImage?.cropped(to: extent) else { return image }
+            guard let recoveredScene = addAir.outputImage?.cropped(to: extent) else { return image }
+
+            // ⚠️ THE COLOUR IS TAKEN MOSTLY FROM THE PICTURE, NOT FROM THE
+            // DIVISION. The recovery divides each channel by t, and in this
+            // pipeline's sRGB working space that grows the distance between the
+            // channels along with the tone: measured 23.09 on C4S_9021 once the
+            // lens veil came out, skin went ruddy and grey-lavender shorts went
+            // purple. Lightroom's Dehaze deepens colour; it does not repaint it.
+            // So the tone of the recovery is kept whole and its colour is mixed
+            // with the original's — hue from the photograph, and only part of
+            // the density the division would have added.
+            //
+            // ⚠️ BUT NOT THE AIR'S COLOUR. Blue haze over a far hill, or warm
+            // flare, is a cast the model is there to take OUT, and a hue taken
+            // straight from the photograph would keep it. So the photograph
+            // first loses the air's colour in proportion to how much air the
+            // map says is in front of each pixel — `(A − grey(A))·(1 − t')` —
+            // and only then lends its hue. On a white A, the usual clipped sky
+            // behind a sun-veiled frame, that subtraction is zero.
+            let grey = (atmosphere.r + atmosphere.g + atmosphere.b) / 3
+            let cast = (r: atmosphere.r - grey, g: atmosphere.g - grey, b: atmosphere.b - grey)
+            var hueSource = image
+            if max(abs(cast.r), abs(cast.g), abs(cast.b)) > 0.002 {
+                let depth = CIFilter.colorCubeWithColorSpace()
+                depth.inputImage = transmission
+                depth.cubeDimension = Float(TransmissionMaskCube.dimension)
+                depth.cubeData = TransmissionMaskCube.data(for: strength)
+                depth.colorSpace = briefEditsSRGBColorSpace
+                // t' → (A − grey)·(t' − 1), signed, per channel.
+                let airCast = CIFilter.colorMatrix()
+                airCast.inputImage = depth.outputImage
+                airCast.rVector = CIVector(x: CGFloat(cast.r), y: 0, z: 0, w: 0)
+                airCast.gVector = CIVector(x: 0, y: CGFloat(cast.g), z: 0, w: 0)
+                airCast.bVector = CIVector(x: 0, y: 0, z: CGFloat(cast.b), w: 0)
+                airCast.aVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+                airCast.biasVector = CIVector(x: CGFloat(-cast.r), y: CGFloat(-cast.g),
+                                              z: CGFloat(-cast.b), w: 0)
+                let lessCast = CIFilter.additionCompositing()
+                lessCast.inputImage = airCast.outputImage
+                lessCast.backgroundImage = image
+                hueSource = lessCast.outputImage?.cropped(to: extent) ?? image
+            }
+            let lumaOnly = CIFilter.luminosityBlendMode()
+            lumaOnly.inputImage = recoveredScene
+            lumaOnly.backgroundImage = hueSource
+            let scene: CIImage
+            if let toneOnly = lumaOnly.outputImage?.cropped(to: extent) {
+                let share = CGFloat(DehazeAtmosphere.recoveredColourShare)
+                let mix = CIFilter.blendWithMask()
+                mix.inputImage = recoveredScene
+                mix.backgroundImage = toneOnly
+                mix.maskImage = CIImage(color: CIColor(red: share, green: share, blue: share))
+                    .cropped(to: extent)
+                // ⚠️ AND THE ALPHA IS PUT BACK FROM THE INPUT. The blend mode
+                // does not keep it: `run-template-edge-test.py` found 100
+                // translucent pixels along the bottom edge with every control
+                // set at once — a white feather once the photo is laid into a
+                // template, the KORAK 186 bug over again. Made opaque, then cut
+                // by the picture's own alpha, so a cut-out layer keeps its
+                // shape and a full frame stays solid to the edge.
+                let solid = CIFilter.colorMatrix()
+                solid.inputImage = mix.outputImage
+                solid.aVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+                solid.biasVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+                let ownAlpha = CIFilter.sourceInCompositing()
+                ownAlpha.inputImage = solid.outputImage
+                ownAlpha.backgroundImage = image
+                scene = ownAlpha.outputImage?.cropped(to: extent) ?? recoveredScene
+            } else {
+                scene = recoveredScene
+            }
 
             // The spec's last clause: the division grew the chroma along with
             // everything else, and drove the darkest tones under black.
@@ -8537,13 +8674,13 @@ enum DevelopPanelTab: String, CaseIterable, Identifiable {
     /// so the tooltip has to say both what it is called and what is in it.
     var helpText: String {
         switch self {
-        case .edit: return "Edit - light, colour, curves and detail."
+        case .edit: return "Edit - light, colour, curves and detail: every slider that grades this photo, from exposure to sharpening."
         // Client, 18.09: the tab is called Tools. rawValue stays "Retouch" -
         // it is the header cell's id, not a label anyone reads.
-        case .retouch: return "Tools - Patch, Select Subjects, Dodge & Burn, Cut, Erase and removal."
-        case .layers: return "Layers - the layers on this photo."
+        case .retouch: return "Tools - Patch, Select Subjects, Dodge & Burn, Cut, Erase and removal: the hands-on tools for fixing this photo."
+        case .layers: return "Layers - every layer on this photo: pick one to work on it alone, tick several to merge them."
         case .templates: return "Templates - print templates: import your own, and lay this photo into one."
-        case .text: return "Text - write on the photo, anywhere: on a print or on the picture itself."
+        case .text: return "Text - write on the photo, anywhere: on a print template or on the picture itself, in your own font and colour."
         }
     }
 }
@@ -9152,6 +9289,11 @@ struct DevelopView: View {
     @State private var showPresetsPopover = false
     /// Which header cell the pointer is over, so the bar can say what it is.
     @State private var hoveredHeaderItemID: String?
+    /// What the caption card is SHOWING, which is not the same as what is
+    /// hovered: it lags on the way out, so a pointer crossing the gap between
+    /// two cells does not fold the card shut and open it again, and the words
+    /// stay on the card while it folds instead of vanishing first.
+    @State private var captionItemID: String?
     @State private var newPresetName = ""
     /// Which preset is being renamed, and what it is being renamed to.
     @State private var renamingPresetID: UUID?
@@ -12722,19 +12864,24 @@ struct DevelopView: View {
             // they are made, so nothing here is waiting to be confirmed.
             HeaderBarItem(id: "grid",
                           glyph: .symbol("square.grid.2x2"),
-                          help: "Grid - back to the grid of photos.",
+                          help: "Grid - leave the editor and go back to the grid of photos in this folder, to pick another one.",
                           behaviour: .tap { onClose() }),
 
             HeaderBarItem(id: "original",
                           glyph: .symbol("photo"),
-                          help: "Original - hold to see this photo as it came out of the camera.",
+                          help: "Original - hold to see this photo as it came out of the camera; let go to return to your edit.",
                           isActive: activeHeaderCellID == "original",
                           isDisabled: noPhoto,
                           behaviour: .holdForOriginal),
 
             HeaderBarItem(id: "ai",
                           glyph: .badge("AI"),
-                          help: "AI Clean Up - paint over what should go, then let the model fill it in.",
+                          // Names everything the AI block holds, not only Clean Up — asked for
+                          // on 23.09: *„fill this text info more detailed as we have not
+                          // youtify, subject mono, mono backround backround enhanced"*.
+                          // ⚠️ And in TWO lines, no more: the first try ran to three and
+                          // was sent back — *„maximum dva"*. See headerHoverCaption.
+                          help: "AI - Clean Up paints out what should go. AI Portrait: Youthify, Subject Mono, Mono Background, Background Enhanced.",
                           isActive: activeHeaderCellID == "ai",
                           isDisabled: noPhoto,
                           behaviour: .tap {
@@ -12747,7 +12894,7 @@ struct DevelopView: View {
 
             HeaderBarItem(id: "crop",
                           glyph: .symbol("crop"),
-                          help: "Crop - crop, straighten and rotate this photo.",
+                          help: "Crop - crop, straighten and rotate this photo, freely or to a fixed aspect ratio.",
                           isActive: activeHeaderCellID == "crop",
                           isDisabled: noPhoto,
                           behaviour: .tap {
@@ -12764,7 +12911,7 @@ struct DevelopView: View {
             // where it started" where a u-turn says "one step back".
             HeaderBarItem(id: "reset",
                           glyph: .symbol("arrow.counterclockwise"),
-                          help: "Reset - put this photo back to the original.",
+                          help: "Reset - put every setting on this photo back to the original. Your file on disk is never touched.",
                           isDisabled: settings.isNeutral,
                           behaviour: .tap { resetAllSettings() }),
 
@@ -12779,20 +12926,20 @@ struct DevelopView: View {
                           help: isFlattening
                               ? "Flattening…"
                               : (isFlattenedPhoto
-                                 ? "Flatten Again - bake what has been done since the last flatten into the photo. Your original file is never touched."
+                                 ? "Flatten Again - bake everything since the last flatten into the photo. Your original file is never touched."
                                  : "Flatten Photo - bake the grade, the masks and the AI Clean Up into the photo. Your original file is never touched."),
                           isDisabled: isFlattening || noPhoto || !hasUnbakedEdits,
                           behaviour: .tap { flattenPhoto() }),
 
             HeaderBarItem(id: "unflatten",
                           glyph: .symbol("arrow.uturn.backward"),
-                          help: "Unflatten - go back to the original file and the settings from before the first flatten. Anything done since is discarded.",
+                          help: "Unflatten - back to the original file and the settings from before the first flatten. Later work is discarded.",
                           isDisabled: isFlattening || !isFlattenedPhoto,
                           behaviour: .tap { unflattenPhoto() }),
 
             HeaderBarItem(id: "presets",
                           glyph: .symbol("paintpalette"),
-                          help: "Presets - save this look, apply a saved one, import or export presets.",
+                          help: "Presets - save this look, apply a saved one to this photo, or import and export presets to share them.",
                           isActive: activeHeaderCellID == "presets",
                           behaviour: .presets),
 
@@ -12884,8 +13031,21 @@ struct DevelopView: View {
         .onHover { inside in
             if inside {
                 hoveredHeaderItemID = item.id
+                if captionItemID == nil {
+                    withAnimation(.easeInOut(duration: 0.2)) { captionItemID = item.id }
+                } else {
+                    captionItemID = item.id
+                }
             } else if hoveredHeaderItemID == item.id {
                 hoveredHeaderItemID = nil
+                // ⚠️ Closed after a beat, not at once. Between two cells the
+                // pointer is over neither for a moment; closing right away made
+                // the card fold and unfold on every step along the bar, and
+                // everything under it bounced with it.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    guard hoveredHeaderItemID == nil else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) { captionItemID = nil }
+                }
             }
         }
     }
@@ -12897,21 +13057,22 @@ struct DevelopView: View {
     /// buttons, "what is this one?" cannot depend on a delay. This answers
     /// instantly and cannot fail to appear.
     ///
-    /// ⚠️ Fixed height, and a space when nothing is hovered. Letting the line
-    /// come and go would move every section under it up and down as the pointer
-    /// crosses the bar.
+    /// ⚠️ It takes NO room when nothing is hovered, and opens smoothly when
+    /// something is — this reverses the older fixed-space rule, on the
+    /// client's word, 23.09: *„ovaj ovde prazan prostor da ne bude za karticu
+    /// ako nista nije hoverovano, kad se hoveruje smoothly da se napravi ovaj
+    /// prostor … da se pogura histogram dole … kad nije da se histogram povuce
+    /// gore isto smoothly"*. What the old rule guarded against — the sections
+    /// below bouncing as the pointer crosses the bar — is handled by
+    /// `captionItemID`, which stays open from one cell to the next and only
+    /// folds once the pointer has really left the bar.
     private var headerHoverCaption: some View {
-        let hovered = headerBarItems.first { $0.id == hoveredHeaderItemID }
+        let hovered = headerBarItems.first { $0.id == captionItemID }
 
         // ⚠️ A CARD, not a bare line. Asked for on 23.09: *„kao i ovaj dole
         // text sto opisuje sta je koje dugme da bude u nekoj vrsti kartice na
         // tom mestu, ne samo text vec kartica i text u njoj"*.
         //
-        // ⚠️ It still holds its place when nothing is hovered, and that is the
-        // older rule this must not break: a line that comes and goes moves every
-        // section under it up and down as the pointer crosses the bar. So the
-        // card is always laid out and only its paint fades — the height is fixed
-        // either way.
         return Text(hovered?.help ?? " ")
             .font(.custom("Figtree", size: 10.5).weight(.medium))
             .foregroundColor(AppColors.ink)
@@ -12920,11 +13081,16 @@ struct DevelopView: View {
             // "Tools - Patch, Select Subjects, Dodge & Burn, Cut, Erase and r…":
             // one line was cutting the longer ones in half.
             //
-            // Fixed rather than grown-to-fit, because the older rule here still
-            // holds: this line must never change height. A card that is one line
-            // for Crop and two for Tools moves every section under it up and down
-            // as the pointer crosses the bar, which is the very thing the fixed
-            // height was put here to stop.
+            // Fixed rather than grown-to-fit: while OPEN it must not change
+            // height. A card that is one line for Crop and two for Tools would
+            // move every section under it as the pointer walks along the bar.
+            //
+            // ⚠️ And every line FILLS both, 23.09: *„svi trenutno koji imaju
+            // ovde na ovom delu po jedan red napravi dva reda malo extend i svi
+            // koji imaju tri reda … napravi dva skrati"*. Each text was measured
+            // in Figtree 10.5 medium at 290, 313 and 360 pt of text width and
+            // comes out at exactly two lines at all three. A new line added here
+            // should be measured the same way, not guessed by character count.
             .lineLimit(2)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
@@ -12940,8 +13106,6 @@ struct DevelopView: View {
                 RoundedRectangle(cornerRadius: 7)
                     .stroke(AppColors.border.opacity(0.7), lineWidth: 1)
             )
-            .opacity(hovered == nil ? 0 : 1)
-            .animation(.linear(duration: 0.1), value: hoveredHeaderItemID)
     }
 
     private var panelHeaderActionBar: some View {
@@ -12965,7 +13129,13 @@ struct DevelopView: View {
                 }
             }
 
-            headerHoverCaption
+            // Inserted and removed rather than faded in place, so the room it
+            // takes opens and closes with it — the withAnimation in the cell's
+            // onHover carries the histogram down and back up.
+            if captionItemID != nil {
+                headerHoverCaption
+                    .transition(.opacity)
+            }
         }
     }
 

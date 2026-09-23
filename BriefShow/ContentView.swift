@@ -23480,6 +23480,21 @@ struct PhotoShowSheet: View {
             .buttonStyle(ShowHeaderButtonStyle())
             .padding(.trailing, 10)
 
+            // ViewThem — the proofing view for buyers, and the bench for the
+            // flickering bands that spoil a phone photo of the screen. See
+            // ViewThem.swift. Asked for on 23.09: *„napravi na appu jos jedno
+            // dugme da vodi na ViewThem"*.
+            Button {
+                ViewThemWindowController.shared.open()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "eye")
+                    Text("ViewThem")
+                }
+            }
+            .buttonStyle(ShowHeaderButtonStyle())
+            .padding(.trailing, 10)
+
             // Opens Develop — a standalone, non-destructive photo editor in
             // its own window (see DevelopWindowController). Entirely
             // separate from this grid and from the slideshow pipeline

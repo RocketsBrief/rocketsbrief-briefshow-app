@@ -23459,3 +23459,53 @@ Ponuđeno klijentu, nije traženo dalje.
 
 **Stanje:** BUILD SUCCEEDED, instalirano i pokrenuto. Dehaze viđen na PNG-ovima istog koda, **ne u
 app-i**. Klijent je rekao „okay" i prešao dalje.
+
+---
+
+## KORAK 214 — ViewThem: galerija za kupce, i crna mreža koja kvari snimak ekrana telefonom (23. septembar 2026)
+
+Klijent želi da kupcima pokazuje slike online (kao contact sheet), a da ih kupci ne mogu iskoristiti:
+screenshot se zabranjuje, a snimak telefonom mora da bude **isečen**. Prvo u app-i, pa posle na
+Cloudflare ako radi.
+
+⚠️ **Rečeno klijentu unapred:** ništa ne može potpuno da spreči fotografisanje ekrana („analogna
+rupa"). Postojeće galerije (Pixieset, ShootProof, Pic-Time…) to ne rešavaju. Istraživanje „Kaleido"
+koristi treperenje, ali telefoni koji spajaju više ekspozicija ga usrednje.
+
+### Šta je napravljeno — `ViewThem.swift`
+
+- **Dugme ViewThem** u headeru grida, između BriefShow i Create; poseban prozor.
+- **Add Photos / Clear**, putanje se pamte (`viewThem.photoPaths`). Sličice 1600 px preko ImageIO,
+  oblik iz zaglavlja pre dekodiranja (lekcija iz KORAKA 211).
+- **Grid bez razmaka**: poravnati redovi, svaka slika cela, bez sečenja, slajder za visinu reda.
+- **`sharingType = .none`**: prozor se ne vidi na screenshot-u ni u snimku ekrana. Provereno:
+  `screencapture` ga ne hvata iako je u listi prozora.
+- **Mreža samo na slikama** (*„samo na slici!"*), svaka slika ima svoj sloj isečen po ivicama, ali
+  se pozicije računaju u koordinatama prozora, pa linija prelazi preko susednih slika kao jedna.
+  Vodoravne idu nagore, uspravne udesno.
+
+### Put do onoga što je klijent potvrdio („super izgleda")
+
+1. Prvo **± treperenje u parovima** (svetlije pa tamnije po frejmu, oko usrednji). I dalje postoji
+   kad je Full black isključen, sa Strength.
+2. *„tu gde je iseceno da bude crno skroz"* → prvo crno naspram duplo svetlije slike; oko je to
+   usrednjilo u sivo, pa → **puna crna u svakom frejmu**.
+3. **Flicker** prekidač i **Flicker speed** (0,5–30 /s, početno 2). Prvi Flicker se menjao svaki
+   frejm (30/s), a oko je to videlo kao sivo.
+4. *„vidi se crna li sa opacity"* → crna je nosila `opacity(strength)`. **Full black je sada uvek
+   100 %**, Strength se sklanja dok je on uključen, `transaction` gasi svaku animaciju.
+5. *„sansa manje vise 50-50"* → sve trake su bile u istoj fazi, pa pola ciklusa nije bilo crnog.
+   **Vodoravne i uspravne sada trepere suprotno.**
+6. **Preklop `overlap = 0.1`**: svaki set je crn 60 % ciklusa, pa je novi set pun crn pre nego što
+   stari nestane. **Nema trenutka bez crne.**
+
+Kontrole su u dva reda (*„moze u dva reda"*), svi natpisi u jednom redu, traka se pomera levo-desno
+u uskom prozoru, a prozor ima minimum 760×480. Speed ide do 600 pt/s.
+
+⚠️ **`viewThem.allowCapture`** (defaults) je dev prekidač koji dozvoljava snimak prozora radi
+provere. **Nikad ga ne ostavljati uključenog.** Isključen je.
+⚠️ Jako treperenje može da zamara oči, a kod fotosenzitivne epilepsije je rizik. Klijentu je rečeno
+pre nego što ovo stigne do kupaca.
+
+**Lenjiri:** `header-bar`, `grid-shape` zeleni. **Stanje:** BUILD SUCCEEDED, instalirano i
+pokrenuto, klijent probao telefonom i potvrdio. Sledeće: Cloudflare verzija za veb.

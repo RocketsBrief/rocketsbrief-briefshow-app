@@ -23554,3 +23554,34 @@ viewthem dugme i sve u vezi njega jer sad imamo BriefContact na git hubu"*.
   ostaju u belešci kao istorija, jer iz njih je BriefContact nastao.
 
 **Stanje:** BUILD SUCCEEDED, `header-bar` i `grid-shape` zeleni, app instaliran i pokrenut bez ViewThem-a.
+
+---
+
+## KORAK 217 — RELEASE v11.51 (23. septembar 2026)
+
+`python3 Tools/make-release.py 11.51 --small-only` — sadrži sve od 211 do 216 (grid, memorija, radnici
+po mašini, hover, kartica ispod Create trake, opisi, Dehaze za koprenu od sunca). ViewThem nije unutra,
+izbačen je u KORAKU 216.
+
+Pre pakovanja zeleni: `run-grid-shape-test.py`, `run-thumbnail-cache-test.py`.
+
+| | |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.51 / 51** |
+| `LaMa.mlmodelc` | unutra |
+| `SD15-Inpainting` | **nema** — dugme u app-i, `v11.0/SD15-Inpainting.aar` HTTP 200 |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| veličina | 116688122 bajta |
+| SHA-256 | `d3bd65e8c31da68070b16fba3ef067fa0f8ed459683a4a5f069ca68423d5db84` |
+
+Klijent je tražio „oba modela", pa u istoj poruci *„ne moraš da uploaduješ 2gb jer već imaju u appu
+dugme za Ai SD download"*. Zato je paket samo jedan, sa LaMa-om. Ko već ima SD zadržava ga, a novi
+klijent ga preuzima dugmetom. Intel: `computeUnits = .all` pod `#if !arch(arm64)` već postoji i nije
+menjano. Oznaka verzije u app-i se čita iz bundle-a.
+**`v11.0` se i dalje NE SME brisati.**
+
+- stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.51`
+- direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.51/C4S-Suite-11.51.zip`

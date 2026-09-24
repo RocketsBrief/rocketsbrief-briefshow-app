@@ -23731,3 +23731,47 @@ Square ostaje u Patch alatu, kao i stari podaci.
 
 **Stanje:** BUILD SUCCEEDED, app restartovan. Zeleni: `header-bar`, `slider-parity`, `layer-edit-parity`,
 `effect-extraction`, `face-dehaze`, `selection-brush`, `editsettings-decode`. **Ništa od ovoga nije viđeno na ekranu.**
+
+---
+
+## KORAK 221 — proba posle KORAKA 220: Background Enhanced pregled, History, Face Dehaze brži, jedna granica za AI (24. septembar 2026)
+
+**Dijagnostika klijenta** (`Diagnostics/diagnostics.jsonl`): app je došao do **3,7–5 GB** na 8 GB mašini dok je radio
+Edit i AI. Tu nastaju swap i „zablokiralo". Zamrzavanja od 290 s i 47 s su na samom početku, pre otvaranja slike.
+
+**Background Enhanced kartica** — *„uopste ne vidim da se menja … backround"*:
+- Pregled je delio `developRenderQueue` sa editorom, pa je čekao dok editor radi. Sada ima **svoj red**
+  (`BackgroundEnhancedCard.previewQueue`), a isti red koristi i `prepare`.
+- Svaki pomeraj slajdera je stavljao render u red, a zastarelost se proveravala tek na kraju, pa se sve
+  računalo. Sada `LatestAsk` preskače render koji je zastareo **pre nego što krene**.
+- Kartica 380 → 480, pregled 200 → 300 px visine, render 900 → 1100 px.
+- `run-background-enhanced-preview-test.py <NEF>`: svaki slajder pomera pregled srazmerno potezu na celoj slici.
+  Na C4S_9021 Shadows ne pomera ništa ni na celoj slici (0,10), jer kadar nema senki.
+- Vreme jedne slike na punoj veličini (`run-recipe-timing.py`): load 0,2 s, Select People 1,0 s, render 0,1 s, plus TIFF.
+  Kod klijenta sporost dolazi od memorije i čekanja u redu. **„Nije je ni odradio" NIJE reprodukovano**
+  (ekran je bio zauzet video pozivom, GUI nije proban).
+
+**History** (dugme `clock.arrow.circlepath` posle Presets):
+- Popover sa listom „Opened → … → sada → (redo)", najnovije gore, plus ↶ ↷.
+- Klik na red ide do tog stanja kroz undo i redo stek (`goToHistoryState`), pa ⌘Z posle toga radi normalno.
+- Imena koraka se čitaju iz razlike susednih snimaka (`historyLabel`, preko Mirror-a): „Saturation +15" ili
+  „Clarity, Dehaze". Ništa novo se ne čuva. Istorija je ona postojeća, 50 koraka po sesiji slike.
+- `run-history-labels-test.py`. `run-header-bar-test.py` sada očekuje 6 izlaza iz `activeHeaderCellID`.
+
+**Face Dehaze** — *„bas je kasnilo … vratim na 0 nije vratilo i zablokiralo"*:
+- Ključ za keš lica (sličica 16×12) je terao Core Image da na svakom renderu ponovo izračuna ceo lanac od RAW-a
+  (+260–340 ms na punoj veličini). Sada se lica za fotografiju traže **jednom po dekoderu i rotaciji**
+  (`FaceDehazeFaces.faces(of:variant:in:)`, weak ključ), na slici posle rotacije a pre tona. Layer i dalje koristi stari put.
+- Veo se računa na kopiji od najviše 768 px (`veilSide`), pa se uvećava. Udeo 0,6 → 0,55, da izgled ostane isti
+  (pod lica 79 → 52 na 50, → 15 na 100).
+
+**AI traka i granica** — *„taj lamin limit koji ce da bude za oba … isti limit"*:
+- **Jedna granica za oba dugmeta i četkicu:** `AIPaintBudget.capPixels` = LaMa 2200 × 1,2 = **2640 px**.
+  Nema posebnog Generative bloka i nema oznake na traci.
+- Traka je u panelu, **ispod Quick / Generative dugmića** u `aiManipulationSection` (ona u `removeSection`
+  bi bila druga kopija). Na slici je više nema.
+- Boje: žuta do 80 %, narandžasta od 80 do 90 %, crvena od 90 %. Na 100 % crveni tekst objašnjava zašto se ne može dalje.
+
+**Stanje:** BUILD SUCCEEDED. Zeleni: header-bar, slider-parity, editsettings-decode, selection-brush, history-labels,
+layer-edit-parity, effect-extraction, face-dehaze, clarity, clarity-layer, people-layer-strength, template-edge,
+background-enhanced, background-enhanced-preview.

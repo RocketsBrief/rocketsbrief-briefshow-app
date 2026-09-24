@@ -35,7 +35,10 @@ import Vision
 
 extension PhotoEditRenderer {
 
-    static func applyFaceDehaze(_ amount: Double, to image: CIImage) -> CIImage {
+    /// `faces` is given by `render`, which knows the photo (see
+    /// FaceDehazeFaces.faces(of:variant:in:)); a layer leaves it nil and the
+    /// faces are found in its own pixels.
+    static func applyFaceDehaze(_ amount: Double, to image: CIImage, faces known: [CGRect]? = nil) -> CIImage {
         let strength = min(max(amount, 0), 1)
         guard strength > 0 else { return image }
         let extent = image.extent
@@ -43,7 +46,7 @@ extension PhotoEditRenderer {
             return image
         }
 
-        let faces = FaceDehazeFaces.faces(in: image)
+        let faces = known ?? FaceDehazeFaces.faces(in: image)
         guard !faces.isEmpty else { return image }
 
         // Faces in this image's pixels (Vision and Core Image are both y-up).
@@ -74,7 +77,7 @@ enum FaceDehazeFaces {
     /// How much of the local floor is taken off at 100. Not all of it: taking
     /// the whole floor makes the darkest pixel beside every face pure black,
     /// which reads as a crushed eye rather than a clear one.
-    static let veilShare: Double = 0.6
+    static let veilShare: Double = 0.55
     /// Never more than this much wash is taken out, whatever the floor says —
     /// a white wall behind a head reads as "veil" too and must not go grey.
     static let maximumVeil: Double = 0.45
@@ -100,23 +103,41 @@ enum FaceDehazeFaces {
 
     /// The white wash near each face: the dark channel over a small patch,
     /// smoothed so it has no blocks in it.
+    ///
+    /// ⚠️ COMPUTED ON A SMALL COPY (24.09, the client's *„bas je kasnilo …
+    /// zablokiralo"*). At native size a patch minimum of up to 80 px and a
+    /// 120 px blur cost 500–800 ms a render on this machine and a lot of GPU
+    /// memory. The veil is smooth by construction, so it is measured at most
+    /// `veilSide` px long and scaled back up — the blur has already removed
+    /// everything the smaller copy cannot hold.
+    static let veilSide: CGFloat = 768
+
     static func veil(of image: CIImage, faceWidth: CGFloat) -> CIImage? {
         let extent = image.extent
-        let radius = Float(min(max(faceWidth * 0.1, 3), 80))
+        let scale = min(veilSide / max(extent.width, extent.height), 1)
+        let small = image
+            .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let smallExtent = CGRect(x: 0, y: 0, width: extent.width * scale, height: extent.height * scale)
+        let radius = Float(min(max(faceWidth * 0.1, 3), 80) * scale)
         let minimum = CIFilter.minimumComponent()
-        minimum.inputImage = image
+        minimum.inputImage = small.cropped(to: smallExtent)
         let patch = CIFilter.morphologyMinimum()
         patch.inputImage = minimum.outputImage?.clampedToExtent()
-        patch.radius = radius
+        patch.radius = max(radius, 1)
         let smooth = CIFilter.gaussianBlur()
         smooth.inputImage = patch.outputImage
-        smooth.radius = radius * 1.5
+        smooth.radius = max(radius * 1.5, 1)
         // Opaque: this is a lookup map, read by its red channel.
         let opaque = CIFilter.colorMatrix()
-        opaque.inputImage = smooth.outputImage
+        opaque.inputImage = smooth.outputImage?.cropped(to: smallExtent)
         opaque.aVector = CIVector(x: 0, y: 0, z: 0, w: 0)
         opaque.biasVector = CIVector(x: 0, y: 0, z: 0, w: 1)
-        return opaque.outputImage?.cropped(to: extent)
+        return opaque.outputImage?
+            .clampedToExtent()
+            .transformed(by: CGAffineTransform(scaleX: 1 / scale, y: 1 / scale))
+            .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
+            .cropped(to: extent)
     }
 
     /// One feathered ellipse per face, joined. Wider than the face and
@@ -221,6 +242,36 @@ enum FaceDehazeFaces {
         let size = [UInt8(truncatingIfNeeded: Int(extent.width) & 0xff),
                      UInt8(truncatingIfNeeded: Int(extent.height) & 0xff)]
         return size + rank
+    }
+
+    /// The photo's faces, found ONCE per photo and orientation.
+    ///
+    /// ⚠️ THE PHOTO'S PATH, and why it is not `faces(in:)`. That one keys on a
+    /// thumbnail of the image it is handed, and on the photo that image is the
+    /// whole chain from the RAW decoder up — reading 16×12 pixels of it made
+    /// Core Image run the lot a second time on every render, +260–340 ms at
+    /// native size, and the client felt it (*„bas je kasnilo … zablokiralo"*,
+    /// 24.09). Faces do not move when a slider does, so here they are keyed by
+    /// the decoder object itself (held weakly — a new photo is a new object)
+    /// and the rotation, and found in `geometry`: the picture turned but not
+    /// yet toned, which Vision reads just as well.
+    private static var byPhoto: [(owner: Weak, variant: String, faces: [CGRect])] = []
+    final class Weak { weak var object: AnyObject?; init(_ o: AnyObject) { object = o } }
+
+    static func faces(of owner: AnyObject, variant: String, in geometry: CIImage) -> [CGRect] {
+        lock.lock()
+        byPhoto.removeAll { $0.owner.object == nil }
+        if let hit = byPhoto.first(where: { $0.owner.object === owner && $0.variant == variant }) {
+            lock.unlock()
+            return hit.faces
+        }
+        lock.unlock()
+        let found = detect(in: geometry)
+        lock.lock()
+        byPhoto.insert((Weak(owner), variant, found), at: 0)
+        if byPhoto.count > 8 { byPhoto.removeLast() }
+        lock.unlock()
+        return found
     }
 
     /// How many times Vision actually ran — read by Tools/test-face-dehaze.swift.

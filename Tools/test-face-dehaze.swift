@@ -55,9 +55,12 @@ func inFace(_ x: Int, _ y: Int) -> Bool { boxes.contains { $0.insetBy(dx: $0.wid
 func farFromFace(_ x: Int, _ y: Int) -> Bool { !boxes.contains { $0.insetBy(dx: -$0.width * 1.6, dy: -$0.height * 1.9).contains(CGPoint(x: x, y: y)) } }
 func luma(_ p: [UInt8], _ i: Int) -> Double { 0.2126 * Double(p[i*4]) + 0.7152 * Double(p[i*4+1]) + 0.0722 * Double(p[i*4+2]) }
 
+t0 = Date(); _ = pixels(render(0)); _ = pixels(render(0))
+print(String(format: "baseline, Face Dehaze 0, two renders: %.0f ms each", Date().timeIntervalSince(t0) * 500))
 let before = pixels(plain)
 var failures = 0
 for amount in [0.5, 1.0] {
+    _ = pixels(render(amount))   // warm: faces remembered, kernels compiled
     t0 = Date()
     let edited = render(amount)
     let after = pixels(edited)

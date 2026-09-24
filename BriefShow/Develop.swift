@@ -3485,6 +3485,9 @@ enum PhotoEditRenderer {
             output = output.transformed(by: CGAffineTransform(rotationAngle: -radians))
         }
 
+        // Turned but not yet toned — where Face Dehaze looks for faces.
+        let faceGeometry = output
+
         if !isRAWSource, settings.temperature != 0 || settings.tint != 0 {
             // `neutral` is the assumed source white point CITemperatureAndTint
             // corrects FROM, back to `targetNeutral` — so telling it the
@@ -3634,7 +3637,17 @@ enum PhotoEditRenderer {
 
         output = PhotoEditRenderer.applyDehaze(settings.dehaze, to: output)
 
-        output = PhotoEditRenderer.applyFaceDehaze(settings.faceDehaze, to: output)
+        if settings.faceDehaze > 0 {
+            let owner: AnyObject
+            switch base {
+            case .standard(let image): owner = image
+            case .raw(let filter, _, _): owner = filter
+            }
+            let faces = FaceDehazeFaces.faces(
+                of: owner, variant: "\(settings.rotationQuarterTurns)/\(settings.straightenDegrees)",
+                in: faceGeometry)
+            output = PhotoEditRenderer.applyFaceDehaze(settings.faceDehaze, to: output, faces: faces)
+        }
 
         output = PhotoEditRenderer.applySoftGlow(settings.softGlow, to: output)
 
@@ -7184,6 +7197,23 @@ struct BackgroundEnhancedCard: View {
     @State private var prepared: Prepared?
     /// Bumped on every slider move; the renderer only keeps the newest.
     @State private var renderToken = 0
+    /// The newest ask, readable from the render queue — so a render that is
+    /// already stale when its turn comes is skipped instead of computed.
+    @State private var latestAsk = LatestAsk()
+
+    final class LatestAsk: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func set(_ v: Int) { lock.lock(); value = v; lock.unlock() }
+        func isNewest(_ v: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return value == v }
+    }
+
+    /// ⚠️ ITS OWN QUEUE (24.09). It shared `developRenderQueue` with the
+    /// editor, so while the editor behind the card was busy — a refine, a
+    /// grid — the preview waited its turn and the client moved Saturation and
+    /// saw nothing: *„uopste ne vidim da se menja"*.
+    private static let previewQueue = DispatchQueue(label: "BackgroundEnhancedCard.preview",
+                                                    qos: .userInitiated)
 
     /// ⚠️ NOT called `State`. A nested type of that name shadows SwiftUI's own
     /// `@State` inside this struct, and the compiler's complaint — "enum 'State'
@@ -7210,7 +7240,7 @@ struct BackgroundEnhancedCard: View {
     /// slider drag. Measured on this machine at ~0.1 s for a NEF at this size
     /// (Tools/run-layer-edit-parity-test.py prints the same number for the same
     /// pipeline at 2600 px, which is 0.07 s without layers and 0.08 s with).
-    private static let previewSide: CGFloat = 900
+    private static let previewSide: CGFloat = 1100
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -7229,7 +7259,7 @@ struct BackgroundEnhancedCard: View {
             footer
         }
         .padding(16)
-        .frame(width: 380)
+        .frame(width: 480)
         .background(AppColors.panel)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
@@ -7294,7 +7324,7 @@ struct BackgroundEnhancedCard: View {
                 EmptyView()
             }
         }
-        .frame(height: 200)
+        .frame(height: 300)
     }
 
     private var footer: some View {
@@ -7365,7 +7395,7 @@ struct BackgroundEnhancedCard: View {
             return
         }
 
-        developRenderQueue.async(qos: .userInitiated) {
+        Self.previewQueue.async {
             guard let base = PhotoEditRenderer.loadBaseImage(from: first,
                                                              maxPixelSize: Self.previewSide) else {
                 DispatchQueue.main.async { stage = .failed }
@@ -7413,8 +7443,12 @@ struct BackgroundEnhancedCard: View {
         renderToken += 1
         let token = renderToken
         let wanted = tuning
+        let latest = latestAsk
+        latest.set(token)
 
-        developRenderQueue.async(qos: .userInitiated) {
+        Self.previewQueue.async {
+            // Stale before it started: a newer number is already waiting.
+            guard latest.isNewest(token) else { return }
             let settings = PortraitRecipe.backgroundEnhanced
                 .applied(to: prepared.settings,
                          backgroundID: prepared.backgroundID,
@@ -8556,22 +8590,25 @@ private struct BrushCursorRing: View {
 // observes this, so a drag redraws that one path and nothing else, and
 // commitRemovalStroke() folds the finished stroke into `removalStrokes` in a
 // single @State write — one body pass per stroke instead of one per point.
-/// How much of the AI brush's area one repair has used — the bar on the photo.
+/// How much of the AI brush's area one repair has used — the bar under the
+/// Clean Up buttons.
 ///
 /// Asked for 24.09: *„dok se paintuje na slici da bude loading bar i kako
 /// paintuje klijent da se taj bar popunjava … taj loading bar je popunjen i
-/// pocrveni sa textom koji objasnjava zasto ne moze vise"*. The client wrote
-/// both "+20 %" and "+30 %"; +20 % is the one tied to the models, so the bar is
-/// full exactly where the brush stops.
+/// pocrveni sa textom koji objasnjava zasto ne moze vise"*, then made ONE limit
+/// for both models, LaMa's + 20 %: *„taj limt opet samo 20 recimo % more than
+/// limit moze za oba max … isti limit"*. 100 % on the bar is that limit, and the
+/// brush stops there.
 ///
 /// Measured the way the buttons measure (`removalAreaPixels`): the longest side,
 /// in photo pixels, of the BIGGEST single repair. A mark far from the others is
 /// its own repair, so it can still be painted when one repair is full.
 final class AIPaintBudget: ObservableObject {
-    /// Each model's block is its measured maximum times this.
+    /// LaMa's measured limit (Quick's smear point, see RemovalEngine).
+    static let lamaLimit: CGFloat = 2200
     static let headroom: CGFloat = 1.2
-    /// The brush stops at the larger block, Quick's: past it no button works.
-    static var capPixels: CGFloat { 2200 * headroom }
+    /// The one block, for the brush and for both buttons.
+    static var capPixels: CGFloat { lamaLimit * headroom }
 
     @Published private(set) var fill: Double = 0
     @Published private(set) var isFull = false
@@ -8627,53 +8664,42 @@ final class AIPaintBudget: ObservableObject {
     }
 }
 
-/// The bar itself, drawn over the photo while the AI brush has paint on it.
+/// The bar itself: yellow to 80 %, orange to 90 %, red past it — *„da se puni
+/// zutom bojom od 80 do 90 narandzastom a od 90 do 100 crvenom"* (24.09).
 struct AIPaintBudgetBar: View {
     @ObservedObject var budget: AIPaintBudget
-    let color: Color
-    /// Where Generative's own block falls, in pixels — a tick on the bar.
-    let generativeMark: CGFloat
 
     var body: some View {
-        if budget.fill > 0 {
-            let red = Color(red: 0.93, green: 0.26, blue: 0.22)
-            let tick = min(Double(generativeMark / AIPaintBudget.capPixels), 1)
-            VStack(spacing: 5) {
-                Text(caption)
-                    .font(.custom("Figtree", size: 11).weight(.medium))
-                    .foregroundColor(.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.22))
-                        Capsule().fill(budget.isFull ? red : color)
-                            .frame(width: proxy.size.width * budget.fill)
-                        if tick > 0, tick < 1 {
-                            Rectangle().fill(Color.white.opacity(0.85))
-                                .frame(width: 1.5, height: proxy.size.height + 4)
-                                .offset(x: proxy.size.width * tick)
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 5) {
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(AppColors.border.opacity(0.6))
+                    Capsule().fill(fillColor)
+                        .frame(width: proxy.size.width * budget.fill)
                 }
-                .frame(height: 6)
-                .animation(.linear(duration: 0.1), value: budget.fill)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.62)))
+            .frame(height: 7)
+            .animation(.linear(duration: 0.1), value: budget.fill)
+            Text(caption)
+                .font(.custom("Figtree", size: 11).weight(budget.isFull ? .semibold : .regular))
+                .foregroundColor(budget.isFull ? Self.red : AppColors.muted)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
+    static let yellow = Color(red: 0.98, green: 0.82, blue: 0.2)
+    static let orange = Color(red: 0.98, green: 0.55, blue: 0.13)
+    static let red = Color(red: 0.93, green: 0.26, blue: 0.22)
+
+    private var fillColor: Color {
+        budget.fill >= 0.9 ? Self.red : (budget.fill >= 0.8 ? Self.orange : Self.yellow)
+    }
+
     private var caption: String {
-        let percent = Int((budget.fill * 100).rounded())
+        let percent = Int((budget.fill * 100).rounded(.down))
         if budget.isFull {
-            return "Brush area full — the AI can rebuild only so much in one piece, "
-                + "and past this it smears. Clean up this part first, or mark a separate spot."
-        }
-        if budget.fill > Double(generativeMark / AIPaintBudget.capPixels) {
-            return "AI brush area \(percent)% — past the line only Quick Clean Up fits"
+            return "Brush area full. The AI can only rebuild this much in one piece — past it, it smears "
+                + "instead of rebuilding. Clean up this part first, or mark a separate spot."
         }
         return "AI brush area \(percent)%"
     }
@@ -9880,6 +9906,7 @@ struct DevelopView: View {
     @State private var isAddingPreset = false
     /// Presets is a popover off the header bar now, not a section in the panel.
     @State private var showPresetsPopover = false
+    @State private var showHistoryPopover = false
     /// Which header cell the pointer is over, so the bar can say what it is.
     @State private var hoveredHeaderItemID: String?
     /// What the caption card is SHOWING, which is not the same as what is
@@ -11542,6 +11569,159 @@ struct DevelopView: View {
         applyUndoRedoSnapshot(next)
     }
 
+    // MARK: History (24.09)
+
+    /// Every state this photo has been in this session, oldest first: the undo
+    /// stack, where it is now, then the redo stack. Nothing new is stored —
+    /// the names come from comparing each state with the one before it.
+    private var historyStates: [PhotoEditSettings] {
+        undoStack + [settings] + redoStack.reversed()
+    }
+
+    private var historyPopover: some View {
+        let states = historyStates
+        let current = undoStack.count
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("History")
+                    .font(.custom("Figtree", size: 13).weight(.semibold))
+                    .foregroundColor(AppColors.ink)
+                Spacer()
+                Button { undo() } label: { Image(systemName: "arrow.uturn.backward") }
+                    .buttonStyle(.plain).foregroundColor(AppColors.ink)
+                    .disabled(undoStack.isEmpty).opacity(undoStack.isEmpty ? 0.35 : 1)
+                    .help("Step back (⌘Z)")
+                Button { redo() } label: { Image(systemName: "arrow.uturn.forward") }
+                    .buttonStyle(.plain).foregroundColor(AppColors.ink)
+                    .disabled(redoStack.isEmpty).opacity(redoStack.isEmpty ? 0.35 : 1)
+                    .help("Step forward")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    // Newest on top, like Lightroom's panel reads.
+                    ForEach(Array(states.indices.reversed()), id: \.self) { index in
+                        historyRow(index == 0 ? "Opened" : Self.historyLabel(from: states[index - 1], to: states[index]),
+                                   index: index, current: current)
+                    }
+                }
+                .padding(8)
+            }
+            .frame(maxHeight: 360)
+            if states.count == 1 {
+                Text("Nothing done on this photo yet.")
+                    .font(.custom("Figtree", size: 11))
+                    .foregroundColor(AppColors.muted)
+                    .padding(12)
+            }
+        }
+        .frame(width: 280)
+        .background(AppColors.panel)
+    }
+
+    private func historyRow(_ title: String, index: Int, current: Int) -> some View {
+        let isCurrent = index == current
+        let isAhead = index > current
+        return Button {
+            goToHistoryState(index)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isCurrent ? "circle.inset.filled" : "circle")
+                    .font(.system(size: 9))
+                    .foregroundColor(isCurrent ? AppColors.ink : AppColors.muted)
+                Text(title)
+                    .font(.custom("Figtree", size: 12).weight(isCurrent ? .semibold : .regular))
+                    .foregroundColor(isAhead ? AppColors.muted : AppColors.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(isCurrent ? AppColors.panelAlt : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Walks there through undo/redo, so the stacks stay exactly what ⌘Z and
+    /// ⇧⌘Z would have made them — one snapshot restore at the end, not one per step.
+    private func goToHistoryState(_ index: Int) {
+        let current = undoStack.count
+        guard index != current else { return }
+        undoCommitWorkItem?.cancel()
+        pendingUndoBaseline = nil
+        var here = settings
+        if index < current {
+            for _ in 0..<(current - index) {
+                guard let previous = undoStack.popLast() else { break }
+                redoStack.append(here)
+                here = previous
+            }
+        } else {
+            for _ in 0..<(index - current) {
+                guard let next = redoStack.popLast() else { break }
+                undoStack.append(here)
+                here = next
+            }
+        }
+        applyUndoRedoSnapshot(here)
+    }
+
+    /// A step's name, read off what changed between two states: "Saturation
+    /// +15" when one slider moved, the names of what changed otherwise.
+    static func historyLabel(from a: PhotoEditSettings, to b: PhotoEditSettings) -> String {
+        let before = Dictionary(uniqueKeysWithValues: Mirror(reflecting: a).children.compactMap { child in
+            child.label.map { ($0, child.value) }
+        })
+        var changed: [(name: String, value: Double?)] = []
+        for child in Mirror(reflecting: b).children {
+            guard let label = child.label, let old = before[label] else { continue }
+            if let new = child.value as? Double, let was = old as? Double {
+                if new != was { changed.append((historyName(label), new)) }
+            } else if String(describing: child.value) != String(describing: old) {
+                changed.append((historyName(label), nil))
+            }
+        }
+        // One control can live in two fields (Temperature and its Kelvin), and
+        // the schema version is not a step.
+        var seen = Set<String>()
+        changed = changed.filter { $0.name != "Schema Version" && seen.insert($0.name).inserted }
+        guard !changed.isEmpty else { return "Edit" }
+        if changed.count == 1, let value = changed[0].value {
+            let name = changed[0].name
+            let shown = name == "Exposure" ? String(format: "%+.2f", value) : String(format: "%+.0f", value * 100)
+            return "\(name) \(shown)"
+        }
+        let names = changed.map(\.name)
+        return names.count > 3 ? names.prefix(3).joined(separator: ", ") + " +\(names.count - 3)"
+                               : names.joined(separator: ", ")
+    }
+
+    private static func historyName(_ label: String) -> String {
+        switch label {
+        case "localAdjustments": return "Masks"
+        case "layers": return "Layers"
+        case "crop", "cropAspect": return "Crop"
+        case "rotationQuarterTurns": return "Rotate"
+        case "straightenDegrees": return "Straighten"
+        case "templateID", "templatePlacement", "templateArtOverPhoto": return "Template"
+        case "templateTexts": return "Text"
+        case "temperatureKelvin": return "Temperature"
+        case "tintAbsolute": return "Tint"
+        case "colorMixer": return "Color Mixer"
+        default:
+            // camelCase → Title Case: "faceDehaze" → "Face Dehaze".
+            var out = ""
+            for ch in label {
+                if ch.isUppercase { out += " " }
+                out.append(out.isEmpty ? Character(ch.uppercased()) : ch)
+            }
+            return out
+        }
+    }
+
     private func applyUndoRedoSnapshot(_ snapshot: PhotoEditSettings) {
         settings = snapshot
         lastCommittedSettings = snapshot
@@ -12910,6 +13090,12 @@ struct DevelopView: View {
                     Spacer(minLength: 0)
                 }
 
+                // The area bar, right under the two buttons it limits — moved
+                // off the photo 24.09, where it sat over the filmstrip: *„taj
+                // ai brush loading bar ide desno ispod quick clean up i
+                // generative clean buttons"*.
+                AIPaintBudgetBar(budget: aiPaintBudget)
+
 
                 // ⚠️ The way in for the 1.8 GB weights, and the first time this
                 // app has ever offered one. Until now the Generative button sat
@@ -13381,6 +13567,8 @@ struct DevelopView: View {
             case holdForOriginal
             /// Opens the Presets popover, anchored to its own cell.
             case presets
+            /// Opens the History popover (24.09), anchored to its own cell.
+            case history
         }
 
         let id: String
@@ -13485,6 +13673,9 @@ struct DevelopView: View {
         }
         if showPresetsPopover {
             return "presets"
+        }
+        if showHistoryPopover {
+            return "history"
         }
         return "tab." + panelTab.rawValue
     }
@@ -13593,6 +13784,16 @@ struct DevelopView: View {
                           isActive: activeHeaderCellID == "presets",
                           behaviour: .presets),
 
+            // Asked for 24.09: *„mora da se doda history button … step back ili
+            // da se udje i da se vidi koji su stepovi odradjeni i da se
+            // izabere"*. Both: the list, and a press on any step goes there.
+            HeaderBarItem(id: "history",
+                          glyph: .symbol("clock.arrow.circlepath"),
+                          help: "History - every step taken on this photo, newest on top. Click one to go back to it, or forward again.",
+                          isActive: activeHeaderCellID == "history",
+                          isDisabled: noPhoto,
+                          behaviour: .history),
+
             tabItem(.retouch),
             tabItem(.layers),
             tabItem(.templates),
@@ -13668,6 +13869,22 @@ struct DevelopView: View {
                 .buttonStyle(PlainHoverButtonStyle(scale: 1.22, scalesLabel: false))
                 .popover(isPresented: $showPresetsPopover, arrowEdge: .bottom) {
                     presetsPopover
+                }
+
+            case .history:
+                Button {
+                    // A step still waiting on the 0.5 s debounce is written
+                    // first, so the list shows what was just done.
+                    undoCommitWorkItem?.cancel()
+                    commitUndoIfNeeded()
+                    showHistoryPopover.toggle()
+                } label: {
+                    face
+                }
+                .buttonStyle(PlainHoverButtonStyle(scale: 1.22, scalesLabel: false))
+                .disabled(item.isDisabled)
+                .popover(isPresented: $showHistoryPopover, arrowEdge: .bottom) {
+                    historyPopover
                 }
             }
         }
@@ -17296,13 +17513,6 @@ struct DevelopView: View {
                 .frame(width: containerSize.width, height: containerSize.height)
             }
 
-            AIPaintBudgetBar(budget: aiPaintBudget, color: ink,
-                             generativeMark: RemovalEngine.generative.blockingAreaPixels ?? 0)
-                .frame(width: min(300, max(imageFrame.width - 32, 120)))
-                .position(x: imageFrame.midX,
-                          y: min(imageFrame.maxY, containerSize.height) - 34)
-                .allowsHitTesting(false)
-
             // Sized to the CONTAINER, not to `frame`. It used to be
             // `.frame(frame.size).position(frame.mid)`, which at fit is the
             // same thing but zoomed in is a hit rect several times larger than
@@ -19326,10 +19536,11 @@ struct DevelopView: View {
             // threshold moves up with it. 1500 keeps the same margin below the
             // old failure point that 1000 kept — it does not permit the
             // failure at a bigger number, it moves where the failure starts.
-            // ⚠️ + 20 % SINCE 24.09, on the client's word: *„ja bi blokirao ai
-            // painting area na maximum plus 20% i za lamu i za SD generativ"*.
-            // The measured number is `measuredMaximum`; this is the block.
-            case .quick, .generative: return measuredMaximum * AIPaintBudget.headroom
+            // ⚠️ ONE LIMIT FOR BOTH since 24.09, LaMa's + 20 %, on the
+            // client's word: *„Lama ima limit … taj lamin limit koji ce da bude
+            // za oba … isti limit"*. Generative starts from LaMa's fill, so
+            // LaMa's limit is the one that matters to both.
+            case .quick, .generative: return AIPaintBudget.capPixels
             }
         }
 

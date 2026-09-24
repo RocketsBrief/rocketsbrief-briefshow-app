@@ -116,7 +116,8 @@ check(lit and all(l.strip().startswith("activeHeaderCellID ==") for l in lit),
       "every lit state comes from the single activeHeaderCellID (%d cells)" % len(lit))
 active = src[src.index("    private var activeHeaderCellID: String {"):]
 active = active[:active.index("\n    }")]
-check(active.count("return ") == 5,
+# 6 since 24.09: History lights its own cell while its popover is open.
+check(active.count("return ") == 6,
       "activeHeaderCellID answers with exactly one id, in priority order")
 check("releaseCanvasTools()" in items_body,
       "pressing a tab puts down whatever was holding the canvas")

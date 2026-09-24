@@ -3922,7 +3922,7 @@ enum PhotoEditRenderer {
         guard ev != 0 else { return image }
 
         let cube = CIFilter.colorCubeWithColorSpace()
-        cube.inputImage = image
+        cube.inputImage = briefCubeInput(image)
         cube.cubeDimension = Float(ExposureCube.dimension)
         cube.cubeData = ExposureCube.data(for: ev)
         cube.colorSpace = briefEditsSRGBColorSpace
@@ -3943,7 +3943,7 @@ enum PhotoEditRenderer {
         guard contrast != 0 else { return image }
 
         let cube = CIFilter.colorCubeWithColorSpace()
-        cube.inputImage = image
+        cube.inputImage = briefCubeInput(image)
         cube.cubeDimension = Float(ContrastCube.dimension)
         cube.cubeData = ContrastCube.data(for: contrast)
         cube.colorSpace = briefEditsSRGBColorSpace
@@ -3984,7 +3984,7 @@ enum PhotoEditRenderer {
         guard let scaled = matrix.outputImage else { return image }
 
         let cube = CIFilter.colorCubeWithColorSpace()
-        cube.inputImage = scaled
+        cube.inputImage = briefCubeInput(scaled)
         cube.cubeDimension = Float(HighlightsCube.dimension)
         cube.cubeData = HighlightsCube.data(for: highlights)
         cube.colorSpace = briefEditsSRGBColorSpace
@@ -4012,6 +4012,42 @@ enum PhotoEditRenderer {
         matrix.biasVector = CIVector(x: 0, y: 0, z: 0, w: 0)
         return matrix.outputImage
     }
+
+    /// `CILuminosityBlendMode`, written out: the backdrop's hue and saturation
+    /// with the source's luminosity — W3C SetLum / ClipColor, Rec.601 weights.
+    ///
+    /// ⚠️ WRITTEN OUT BECAUSE OF ONE DIVISION (KORAK 219). ClipColor divides by
+    /// (max − lum) above white and by (lum − min) under black, and on a GREY
+    /// pixel both are zero. Dehaze feeds it exactly that: the recovered sky
+    /// beside the sun is grey and past white. Apple silicon renders the 0/0 as
+    /// white; the client's Intel Mac (AMD Radeon) drew a hard contour across
+    /// the sky where it crosses white with noise inside it, and black blobs in
+    /// the shadows (C4S Problem Screenshots 3, 7, 8). Here the grey case is
+    /// answered explicitly — it is already the colour, so it is only clamped —
+    /// and the result is the stock filter's everywhere else (measured against
+    /// it on the RAWs on this machine, see Tools/run-dehaze-renderers-test.py).
+    static func luminosityBlend(of source: CIImage, over backdrop: CIImage) -> CIImage? {
+        guard let kernel = luminosityKernel else { return nil }
+        return kernel.apply(extent: source.extent.intersection(backdrop.extent),
+                            arguments: [source, backdrop])
+    }
+
+    private static let luminosityKernel: CIColorKernel? = CIColorKernel(source: """
+        kernel vec4 briefLuminosityBlend(__sample s, __sample b) {
+            vec3 cs = s.a > 0.0 ? s.rgb / s.a : vec3(0.0);
+            vec3 cb = b.a > 0.0 ? b.rgb / b.a : vec3(0.0);
+            vec3 w = vec3(0.3, 0.59, 0.11);
+            float l = dot(cs, w);
+            vec3 c = cb + (l - dot(cb, w));
+            float lc = dot(c, w);
+            float n = min(min(c.r, c.g), c.b);
+            float x = max(max(c.r, c.g), c.b);
+            if (n < 0.0) { float d = lc - n; c = d > 1.0e-5 ? lc + (c - lc) * lc / d : vec3(lc); }
+            if (x > 1.0) { float d = x - lc; c = d > 1.0e-5 ? lc + (c - lc) * (1.0 - lc) / d : vec3(lc); }
+            c = clamp(c, 0.0, 1.0);
+            return vec4(c * b.a, b.a);
+        }
+        """)
 
     /// Adds the COLOUR of two images, unclamped, and keeps the first one's alpha.
     /// See `scalingChannels`.
@@ -4096,7 +4132,7 @@ enum PhotoEditRenderer {
         guard let down = scalingChannels(of: image, by: 1 / headroom) else { return image }
 
         let cube = CIFilter.colorCubeWithColorSpace()
-        cube.inputImage = down
+        cube.inputImage = briefCubeInput(down)
         cube.cubeDimension = Float(ShadowsCube.dimension)
         cube.cubeData = ShadowsCube.data(for: shadows)
         cube.colorSpace = briefEditsSRGBColorSpace
@@ -4285,7 +4321,7 @@ enum PhotoEditRenderer {
         else { return image }
 
         let maskCube = CIFilter.colorCubeWithColorSpace()
-        maskCube.inputImage = base
+        maskCube.inputImage = briefCubeInput(base)
         maskCube.cubeDimension = Float(ClarityMaskCube.dimension)
         maskCube.cubeData = ClarityMaskCube.data()
         maskCube.colorSpace = briefEditsSRGBColorSpace
@@ -4725,11 +4761,8 @@ enum PhotoEditRenderer {
                 lessCast.backgroundImage = image
                 hueSource = lessCast.outputImage?.cropped(to: extent) ?? image
             }
-            let lumaOnly = CIFilter.luminosityBlendMode()
-            lumaOnly.inputImage = recoveredScene
-            lumaOnly.backgroundImage = hueSource
             let scene: CIImage
-            if let toneOnly = lumaOnly.outputImage?.cropped(to: extent) {
+            if let toneOnly = luminosityBlend(of: recoveredScene, over: hueSource)?.cropped(to: extent) {
                 let share = CGFloat(DehazeAtmosphere.recoveredColourShare)
                 let mix = CIFilter.blendWithMask()
                 mix.inputImage = recoveredScene
@@ -4758,7 +4791,7 @@ enum PhotoEditRenderer {
             // The spec's last clause: the division grew the chroma along with
             // everything else, and drove the darkest tones under black.
             let relief = CIFilter.colorCubeWithColorSpace()
-            relief.inputImage = scene
+            relief.inputImage = briefCubeInput(scene)
             relief.cubeDimension = Float(DehazeReliefCube.dimension)
             relief.cubeData = DehazeReliefCube.data(for: strength)
             relief.colorSpace = briefEditsSRGBColorSpace
@@ -5463,7 +5496,7 @@ enum PhotoEditRenderer {
     /// for two images at alpha 0.5 as well.
     private static func applyColorMixer(_ mixer: ColorMixer, to image: CIImage) -> CIImage {
         let cube = CIFilter.colorCubeWithColorSpace()
-        cube.inputImage = image
+        cube.inputImage = briefCubeInput(image)
         cube.cubeDimension = Float(ColorMixerCube.dimension)
         cube.cubeData = ColorMixerCube.data(for: mixer)
         cube.colorSpace = briefEditsSRGBColorSpace
@@ -6472,6 +6505,25 @@ private let briefEditsDefaultSharpenRadius: Double = 1.69
 // Each context keeps its own caches, which is the cost. It is worth paying:
 // the three jobs have genuinely different urgency, and none of them should be
 // able to stall the one the client is looking at.
+/// What every colour cube in this pipeline reads: its input, clamped to [0,1].
+///
+/// ⚠️ ON APPLE SILICON THIS CHANGES NOTHING, and that is the point of it. A
+/// cube there lands anything past white on its top entry and anything under
+/// black on its bottom one (measured — see HighlightsCurve.swift), which is
+/// exactly this clamp. How ANOTHER GPU addresses the cube past its edge was
+/// never measured, and the client's Intel Mac (AMD Radeon) showed what a lookup
+/// read from the wrong end looks like (KORAK 219, C4S Problem Screenshots 3, 7,
+/// 8): Dehaze +31 drew a hard contour across the sky exactly where the
+/// recovered sky crosses white, with noise inside it, and black blobs where the
+/// shadows went under zero. Clamped here, no cube depends on addressing.
+func briefCubeInput(_ image: CIImage) -> CIImage {
+    let clamp = CIFilter.colorClamp()
+    clamp.inputImage = image
+    clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+    clamp.maxComponents = CIVector(x: 1, y: 1, z: 1, w: 1)
+    return clamp.outputImage ?? image
+}
+
 private func makeBriefEditsCIContext() -> CIContext {
     CIContext(options: [
         .workingColorSpace: briefEditsSRGBColorSpace,

@@ -23642,3 +23642,41 @@ menjano. Oznaka verzije u app-i se čita iz bundle-a.
 Detalji, šta je urađeno, šta je probano i odbačeno i plan za sutra: v. „GDE SMO STALI — 24. septembar" na vrhu.
 Novi lenjiri: `run-people-layer-strength-test.py`, `run-enhance-edge-test.py` (env: FROZEN, ONLY, PEOPLE_ONLY, DIAG),
 `run-clarity-layer-test.py`, `run-clarity-roi-test.py`. Svi primaju putanju do NEF-a sa ljudima (`BriefShow RAW Check/2026-09-01/C4S_9021.NEF`).
+
+---
+
+## KORAK 219 — Clarity bez linije, Subject prati slajdere, Dehaze bez 0/0 za Intel, traka za import (24. septembar 2026)
+
+Klijent otišao na plažu uz *„imas autorizaciju da odlucis sta je najbolje"*, pa su izbori ispod moji.
+
+**1. Clarity alfa — POPRAVLJENO.** `PhotoEditRenderer.adding` više nije `CIAdditionCompositing` nego mali
+`CIColorKernel` (`vec4(a.rgb + b.rgb, a.a)`): sabira boju, alfu uzima od slike. `adding` koristi samo Clarity.
+`run-enhance-edge-test.py` (FROZEN=1 ONLY=clarity PEOPLE_ONLY=1): prsten **−16,3 → 0,0**, na HEAD-u „LINE", sada OK.
+`run-clarity-test.py`, `run-clarity-layer-test.py`, `run-clarity-roi-test.py` zeleni.
+
+**2. „Subject prati slajdere slike" — UKLJUČENO** (`people.liveSource` u `PeopleLayerFactory`).
+`run-people-layer-strength-test.py`: svaki slajder 1,00, kontrola 0,00; edge test bez FROZEN: dubina linije 0,1.
+
+**3. Dehaze na Intel-u (slike 3, 7, 8) — popravka NASLEPO, Intel mašine ovde nema.** Klijentovih NEF-ova
+(C4S_1773, C4S_1819) na ovoj mašini nema. `.useSoftwareRenderer` na Apple silicon-u daje bajt-isto kao GPU,
+dakle ignoriše se i ne može da glumi drugi GPU.
+- Uzrok po kome je rađeno: `CILuminosityBlendMode` u Dehaze-u (ClipColor) deli sa (max − lum). Na SIVOM pikselu
+  iznad belog (nebo kraj sunca posle oporavka) to je **0/0**. Izmereno na M2: stock vraća 1,0, izlaz sveden na
+  [0,1]. AMD verovatno drugačije prikazuje NaN, a to se poklapa sa slikom 7: kontura tačno gde nebo prelazi belo,
+  šum unutra.
+- Zamena: `PhotoEditRenderer.luminosityBlend(of:over:)`, W3C SetLum/ClipColor u `CIColorKernel`, sa izričitim
+  odgovorom za sivi slučaj. Prema stock-u na 7 RAW-ova × Dehaze 31 i 100, sa celim klijentovim panelom (ALL=1):
+  **najviše 2 nivoa, na najviše 22 piksela od 667 000**.
+- Usput, kao osiguranje: `briefCubeInput` ograničava ulaz svakog color cube-a na [0,1] (7 mesta). Na M2 je
+  **bit-identično** sa HEAD-om (5 RAW-ova, ceo panel, max 0), jer cube tu već sam svodi na ivicu tabele.
+- Probano i ODBAČENO: ograničiti na [0,1] oba ulaza luminosity blend-a. To menja Lum(izvora) kad je samo jedan
+  kanal iznad 1: **do 67 nivoa** na C4S_8971.
+- ⚠️ Nađeno, NIJE dirano: `lessCast` u Dehaze-u sabira `airCast` čija je alfa 0. Premultiplied boja sa alfom 0
+  je 0, pa se uklanjanje boje vazduha (`(A − grey)·(1 − t')`) verovatno nikad ne desi. Popravka bi promenila
+  izgled već podešenih slika, pa se prvo pita klijent.
+- ⚠️ **Potvrda je moguća samo na klijentovom Intel-u** (C4S_1773 Dehaze +31, C4S_1819 Background Enhanced).
+- Novi lenjir: `Tools/run-dehaze-renderers-test.py <NEF> [size] [dehaze] [out]` (env ALL=1 = klijentov panel
+  sa slike 7): isti graf kroz GPU, softverski, RGBAf i RGBA8, i broj piksela zdrobljenih u crno.
+
+**4. Import sa kamere** — traka koja se puni, uz „Copying X — 3 of 155 · 1%", u boji Create akcenta.
+Pravilo od danas: **svako učitavanje ima traku sa brojevima, nikad sam spinner.**

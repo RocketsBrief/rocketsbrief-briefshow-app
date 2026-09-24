@@ -104,6 +104,13 @@ struct CameraImportView: View {
     @StateObject private var session: CameraImportSession
     @ObservedObject private var themeManager = ThemeManager.shared
 
+    // Create's accent, so the import bar fills in the same colour as Export's.
+    private var importAccent: Color {
+        themeManager.current == .dark
+            ? Color(red: 1.0, green: 0.94, blue: 0.62)
+            : Color(red: 0.56, green: 0.56, blue: 0.58)
+    }
+
     @State private var destination: URL?
     /// Always on, and no longer a choice: the client asked for every import to
     /// land in a dated folder, so the checkbox that could turn it off is gone
@@ -535,11 +542,22 @@ struct CameraImportView: View {
         HStack(spacing: 12) {
             switch session.phase {
             case .importing:
-                ProgressView()
-                    .controlSize(.small)
-                Text("Copying \(session.currentFileName) — \(session.completedCount) of \(session.checkedItems.count)")
-                    .font(.custom("Figtree", size: 11))
-                    .foregroundColor(AppColors.inkSecondary)
+                // A bar that FILLS, with the numbers on it — the rule since
+                // 24.09 is that every load shows how far it has got, not a
+                // spinner (KORAK 219). Same bar as Export in Create.
+                let total = max(session.checkedItems.count, 1)
+                let done = min(session.completedCount, total)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Copying \(session.currentFileName) — \(done) of \(total) · \(done * 100 / total)%")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.inkSecondary)
+                        .lineLimit(1)
+                    ProgressView(value: Double(done), total: Double(total))
+                        .progressViewStyle(.linear)
+                        .tint(importAccent)
+                        .animation(.linear(duration: 0.2), value: done)
+                        .frame(maxWidth: 360)
+                }
 
             case .finished(let count, let folder):
                 Image(systemName: "checkmark.circle")

@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 24. septembar 2026 (KORAK 218, nije objavljeno; **v11.51 je gore**).
+Beleška za nastavak rada. Poslednja izmena: 24. septembar 2026 (KORAK 223, **v11.58 je gore**; koraci 219–223 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 

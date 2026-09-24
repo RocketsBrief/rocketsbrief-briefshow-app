@@ -23829,3 +23829,8 @@ menjano, jer je deo zaključanog AI odeljka. **`v11.0` se i dalje NE SME brisati
 
 - stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.58`
 - direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.58/C4S-Suite-11.58.zip`
+
+**24.09, veče:** klijent je pokrenuo `Tools/diagnostics.sql` u Supabase-u (RocketsBrief), rezultat „Success". Provereno
+anon ključem, bez upisa: neispravan `kind` vraća `23514 check constraint`, dakle tabela postoji i INSERT je dozvoljen.
+Slanje radi čim se na mašini uključi profil ▸ **Send performance diagnostics**. Sledeće: klijent uključuje prekidač
+na Intel-u (v11.58), a ujutru šalje rezultat `select … from briefshow_diagnostics` za poslednji dan.

@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026 (KORAK 225, **nije objavljeno**, v11.58 je poslednje izdanje; koraci 224–225 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026 (KORAK 226, **v11.62 je gore**; koraci 224–226 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -23949,3 +23949,26 @@ sakriva ispod 0,15 s. Posao se sada zove „Loading sharp view"/„Updating view
 
 ⚠️ Prvi potez na slici posle prelaska sa suseda ponovo čita RAW (~1 s ovde; slot je samo za otvorenu sliku).
 ⚠️ Na 100 % i više renderuje se CEO kadar u native-u (ne samo vidljivi deo kao Lightroom) — sledeći korak ako zum bude spor.
+
+---
+
+## KORAK 226 — RELEASE v11.62 (25. septembar 2026)
+
+`python3 Tools/make-release.py 11.62 --small-only` — sadrži KORAKE 224 i 225. Verzija 11.58/58 → **11.62/62**.
+
+| | |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.62 / 62** |
+| `LaMa.mlmodelc` | unutra |
+| `SD15-Inpainting` | **nema** — dugme u app-i, `v11.0/SD15-Inpainting.aar` HTTP 200; oni koji ga već imaju ga zadržavaju |
+| SD na Intel-u | `computeUnits = .all` (CPU+GPU dele posao), nepromenjeno |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| veličina | 116957359 bajta |
+| SHA-256 | `409b76b2ad815216ba21a405a1b6bff0d0d88332e180f3c60985e2eb93bbba7a` |
+
+- stranica: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.62`
+- preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.62/C4S-Suite-11.62.zip`
+- **`v11.0` se i dalje NE SME brisati.**

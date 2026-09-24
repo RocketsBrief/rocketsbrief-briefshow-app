@@ -23680,3 +23680,12 @@ dakle ignoriše se i ne može da glumi drugi GPU.
 
 **4. Import sa kamere** — traka koja se puni, uz „Copying X — 3 of 155 · 1%", u boji Create akcenta.
 Pravilo od danas: **svako učitavanje ima traku sa brojevima, nikad sam spinner.**
+
+**5. ⌘A / četkica — NIJE urađeno: mašina je bila zaključana** (lock screen), pa merenje u app-i nije moglo.
+Kandidat iz koda, NEIZMEREN: `multiSelectedURLs` je `@State` na celom `DevelopView`-u, pa ⌘A ponovo računa
+ceo editor, ne samo filmstrip (35 mesta ga čita, svaka ćelija ima svoj `contextMenu`). Popravka bi bila da
+selekcija pređe u zaseban `ObservableObject` koji gledaju samo filmstrip i paneli. Prvo `sample` pa to.
+
+**6. `Tools/diagnostics.sql`** — i dalje čeka Supabase SQL editor (treba login).
+
+**Stanje:** BUILD SUCCEEDED (Debug), app pokrenut sa ovim kodom, svih 11 lenjira zeleno. Ništa nije viđeno na ekranu.

@@ -1,8 +1,15 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026 (KORAK 224, **nije objavljeno**, v11.58 je poslednje izdanje; korak 224 je na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026 (KORAK 225, **nije objavljeno**, v11.58 je poslednje izdanje; koraci 224–225 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
+
+> ⚠️ **PROMENJENO 25.09.2026 odlukom klijenta** (KORAK 225): *„moze uradi kao lightroom sto radi, ali kad se
+> exportuju slike mora da se exportuju original kakve jesu samo u JPEG kako klijent izabere jacinu kvaliteta, i
+> prikazivanje slika u gridu mora da bude original max quality"*. Oštra slika u Create-u se od sada renderuje u
+> veličini koju ekran prikazuje (pun kvalitet dekodiranja, pa Lanczos), a sa zumom raste do native na 100 % i više.
+> **Izvoz, flatten, AI i grid su i dalje iz originala u punoj rezoluciji — to ostaje zaključano.** Tekst ispod je
+> istorija pravila; ono što važi je ova napomena.
 
 **Slika otvorena u LumenoLab-u i spremna za rad MORA biti u originalnoj
 rezoluciji fajla. Nijedna popravka, optimizacija ni ubrzanje ne sme da je
@@ -23909,3 +23916,36 @@ background-enhanced-preview, template-edge, enhance-edge. effect-extraction pada
 **Sledeće:** klijent proba na Intel-u (posle paketa) — zamrzavanja posle slajdera/crop-a u Supabase-u treba da nestanu;
 i dalje čeka Dehaze snimak sa Intel-a (C4S_1773 +31, C4S_1819). Sync sa oba recepta koristi podrazumevane brojeve
 (kartica postoji samo za jedan recept odjednom).
+
+
+---
+
+## KORAK 225 — oštra slika kao u Lightroom-u: veličina ekrana, dekodiranje zapamćeno; trake sa imenima; bez Exit Clean Up (25. septembar 2026)
+
+Klijent: *„a ovo sto uvek ucitava full resolution jel to mora.. kako lightroom radi lepo na intelu?"* → objašnjeno
+(Lightroom renderuje koliko ekran prikazuje, na 100 % samo vidljivo), pa odobreno (v. napomenu u ZAKLJUČANO odeljku).
+
+**Kako radi:** `briefShowSharpScale` = koliko native-a treba prostoru za sliku (tačke − crop inset) × zum × Retina,
+u osminama, ≥0,9 → native. `refinedRenderNow` zove `render(…, decodeScale:)`: RAW se dekodira u PUNOJ veličini, Lanczos
+na veličinu ekrana PRE svih izmena, i to se drži (`cachedScreenDecode`, ključ temperatura|tint|scale) dok se ne promeni
+White Balance, zum ili slika. Zum koji traži više piksela ponovo pokreće refine (`onChange(of: zoomLevel)`).
+`NeighborPrefetch` pravi susede u istoj veličini (`holdDecode: false`, da ne otme slot otvorene slike), radijus 3/2/1 po RAM-u.
+Face Dehaze keš lica ima `decodeScale` u ključu.
+
+**Izmereno** (`Tools/run-screen-decode-test.py <NEF> 3000`, C4S_9021, M2):
+| | vreme | oštrina (mean abs Laplasijan) |
+|---|---|---|
+| native (staro) | 1,8–2,5 s | 2,50 (smanjeno na ekran) |
+| CIRAWFilter `scaleFactor` (probano, ODBAČENO) | 0,6 s | **1,62 — mek** |
+| scaleFactor ×1,25/1,5 + Lanczos (probano, ODBAČENO) | 0,8/1,3 s | 1,87/2,19 |
+| **pun dekoder → Lanczos → izmene, zapamćeno** | **0,22 s (~9×)** | **2,59–2,60**, razlika 0,47 nivoa |
+Isti lenjir proverava i pravilo: zum 1/1,5/2/4 → 0,5/0,75/1/1 i polovični crop → 1.
+
+**Na ekranu (ova mašina):** zum ⌘= ×4 oštar (trepavice, vez na majici); 0 zamrzavanja; trake:
+Klijent je tražio trake i za kratko čekanje (*„mora da ima loading bar ako se ceka i malo"*); ispod 0,15 s se ionako ne prikazuju. Za Rendering / Updating view / Loading sharp view traka piše NASUMIČNU reč iz liste (`WorkMeter.playfulWords`, klijentova lista 25.09 + Pontificating, Working), jednom po poslu; ostala čekanja zadržavaju pravo ime.
+sakriva ispod 0,15 s. Posao se sada zove „Loading sharp view"/„Updating view", ne „Full resolution".
+
+**Exit Clean Up uklonjen** (*„obrisi ovo dugme ne treba nam vise"*).
+
+⚠️ Prvi potez na slici posle prelaska sa suseda ponovo čita RAW (~1 s ovde; slot je samo za otvorenu sliku).
+⚠️ Na 100 % i više renderuje se CEO kadar u native-u (ne samo vidljivi deo kao Lightroom) — sledeći korak ako zum bude spor.

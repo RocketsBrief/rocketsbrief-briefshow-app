@@ -3015,14 +3015,20 @@ enum PhotoEditRenderer {
     /// replaced by the full-resolution render as soon as editing pauses. What
     /// changed is what the client looks at in between, which is most of the
     /// time they spend in this window.
-    static func loadPreviewBaseImage(from photoURL: URL, full: PhotoBaseImage, previewMax: CGFloat = 2600) -> PhotoBaseImage {
+    static func loadPreviewBaseImage(from photoURL: URL, full: PhotoBaseImage, previewMax: CGFloat = 2600,
+                                     draft: Bool = true) -> PhotoBaseImage {
         loadPreviewBaseImage(at: FlattenedImageStore.sourceURL(for: photoURL),
-                             full: full, previewMax: previewMax)
+                             full: full, previewMax: previewMax, draft: draft)
     }
 
     /// The same reduced decode, told exactly WHICH file to open — the other
     /// half of `loadBaseImage(at:)`, and for the same one caller.
-    static func loadPreviewBaseImage(at url: URL, full: PhotoBaseImage, previewMax: CGFloat = 2600) -> PhotoBaseImage {
+    /// `draft: false` asks for the full-quality demosaic at the reduced size. It
+    /// is NOT what Create's sharp frame uses: CIRAWFilter's own scaleFactor is
+    /// soft at every step (Tools/run-screen-decode-test.py), so that frame is
+    /// the full decode brought down with Lanczos — render(decodeScale:).
+    static func loadPreviewBaseImage(at url: URL, full: PhotoBaseImage, previewMax: CGFloat = 2600,
+                                     draft: Bool = true) -> PhotoBaseImage {
         let extent = full.extent
         let longEdge = max(extent.width, extent.height)
         let scale = (longEdge.isFinite && longEdge > previewMax) ? previewMax / longEdge : 1
@@ -3070,7 +3076,7 @@ enum PhotoEditRenderer {
             // below), live-dragging preview; the export render() call
             // above never touches this filter, so the final exported file
             // is completely unaffected.
-            previewFilter.isDraftModeEnabled = true
+            previewFilter.isDraftModeEnabled = draft
             if scale < 1 {
                 previewFilter.scaleFactor = Float(scale)
             }
@@ -3360,6 +3366,11 @@ enum PhotoEditRenderer {
     private static weak var rawDecodeFilter: CIRAWFilter?
     private static var rawDecodeKey: String?
     private static var rawDecodeImage: CIImage?
+    // The sharp frame's own held decode — full demosaic, already brought down
+    // to the screen's size. See cachedScreenDecode.
+    private static weak var screenDecodeFilter: CIRAWFilter?
+    private static var screenDecodeKey: String?
+    private static var screenDecodeImage: CIImage?
 
     private static func cachedRAWDecode(from filter: CIRAWFilter, exposure: Float,
                                         kelvin: Float, tint: Float) -> CIImage {
@@ -3389,6 +3400,36 @@ enum PhotoEditRenderer {
         return held
     }
 
+    /// The full-quality demosaic, Lanczos'd to `scale`, held between sharp
+    /// frames. Measured on C4S_9021 at 3000 px: the demosaic is most of a sharp
+    /// frame, and it only changes with White Balance — every other slider
+    /// works after it. Same holding mechanism as cachedRAWDecode, its own slot.
+    private static func cachedScreenDecode(from filter: CIRAWFilter, kelvin: Float, tint: Float,
+                                           scale: CGFloat) -> CIImage {
+        let key = "\(kelvin)|\(tint)|\(scale)"
+        rawDecodeLock.lock()
+        if screenDecodeFilter === filter, screenDecodeKey == key, let hit = screenDecodeImage {
+            rawDecodeLock.unlock()
+            return hit
+        }
+        rawDecodeLock.unlock()
+
+        guard let fresh = filter.outputImage else { return CIImage.empty() }
+        let origin = fresh.extent.origin
+        let held = fresh
+            .transformed(by: CGAffineTransform(translationX: -origin.x, y: -origin.y))
+            .applyingFilter("CILanczosScaleTransform",
+                            parameters: [kCIInputScaleKey: scale, kCIInputAspectRatioKey: 1])
+            .insertingIntermediate(cache: true)
+
+        rawDecodeLock.lock()
+        screenDecodeFilter = filter
+        screenDecodeKey = key
+        screenDecodeImage = held
+        rawDecodeLock.unlock()
+        return held
+    }
+
     /// Lets go of the held decode. Called when the open photo changes — the
     /// previous photograph's demosaic is dead weight the moment another one
     /// is on screen, and it is the largest single thing this type holds.
@@ -3397,6 +3438,9 @@ enum PhotoEditRenderer {
         rawDecodeFilter = nil
         rawDecodeKey = nil
         rawDecodeImage = nil
+        screenDecodeFilter = nil
+        screenDecodeKey = nil
+        screenDecodeImage = nil
         rawDecodeLock.unlock()
     }
 
@@ -3431,9 +3475,12 @@ enum PhotoEditRenderer {
     static func render(_ settings: PhotoEditSettings, on base: PhotoBaseImage,
                        applyCrop: Bool = true,
                        reusingRAWDecode: Bool = false,
-                       templateCanvasScale: Double = 1) -> CIImage {
+                       templateCanvasScale: Double = 1,
+                       decodeScale: CGFloat = 1,
+                       holdDecode: Bool = true) -> CIImage {
         var output: CIImage
         let isRAWSource: Bool
+        var alreadyScaled = false
 
         switch base {
         case .standard(let image):
@@ -3467,11 +3514,31 @@ enum PhotoEditRenderer {
                 ?? (asShotTint + Float(settings.tint) * 100)
             filter.neutralTemperature = min(max(wantedKelvin, 2000), 50000)
             filter.neutralTint = min(max(wantedTint, -150), 150)
-            output = reusingRAWDecode
-                ? cachedRAWDecode(from: filter, exposure: 0,
-                                  kelvin: filter.neutralTemperature, tint: filter.neutralTint)
-                : (filter.outputImage ?? CIImage.empty())
+            if decodeScale < 1, holdDecode {
+                output = cachedScreenDecode(from: filter, kelvin: filter.neutralTemperature,
+                                            tint: filter.neutralTint, scale: decodeScale)
+                alreadyScaled = true
+            } else {
+                output = reusingRAWDecode
+                    ? cachedRAWDecode(from: filter, exposure: 0,
+                                      kelvin: filter.neutralTemperature, tint: filter.neutralTint)
+                    : (filter.outputImage ?? CIImage.empty())
+            }
             isRAWSource = true
+        }
+
+        // The screen's sharp frame (briefShowSharpScale, 25.09): decoded at FULL
+        // size — CIRAWFilter's own scaleFactor is soft at every step, measured
+        // (Tools/run-screen-decode-test.py: sharpness 1.62 against 2.50) — then
+        // brought down with Lanczos BEFORE any edit, so everything after this
+        // line works on the screen's pixel count. Every effect below is sized
+        // to the picture, not to pixels, so the look is the same at any size.
+        if decodeScale < 1, !alreadyScaled {
+            let origin = output.extent.origin
+            output = output
+                .transformed(by: CGAffineTransform(translationX: -origin.x, y: -origin.y))
+                .applyingFilter("CILanczosScaleTransform",
+                                parameters: [kCIInputScaleKey: decodeScale, kCIInputAspectRatioKey: 1])
         }
 
         if settings.rotationQuarterTurns != 0 {
@@ -3644,7 +3711,7 @@ enum PhotoEditRenderer {
             case .raw(let filter, _, _): owner = filter
             }
             let faces = FaceDehazeFaces.faces(
-                of: owner, variant: "\(settings.rotationQuarterTurns)/\(settings.straightenDegrees)",
+                of: owner, variant: "\(settings.rotationQuarterTurns)/\(settings.straightenDegrees)/\(decodeScale)",
                 in: faceGeometry)
             output = PhotoEditRenderer.applyFaceDehaze(settings.faceDehaze, to: output, faces: faces)
         }
@@ -8081,7 +8148,46 @@ final class PreviewImageState: ObservableObject {
     /// the sharp frame with a soft preview and then refine it all over again —
     /// measured on screen: „Full resolution" appeared 1.3 s after every switch.
     var prefetchedFor: PhotoEditSettings?
+    /// The preview area in points, written by the view (not published — a
+    /// GeometryReader must never write state its own body reads, KORAK 212).
+    var viewPoints: CGSize = .zero
+    /// The scale the last sharp frame was rendered at (1 = native). See
+    /// DevelopView.sharpScale.
+    var lastSharpScale: CGFloat = 0
+    /// White Balance the held decode was made with — the decode's other key.
+    var lastSharpWB: String = ""
 }
+
+/// The fraction of native resolution a picture needs to fill `view` (points)
+/// at `zoom` on a `backing`× screen — Lightroom's rule.
+///
+/// ⚠️ 25.09, the client's decision, reversing „ZAKLJUČANO — rezolucija": *„moze
+/// uradi kao lightroom sto radi, ali kad se exportuju slike mora da se exportuju
+/// original … i prikazivanje slika u gridu mora da bude original max quality"*.
+/// Create's sharp frame was a 24 MP render after every edit for a ~3000 px
+/// view. It is now the FULL-quality decode brought down to what the view shows
+/// (PhotoEditRenderer.render `decodeScale`), rising with zoom to native at
+/// 100 % and beyond. Export, flatten, AI and the grid are untouched.
+/// Measured, Tools/run-screen-decode-test.py on C4S_9021 at 3000 px: 0.22 s
+/// against 2.0 s, sharpness 2.60 against native-brought-down 2.50, mean
+/// difference 0.47 levels.
+/// Stepped in eighths so a small resize does not re-decode, and anything past
+/// 0.9 is simply native.
+func briefShowSharpScale(extent: CGRect, settings: PhotoEditSettings, applyCrop: Bool,
+                         view: CGSize, zoom: CGFloat, backing: CGFloat) -> CGFloat {
+    guard view.width > 1, view.height > 1 else { return 1 }
+    var w = extent.width, h = extent.height
+    if settings.rotationQuarterTurns % 2 != 0 { swap(&w, &h) }
+    if applyCrop, let crop = settings.crop {
+        w *= CGFloat(crop.width); h *= CGFloat(crop.height)
+    }
+    guard w > 0, h > 0, w.isFinite, h.isFinite else { return 1 }
+    let needed = min(view.width / w, view.height / h) * zoom * backing
+    let stepped = (needed * 8).rounded(.up) / 8
+    return stepped >= 0.9 ? 1 : max(stepped, 0.125)
+}
+
+
 
 /// The photos either side of the open one, opened AND rendered at full
 /// resolution before they are asked for.
@@ -8111,13 +8217,15 @@ final class NeighborPrefetch: @unchecked Sendable {
         let settings: PhotoEditSettings
         let frame: NSImage?
         let histogram: [CGFloat]
+        /// The scale `frame` was rendered at (1 = native).
+        let scale: CGFloat
     }
 
-    /// Photos each side of the open one. 32 GB: 2 (four frames, ~0.4 GB),
-    /// 16 GB: 1, 8 GB: 1.
+    /// Photos each side of the open one. Frames are screen-sized since 25.09
+    /// (~25 MB for a 3000 px view, not ~100 MB), so 32 GB: 3, 16 GB: 2, 8 GB: 1.
     static var radius: Int {
         let gigabytes = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
-        return gigabytes >= 24 ? 2 : 1
+        return gigabytes >= 24 ? 3 : (gigabytes >= 12 ? 2 : 1)
     }
 
     let queue: OperationQueue = {
@@ -8151,7 +8259,12 @@ final class NeighborPrefetch: @unchecked Sendable {
         lock.lock(); entries = [:]; wanted = []; lock.unlock()
     }
 
-    func prefetch(around url: URL, in urls: [URL]) {
+    /// The view the frames are for — set by the editor before `prefetch`.
+    private var view: CGSize = .zero
+    private var backing: CGFloat = 2
+
+    func prefetch(around url: URL, in urls: [URL], view: CGSize, backing: CGFloat) {
+        lock.lock(); self.view = view; self.backing = backing; lock.unlock()
         guard let index = urls.firstIndex(of: url) else { return }
         let r = Self.radius
         // Next first, then previous, then the second ring — the order the
@@ -8187,7 +8300,13 @@ final class NeighborPrefetch: @unchecked Sendable {
         let settings = PhotoEditStore.settings(for: url)
 
         guard isWanted(url) else { return }
-        let rendered = PhotoEditRenderer.render(settings, on: base, applyCrop: true)
+        lock.lock(); let view = self.view, backing = self.backing; lock.unlock()
+        let scale = briefShowSharpScale(extent: base.extent, settings: settings, applyCrop: true,
+                                        view: view, zoom: 1, backing: backing)
+        // holdDecode: false — the held slot is the OPEN photo's; a neighbour
+        // taking it would make the open photo's next edit decode again.
+        let rendered = PhotoEditRenderer.render(settings, on: base, applyCrop: true,
+                                                decodeScale: scale, holdDecode: false)
         var frame: NSImage?
         if let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent, context: context) {
             frame = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
@@ -8197,7 +8316,7 @@ final class NeighborPrefetch: @unchecked Sendable {
         lock.lock()
         if wanted.contains(url) {
             entries[url] = Entry(base: base, preview: preview, settings: settings,
-                                 frame: frame, histogram: bins)
+                                 frame: frame, histogram: bins, scale: scale)
         }
         lock.unlock()
     }
@@ -11074,6 +11193,12 @@ struct DevelopView: View {
             if isOn { loadOriginalBaseIfNeeded() }
             renderNow()
         }
+        // Zooming in past what the last sharp frame was rendered for asks for
+        // a sharper one — up to native at 100 % and beyond, like Lightroom.
+        .onChange(of: zoomLevel) { _ in
+            guard let fullBaseImage, sharpScale(for: fullBaseImage) > previewState.lastSharpScale else { return }
+            scheduleRefinedRender()
+        }
         // What a diagnostics row says Create was doing — see Diagnostics.
         .onChange(of: selectedURL) { Diagnostics.shared.setCreateFile($0) }
         .onChange(of: activeHeaderCellID) { Diagnostics.shared.setCreateTool($0) }
@@ -13495,24 +13620,9 @@ struct DevelopView: View {
                 // header, where one press both opens this block and picks up
                 // the brush; leaving a copy behind would be leaving the second
                 // step of the two-step that was just removed.
-                HStack(spacing: 6) {
-                    // Explicit way out. Select People is NOT gone — it lives on
-                    // in the Remove section below, which is its only entry
-                    // point now. It was moved rather than deleted because it
-                    // MAKES a selection, and the request was for a way to leave
-                    // the tool, not to lose a way into it.
-                    //
-                    // Disabled rather than hidden while the tool is off: a
-                    // button that appears and disappears reflows the row around
-                    // it, and these rows are meant to be muscle memory.
-                    toolButton("Exit Clean Up", systemImage: "xmark",
-                               isActive: false,
-                               isEnabled: isRemoveBrushActive) {
-                        toggleRemoveBrush()
-                    }
-
-                    Spacer(minLength: 0)
-                }
+                // ⚠️ NO „Exit Clean Up" since 25.09 — *„obrisi ovo dugme ne
+                // treba nam vise"*. The header's AI button and choosing another
+                // tool both leave the brush, as they did before.
 
                 // ⚠️ A CHOICE AND ONE BUTTON since 24.09: *„Ai kada se bira
                 // quick ili sd generative da se oznaci check box-om (kad je
@@ -14554,6 +14664,12 @@ struct DevelopView: View {
             // redrawing the panel and the filmstrip. See PreviewImageState.
             PreviewImageReader(state: previewState) { displayedImage in
             ZStack {
+                // The view's size, for sharpScale — into a plain field, so
+                // nothing redraws because of it.
+                Color.clear.frame(width: 0, height: 0)
+                    .onAppear { previewState.viewPoints = proxy.size }
+                    .onChange(of: proxy.size) { previewState.viewPoints = $0 }
+
                 AppColors.panelAlt.opacity(0.4)
 
                 if let displayedImage {
@@ -25967,6 +26083,8 @@ struct DevelopView: View {
         refineWorkItem = nil
         displayedImage = nil
         histogramBins = []
+        previewState.lastSharpScale = 0
+        previewState.lastSharpWB = ""
 
         // Made ready while the previous photo was open — see NeighborPrefetch.
         // The sharp frame goes up at once and nothing is rendered: it IS the
@@ -25980,11 +26098,13 @@ struct DevelopView: View {
                 displayedImage = frame
                 histogramBins = ready.histogram
                 previewState.prefetchedFor = ready.settings
+                previewState.lastSharpScale = ready.scale
             } else {
                 renderNow()
             }
             DevelopLaunchProgress.shared.finish()
-            NeighborPrefetch.shared.prefetch(around: url, in: photoURLs)
+            NeighborPrefetch.shared.prefetch(around: url, in: photoURLs, view: previewState.viewPoints,
+                                                 backing: NSApp.keyWindow?.backingScaleFactor ?? 2)
             return
         }
 
@@ -26016,7 +26136,8 @@ struct DevelopView: View {
                 previewBaseImage = preview
                 isLoadingPreview = false
                 renderNow()
-                NeighborPrefetch.shared.prefetch(around: url, in: photoURLs)
+                NeighborPrefetch.shared.prefetch(around: url, in: photoURLs, view: previewState.viewPoints,
+                                                 backing: NSApp.keyWindow?.backingScaleFactor ?? 2)
                 // The photo is on screen — this is the moment Create is
                 // genuinely usable, so it is the moment the opening card comes
                 // down. A no-op on every later photo switch, since the card is
@@ -26114,6 +26235,9 @@ struct DevelopView: View {
         let source = showOriginal ? (originalPreviewBaseImage ?? previewBaseImage) : previewBaseImage
         let photoAtRenderTime = selectedURL
 
+        // On the bar like every wait — 25.09: *„mora da ima loading bar ako se
+        // ceka i malo"*. The bar itself stays hidden under WorkMeter.showAfter
+        // (0.15 s), so a render that is instant never flashes it.
         developPreviewRenderQueue.tracked("Rendering", qos: .userInteractive) {
             // A NEWER renderNow() already landed while this one was sitting
             // in the queue — skip the expensive render entirely rather than
@@ -26216,6 +26340,17 @@ struct DevelopView: View {
             || layerDragStart != nil
     }
 
+    /// See briefShowSharpScale. The preview area minus the crop inset, at the
+    /// current zoom, on this window's screen.
+    private func sharpScale(for base: PhotoBaseImage) -> CGFloat {
+        let view = previewState.viewPoints
+        let backing = NSApp.keyWindow?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        return briefShowSharpScale(extent: base.extent, settings: settings, applyCrop: !isCropping,
+                                   view: CGSize(width: view.width - cropInset * 2,
+                                                height: view.height - cropInset * 2),
+                                   zoom: CGFloat(zoomLevel), backing: backing)
+    }
+
     private func scheduleRefinedRender() {
         refineWorkItem?.cancel()
         // A refine already sitting on the render queue but not yet started is
@@ -26277,6 +26412,9 @@ struct DevelopView: View {
         let effectiveSettings = showOriginal ? PhotoEditSettings() : settings
         let cropEnabled = !isCropping
         let photoAtRenderTime = selectedURL
+        // What the screen can show, not always native — briefShowSharpScale.
+        // The Original hold keeps the native path: it reads another file.
+        let scale = showOriginal ? 1 : sharpScale(for: fullBaseImage)
 
         // Held so a later edit can cancel this before it starts. `isCancelled`
         // is then checked again after the render, because the expensive part
@@ -26287,7 +26425,8 @@ struct DevelopView: View {
             guard generation == renderGeneration else {
                 return
             }
-            let rendered = PhotoEditRenderer.render(effectiveSettings, on: fullBaseImage, applyCrop: cropEnabled)
+            let rendered = PhotoEditRenderer.render(effectiveSettings, on: fullBaseImage,
+                                                    applyCrop: cropEnabled, decodeScale: scale)
             guard generation == renderGeneration,
                   let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent,
                                                          context: briefEditsCIContext) else {
@@ -26304,11 +26443,21 @@ struct DevelopView: View {
                 // this path is meant to change what the picture LOOKS like,
                 // nothing else.
                 displayedImage = image
+                previewState.lastSharpScale = scale
                 refineQueueWorkItem = nil
             }
         }
         refineQueueWorkItem = work
-        developRenderQueue.tracked("Full resolution", item: work)
+        // Named for what it does, 25.09: *„to sto loaduje sliku mora da pise sta
+        // je u loading baru"* and *„mora da ima loading bar ako se ceka i
+        // malo"*. The held decode (cachedScreenDecode) is rebuilt on a new
+        // photo, a new zoom step or a White Balance change — a real read of the
+        // RAW, about a second: „Loading sharp view". Any other edit reuses it
+        // (~0.2 s): „Updating view".
+        let wb = "\(effectiveSettings.temperature)|\(effectiveSettings.tint)|\(String(describing: effectiveSettings.temperatureKelvin))|\(String(describing: effectiveSettings.tintAbsolute))"
+        let loadsDecode = scale != previewState.lastSharpScale || wb != previewState.lastSharpWB
+        previewState.lastSharpWB = wb
+        developRenderQueue.tracked(loadsDecode ? "Loading sharp view" : "Updating view", item: work)
     }
 
     private func exportEditedCopy() {

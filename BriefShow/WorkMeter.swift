@@ -33,7 +33,22 @@ final class WorkMeter: ObservableObject {
     @Published private(set) var isVisible = false
     @Published private(set) var others = 0
 
-    private struct Job { let label: String; let started: Date; let expected: Double }
+    private struct Job { let label: String; let shown: String; let started: Date; let expected: Double }
+
+    /// The editor keeping its picture up to date — asked for 25.09: *„umesto da
+    /// se zove loading sharp view, da ima vise naziva ali skracenih … randomly"*.
+    /// These three are the same thing to the client (the picture catching up),
+    /// so the bar says a word from this list instead. Picked ONCE per job, when
+    /// it begins — the word does not change under a running bar, and the cost
+    /// is one random index. Every other wait keeps its real name (Opening photo,
+    /// Exporting, AI Clean Up…): there the client needs to know what it is.
+    static let playfulLabels: Set<String> = ["Rendering", "Updating view", "Loading sharp view"]
+    static let playfulWords = [
+        "Pontificating", "Working", "Deliberating", "Ruminating", "Contemplating",
+        "Dissecting", "Formulating", "Executing", "Iterating", "Grinding",
+        "Hammering away", "Tinkering", "Elaborating", "Noodling", "Discourse-building",
+        "Pondering", "Honing", "Drafting", "Exploring", "Structuring", "Mapping out", "Polishing",
+    ]
     private let lock = NSLock()
     private var jobs: [Int: Job] = [:]
     private var nextToken = 0
@@ -47,7 +62,7 @@ final class WorkMeter: ObservableObject {
 
     private static let defaultsKey = "workMeter.learned"
     private static let firstGuess: [String: Double] = [
-        "Rendering": 0.3, "Full resolution": 1.0, "Opening photo": 1.5,
+        "Rendering": 0.3, "Updating view": 0.25, "Opening photo": 1.5, "Loading sharp view": 1.0,
         "AI Clean Up": 8, "Exporting": 5, "Background preview": 0.4
     ]
 
@@ -60,7 +75,9 @@ final class WorkMeter: ObservableObject {
         nextToken += 1
         let token = nextToken
         let expected = learned[label] ?? Self.firstGuess[label] ?? 3
-        jobs[token] = Job(label: label, started: Date(), expected: max(expected, 0.1))
+        let shown = Self.playfulLabels.contains(label)
+            ? (Self.playfulWords.randomElement() ?? label) : label
+        jobs[token] = Job(label: label, shown: shown, started: Date(), expected: max(expected, 0.1))
         lock.unlock()
         onMain { self.startTicking() }
         return token
@@ -112,7 +129,7 @@ final class WorkMeter: ObservableObject {
         let elapsed = Date().timeIntervalSince(main.started)
         let value = min(elapsed / main.expected, 0.95)
         if !isVisible { isVisible = true }
-        if label != main.label { label = main.label }
+        if label != main.shown { label = main.shown }
         if abs(value - fraction) > 0.004 { fraction = value }
         if others != running.count - 1 { others = running.count - 1 }
     }

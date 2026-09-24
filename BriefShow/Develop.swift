@@ -4013,13 +4013,28 @@ enum PhotoEditRenderer {
         return matrix.outputImage
     }
 
-    /// Adds two images, channel by channel, unclamped. See `scalingChannels`.
+    /// Adds the COLOUR of two images, unclamped, and keeps the first one's alpha.
+    /// See `scalingChannels`.
+    ///
+    /// ⚠️ NOT `CIAdditionCompositing` ANY MORE (KORAK 219). That filter adds the
+    /// alpha too, so Clarity's two sums left alpha = 3. On the whole photo it is
+    /// clipped back to 1 and nobody sees it; through the soft matte of a People
+    /// cut-out a pixel of colour c·m came out with alpha 3m, was clipped to 1,
+    /// and the rim of the subject turned m times darker — the dark outline on
+    /// the client's photos 5 and 6. Both inputs are premultiplied, so adding
+    /// their rgb and keeping one alpha is exact arithmetic on either side of
+    /// the matte. Tried and dropped first: zeroing the addend's alpha through a
+    /// `CIColorMatrix` (it works unpremultiplied, the colour vanished with it),
+    /// a mask of 1+k (masks clip to [0,1]), and scaling alpha by ⅓ afterwards
+    /// (moved brightness by 7.9 levels).
     static func adding(_ image: CIImage, _ other: CIImage) -> CIImage? {
-        let add = CIFilter.additionCompositing()
-        add.inputImage = image
-        add.backgroundImage = other
-        return add.outputImage
+        guard let kernel = colourAddKernel else { return nil }
+        return kernel.apply(extent: image.extent.intersection(other.extent),
+                            arguments: [image, other])
     }
+
+    private static let colourAddKernel: CIColorKernel? = CIColorKernel(source:
+        "kernel vec4 briefAddColourKeepAlpha(__sample a, __sample b) { return vec4(a.rgb + b.rgb, a.a); }")
 
     /// The edge-preserving smooth Clarity separates the picture with.
     ///
@@ -6711,11 +6726,10 @@ enum PeopleLayerFactory {
             people: {
                 var people = ImageLayer(name: peopleName, imageData: peoplePNG,
                                         x: x, y: y, width: width, height: height)
-                // ⚠️ OFF until Clarity's alpha is fixed (KORAK 218, open):
-                // with Clarity on, a live cut-out comes out washed like a
-                // negative. Turn back on with the fix — see ImageLayer.liveSource.
-                // people.liveSource = LayerSourceRect(x: x, y: y, width: width, height: height)
-                _ = LayerSourceRect.self
+                // The subject follows the photo's sliders (KORAK 218). Was off
+                // until Clarity stopped adding alpha (KORAK 219) — before that a
+                // live cut-out came out washed like a negative.
+                people.liveSource = LayerSourceRect(x: x, y: y, width: width, height: height)
                 return people
             }()
         )

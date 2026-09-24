@@ -23689,3 +23689,45 @@ selekcija pređe u zaseban `ObservableObject` koji gledaju samo filmstrip i pane
 **6. `Tools/diagnostics.sql`** — i dalje čeka Supabase SQL editor (treba login).
 
 **Stanje:** BUILD SUCCEEDED (Debug), app pokrenut sa ovim kodom, svih 11 lenjira zeleno. Ništa nije viđeno na ekranu.
+
+---
+
+## KORAK 220 — kartica uvek na mestu, AI četkica sa plafonom i trakom, Face Dehaze, Cut četkica (24. septembar 2026)
+
+Klijent: *„imas autorizaciju da uradis kako mislis da je najbolje"*, pa su izbori ispod moji.
+
+**1. Kartica ispod dugmića je UVEK tu** (poništava 23.09). Fiksna visina, pa se histogram više ne pomera.
+Kad ništa nije hoverovano, prigušeno piše opis osvetljenog dugmeta (alat u kome je klijent), a ne stoji prazno.
+
+**2. Plafon AI četkice = maksimum modela + 20 %** (klijent je napisao i 20 i 30 %, uzeto je 20).
+- `RemovalEngine.measuredMaximum`: Quick 2200 px, Generative 1400 px (600 bez LaMa osnove).
+  Blok = maksimum × `AIPaintBudget.headroom` (1,2): **Quick 2640, Generative 1680**. Generative dosad nije
+  imao blok, samo upozorenje.
+- Četkica staje na 2640 (`AIPaintBudget.accept`): tačka koja bi zahvat izvukla preko granice se ne dodaje.
+  Brisanje nema plafon. Poseban znak dalje od ostalih je poseban zahvat, pa i dalje može.
+- `AIPaintBudgetBar`: traka na dnu slike koja se puni tokom bojenja i ima oznaku gde prestaje Generative.
+  Pun = crveno + objašnjenje. Meri isto što i dugmad (`removalAreaPixels`, najveći pojedinačni zahvat).
+- ⚠️ NEIZMERENO: Quick između 2200 i 2640 px. Pri starom merenju mrlja je krenula na 1550 px (maxWorkingEdge 1100),
+  a sada je 1600.
+
+**3. Face Dehaze** (`FaceDehaze.swift`), 0…100, u Detail & Effects na slici i na layeru, Sync i Copy Settings.
+Vision nađe lica. Oko svakog je meka elipsa (1,15 × širina, 1,35 × visina, spuštena ka vratu). Unutra se lokalni
+pod (dark channel preko ~1/10 lica, zamućen) skida kao `(c − veo)/(1 − veo)`, sa udelom 0,6 i plafonom 0,45,
+i vraća se deo zasićenja. Na kraju ide Clarity × 0,35.
+- `run-face-dehaze-test.py <NEF> [size] [out]` na C4S_9021: pod lica 79 → 51 (50) → 12 (100), raspon 29 → 34 → 40,
+  **daleko od lica pomeraj 0,0**. Prva verzija (udeo 0,85, plafon 0,6) na 100: koža crvena, ivica elipse
+  vidljiva, odbačena.
+- Lica se pamte po rangovnoj sličici 16×12 (85 % ćelija isto). Exposure i Contrast ne pokreću Vision ponovo,
+  a Dehaze ga pokrene jednom.
+- `run-layer-edit-parity-test.py`: Face Dehaze 0,70 layer = slika, **0,00**. `run-slider-parity-test.py` zelen.
+- Maska (radial/brush) ga nema, kao ni Soft Glow ni Dehaze.
+
+**4. Cut: Square uklonjen, Circle je četkica** (`selectionPaintOverlay`, `SelectionGeometry.strokes`).
+Boji plavo. Posle poteza se na slici, ispod označenog, pojave Cut / Copy / ✕ (`SelectionPaintActions`).
+Dok traje novi potez sklone se (posmatraju `BrushCursorPosition`, pa editor ne crta ponovo). Svi potezi su jedna
+selekcija. Brush Size u panelu i [ ], Feather zamućuje masku do 3 % duže strane.
+`run-selection-brush-test.py`: dva mesta, isečak pokriva oba, neprovidan na boji, providan između.
+Square ostaje u Patch alatu, kao i stari podaci.
+
+**Stanje:** BUILD SUCCEEDED, app restartovan. Zeleni: `header-bar`, `slider-parity`, `layer-edit-parity`,
+`effect-extraction`, `face-dehaze`, `selection-brush`, `editsettings-decode`. **Ništa od ovoga nije viđeno na ekranu.**

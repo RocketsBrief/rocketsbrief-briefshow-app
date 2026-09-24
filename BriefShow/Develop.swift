@@ -1206,6 +1206,20 @@ struct SelectionGeometry: Equatable {
     var radiusY: Double = 0.15
     var feather: Double = 0
     var points: [CGPoint] = []   // unit space, Free shape only
+    /// Circle only, since 24.09: the Circle is a BRUSH that paints the
+    /// selection, the way the AI brush paints what to clean up — *„da cirlce
+    /// radi na foru ti oznacis kao ai painting sta ces da selektiras"*. Every
+    /// painted spot is part of ONE selection, cut or copied together.
+    var strokes: [BrushStroke] = []
+
+    /// Nothing marked yet — Cut and Copy have nothing to take.
+    var isEmpty: Bool {
+        switch shape {
+        case .circle: return !strokes.contains { !$0.isErase }
+        case .square: return false
+        case .free: return points.count < 3
+        }
+    }
 }
 
 // MARK: - Image layers (pasted cut/copied pieces)
@@ -6250,6 +6264,16 @@ enum PhotoEditRenderer {
     // identical to a patch's "where do I sample/blend" question, just
     // without any source-offset concept.
     static func selectionMask(_ selection: SelectionGeometry, extent: CGRect) -> CIImage {
+        // The painted Circle: the same stroke-to-mask renderer the AI brush
+        // uses, softened by Feather (0…1 → up to 3 % of the long edge).
+        if selection.shape == .circle {
+            let mask = strokeMask(selection.strokes, extent: extent)
+            guard selection.feather > 0 else { return mask }
+            let blur = CIFilter.gaussianBlur()
+            blur.inputImage = mask.clampedToExtent()
+            blur.radius = Float(selection.feather * 0.03 * max(extent.width, extent.height))
+            return blur.outputImage?.cropped(to: extent) ?? mask
+        }
         let geo = PatchGeometry(
             shape: selection.shape, centerX: selection.centerX, centerY: selection.centerY,
             radiusX: selection.radiusX, radiusY: selection.radiusY, feather: selection.feather,
@@ -6267,7 +6291,18 @@ enum PhotoEditRenderer {
     private static func selectionBoundsUnit(_ selection: SelectionGeometry) -> CGRect? {
         let raw: CGRect
         switch selection.shape {
-        case .circle, .square:
+        case .circle:
+            let erasures = briefShowEraseDabs(selection.strokes)
+            guard let box = selection.strokes.filter({ !$0.isErase })
+                .compactMap({ briefShowStrokeBox($0, erasedBy: erasures) })
+                .reduce(nil, { (union: CGRect?, next) in union?.union(next) ?? next })
+            else {
+                return nil
+            }
+            // Feather spreads past the paint; leave it room.
+            let spread = selection.feather * 0.03 * 2
+            raw = box.insetBy(dx: -spread, dy: -spread)
+        case .square:
             raw = CGRect(
                 x: selection.centerX - selection.radiusX, y: selection.centerY - selection.radiusY,
                 width: selection.radiusX * 2, height: selection.radiusY * 2
@@ -8644,6 +8679,56 @@ struct AIPaintBudgetBar: View {
     }
 }
 
+/// Cut / Copy / Deselect on the photo, beside what the Cut brush marked.
+/// Hidden while a stroke is being painted — it observes the cursor object so
+/// the hiding costs no editor redraw.
+struct SelectionPaintActions: View {
+    @ObservedObject var cursor: BrushCursorPosition
+    let isBusy: Bool
+    let cut: () -> Void
+    let copy: () -> Void
+    let deselect: () -> Void
+
+    var body: some View {
+        if !cursor.isStrokeInProgress {
+            HStack(spacing: 6) {
+                action("Cut", systemImage: "scissors", run: cut)
+                action("Copy", systemImage: "doc.on.doc", run: copy)
+                Button(action: deselect) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.white)
+                .background(Circle().fill(Color.black.opacity(0.55)))
+                .help("Deselect")
+            }
+            .disabled(isBusy)
+            .opacity(isBusy ? 0.5 : 1)
+            .transition(.opacity)
+        }
+    }
+
+    private func action(_ title: String, systemImage: String, run: @escaping () -> Void) -> some View {
+        Button(action: run) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                Text(title)
+            }
+            .font(.custom("Figtree", size: 12).weight(.semibold))
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+            .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(.white)
+        .background(Capsule().fill(Color(red: 0.2, green: 0.45, blue: 0.95)))
+        .overlay(Capsule().stroke(Color.white.opacity(0.6), lineWidth: 1))
+        .shadow(color: .black.opacity(0.35), radius: 4, y: 1)
+    }
+}
+
 final class ActiveStrokePoints: ObservableObject {
     @Published var points: [CGPoint] = []
 }
@@ -10063,6 +10148,9 @@ struct DevelopView: View {
     // Held, not observed — see ActiveOutlineLayer.
     @State private var activeSelectionDrawPoints = ActiveStrokePoints()
     @State private var isExtractingSelection = false
+    /// The Cut brush (the Circle, since 24.09) — its size and its cursor.
+    @State private var selectionBrushSize: Double = 0.04
+    @State private var selectionBrushCursor = BrushCursorPosition()
 
     // The most recently Cut/Copy'd piece, in-memory only (like
     // settingsClipboard) — survives switching photos in the filmstrip
@@ -11383,6 +11471,10 @@ struct DevelopView: View {
             return
         }
 
+        if activeSelection?.shape == .circle {
+            selectionBrushSize = min(max(selectionBrushSize * factor, 0.005), 0.3)
+            return
+        }
         if var selection = activeSelection, selection.shape != .free {
             selection.radiusX = min(max(selection.radiusX * factor, 0.02), 1)
             selection.radiusY = min(max(selection.radiusY * factor, 0.02), 1)
@@ -13887,7 +13979,8 @@ struct DevelopView: View {
                             } else if let index = selectedAdjustmentIndex {
                                 localAdjustmentOverlay(settings.localAdjustments[index], frame: fullImageFrame(from: fitted))
                             } else if let activeSelection {
-                                selectionOverlay(activeSelection, frame: fullImageFrame(from: fitted))
+                                selectionOverlay(activeSelection, frame: fullImageFrame(from: fitted),
+                                                 imageFrame: fitted, containerSize: proxy.size)
                             // Pixel layers get the full frame — outline,
                             // corner handles, rotate knob — because they can
                             // be moved, resized and turned.
@@ -16165,9 +16258,12 @@ struct DevelopView: View {
     // needed beyond `selectionDragStart`) — a plain selection only ever
     // has ONE outline to show.
     @ViewBuilder
-    private func selectionOverlay(_ selection: SelectionGeometry, frame: CGRect) -> some View {
+    private func selectionOverlay(_ selection: SelectionGeometry, frame: CGRect,
+                                  imageFrame: CGRect, containerSize: CGSize) -> some View {
         switch selection.shape {
-        case .circle, .square:
+        case .circle:
+            selectionPaintOverlay(selection, frame: frame, imageFrame: imageFrame, containerSize: containerSize)
+        case .square:
             selectionShapeOverlay(selection, frame: frame)
         case .free:
             if selection.points.isEmpty {
@@ -16176,6 +16272,111 @@ struct DevelopView: View {
                 selectionFreeShapeOverlay(selection, frame: frame)
             }
         }
+    }
+
+    /// The Circle as a brush (24.09). Paint in blue; when the mouse comes up,
+    /// Cut and Copy appear on the photo beside what is marked. Start another
+    /// drag and they step aside while it paints — the first marks stay — and
+    /// come back for ALL of them when it ends:
+    /// *„ako slucajno klijent hoce jos da selektuje onda on klikne na sliku i
+    /// opet pocne da draguje drugo mesto onda se opcije cut i copy gube dok
+    /// draguje … kada prestane drag opet cut or copy opcije za sva mesta"*.
+    ///
+    /// The same no-invalidation rules as the AI brush: the stroke lives in
+    /// ActiveStrokePoints, and "is a drag under way" in BrushCursorPosition,
+    /// which only the ring and the floating buttons observe.
+    private func selectionPaintOverlay(_ selection: SelectionGeometry, frame: CGRect,
+                                       imageFrame: CGRect, containerSize: CGSize) -> some View {
+        let longEdge = max(frame.width, frame.height)
+        let brushDiameter = max(selectionBrushSize * longEdge, 2)
+        let ink = Color(red: 0.25, green: 0.55, blue: 1.0)
+        let visible = imageFrame.intersection(CGRect(origin: .zero, size: containerSize))
+        let erasures = briefShowEraseDabs(selection.strokes)
+        let marked = selection.strokes.filter { !$0.isErase }
+            .compactMap { briefShowStrokeBox($0, erasedBy: erasures) }
+            .reduce(nil) { (union: CGRect?, next) in union?.union(next) ?? next }
+        let anchor: CGPoint? = marked.map {
+            CGPoint(x: min(max(frame.minX + $0.midX * frame.width, visible.minX + 90), visible.maxX - 90),
+                    y: min(frame.minY + $0.maxY * frame.height + 24, visible.maxY - 22))
+        }
+
+        return ZStack {
+            ZStack {
+                ForEach(selection.strokes) { stroke in
+                    strokePath(stroke.points, frame: frame)
+                        .stroke(ink, style: StrokeStyle(lineWidth: max(stroke.size * longEdge, 2),
+                                                        lineCap: .round, lineJoin: .round))
+                        .blendMode(stroke.isErase ? .destinationOut : .normal)
+                }
+                ActiveStrokeLayer(stroke: activeSelectionDrawPoints, frame: frame,
+                                  lineWidth: brushDiameter, color: ink, isErase: false)
+            }
+            .compositingGroup()
+            .opacity(0.45)
+            .frame(width: containerSize.width, height: containerSize.height)
+            .clipShape(PreviewClipShape(rect: visible))
+            .allowsHitTesting(false)
+
+            BrushCursorRing(cursor: selectionBrushCursor, diameter: brushDiameter,
+                            color: ink.opacity(0.9), isDashed: false)
+                .frame(width: containerSize.width, height: containerSize.height)
+
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: containerSize.width, height: containerSize.height)
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location): selectionBrushCursor.location = location
+                    case .ended: selectionBrushCursor.location = nil
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            if !selectionBrushCursor.isStrokeInProgress {
+                                selectionBrushCursor.isStrokeInProgress = true
+                            }
+                            selectionBrushCursor.location = value.location
+                            paintSelectionBrush(at: value.location, frame: frame, imageFrame: imageFrame)
+                        }
+                        .onEnded { _ in
+                            selectionBrushCursor.isStrokeInProgress = false
+                            commitSelectionBrushStroke()
+                        }
+                )
+                .disabled(isExtractingSelection)
+
+            if let anchor {
+                SelectionPaintActions(cursor: selectionBrushCursor, isBusy: isExtractingSelection,
+                                      cut: { cutSelection() }, copy: { copySelection() },
+                                      deselect: { deselectSelection() })
+                    .position(anchor)
+            }
+        }
+    }
+
+    private func paintSelectionBrush(at location: CGPoint, frame: CGRect, imageFrame: CGRect) {
+        guard !isExtractingSelection, imageFrame.contains(location),
+              let unit = unitPoint(from: location, frame: frame) else {
+            return
+        }
+        if let last = activeSelectionDrawPoints.points.last {
+            let dx = unit.x - last.x, dy = unit.y - last.y
+            if (dx * dx + dy * dy) < 0.0001 {
+                return
+            }
+        }
+        activeSelectionDrawPoints.points.append(unit)
+    }
+
+    private func commitSelectionBrushStroke() {
+        defer { activeSelectionDrawPoints.points = [] }
+        guard !isExtractingSelection, !activeSelectionDrawPoints.points.isEmpty,
+              activeSelection?.shape == .circle else {
+            return
+        }
+        activeSelection?.strokes.append(BrushStroke(points: activeSelectionDrawPoints.points,
+                                                    size: selectionBrushSize, hardness: 1))
     }
 
     private func selectionShapeOverlay(_ selection: SelectionGeometry, frame: CGRect) -> some View {
@@ -18438,11 +18639,10 @@ struct DevelopView: View {
             sectionTitle("Cut")
 
             HStack(spacing: 8) {
+                // No Square since 24.09: *„cut (circle samo ukloni square)"*.
+                // The Circle paints the selection — see selectionPaintOverlay.
                 maskAddButton("Circle", systemImage: "circle") {
                     addSelection(shape: .circle)
-                }
-                maskAddButton("Square", systemImage: "square") {
-                    addSelection(shape: .square)
                 }
                 maskAddButton("Free", systemImage: "lasso") {
                     addSelection(shape: .free)
@@ -18450,9 +18650,20 @@ struct DevelopView: View {
             }
 
             if let activeSelection {
-                let isFreeUndrawn = activeSelection.shape == .free && activeSelection.points.isEmpty
+                let isFreeUndrawn = activeSelection.isEmpty
 
-                if isFreeUndrawn {
+                if activeSelection.shape == .circle {
+                    editSlider("Brush Size", key: "selection.brushSize", value: $selectionBrushSize, range: 0.005...0.3) { String(format: "%.0f", $0 * 1000) }
+                    Text(isFreeUndrawn
+                         ? "Paint over what you want to cut or copy. Paint more spots to add them."
+                         : "Paint more spots to add them — Cut and Copy take them all.")
+                        .font(.custom("Figtree", size: 11))
+                        .foregroundColor(AppColors.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !isFreeUndrawn {
+                        editSlider("Feather", key: "selection.feather", value: selectionFeatherBinding, range: 0...1) { String(format: "%.0f", $0 * 100) }
+                    }
+                } else if isFreeUndrawn {
                     Text("Drag on the photo to draw the selection outline.")
                         .font(.custom("Figtree", size: 11))
                         .foregroundColor(AppColors.muted)
@@ -24743,7 +24954,7 @@ struct DevelopView: View {
         guard let selection = activeSelection, let fullBaseImage, let selectedURL else {
             return
         }
-        if selection.shape == .free && selection.points.count < 3 {
+        if selection.isEmpty {
             return
         }
 

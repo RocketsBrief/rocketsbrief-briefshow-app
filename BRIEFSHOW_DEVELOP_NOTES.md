@@ -23775,3 +23775,31 @@ Edit i AI. Tu nastaju swap i „zablokiralo". Zamrzavanja od 290 s i 47 s su na 
 **Stanje:** BUILD SUCCEEDED. Zeleni: header-bar, slider-parity, editsettings-decode, selection-brush, history-labels,
 layer-edit-parity, effect-extraction, face-dehaze, clarity, clarity-layer, people-layer-strength, template-edge,
 background-enhanced, background-enhanced-preview.
+
+---
+
+## KORAK 222 — jedna traka za svako čekanje; grid se gasi dok je BriefShow otvoren (24. septembar 2026)
+
+**WorkMeter** (`WorkMeter.swift`) — *„za svko cekanje da dobije loading bar … jedan loading bar za sveee"*:
+- Svaki posao u pozadini ide kroz `DispatchQueue.tracked("ime") { … }`. To je **21 mesto**: render, puna
+  rezolucija (work item, otkazan se odjavi bez rada), otvaranje slike, Background Enhanced (pregled i recept),
+  Select Subjects, AI Clean Up, Erase, Merge, Flatten, Cut, Export (4), Bake, Undo recepta.
+- `WorkMeterBar` stoji u zaglavlju Create-a, desno od imena fajla i RAW oznake. Prikazuje ime posla, procenat
+  i „+N" kad radi još nešto.
+- Render ne javlja svoj procenat, pa se traka puni prema **naučenom proseku tog posla na ovoj mašini**
+  (`workMeter.learned`, 3/4 staro + 1/4 novo), staje na 95 % dok posao stvarno ne završi, pa skoči na 100 % i nestane.
+  Posao kraći od 0,15 s ne prikazuje traku.
+- Traku crta samo `WorkMeterBar` (posmatra singleton), pa tik od 20 Hz **ne crta editor ponovo**.
+
+**BriefShow gasi grid** — *„kada udjem u briefshow iskljcujes grid totalno … i da pamti … folder"*:
+- Dugme BriefShow u gridu posle otvaranja poziva `ShowGridSuspension.shared.suspend()`, isto kao Create.
+  Folder, selekcija i stablo ostaju u @State.
+- U BriefShow-u je dugme „Browse" preimenovano u **„Grid"**. Ako je grid pauziran, samo zatvara BriefShow
+  (`close()` vraća grid tačno gde je bio). Inače radi kao pre (grid na slikama iz slideshow-a).
+- Crveno dugme na BriefShow prozoru takođe vraća grid (`watchClose`, `willCloseNotification`).
+
+Usput: 5 novih dugmića iz KORAKA 220–221 (History, Cut/Copy/✕) bilo je `.plain` bez hover animacije. Sada su
+`PlainHoverButtonStyle`, pa je `run-grid-shape-test.py` opet zelen.
+
+**Stanje:** BUILD SUCCEEDED, app restartovan. Zeleni: header-bar, grid-shape, thumbnail-cache.
+**Ništa nije viđeno na ekranu.**

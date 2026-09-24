@@ -561,7 +561,7 @@ enum TemplateBatchFlatten {
                     context: CIContext,
                     progress: @escaping (Int, Int) -> Void,
                     completion: @escaping (Outcome) -> Void) {
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("Working on photos", qos: .userInitiated) {
             var outcome = Outcome()
 
             for (index, url) in targets.enumerated() {
@@ -7395,7 +7395,7 @@ struct BackgroundEnhancedCard: View {
             return
         }
 
-        Self.previewQueue.async {
+        Self.previewQueue.tracked("Background preview") {
             guard let base = PhotoEditRenderer.loadBaseImage(from: first,
                                                              maxPixelSize: Self.previewSide) else {
                 DispatchQueue.main.async { stage = .failed }
@@ -7446,7 +7446,7 @@ struct BackgroundEnhancedCard: View {
         let latest = latestAsk
         latest.set(token)
 
-        Self.previewQueue.async {
+        Self.previewQueue.tracked("Background preview") {
             // Stale before it started: a newer number is already waiting.
             guard latest.isNewest(token) else { return }
             let settings = PortraitRecipe.backgroundEnhanced
@@ -7637,7 +7637,7 @@ enum PortraitRecipeService {
             return
         }
 
-        developBatchQueue.async {
+        developBatchQueue.tracked("Undoing") {
             var restored: [URL: PhotoEditSettings] = [:]
             for url in targets {
                 if let settings = PortraitRecipeUndoStore.undo(url) {
@@ -7669,7 +7669,7 @@ enum PortraitRecipeService {
 
         let ordered = PortraitRecipe.allCases.filter { recipes.contains($0) }
 
-        developBatchQueue.async {
+        developBatchQueue.tracked("Applying recipe") {
             var outcome = Outcome()
 
             for (offset, url) in targets.enumerated() {
@@ -7840,7 +7840,7 @@ enum PhotoBakeService {
             return
         }
 
-        developBatchQueue.async {
+        developBatchQueue.tracked("Baking") {
             var baked: [URL: PhotoEditSettings] = [:]
             var failed = 0
 
@@ -8725,7 +8725,7 @@ struct SelectionPaintActions: View {
                         .font(.system(size: 11, weight: .semibold))
                         .frame(width: 26, height: 26)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
                 .foregroundColor(.white)
                 .background(Circle().fill(Color.black.opacity(0.55)))
                 .help("Deselect")
@@ -8747,7 +8747,7 @@ struct SelectionPaintActions: View {
             .frame(height: 28)
             .fixedSize()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle(scalesLabel: false))
         .foregroundColor(.white)
         .background(Capsule().fill(Color(red: 0.2, green: 0.45, blue: 0.95)))
         .overlay(Capsule().stroke(Color.white.opacity(0.6), lineWidth: 1))
@@ -11588,11 +11588,11 @@ struct DevelopView: View {
                     .foregroundColor(AppColors.ink)
                 Spacer()
                 Button { undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                    .buttonStyle(.plain).foregroundColor(AppColors.ink)
+                    .buttonStyle(PlainHoverButtonStyle()).foregroundColor(AppColors.ink)
                     .disabled(undoStack.isEmpty).opacity(undoStack.isEmpty ? 0.35 : 1)
                     .help("Step back (⌘Z)")
                 Button { redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                    .buttonStyle(.plain).foregroundColor(AppColors.ink)
+                    .buttonStyle(PlainHoverButtonStyle()).foregroundColor(AppColors.ink)
                     .disabled(redoStack.isEmpty).opacity(redoStack.isEmpty ? 0.35 : 1)
                     .help("Step forward")
             }
@@ -11642,7 +11642,7 @@ struct DevelopView: View {
             .background(RoundedRectangle(cornerRadius: 6).fill(isCurrent ? AppColors.panelAlt : Color.clear))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainHoverButtonStyle(scale: 1.03))
     }
 
     /// Walks there through undo/redo, so the stacks stay exactly what ⌘Z and
@@ -12457,7 +12457,10 @@ struct DevelopView: View {
                         rawBadge
                     }
 
-                    Spacer(minLength: 0)
+                    // Every wait, one bar — see WorkMeter.swift. It observes
+                    // the meter itself, so its ticking never touches this view.
+                    WorkMeterBar(tint: accentColor)
+                        .frame(maxWidth: .infinity)
                 }
 
                 if isRemoving {
@@ -12816,7 +12819,7 @@ struct DevelopView: View {
             closeAICleanUp()
         }
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("Selecting subjects", qos: .userInitiated) {
             // applyCrop: false, because a layer's x/y/width/height live in
             // the pre-crop unit space — the same reason compositeLayers runs
             // before the crop.
@@ -17146,7 +17149,7 @@ struct DevelopView: View {
                                     feather: layerEraserFeather)
         let photoSize = extent.size
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("Erasing", qos: .userInitiated) {
             var after = before
             if let mask = before.maskData {
                 guard let erased = LayerEraser.eraseMatte(
@@ -19417,7 +19420,7 @@ struct DevelopView: View {
         let photoAtActionTime = selectedURL
         let confineTo = activeSelection
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("Finding people", qos: .userInitiated) {
             let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
             var mask = SubjectMasker.personMask(for: full)
 
@@ -19650,7 +19653,7 @@ struct DevelopView: View {
         let feather = aiRemoveFeather
         let flyawayHair = aiRemoveFlyawayHair
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("AI Clean Up", qos: .userInitiated) {
             let full = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage, applyCrop: false)
 
             let erasures = strokes.filter { $0.isErase }
@@ -22208,7 +22211,7 @@ struct DevelopView: View {
         isFlatteningOpenPhoto = true
         flattenErrorMessage = nil
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("Merging", qos: .userInitiated) {
             var rendered = PhotoEditRenderer.render(bake, on: fullBaseImage,
                                                     applyCrop: bakesTemplate,
                                                     templateCanvasScale: bakeScale)
@@ -23891,7 +23894,7 @@ struct DevelopView: View {
         isFlatteningOpenPhoto = true
         flattenErrorMessage = nil
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("Flattening", qos: .userInitiated) {
             // ⚠️ `applyCrop` also gates the canvas — both are the things that
             // turn a photograph into a print, and a template baked over an
             // UNCROPPED picture would put the wrong part of it in the frame.
@@ -25173,7 +25176,7 @@ struct DevelopView: View {
         let settingsSnapshot = settings
         let photoAtActionTime = selectedURL
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("Cutting", qos: .userInitiated) {
             let rendered = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage)
             let extracted = PhotoEditRenderer.extractSelectionPNG(selection, from: rendered)
             // Neutral gray, not black — a black hole read as "broken"/
@@ -25479,7 +25482,7 @@ struct DevelopView: View {
         displayedImage = nil
         histogramBins = []
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).tracked("Opening photo", qos: .userInitiated) {
             // Off the main thread, before the decode that is about to open the
             // file: a flattened copy written by an older build is LZW and costs
             // ~10 s on its first render. Reads the TIFF header and returns
@@ -25533,7 +25536,7 @@ struct DevelopView: View {
         // Claimed before the work starts, so a hold that is pressed, let go
         // and pressed again does not start the same decode twice.
         originalBaseURL = url
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).tracked("Opening photo", qos: .userInitiated) {
             guard let full = PhotoEditRenderer.loadBaseImage(at: url) else {
                 DispatchQueue.main.async {
                     if originalBaseURL == url { originalBaseURL = nil }
@@ -25604,7 +25607,7 @@ struct DevelopView: View {
         let source = showOriginal ? (originalPreviewBaseImage ?? previewBaseImage) : previewBaseImage
         let photoAtRenderTime = selectedURL
 
-        developPreviewRenderQueue.async(qos: .userInteractive) {
+        developPreviewRenderQueue.tracked("Rendering", qos: .userInteractive) {
             // A NEWER renderNow() already landed while this one was sitting
             // in the queue — skip the expensive render entirely rather than
             // computing a result nobody will see (see renderGeneration's
@@ -25798,7 +25801,7 @@ struct DevelopView: View {
             }
         }
         refineQueueWorkItem = work
-        developRenderQueue.async(execute: work)
+        developRenderQueue.tracked("Full resolution", item: work)
     }
 
     private func exportEditedCopy() {
@@ -25833,7 +25836,7 @@ struct DevelopView: View {
         exportStatusText = "Exporting…"
 
         let photoAtExport = selectedURL
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("Exporting", qos: .userInitiated) {
             var rendered = PhotoEditRenderer.render(settingsSnapshot, on: fullBaseImage)
             // A print comes out as its paper, at 300 dpi — whether the frame is
             // still live on the record or already baked into the pixels.
@@ -25891,7 +25894,7 @@ struct DevelopView: View {
         let settingsForPhoto = PhotoEditStore.settings(for: url)
         exportStatusText = "Exporting…"
 
-        developRenderQueue.async(qos: .userInitiated) {
+        developRenderQueue.tracked("Exporting", qos: .userInitiated) {
             var didWrite = false
 
             if let base = PhotoEditRenderer.loadBaseImage(from: url) {
@@ -26033,7 +26036,7 @@ struct DevelopView: View {
         exportStatusText = "Exporting 0/\(urls.count)…"
         exportProgress = 0
 
-        developBatchQueue.async {
+        developBatchQueue.tracked("Exporting") {
             var successCount = 0
 
             for (index, url) in urls.enumerated() {
@@ -26123,7 +26126,7 @@ struct DevelopView: View {
         exportStatusText = "Exporting 0/\(editedURLs.count)…"
         exportProgress = 0
 
-        developBatchQueue.async {
+        developBatchQueue.tracked("Exporting") {
             var successCount = 0
 
             for (index, url) in editedURLs.enumerated() {

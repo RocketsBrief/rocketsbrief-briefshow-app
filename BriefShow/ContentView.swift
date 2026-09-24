@@ -571,8 +571,16 @@ struct ContentView: View {
                     // close() also clears its stored window reference, so
                     // a later "Slideshow" click correctly opens a fresh
                     // editor instead of trying to refocus this closed one.
-                    ShowGridWindowController.shared.open(initialPhotoURLs: selectedPhotoURLs)
-                    BriefShowWindowController.shared.close()
+                    // Entered from the grid: the grid is only suspended, with
+                    // its folder, so it comes back as it was and BriefShow is
+                    // shut down completely (close() resumes it). Otherwise the
+                    // old way — open the grid on the slideshow's photos.
+                    if ShowGridSuspension.shared.isSuspended {
+                        BriefShowWindowController.shared.close()
+                    } else {
+                        ShowGridWindowController.shared.open(initialPhotoURLs: selectedPhotoURLs)
+                        BriefShowWindowController.shared.close()
+                    }
                 })
 
                 // ⚠️ The video first, across the whole window, and every
@@ -12207,7 +12215,8 @@ struct HeaderView: View {
                                 .scaledToFit()
                                 .frame(width: 13, height: 13)
 
-                            Text("Browse")
+                            // "Grid", as in Create — it goes back to the grid.
+                            Text("Grid")
                         }
                         .frame(height: 15)
                     }
@@ -22298,6 +22307,7 @@ final class BriefShowWindowController {
         window.setFrame(available, display: true)
 
         let controller = NSWindowController(window: window)
+        watchClose(of: window)
         windowController = controller
 
         // ⚠️ sizingOptions = [] — THE WINDOW IS NOT SIZED BY ITS CONTENT.
@@ -22364,8 +22374,25 @@ final class BriefShowWindowController {
 
     func close() {
         appearanceObserver = nil
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        closeObserver = nil
         windowController?.close()
         windowController = nil
+        // Grid, or the red button: BriefShow is gone, the grid comes back.
+        ShowGridSuspension.shared.resume()
+    }
+
+    /// The red button closes the window without calling close(); this turns
+    /// that into the same thing, so the grid is never left switched off.
+    private var closeObserver: NSObjectProtocol?
+
+    private func watchClose(of window: NSWindow) {
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.windowController?.window === window else { return }
+            DispatchQueue.main.async { self.close() }
+        }
     }
 }
 
@@ -23537,6 +23564,12 @@ struct PhotoShowSheet: View {
             // the header above still carries the identity.
             Button {
                 BriefShowWindowController.shared.open(initialPhotoURLs: photoURLs)
+                // The grid goes off while BriefShow is up, exactly as it does
+                // for Create (24.09): *„kada udjem u briefshow iskljcujes grid
+                // totalno … i da pamti ako sa uz tog i tog folder usao"*. The
+                // folder, selection and tree stay in @State — see
+                // ShowGridSuspension — so Grid in BriefShow lands right here.
+                ShowGridSuspension.shared.suspend()
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "film")

@@ -151,6 +151,7 @@ struct PhotoEditSettings: Codable, Equatable {
     var texture: Double = 0         // -1 (smooth/soften mid-frequency detail — "younger, softer" portrait skin) ...1 (bring skin/fabric/hair texture out), see PhotoEditRenderer.render.
     var clarity: Double = 0         // -1...1 — Lightroom-style local (midtone) contrast: unsharp above zero, a mix toward a blur of the same radius below it. See PhotoEditRenderer.render.
     var dehaze: Double = 0          // -1...1 — contrast/saturation/black-point APPROXIMATION of Lightroom's Dehaze, not a real dark-channel-prior algorithm; negative adds haze rather than removing it. See PhotoEditRenderer.render.
+    var faceDehaze: Double = 0      // 0...1 — the sun's white veil taken off faces only (24.09), see FaceDehaze.swift.
     var softGlow: Double = 0        // 0...1 — diffusion/"soft focus" glow (blurred copy screen-blended back over the original), see PhotoEditRenderer.render.
     var vignette: Double = 0        // -1...1 — positive darkens the corners, negative lightens them.
     // The three shape controls Lightroom's Post-Crop Vignetting has beside its
@@ -258,6 +259,7 @@ struct PhotoEditSettings: Codable, Equatable {
         clarity = try c.decodeIfPresent(Double.self, forKey: .clarity) ?? 0
         dehaze = try c.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0
         softGlow = try c.decodeIfPresent(Double.self, forKey: .softGlow) ?? 0
+        faceDehaze = try c.decodeIfPresent(Double.self, forKey: .faceDehaze) ?? 0
         vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
         // Absent in anything saved before these existed, and the fallbacks are
         // the values that reproduce the old drawing — so an old record decodes
@@ -312,6 +314,7 @@ struct PhotoEditSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance
         case temperature, tint, sharpness, texture, clarity, dehaze, softGlow, vignette
+        case faceDehaze
         case vignetteMidpoint, vignetteFeather, vignetteRoundness, sharpenRadius
         case colorMixer
         case rotationQuarterTurns, straightenDegrees, crop, cropAspect
@@ -326,6 +329,7 @@ struct PhotoEditSettings: Codable, Equatable {
             && whites == 0 && blacks == 0
             && saturation == 0 && vibrance == 0 && temperature == 0 && tint == 0
             && sharpness == 0 && texture == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
+            && faceDehaze == 0
             // The vignette's shape and the sharpening radius are deliberately
             // NOT counted. They are the SHAPE of an effect, not the effect: a
             // photo with Vignette at 0 is unvignetted whatever its midpoint
@@ -410,6 +414,7 @@ struct SyncItem: OptionSet {
     // on a plain photograph too. One control, one tick, which is the rule this
     // whole list was rebuilt around.
     static let text = SyncItem(rawValue: 1 << 22)
+    static let faceDehaze = SyncItem(rawValue: 1 << 23)
 
     /// One row of the dialog: one control, one checkbox.
     struct Row: Identifiable {
@@ -463,6 +468,7 @@ struct SyncItem: OptionSet {
             Row(item: .texture, title: "Texture", carries: nil),
             Row(item: .clarity, title: "Clarity", carries: nil),
             Row(item: .dehaze, title: "Dehaze", carries: nil),
+            Row(item: .faceDehaze, title: "Face Dehaze", carries: nil),
             Row(item: .softGlow, title: "Soft Glow", carries: nil),
             Row(item: .vignette, title: "Vignette", carries: "with its shape"),
         ]),
@@ -510,6 +516,7 @@ struct SyncItem: OptionSet {
         case .texture: return settings.texture != 0
         case .clarity: return settings.clarity != 0
         case .dehaze: return settings.dehaze != 0
+        case .faceDehaze: return settings.faceDehaze != 0
         case .softGlow: return settings.softGlow != 0
         case .vignette: return settings.vignette != 0
         case .masks: return !settings.localAdjustments.isEmpty
@@ -906,6 +913,7 @@ struct LocalAdjustmentSettings: Codable, Equatable {
     var texture: Double = 0
     var clarity: Double = 0
     var dehaze: Double = 0
+    var faceDehaze: Double = 0
     var softGlow: Double = 0
     var vignette: Double = 0
     var vignetteMidpoint: Double = 0.5
@@ -918,6 +926,7 @@ struct LocalAdjustmentSettings: Codable, Equatable {
             && whites == 0 && blacks == 0 && saturation == 0 && vibrance == 0
             && temperature == 0 && tint == 0 && sharpness == 0
             && texture == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
+            && faceDehaze == 0
             && vignette == 0 && colorMixer.isNeutral
             // sharpenRadius, and the three vignette shape dials, are NOT in
             // here on purpose: they are modifiers, not effects. At sharpness 0
@@ -958,6 +967,7 @@ struct LocalAdjustmentSettings: Codable, Equatable {
         texture = try c.decodeIfPresent(Double.self, forKey: .texture) ?? 0
         clarity = try c.decodeIfPresent(Double.self, forKey: .clarity) ?? 0
         dehaze = try c.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0
+        faceDehaze = try c.decodeIfPresent(Double.self, forKey: .faceDehaze) ?? 0
         softGlow = try c.decodeIfPresent(Double.self, forKey: .softGlow) ?? 0
         vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
         vignetteMidpoint = try c.decodeIfPresent(Double.self, forKey: .vignetteMidpoint) ?? 0.5
@@ -3610,6 +3620,8 @@ enum PhotoEditRenderer {
 
         output = PhotoEditRenderer.applyDehaze(settings.dehaze, to: output)
 
+        output = PhotoEditRenderer.applyFaceDehaze(settings.faceDehaze, to: output)
+
         output = PhotoEditRenderer.applySoftGlow(settings.softGlow, to: output)
 
         // Vignette moved to AFTER crop (see the end of this function) — it
@@ -5103,6 +5115,7 @@ enum PhotoEditRenderer {
         output = applyTexture(local.texture, to: output)
         output = applyClarity(local.clarity, to: output)
         output = applyDehaze(local.dehaze, to: output)
+        output = applyFaceDehaze(local.faceDehaze, to: output)
         output = applySoftGlow(local.softGlow, to: output)
 
         // Against the LAYER's own rectangle, which is the only frame a layer
@@ -8508,6 +8521,129 @@ private struct BrushCursorRing: View {
 // observes this, so a drag redraws that one path and nothing else, and
 // commitRemovalStroke() folds the finished stroke into `removalStrokes` in a
 // single @State write — one body pass per stroke instead of one per point.
+/// How much of the AI brush's area one repair has used — the bar on the photo.
+///
+/// Asked for 24.09: *„dok se paintuje na slici da bude loading bar i kako
+/// paintuje klijent da se taj bar popunjava … taj loading bar je popunjen i
+/// pocrveni sa textom koji objasnjava zasto ne moze vise"*. The client wrote
+/// both "+20 %" and "+30 %"; +20 % is the one tied to the models, so the bar is
+/// full exactly where the brush stops.
+///
+/// Measured the way the buttons measure (`removalAreaPixels`): the longest side,
+/// in photo pixels, of the BIGGEST single repair. A mark far from the others is
+/// its own repair, so it can still be painted when one repair is full.
+final class AIPaintBudget: ObservableObject {
+    /// Each model's block is its measured maximum times this.
+    static let headroom: CGFloat = 1.2
+    /// The brush stops at the larger block, Quick's: past it no button works.
+    static var capPixels: CGFloat { 2200 * headroom }
+
+    @Published private(set) var fill: Double = 0
+    @Published private(set) var isFull = false
+    /// On while a point was just refused — the bar says why.
+    @Published private(set) var refused = false
+
+    private var jobBoxes: [CGRect] = []
+    private var settledPixels: CGFloat = 0
+    private var strokeBox: CGRect?
+    private var brushSize: Double = 0
+
+    func begin(jobs: [BriefShowRemovalJob], brushSize: Double) {
+        jobBoxes = jobs.map(\.box).filter { !$0.isNull }
+        strokeBox = nil
+        self.brushSize = brushSize
+        if refused { refused = false }
+    }
+
+    /// Whether `point` may join the stroke; updates the bar either way.
+    func accept(_ point: CGPoint, extent: CGRect) -> Bool {
+        let radius = brushSize / 2
+        let dab = CGRect(x: point.x - radius, y: point.y - radius, width: brushSize, height: brushSize)
+        let grown = strokeBox?.union(dab) ?? dab
+        // The stroke joins every repair its reach touches — the same inflation
+        // briefShowStrokeClusters merges by.
+        let reach = grown.insetBy(dx: -brushSize, dy: -brushSize)
+        var box = grown
+        for job in jobBoxes where job.insetBy(dx: -brushSize, dy: -brushSize).intersects(reach) {
+            box = box.union(job)
+        }
+        let pixels = max(box.width * extent.width, box.height * extent.height)
+        guard pixels <= Self.capPixels else {
+            publish(max(settledPixels, Self.capPixels), refused: true)
+            return false
+        }
+        strokeBox = grown
+        publish(max(settledPixels, pixels), refused: false)
+        return true
+    }
+
+    func settle(pixels: CGFloat) {
+        settledPixels = pixels
+        strokeBox = nil
+        publish(pixels, refused: false)
+    }
+
+    private func publish(_ pixels: CGFloat, refused: Bool) {
+        let value = min(Double(pixels / Self.capPixels), 1)
+        if abs(value - fill) > 0.002 { fill = value }
+        let full = value >= 0.999
+        if full != isFull { isFull = full }
+        if refused != self.refused { self.refused = refused }
+    }
+}
+
+/// The bar itself, drawn over the photo while the AI brush has paint on it.
+struct AIPaintBudgetBar: View {
+    @ObservedObject var budget: AIPaintBudget
+    let color: Color
+    /// Where Generative's own block falls, in pixels — a tick on the bar.
+    let generativeMark: CGFloat
+
+    var body: some View {
+        if budget.fill > 0 {
+            let red = Color(red: 0.93, green: 0.26, blue: 0.22)
+            let tick = min(Double(generativeMark / AIPaintBudget.capPixels), 1)
+            VStack(spacing: 5) {
+                Text(caption)
+                    .font(.custom("Figtree", size: 11).weight(.medium))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.22))
+                        Capsule().fill(budget.isFull ? red : color)
+                            .frame(width: proxy.size.width * budget.fill)
+                        if tick > 0, tick < 1 {
+                            Rectangle().fill(Color.white.opacity(0.85))
+                                .frame(width: 1.5, height: proxy.size.height + 4)
+                                .offset(x: proxy.size.width * tick)
+                        }
+                    }
+                }
+                .frame(height: 6)
+                .animation(.linear(duration: 0.1), value: budget.fill)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.62)))
+        }
+    }
+
+    private var caption: String {
+        let percent = Int((budget.fill * 100).rounded())
+        if budget.isFull {
+            return "Brush area full — the AI can rebuild only so much in one piece, "
+                + "and past this it smears. Clean up this part first, or mark a separate spot."
+        }
+        if budget.fill > Double(generativeMark / AIPaintBudget.capPixels) {
+            return "AI brush area \(percent)% — past the line only Quick Clean Up fits"
+        }
+        return "AI brush area \(percent)%"
+    }
+}
+
 final class ActiveStrokePoints: ObservableObject {
     @Published var points: [CGPoint] = []
 }
@@ -10199,6 +10335,9 @@ struct DevelopView: View {
     @State private var isRemoveBrushErasing = false
     @State private var removalStrokes: [BrushStroke] = []
     @State private var activeRemovalStroke = ActiveStrokePoints()
+    /// How full the AI brush is — its own object so the bar can move on every
+    /// drag event without redrawing the editor (the ActiveStrokePoints rule).
+    @StateObject private var aiPaintBudget = AIPaintBudget()
     // 0.02, not the 0.06 this shipped with: at 6 the smallest thing anyone
     // could select was already bigger than most of what this tool is for (a
     // mole, an insect, a cable), and every use started by dragging the size
@@ -13476,8 +13615,8 @@ struct DevelopView: View {
     /// buttons, "what is this one?" cannot depend on a delay. This answers
     /// instantly and cannot fail to appear.
     ///
-    /// ⚠️ It takes NO room when nothing is hovered, and opens smoothly when
-    /// something is — this reverses the older fixed-space rule, on the
+    /// ⚠️ SUPERSEDED 24.09 — it is now always there, see panelHeaderActionBar.
+    /// Kept for the history: it took NO room when nothing was hovered, on the
     /// client's word, 23.09: *„ovaj ovde prazan prostor da ne bude za karticu
     /// ako nista nije hoverovano, kad se hoveruje smoothly da se napravi ovaj
     /// prostor … da se pogura histogram dole … kad nije da se histogram povuce
@@ -13487,14 +13626,19 @@ struct DevelopView: View {
     /// folds once the pointer has really left the bar.
     private var headerHoverCaption: some View {
         let hovered = headerBarItems.first { $0.id == captionItemID }
+        // ⚠️ NOT HOVERING, the card says what the LIT cell is — dimmed, so it
+        // reads as "where you are" rather than "what you point at". Asked for
+        // 24.09 together with the fixed space: *„dok se ne hoveruje tu je
+        // prazno mesto sa necim … da ne izglda ruzno prazno mesto"*.
+        let resting = headerBarItems.first { $0.id == activeHeaderCellID }
 
         // ⚠️ A CARD, not a bare line. Asked for on 23.09: *„kao i ovaj dole
         // text sto opisuje sta je koje dugme da bude u nekoj vrsti kartice na
         // tom mestu, ne samo text vec kartica i text u njoj"*.
         //
-        return Text(hovered?.help ?? " ")
+        return Text(hovered?.help ?? resting?.help ?? "Point at a button to see what it does.")
             .font(.custom("Figtree", size: 10.5).weight(.medium))
-            .foregroundColor(AppColors.ink)
+            .foregroundColor(hovered != nil ? AppColors.ink : AppColors.muted)
             // ⚠️ TWO LINES, and the height is fixed at two whether the sentence
             // needs them or not. Asked for on 23.09 with a screenshot of
             // "Tools - Patch, Select Subjects, Dodge & Burn, Cut, Erase and r…":
@@ -13548,13 +13692,12 @@ struct DevelopView: View {
                 }
             }
 
-            // Inserted and removed rather than faded in place, so the room it
-            // takes opens and closes with it — the withAnimation in the cell's
-            // onHover carries the histogram down and back up.
-            if captionItemID != nil {
-                headerHoverCaption
-                    .transition(.opacity)
-            }
+            // ⚠️ ALWAYS THERE, on the client's word of 24.09, which reverses
+            // 23.09 again: *„kada hoverujem da hovermasage u kartici ne pomera
+            // histogram uopste, vec da je izmedju histograma i dugmica mesto za
+            // text uvek"*. Fixed height, so nothing under it ever moves.
+            headerHoverCaption
+                .animation(.easeInOut(duration: 0.15), value: captionItemID)
         }
     }
 
@@ -16952,6 +17095,13 @@ struct DevelopView: View {
                 .frame(width: containerSize.width, height: containerSize.height)
             }
 
+            AIPaintBudgetBar(budget: aiPaintBudget, color: ink,
+                             generativeMark: RemovalEngine.generative.blockingAreaPixels ?? 0)
+                .frame(width: min(300, max(imageFrame.width - 32, 120)))
+                .position(x: imageFrame.midX,
+                          y: min(imageFrame.maxY, containerSize.height) - 34)
+                .allowsHitTesting(false)
+
             // Sized to the CONTAINER, not to `frame`. It used to be
             // `.frame(frame.size).position(frame.mid)`, which at fit is the
             // same thing but zoomed in is a hit rect several times larger than
@@ -17943,6 +18093,7 @@ struct DevelopView: View {
             editSlider("Texture", value: $settings.texture, range: -1...1)
             editSlider("Clarity", value: $settings.clarity, range: -1...1)
             editSlider("Dehaze", value: $settings.dehaze, range: -1...1)
+            editSlider("Face Dehaze", value: $settings.faceDehaze, range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Soft Glow", value: $settings.softGlow, range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Vignette", value: $settings.vignette, range: -1...1)
             // Same rule as Radius: the shape of a vignette of zero is nothing.
@@ -18646,7 +18797,14 @@ struct DevelopView: View {
         return (removalAreaPixels ?? 0) > limit
     }
 
+    /// The bar's reading between strokes: the biggest single repair against
+    /// the cap. Called after every stroke and whenever the area is cleared.
+    private func refreshAIPaintBudget() {
+        aiPaintBudget.settle(pixels: hasRemovalArea ? (removalAreaPixels ?? 0) : 0)
+    }
+
     private func clearRemovalMask() {
+        defer { refreshAIPaintBudget() }
         removalMask = nil
         removalOverlay = nil
         removalStrokes = []
@@ -18768,11 +18926,28 @@ struct DevelopView: View {
                 return
             }
         }
+        // The area cap (24.09). A point that would grow ITS repair past the
+        // cap is dropped — the mark stops where the bar went red. Erasing is
+        // never capped, it only ever shrinks the area.
+        if !isRemoveBrushErasing, let extent = fullBaseImage?.extent {
+            if activeRemovalStroke.points.isEmpty {
+                aiPaintBudget.begin(jobs: briefShowRemovalJobs(strokes: removalStrokes,
+                                                               hasVisionMask: removalMask != nil,
+                                                               visionBox: removalMaskUnitBox),
+                                    brushSize: removalBrushSize)
+            }
+            guard aiPaintBudget.accept(unit, extent: extent) else {
+                return
+            }
+        }
         activeRemovalStroke.points.append(unit)
     }
 
     private func commitRemovalStroke() {
-        defer { activeRemovalStroke.points = [] }
+        defer {
+            activeRemovalStroke.points = []
+            refreshAIPaintBudget()
+        }
         // A drag that was under way when the clean up started ends here, and
         // it ends with nothing recorded — see paintRemovalBrush.
         guard !isRemoving else {
@@ -18940,14 +19115,27 @@ struct DevelopView: View {
             // threshold moves up with it. 1500 keeps the same margin below the
             // old failure point that 1000 kept — it does not permit the
             // failure at a bigger number, it moves where the failure starts.
+            // ⚠️ + 20 % SINCE 24.09, on the client's word: *„ja bi blokirao ai
+            // painting area na maximum plus 20% i za lamu i za SD generativ"*.
+            // The measured number is `measuredMaximum`; this is the block.
+            case .quick, .generative: return measuredMaximum * AIPaintBudget.headroom
+            }
+        }
+
+        /// Where each model stops giving a clean result — Quick's measured
+        /// smear point, and Generative's softness (caution) point. Until 24.09
+        /// Generative had no block at all, only the caution.
+        var measuredMaximum: CGFloat {
+            switch self {
             case .quick: return 2200
-            case .generative: return nil    // no size at which this reliably fails
+            case .generative: return SDInpaintPipeline.generativeUsesLaMaBase ? 1400 : 600
             }
         }
 
         var cautionAreaPixels: CGFloat? {
             switch self {
             case .quick: return nil         // it is blocked before it needs a caution
+            // Generative: between its maximum and the block (+20 %) it says so.
             // Was 600, "where inventing began, over structure". Inventing is
             // no longer what happens: Generative now starts from Quick's fill
             // and only finishes it (see SDInpaintPipeline.defaultRefineStrength),
@@ -18963,7 +19151,7 @@ struct DevelopView: View {
             // was measured for this configuration, so this goes back to it
             // whenever that configuration is the one running.
             case .generative:
-                return SDInpaintPipeline.generativeUsesLaMaBase ? 1400 : 600
+                return measuredMaximum
             }
         }
 
@@ -22046,6 +22234,7 @@ struct DevelopView: View {
             editSlider("Texture", key: "layer.texture", value: layerAdjustmentBinding(\.texture), range: -1...1)
             editSlider("Clarity", key: "layer.clarity", value: layerAdjustmentBinding(\.clarity), range: -1...1)
             editSlider("Dehaze", key: "layer.dehaze", value: layerAdjustmentBinding(\.dehaze), range: -1...1)
+            editSlider("Face Dehaze", key: "layer.faceDehaze", value: layerAdjustmentBinding(\.faceDehaze), range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Soft Glow", key: "layer.softGlow", value: layerAdjustmentBinding(\.softGlow), range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Vignette", key: "layer.vignette", value: layerAdjustmentBinding(\.vignette), range: -1...1)
             if selectedLayerAdjustments.vignette != 0 {
@@ -24146,6 +24335,7 @@ struct DevelopView: View {
         if items.contains(.texture) { result.texture = source.texture }
         if items.contains(.clarity) { result.clarity = source.clarity }
         if items.contains(.dehaze) { result.dehaze = source.dehaze }
+        if items.contains(.faceDehaze) { result.faceDehaze = source.faceDehaze }
         if items.contains(.softGlow) { result.softGlow = source.softGlow }
         if items.contains(.vignette) {
             result.vignette = source.vignette

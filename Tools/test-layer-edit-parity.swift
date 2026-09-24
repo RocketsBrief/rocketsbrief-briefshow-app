@@ -117,6 +117,7 @@ let controls: [(String, WritableKeyPath<PhotoEditSettings, Double>, WritableKeyP
     ("Clarity +0.50", \.clarity, \.clarity, 0.5),
     ("Dehaze +0.50", \.dehaze, \.dehaze, 0.5),
     ("Soft Glow 0.50", \.softGlow, \.softGlow, 0.5),
+    ("Face Dehaze 0.70", \.faceDehaze, \.faceDehaze, 0.7),
     ("Vignette +0.50", \.vignette, \.vignette, 0.5),
 ]
 

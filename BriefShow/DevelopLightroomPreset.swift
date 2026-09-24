@@ -413,6 +413,7 @@ enum LightroomPresetExport {
     static func unsupportedParts(of settings: PhotoEditSettings) -> [String] {
         var parts: [String] = []
         if settings.softGlow != 0 { parts.append("Soft Glow") }
+        if settings.faceDehaze != 0 { parts.append("Face Dehaze") }
         if settings.crop != nil { parts.append("Crop") }
         if settings.rotationQuarterTurns != 0 || settings.straightenDegrees != 0 {
             parts.append("Rotation / Straighten")

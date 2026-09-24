@@ -21739,6 +21739,12 @@ enum MachineBudget {
     static var headerWorkers: Int {
         min(2, decodeWorkers)
     }
+
+    /// Neighbours rendered ahead at full resolution (NeighborPrefetch). One at
+    /// a time on every machine: each holds a whole native decode, and two in
+    /// flight on 8 GB is the swap the diagnostics showed on 24.09. What the
+    /// machine decides instead is how MANY neighbours — NeighborPrefetch.radius.
+    static var prefetchWorkers: Int { 1 }
 }
 
 struct PlainHoverButtonStyle: ButtonStyle {
@@ -23324,11 +23330,13 @@ struct PhotoShowSheet: View {
                 .sheet(item: $backgroundEnhancedRequest) { request in
                 BackgroundEnhancedCard(
                     targets: request.targets,
+                    recipe: request.recipe,
                     onCancel: { backgroundEnhancedRequest = nil },
                     onApply: { tuning in
                         let targets = request.targets
+                        let recipe = request.recipe
                         backgroundEnhancedRequest = nil
-                        runBackgroundEnhancedInGrid(targets, tuning: tuning)
+                        runBackgroundEnhancedInGrid(targets, recipe: recipe, tuning: tuning)
                     }
                 )
             }
@@ -23356,6 +23364,23 @@ struct PhotoShowSheet: View {
                     // Presenting straight over it leaves two sheets racing and
                     // the camera locked to the one that lost.
                     DispatchQueue.main.async { importingSource = newSource }
+                },
+                onHardRefresh: {
+                    let was = source
+                    importingSource = nil
+                    CameraBrowser.shared.restart { cameras in
+                        switch was {
+                        case .camera(let old):
+                            // The same body if it is still there, else whatever
+                            // camera is — the one just plugged in, usually.
+                            let live = cameras.first { $0.id == old.id }
+                                ?? cameras.first { $0.name == old.name }
+                                ?? cameras.first
+                            importingSource = live.map { .camera($0) } ?? was
+                        case .folder:
+                            importingSource = cameras.first.map { .camera($0) } ?? was
+                        }
+                    }
                 })
         }
         // File ▸ Import…, and anything else that asks for the import window
@@ -24665,12 +24690,15 @@ struct PhotoShowSheet: View {
         // this one asks before it acts. Asked for on 12.09: *„before enhance to
         // get small modul card with all slide bar setting … to show real alive
         // result on the first chosen image"*.
-        Button(targets.count > 1
-               ? "\(PortraitRecipe.backgroundEnhanced.actionTitle) (\(targets.count))"
-               : PortraitRecipe.backgroundEnhanced.actionTitle) {
-            backgroundEnhancedRequest = BackgroundEnhancedRequest(targets: targets)
+        ForEach([PortraitRecipe.backgroundEnhanced, .subjectEnhanced]) { recipe in
+            Button(targets.count > 1
+                   ? "\(recipe.actionTitle) (\(targets.count))"
+                   : recipe.actionTitle) {
+                backgroundEnhancedRequest = BackgroundEnhancedRequest(targets: targets,
+                                                                      recipe: recipe)
+            }
+            .help(recipe.help)
         }
-        .help(PortraitRecipe.backgroundEnhanced.help)
 
         // ⚠️ NOT Unflatten, and that is the point of it. Asked for on 12.09:
         // *„When i want to undo enhanced backround i need to be able to do so.
@@ -25195,15 +25223,18 @@ struct PhotoShowSheet: View {
     /// Thumbnails refresh themselves: the service writes the cleared records
     /// and flushes, and refreshEditedThumbnails is already listening for that.
     private func runBackgroundEnhancedInGrid(_ targets: [URL],
+                                             recipe: PortraitRecipe = .backgroundEnhanced,
                                              tuning: BackgroundEnhancedTuning) {
         guard !targets.isEmpty else {
             return
         }
 
-        let title = PortraitRecipe.backgroundEnhanced.title
+        let title = recipe.title
         gridActionStatus = "\(title) 1 of \(targets.count)…"
 
-        PortraitRecipeService.run([.backgroundEnhanced], on: targets, tuning: tuning) { done, total in
+        PortraitRecipeService.run([recipe], on: targets,
+                                  tuning: recipe == .subjectEnhanced ? BackgroundEnhancedTuning() : tuning,
+                                  subjectTuning: recipe == .subjectEnhanced ? tuning : .subject) { done, total in
             gridActionStatus = "\(title) \(done + 1) of \(total)…"
         } completion: { outcome in
             var message = "\(title) on \(outcome.settingsByURL.count)"

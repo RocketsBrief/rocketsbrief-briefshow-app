@@ -64,24 +64,27 @@ print("\nthe Create strip's right-click menu")
 # menu leads to the card and that the card leads to the shared service. Checking
 # for the old direct call would now fail while the feature works, and loosening
 # it to "mentions the recipe somewhere" would pass while it was broken.
+# 24.09: one menu item per recipe that has a card — Background Enhanced and
+# Subject Enhanced — built from one list, each asking the recipe for its name.
 check("it offers Background Enhanced",
-      "BackgroundEnhancedRequest(targets: bwTargets)" in develop)
+      "ForEach([PortraitRecipe.backgroundEnhanced, .subjectEnhanced])" in develop
+      and "BackgroundEnhancedRequest(targets: bwTargets," in develop)
 check("under the same name as everywhere else",
-      "PortraitRecipe.backgroundEnhanced.title" in develop)
+      "recipe.actionTitle" in develop and 'case .backgroundEnhanced: return "Background Enhanced"' in develop)
 check("and it opens the card rather than acting at once",
       "BackgroundEnhancedCard(" in develop
       and ".sheet(item: $backgroundEnhancedRequest)" in develop)
 check("the card's Apply runs the recipe with the card's own numbers",
-      "runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)" in develop)
+      "runPortraitRecipes([recipe], on: targets, tuning: tuning)" in develop)
 
 print("\nthe grid's right-click menu")
 check("it offers Background Enhanced",
-      "PortraitRecipe.backgroundEnhanced.title" in content)
+      "ForEach([PortraitRecipe.backgroundEnhanced, .subjectEnhanced])" in content)
 check("pressing it opens the card",
-      "BackgroundEnhancedRequest(targets: targets)" in content
+      "BackgroundEnhancedRequest(targets: targets," in content
       and ".sheet(item: $backgroundEnhancedRequest)" in content)
 check("and the card's Apply runs the batch",
-      "runBackgroundEnhancedInGrid(targets, tuning: tuning)" in content)
+      "runBackgroundEnhancedInGrid(targets, recipe: recipe, tuning: tuning)" in content)
 check("it acts on the WHOLE selection, not the photo under the cursor",
       "private func photoContextMenuItems(for url: URL)" in content
       and "selectedURLs.contains(url) && selectedURLs.count > 1" in content)
@@ -93,9 +96,9 @@ check("it acts on the WHOLE selection, not the photo under the cursor",
 # ContentView.swift, that is what happened.
 print("\none implementation, not two")
 check("the grid calls the shared service",
-      "PortraitRecipeService.run([.backgroundEnhanced], on: targets, tuning: tuning)" in content)
+      "PortraitRecipeService.run([recipe], on: targets," in content)
 check("the editor calls the same service",
-      "PortraitRecipeService.run(recipes, on: targets, tuning: tuning)" in develop)
+      "PortraitRecipeService.run(recipes, on: targets, tuning: backgroundTuning," in develop)
 # ⚠️ The card is a THIRD place that could have grown its own copy of the recipe,
 # and it is the most tempting one — it already holds the layers and the base
 # image. It must ask PortraitRecipe for the numbers like everyone else, or the
@@ -103,7 +106,7 @@ check("the editor calls the same service",
 card_start = develop.find("struct BackgroundEnhancedCard: View {")
 card = develop[card_start:develop.find("\n/// One step back for the one-press", card_start)]
 check("the card previews through the recipe itself, not its own copy of it",
-      "PortraitRecipe.backgroundEnhanced" in card and "tuning: wanted" in card)
+      "let settings = recipe\n                .applied(to: prepared.settings," in card and "tuning: wanted" in card)
 check("and the card does not flatten anything", "FlattenedImageStore.flatten" not in card)
 
 # ⚠️ EVERY BUTTON THAT RUNS THIS RECIPE, COUNTED. Reported 13.09 with two
@@ -117,7 +120,7 @@ check("and the card does not flatten anything", "FlattenedImageStore.flatten" no
 print("\nevery way in goes through the card")
 
 check("the recipe itself says which ones ask first",
-      "var opensCard: Bool { self == .backgroundEnhanced }" in develop)
+      "var opensCard: Bool { self == .backgroundEnhanced || self == .subjectEnhanced }" in develop)
 check("and names its own button, so no call site types the ellipsis",
       'var actionTitle: String { opensCard ? "\\(title)…" : title }' in develop)
 
@@ -138,10 +141,10 @@ check("the AI Portrait panel asks the recipe instead of naming it",
       "toolButton(recipe.actionTitle" in develop and "if recipe.opensCard {" in develop)
 check("and its Apply runs the editor's own chain, not the batch service",
       "case .openPhoto:" in develop
-      and "runPortraitRecipe(.backgroundEnhanced, tuning: tuning)" in develop)
+      and "runPortraitRecipe(recipe, tuning: tuning)" in develop)
 check("while a selection still goes through the service",
       "case .selection:" in develop
-      and "runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)" in develop)
+      and "runPortraitRecipes([recipe], on: targets, tuning: tuning)" in develop)
 check("the editor's chain carries the card's numbers through to the layer",
       "tuning: BackgroundEnhancedTuning = BackgroundEnhancedTuning()) {" in develop
       and "backgroundID: backgroundID, peopleID: peopleID,\n                                      tuning: tuning)" in develop)
@@ -198,13 +201,15 @@ check("it splits people from background", "PeopleLayerFactory.make" in service)
 check("both layers go on the photo",
       "layers.append(made.background)" in service and "layers.append(made.people)" in service)
 check("then the recipe", "recipe.applied(to: photoSettings" in service)
-check("then the flatten", "FlattenedImageStore.flatten" in service)
-# The crop is a description of the photo, not pixels — flattenPhoto keeps it and
-# so must this, or a cropped photo run through the recipe loses its crop.
-check("the crop survives the bake", "cleared.crop = photoSettings.crop" in service)
+# ⚠️ REVERSED 24.09: no flatten. The client chose live layers so the sliders
+# still show what was done — the record, layers and all, is what is stored.
+check("and NO flatten — the layers stay live", "FlattenedImageStore.flatten" not in service)
+check("the whole record is kept, crop and sliders included",
+      "outcome.settingsByURL[url] = photoSettings" in service)
+check("its undo touches no file", "flattens: false" in service)
 # developBatchQueue since 23.09 — its own queue, so the editor's refine
-# does not wait behind a batch. Still off the main thread either way.
-check("it runs off the main thread", "developBatchQueue.async" in service)
+# does not wait behind a batch. `.tracked` since KORAK 222 (the work bar).
+check("it runs off the main thread", 'developBatchQueue.tracked("Applying recipe")' in service)
 check("the store is written and flushed before anyone is told",
       "PhotoEditStore.flushNow()" in service)
 

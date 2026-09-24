@@ -4281,8 +4281,32 @@ enum PhotoEditRenderer {
                         "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)
                     ])
 
+                // ⚠️ THE GUARD REACHES AS FAR AS THE BLUR DOES (24.09). The
+                // map above is only high ON an edge; a flat pixel one blur
+                // radius away scored as flat and was mixed toward `blurred` —
+                // which at that distance still carries the edge's dark side.
+                // Against a bright sky that drew a grey ring ~18 px outside
+                // hair and shoulders, the „okvir oko subjecta" reported after
+                // Select People (it is there with no layers at all — measured,
+                // Tools/run-subject-edge-test.py NO_LAYERS=1 HEAVY_ONLY=texture).
+                // Spreading the map by the blur radius keeps that band as it
+                // was; skin away from features smooths exactly as before.
+                // Worked at a quarter size: it is a coarse map by nature.
+                let blurRadius = min(max(longEdge * 0.003, 1.5), 24)
+                let quarter: CGFloat = 0.25
+                let guardMap = detail
+                    .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+                    .transformed(by: CGAffineTransform(scaleX: quarter, y: quarter))
+                    .applyingFilter("CIMorphologyMaximum",
+                                    parameters: [kCIInputRadiusKey: max(1, blurRadius * quarter * 1.5)])
+                    .transformed(by: CGAffineTransform(scaleX: 1 / quarter, y: 1 / quarter))
+                    .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
+                    .cropped(to: extent)
+                let spreadDetail = guardMap
+                    .applyingFilter("CIMaximumCompositing", parameters: [kCIInputBackgroundImageKey: detail])
+
                 let amount = CGFloat(min(max(-texture, 0), 1) * 0.9)
-                let mixMask = detail
+                let mixMask = spreadDetail
                     .applyingFilter("CIColorInvert")
                     .applyingFilter("CIColorMatrix", parameters: [
                         "inputRVector": CIVector(x: amount, y: 0, z: 0, w: 0),
@@ -5723,12 +5747,15 @@ enum PhotoEditRenderer {
             return image
         }
 
-        let scaled = stored
-            .transformed(by: CGAffineTransform(scaleX: extent.width / stored.extent.width,
-                                               y: extent.height / stored.extent.height))
-        let mask = scaled
-            .transformed(by: CGAffineTransform(translationX: extent.origin.x - scaled.extent.origin.x,
-                                               y: extent.origin.y - scaled.extent.origin.y))
+        // Clamped before it is scaled up: sampled past its own edge the matte
+        // faded toward nothing along the frame's border, so a full-frame white
+        // matte was not quite white in the outermost pixel.
+        let storedExtent = stored.extent
+        let mask = stored.clampedToExtent()
+            .transformed(by: CGAffineTransform(translationX: -storedExtent.minX, y: -storedExtent.minY))
+            .transformed(by: CGAffineTransform(scaleX: extent.width / storedExtent.width,
+                                               y: extent.height / storedExtent.height))
+            .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
             .cropped(to: extent)
 
         // A derived layer adjusts the photo under its own matte — it never
@@ -5748,6 +5775,21 @@ enum PhotoEditRenderer {
             local.tint = 0
         }
 
+        // ⚠️ THE FRAME AROUND THE SUBJECT, 24.09: *„posle editovanja slike i
+        // odvajanja subject i backrounda i menjanja settings ipak se malo vidi
+        // okvir oko subjecta"*. Shadows, Clarity and Dehaze are LOCAL — each
+        // looks at a neighbourhood — so run over the whole photo they saw the
+        // dark hair next to the bright sky and lifted the sky beside it. Seen
+        // through the matte, that halo is a rim hugging the person. Measured
+        // (Tools/run-subject-edge-test.py) with every layer number at zero the
+        // layers differ from no layers by at most 1 level: the rim is these
+        // numbers, not the compositing. So the layer's own local work now sees
+        // the photo with what is OUTSIDE its matte replaced by its own
+        // surroundings (`matteFilled`). A full-frame white matte replaces
+        // nothing, which keeps layer = photo parity exact.
+        if !local.isNeutral {
+            source = matteFilled(source, matte: mask, extent: extent)
+        }
         var adjusted = local.isNeutral
             ? source
             : applyLocalToneColorDetail(local, to: source)
@@ -5761,6 +5803,70 @@ enum PhotoEditRenderer {
         blend.maskImage = layer.opacity < 1 ? scaleMaskOpacity(mask, by: layer.opacity) : mask
         return blend.outputImage ?? image
     }
+    /// `image` inside `matte`, and outside it a smooth continuation of what
+    /// the matte holds — a normalised blur, blur(image·m) / blur(m), taken at
+    /// two reaches and joined where the near one runs out of support.
+    ///
+    /// Worked on a copy about 512 px long: the fill is soft by nature, and at
+    /// native resolution two blurs of this reach would cost more than the
+    /// adjustments they serve. Proportional to the picture, so the preview and
+    /// the export fill alike.
+    static func matteFilled(_ image: CIImage, matte: CIImage, extent: CGRect) -> CIImage {
+        let longEdge = max(extent.width, extent.height)
+        guard longEdge.isFinite, longEdge > 8 else { return image }
+
+        let held = CIFilter.blendWithMask()
+        held.inputImage = image
+        held.backgroundImage = CIImage.empty()
+        held.maskImage = matte
+        guard let inside = held.outputImage?.cropped(to: extent) else { return image }
+
+        let scale = min(1, 512 / longEdge)
+        let small = inside
+            .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+            .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale,
+                                                                    kCIInputAspectRatioKey: 1])
+        let smallExtent = small.extent
+        func spread(_ fraction: CGFloat) -> CIImage {
+            small.clampedToExtent()
+                .applyingGaussianBlur(sigma: Double(fraction * longEdge * scale))
+                .cropped(to: smallExtent)
+        }
+        let near = spread(0.02)
+        let far = spread(0.08)
+        let nearColor = near.unpremultiplyingAlpha().settingAlphaOne(in: smallExtent)
+        let farColor = far.unpremultiplyingAlpha().settingAlphaOne(in: smallExtent)
+        // Trust the near fill where it has at least a quarter of its weight.
+        let weight = near
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 4),
+                "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 4),
+                "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 4),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            ])
+            .applyingFilter("CIColorClamp", parameters: [
+                "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+                "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1),
+            ])
+        let mix = CIFilter.blendWithMask()
+        mix.inputImage = nearColor
+        mix.backgroundImage = farColor
+        mix.maskImage = weight
+        guard let fillSmall = mix.outputImage?.cropped(to: smallExtent) else { return image }
+
+        let fill = fillSmall.clampedToExtent()
+            .transformed(by: CGAffineTransform(scaleX: 1 / scale, y: 1 / scale))
+            .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
+            .cropped(to: extent)
+
+        let joined = CIFilter.blendWithMask()
+        joined.inputImage = image
+        joined.backgroundImage = fill
+        joined.maskImage = matte
+        return joined.outputImage?.cropped(to: extent) ?? image
+    }
+
     /// Blur scaled to the PICTURE, not to pixels.
     ///
     /// ⚠️ A sigma in pixels would be wrong here and wrong invisibly: the
@@ -6941,6 +7047,16 @@ struct BackgroundEnhancedTuning: Equatable {
     }
 
     var isDefault: Bool { self == BackgroundEnhancedTuning() }
+
+    /// Subject Enhanced's starting numbers, 24.09 — *„Samo da se enhancuje
+    /// subject ne i backround"*. Gentle on purpose: a face takes far less than
+    /// a background before it looks processed. The card moves them.
+    static let subject = BackgroundEnhancedTuning(exposure: 0.10, contrast: 0.10, shadows: 0,
+                                                  saturation: 0, clarity: 0.15, dehaze: 0)
+
+    static func defaults(for recipe: PortraitRecipe) -> BackgroundEnhancedTuning {
+        recipe == .subjectEnhanced ? .subject : BackgroundEnhancedTuning()
+    }
 }
 
 /// The card's own buttons.
@@ -6997,6 +7113,7 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
     case subjectMono
     case monoBackground
     case backgroundEnhanced
+    case subjectEnhanced
 
     var id: String { rawValue }
 
@@ -7006,6 +7123,7 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
         case .subjectMono: return "Subject Mono"
         case .monoBackground: return "Mono Background"
         case .backgroundEnhanced: return "Background Enhanced"
+        case .subjectEnhanced: return "Subject Enhanced"
         }
     }
 
@@ -7015,6 +7133,7 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
         case .subjectMono: return "person.crop.circle"
         case .monoBackground: return "person.crop.circle.badge.moon"
         case .backgroundEnhanced: return "photo.on.rectangle.angled"
+        case .subjectEnhanced: return "person.crop.rectangle"
         }
     }
 
@@ -7023,13 +7142,15 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
     var help: String {
         switch self {
         case .youthify:
-            return "Select People, then Texture −60 on the people, then Flatten."
+            return "Select People, then Texture −60 on the people. The layers stay live."
         case .subjectMono:
-            return "Select People, then Black & White and Contrast +30 on the people, then Flatten."
+            return "Select People, then Black & White and Contrast +30 on the people. The layers stay live."
         case .monoBackground:
-            return "Select People, then Black & White and Contrast +40 on the background, then Flatten."
+            return "Select People, then Black & White and Contrast +40 on the background. The layers stay live."
         case .backgroundEnhanced:
-            return "Select People, then Shadows −100, Saturation +30 and Clarity +30 on the background, then Flatten."
+            return "Select People, then Shadows −100, Saturation +30 and Clarity +30 on the background. The layers stay live."
+        case .subjectEnhanced:
+            return "Select People, then Exposure +0.10, Contrast +10 and Clarity +15 on the people. The layers stay live."
         }
     }
 
@@ -7044,7 +7165,7 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
     ///
     /// There are three buttons and there will be a fourth one day. Asking the
     /// recipe is the only arrangement where adding a button cannot forget.
-    var opensCard: Bool { self == .backgroundEnhanced }
+    var opensCard: Bool { self == .backgroundEnhanced || self == .subjectEnhanced }
 
     /// What a button that runs this recipe is called.
     ///
@@ -7115,6 +7236,16 @@ enum PortraitRecipe: String, CaseIterable, Identifiable {
             result.layers[index].adjustments.saturation = tuning.saturation
             result.layers[index].adjustments.clarity = tuning.clarity
             result.layers[index].adjustments.dehaze = tuning.dehaze
+
+        case .subjectEnhanced:
+            // The same six controls, on the people instead (writesOnBackground
+            // is false for this one, so `index` is the Subjects layer).
+            result.layers[index].adjustments.exposure = tuning.exposure
+            result.layers[index].adjustments.contrast = tuning.contrast
+            result.layers[index].adjustments.shadows = tuning.shadows
+            result.layers[index].adjustments.saturation = tuning.saturation
+            result.layers[index].adjustments.clarity = tuning.clarity
+            result.layers[index].adjustments.dehaze = tuning.dehaze
         }
 
         return result
@@ -7146,6 +7277,8 @@ struct BackgroundEnhancedRequest: Identifiable {
     let id = UUID()
     let targets: [URL]
     var source: Source = .selection
+    /// Background Enhanced or Subject Enhanced — the same card for both.
+    var recipe: PortraitRecipe = .backgroundEnhanced
 }
 
 /// The card that stands between pressing Background Enhanced and it happening.
@@ -7178,19 +7311,23 @@ struct BackgroundEnhancedCard: View {
     /// *„on the first chosen image"* — and the count is shown so nobody presses
     /// Apply thinking it is about the one picture on screen.
     let targets: [URL]
+    let recipe: PortraitRecipe
     let onCancel: () -> Void
     let onApply: (BackgroundEnhancedTuning) -> Void
 
     /// Spelled out because the implicit memberwise initialiser is private the
     /// moment any stored property is, and every `@State` below is.
-    init(targets: [URL], onCancel: @escaping () -> Void,
+    init(targets: [URL], recipe: PortraitRecipe = .backgroundEnhanced,
+         onCancel: @escaping () -> Void,
          onApply: @escaping (BackgroundEnhancedTuning) -> Void) {
         self.targets = targets
+        self.recipe = recipe
         self.onCancel = onCancel
         self.onApply = onApply
+        _tuning = State(initialValue: .defaults(for: recipe))
     }
 
-    @State private var tuning = BackgroundEnhancedTuning()
+    @State private var tuning: BackgroundEnhancedTuning
     @State private var preview: NSImage?
     @State private var stage: Stage = .preparing
     /// The prepared work for the first photo, held between renders.
@@ -7275,13 +7412,13 @@ struct BackgroundEnhancedCard: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(PortraitRecipe.backgroundEnhanced.title)
+            Text(recipe.title)
                 .font(.custom("Figtree", size: 14).weight(.semibold))
                 .foregroundColor(AppColors.ink)
 
             Text(targets.count > 1
-                 ? "Select People, then these numbers on the Background, then Flatten — on \(targets.count) photos."
-                 : "Select Subjects, then these numbers on the Background, then Flatten.")
+                 ? "Select People, then these numbers on the \(recipe.targetLayerName) — on \(targets.count) photos."
+                 : "Select Subjects, then these numbers on the \(recipe.targetLayerName).")
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -7332,9 +7469,9 @@ struct BackgroundEnhancedCard: View {
             // Back to his three numbers in one press. Shown greyed rather than
             // hidden when they are already the defaults, so the card always
             // says what "the recipe" means.
-            Button("Reset") { tuning = BackgroundEnhancedTuning() }
+            Button("Reset") { tuning = .defaults(for: recipe) }
                 .buttonStyle(CardButtonStyle())
-                .disabled(tuning.isDefault)
+                .disabled(tuning == .defaults(for: recipe))
 
             Spacer()
 
@@ -7449,7 +7586,7 @@ struct BackgroundEnhancedCard: View {
         Self.previewQueue.tracked("Background preview") {
             // Stale before it started: a newer number is already waiting.
             guard latest.isNewest(token) else { return }
-            let settings = PortraitRecipe.backgroundEnhanced
+            let settings = recipe
                 .applied(to: prepared.settings,
                          backgroundID: prepared.backgroundID,
                          peopleID: prepared.peopleID,
@@ -7511,6 +7648,10 @@ enum PortraitRecipeUndoStore {
         /// FlattenedImageStore's snapshot as it was before — nil when the photo
         /// had never been flattened, which is the usual case.
         var flattenSnapshot: PhotoEditSettings?
+        /// false for a recipe run after 24.09, which no longer flattens — its
+        /// undo is the record alone, and no file is touched. nil on older
+        /// entries, which did flatten.
+        var didFlatten: Bool?
         var date: Date
 
         var title: String {
@@ -7547,13 +7688,16 @@ enum PortraitRecipeUndoStore {
     /// the recipe's flatten — so what is recorded is what was true at that
     /// instant and not what the main thread thought a moment earlier.
     static func record(_ recipes: [PortraitRecipe], for photo: URL,
-                       settings: PhotoEditSettings) {
-        let hadCopy = FlattenedImageStore.setAsideForRecipeUndo(photo)
+                       settings: PhotoEditSettings, flattens: Bool = true) {
+        // An older undo's set-aside pixels go first, whichever kind this is.
+        if !flattens { FlattenedImageStore.discardRecipeUndoCopy(for: photo) }
+        let hadCopy = flattens ? FlattenedImageStore.setAsideForRecipeUndo(photo) : false
         var all = entries
         all[photoKey(for: photo)] = Entry(recipes: recipes.map(\.rawValue),
                                           settings: settings,
                                           hadFlattenedCopy: hadCopy,
                                           flattenSnapshot: FlattenedImageStore.snapshot(for: photo),
+                                          didFlatten: flattens,
                                           date: Date())
         entries = all
     }
@@ -7580,7 +7724,14 @@ enum PortraitRecipeUndoStore {
     /// back" from "nothing to put back" without asking twice.
     static func undo(_ photo: URL) -> PhotoEditSettings? {
         guard let stored = entry(for: photo) else { return nil }
-
+        // A recipe that did not flatten left the files alone — including a
+        // flattened copy the client made before it, which must survive.
+        if stored.didFlatten == false {
+            var all = entries
+            all.removeValue(forKey: photoKey(for: photo))
+            entries = all
+            return stored.settings
+        }
         FlattenedImageStore.restoreFromRecipeUndo(photo,
                                                  hadFlattenedCopy: stored.hadFlattenedCopy)
         // ⚠️ Back to what it WAS, including nil. The recipe's flatten wrote this
@@ -7609,11 +7760,11 @@ enum PortraitRecipeUndoStore {
 /// recipe do", and the one nobody looks at would be the one that drifts. The
 /// editor and the grid now differ only in what they SAY while it runs.
 ///
-/// ⚠️ Every recipe ends in a FLATTEN, which writes pixels. Unflatten takes it
-/// back; nothing else here does.
+/// Since 24.09 no recipe flattens: the two layers stay live on the record, and
+/// the recipe's undo is that record as it was before.
 enum PortraitRecipeService {
     struct Outcome {
-        /// The cleared record each finished photo should be left with.
+        /// The record each finished photo should be left with — its layers live.
         var settingsByURL: [URL: PhotoEditSettings] = [:]
         /// Vision found nobody. A normal answer, not a failure.
         var noPeople = 0
@@ -7660,6 +7811,7 @@ enum PortraitRecipeService {
     /// written and flushed.
     static func run(_ recipes: [PortraitRecipe], on targets: [URL],
                     tuning: BackgroundEnhancedTuning = BackgroundEnhancedTuning(),
+                    subjectTuning: BackgroundEnhancedTuning = .subject,
                     progress: @escaping (Int, Int) -> Void,
                     completion: @escaping (Outcome) -> Void) {
         guard !recipes.isEmpty, !targets.isEmpty else {
@@ -7707,46 +7859,25 @@ enum PortraitRecipeService {
                     photoSettings = recipe.applied(to: photoSettings,
                                                    backgroundID: made.background.id,
                                                    peopleID: made.people.id,
-                                                   tuning: tuning)
+                                                   tuning: recipe == .subjectEnhanced
+                                                       ? subjectTuning : tuning)
                 }
 
-                let rendered = PhotoEditRenderer.render(photoSettings, on: base, applyCrop: false)
-
-                // ⚠️ BEFORE the flatten, not after: this both remembers the
-                // record as it stands and moves any existing flattened copy
-                // aside, and `flatten` is about to write over that copy. See
-                // PortraitRecipeUndoStore.
+                // ⚠️ NO FLATTEN since 24.09. The client, after a preset, a Sync
+                // and Background Enhanced found every slider back at zero: *„a
+                // treba ipak da pokaze da je slika editovana da su slajderi i
+                // tamo i vamo pomereni"*. Asked, he chose to keep the layers
+                // live. Both already are — Subjects follows the photo's sliders
+                // (liveSource), Background is a matte over the photo — so the
+                // photo's own sliders stay what they were and the recipe's
+                // numbers sit on the layer, where they can still be moved.
+                // Flatten is the client's own button now.
                 //
-                // `settingsBefore` is the record as it was READ at the top of
-                // this photo's turn — before the two layers were appended and
-                // before any recipe touched them.
-                PortraitRecipeUndoStore.record(ordered, for: url, settings: settingsBefore)
-
-                do {
-                    try FlattenedImageStore.flatten(rendered, settings: photoSettings,
-                                                    for: url, context: briefEditsCIContext)
-                } catch {
-                    // The undo entry points at a state the photo is still in,
-                    // so it would offer to "take back" something that never
-                    // happened — and it is holding the previous flattened copy
-                    // hostage in a sidecar. Put that back and drop the entry.
-                    _ = PortraitRecipeUndoStore.undo(url)
-                    outcome.failed += 1
-                    continue
-                }
-
-                // Everything is in the pixels now. The crop is kept because
-                // it was not baked — same rule as flattenPhoto, including what
-                // happens when there is a template: this path renders with
-                // `applyCrop: false`, so it bakes no canvas, and a photo that
-                // has one keeps it rather than losing it here.
-                var cleared = PhotoEditSettings()
-                cleared.crop = photoSettings.crop
-                cleared.templateID = photoSettings.templateID
-                cleared.templatePlacement = photoSettings.templatePlacement
-                cleared.templateArtOverPhoto = photoSettings.templateArtOverPhoto
-                cleared.templateTexts = photoSettings.templateTexts
-                outcome.settingsByURL[url] = cleared
+                // The undo is the record as it was READ at the top of this
+                // photo's turn, before the layers were appended; no file moves.
+                PortraitRecipeUndoStore.record(ordered, for: url, settings: settingsBefore,
+                                               flattens: false)
+                outcome.settingsByURL[url] = photoSettings
             }
 
             DispatchQueue.main.async {
@@ -7944,6 +8075,224 @@ enum PhotoBakeService {
 final class PreviewImageState: ObservableObject {
     @Published var image: NSImage?
     @Published var histogram: [CGFloat] = []
+    /// The settings a NeighborPrefetch frame was rendered for, while it is the
+    /// frame on screen. Not published. The photo switch that put it there also
+    /// changes `settings`, and the render that change asks for would replace
+    /// the sharp frame with a soft preview and then refine it all over again —
+    /// measured on screen: „Full resolution" appeared 1.3 s after every switch.
+    var prefetchedFor: PhotoEditSettings?
+}
+
+/// The photos either side of the open one, opened AND rendered at full
+/// resolution before they are asked for.
+///
+/// Asked for 24.09: *„kada udjemo create on loaduje sve slike u full
+/// rezoluciju … i nema kocenja"*. Every photo at full resolution does not fit:
+/// one decoded 24 MP RAW is ~190 MB, a folder of 250 would be ~48 GB. What the
+/// client actually waits on is the NEXT photo — so the neighbours are made
+/// ready, as many as the machine's memory allows (`radius`), and moving to one
+/// of them puts its sharp, native-resolution frame up at once, with no soft
+/// preview and no refine in between. The frame is the SAME render the refine
+/// would have made (same settings, applyCrop, RGBA8 sRGB); see „ZAKLJUČANO —
+/// rezolucija slike".
+///
+/// ⚠️ Its OWN CIContext: every render sharing one context shares its lock,
+/// which is the two-minute freeze documented at briefEditsPreviewCIContext.
+/// ⚠️ Holds while a mouse button is down (DevelopView's crop/mouse monitor),
+/// like the filmstrip decodes.
+final class NeighborPrefetch: @unchecked Sendable {
+    static let shared = NeighborPrefetch()
+
+    struct Entry {
+        let base: PhotoBaseImage
+        let preview: PhotoBaseImage?
+        /// What `frame` was rendered with. A frame for other settings is
+        /// never shown — the base is still used, and the editor renders.
+        let settings: PhotoEditSettings
+        let frame: NSImage?
+        let histogram: [CGFloat]
+    }
+
+    /// Photos each side of the open one. 32 GB: 2 (four frames, ~0.4 GB),
+    /// 16 GB: 1, 8 GB: 1.
+    static var radius: Int {
+        let gigabytes = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        return gigabytes >= 24 ? 2 : 1
+    }
+
+    let queue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "com.rocketsbrief.briefshow.neighbor-prefetch"
+        queue.maxConcurrentOperationCount = MachineBudget.prefetchWorkers
+        queue.qualityOfService = .utility
+        return queue
+    }()
+
+    private let context = CIContext(options: [.cacheIntermediates: false,
+                                              .name: "NeighborPrefetch"])
+    private let lock = NSLock()
+    private var entries: [URL: Entry] = [:]
+    private var wanted: Set<URL> = []
+
+    /// Hands over a finished entry and forgets it — the editor owns it now.
+    func take(_ url: URL) -> Entry? {
+        lock.lock(); defer { lock.unlock() }
+        return entries.removeValue(forKey: url)
+    }
+
+    /// Anything decoded for these photos is stale (a bake, a sync, a recipe).
+    func drop(_ urls: Set<URL>) {
+        lock.lock(); defer { lock.unlock() }
+        for url in urls { entries.removeValue(forKey: url) }
+    }
+
+    func clear() {
+        queue.cancelAllOperations()
+        lock.lock(); entries = [:]; wanted = []; lock.unlock()
+    }
+
+    func prefetch(around url: URL, in urls: [URL]) {
+        guard let index = urls.firstIndex(of: url) else { return }
+        let r = Self.radius
+        // Next first, then previous, then the second ring — the order the
+        // client most often moves in.
+        var order: [URL] = []
+        for step in 1...r {
+            if index + step < urls.count { order.append(urls[index + step]) }
+            if index - step >= 0 { order.append(urls[index - step]) }
+        }
+
+        lock.lock()
+        wanted = Set(order)
+        entries = entries.filter { wanted.contains($0.key) }
+        let missing = order.filter { entries[$0] == nil }
+        lock.unlock()
+
+        queue.cancelAllOperations()
+        for neighbor in missing {
+            queue.addOperation { [weak self] in self?.make(neighbor) }
+        }
+    }
+
+    private func isWanted(_ url: URL) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return wanted.contains(url) && entries[url] == nil
+    }
+
+    private func make(_ url: URL) {
+        guard isWanted(url) else { return }
+        FlattenedImageStore.upgradeLegacyCompressedFile(for: url)
+        guard let base = PhotoEditRenderer.loadBaseImage(from: url) else { return }
+        let preview = PhotoEditRenderer.loadPreviewBaseImage(from: url, full: base)
+        let settings = PhotoEditStore.settings(for: url)
+
+        guard isWanted(url) else { return }
+        let rendered = PhotoEditRenderer.render(settings, on: base, applyCrop: true)
+        var frame: NSImage?
+        if let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent, context: context) {
+            frame = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        }
+        let bins = PhotoEditRenderer.luminanceHistogram(of: rendered, context: context)
+
+        lock.lock()
+        if wanted.contains(url) {
+            entries[url] = Entry(base: base, preview: preview, settings: settings,
+                                 frame: frame, histogram: bins)
+        }
+        lock.unlock()
+    }
+}
+
+/// The filmstrip's decoded thumbnails, out of `DevelopView`'s `@State`.
+///
+/// ⚠️ Reported 24.09 on the Intel: *„Moving film strip from one side to another
+/// glitch … and froze"*. Every thumbnail that landed was a write to the
+/// editor's own `@State`, and so a pass over the ENTIRE editor body — panel,
+/// every slider, tool strip — for one 100 pt tile. Scrolling the strip asks
+/// for dozens at once, and each of them did that on the main thread. Now only
+/// the tiles (`FilmstripThumbReader`) and the loading row observe this.
+final class FilmstripThumbnailStore: ObservableObject {
+    @Published var images: [URL: NSImage] = [:]
+    @Published var inFlight: Set<URL> = []
+    /// Not published — only eviction reads it.
+    var order: [URL] = []
+    /// The folder preload's size, for the „Loading photos 12 of 240" bar.
+    @Published var preloadTotal = 0
+}
+
+private struct FilmstripThumbReader<Content: View>: View {
+    @ObservedObject var store: FilmstripThumbnailStore
+    let url: URL
+    @ViewBuilder let content: (NSImage?) -> Content
+
+    var body: some View {
+        content(store.images[url])
+    }
+}
+
+private struct FilmstripLoadingReader<Content: View>: View {
+    @ObservedObject var store: FilmstripThumbnailStore
+    @ViewBuilder let content: (FilmstripThumbnailStore) -> Content
+
+    var body: some View {
+        content(store)
+    }
+}
+
+/// The photo in the middle of Create, drawn by a plain layer instead of
+/// SwiftUI's `Image`.
+///
+/// ⚠️ This is the freeze after every edit. Intel diagnostics from 24.09:
+/// 24 hangs of 0.27–1.27 s in 44 s of work, all on `mouseUp` in Edit or Crop,
+/// NONE while dragging. The frame that lands after a release is the full
+/// resolution refine (24 MP on a Z6), and `Image(nsImage:)` copies and
+/// colour-matches the whole bitmap on the main thread before it can show it.
+/// Measured on M2 with a 6048×4024 frame: `Image` 132–138 ms of main thread per
+/// frame, `layer.contents` 0–1 ms. The copy moves to the window server, where it
+/// blocks nothing.
+///
+/// Same pixels, same size: the layer is given the CGImage the renderer made,
+/// never a smaller one. See „ZAKLJUČANO — rezolucija slike".
+struct PreviewLayerImage: NSViewRepresentable {
+    let image: NSImage
+
+    final class LayerView: NSView {
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            layerContentsRedrawPolicy = .never
+            layer?.contentsGravity = .resize
+            // Trilinear = mipmaps, so a 6000 px frame drawn at 1400 px is
+            // filtered, not point-sampled into shimmer.
+            layer?.minificationFilter = .trilinear
+            layer?.magnificationFilter = .linear
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        // Display only; every gesture lives in the overlays above it.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> LayerView {
+        let view = LayerView(frame: .zero)
+        set(image, on: view)
+        return view
+    }
+
+    func updateNSView(_ view: LayerView, context: Context) {
+        set(image, on: view)
+    }
+
+    private func set(_ image: NSImage, on view: LayerView) {
+        var rect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+            return
+        }
+        if (view.layer?.contents as AnyObject?) === cgImage { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.layer?.contents = cgImage
+        CATransaction.commit()
+    }
 }
 
 /// Draws its content from the current frame, and re-draws only when a new one
@@ -9784,7 +10133,12 @@ struct DevelopView: View {
         get { previewState.histogram }
         nonmutating set { previewState.histogram = newValue }
     }
-    @State private var filmstripThumbnails: [URL: NSImage] = [:]
+    /// Held in an object this view does NOT observe — see FilmstripThumbnailStore.
+    @State private var filmstripStore = FilmstripThumbnailStore()
+    private var filmstripThumbnails: [URL: NSImage] {
+        get { filmstripStore.images }
+        nonmutating set { filmstripStore.images = newValue }
+    }
 
     /// Identity for this window's own file-change posts, so it can ignore
     /// them coming back — see PhotoFileChangeBroadcast.
@@ -9793,9 +10147,15 @@ struct DevelopView: View {
     // alone is not enough: it runs on the main thread before the dispatch, so
     // two .onAppear for the same url arriving before the first decode finishes
     // both pass it and decode the same photo twice.
-    @State private var filmstripThumbnailsInFlight: Set<URL> = []
+    private var filmstripThumbnailsInFlight: Set<URL> {
+        get { filmstripStore.inFlight }
+        nonmutating set { filmstripStore.inFlight = newValue }
+    }
     // Insertion order, for oldest-first eviction at filmstripThumbnailCacheLimit.
-    @State private var filmstripThumbnailOrder: [URL] = []
+    private var filmstripThumbnailOrder: [URL] {
+        get { filmstripStore.order }
+        nonmutating set { filmstripStore.order = newValue }
+    }
     @State private var isLoadingPreview = false
     @State private var showOriginal = false
     @State private var isCropping = false
@@ -9951,6 +10311,9 @@ struct DevelopView: View {
     // below. Past that the thumbnails are drawn larger than their own pixels
     // and go soft, so raising this number means raising the decode size in the
     // same commit, not on its own.
+    /// Which engine „Clean" runs — the tick in the AI block. Remembered, like
+    /// the layout, so a client who works in Generative stays in it.
+    @AppStorage("develop.ai.cleanUsesGenerative") private var cleanUsesGenerative = false
     @AppStorage("develop.layout.panelWidth") private var panelWidth: Double = 340
     @AppStorage("develop.layout.filmstripHeight") private var filmstripHeight: Double = 120
 
@@ -10622,12 +10985,16 @@ struct DevelopView: View {
             // PhotoLabelStore.isRejected hits UserDefaults, and the filmstrip
             // draws every visible cell on every pass.
             reloadRejectedFlags()
+            // After selectPhoto, so the open photo's own decode is queued
+            // first and the strip fills behind it.
+            preloadFilmstrip()
         }
         // The folder's contents change under this window — a photo trashed, a
         // duplicate made — and a stale mirror would leave an X on a thumbnail
         // that is now a different photo.
         .onChange(of: photoURLs) { _ in
             reloadRejectedFlags()
+            preloadFilmstrip()
         }
         // A duplicate made in the GRID while this window is open. Same
         // problem in the other direction: neither list is re-read from the
@@ -10658,7 +11025,16 @@ struct DevelopView: View {
                 }
             }
         }
-        .onChange(of: settings) { _ in
+        .onChange(of: settings) { newValue in
+            // The frame on screen was already rendered for exactly these —
+            // see PreviewImageState.prefetchedFor.
+            if let ready = previewState.prefetchedFor {
+                previewState.prefetchedFor = nil
+                if ready == newValue {
+                    scheduleUndoCommit()
+                    return
+                }
+            }
             scheduleRender()
             scheduleUndoCommit()
         }
@@ -10725,6 +11101,7 @@ struct DevelopView: View {
             }
             refreshFilmstripThumbnails(changed)
             reloadOpenPhotoIfChangedElsewhere(changed)
+            NeighborPrefetch.shared.drop(changed)
         }
         // ⚠️ The card, not the recipe. Asked for on 12.09 — *„before enhance to
         // get small modul card with all slide bar setting … to show real alive
@@ -10746,16 +11123,18 @@ struct DevelopView: View {
                 .sheet(item: $backgroundEnhancedRequest) { request in
                 BackgroundEnhancedCard(
                     targets: request.targets,
+                    recipe: request.recipe,
                     onCancel: { backgroundEnhancedRequest = nil },
                     onApply: { tuning in
                         let targets = request.targets
                         let source = request.source
+                        let recipe = request.recipe
                         backgroundEnhancedRequest = nil
                         switch source {
                         case .selection:
-                            runPortraitRecipes([.backgroundEnhanced], on: targets, tuning: tuning)
+                            runPortraitRecipes([recipe], on: targets, tuning: tuning)
                         case .openPhoto:
-                            runPortraitRecipe(.backgroundEnhanced, tuning: tuning)
+                            runPortraitRecipe(recipe, tuning: tuning)
                         }
                     }
                 )
@@ -11903,8 +12282,8 @@ struct DevelopView: View {
         let isRejected = rejectedURLs.contains(url)
 
         return ZStack(alignment: .topTrailing) {
-            Group {
-                if let image = filmstripThumbnails[url] {
+            FilmstripThumbReader(store: filmstripStore, url: url) { thumbnail in
+                if let image = thumbnail {
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -12163,12 +12542,15 @@ struct DevelopView: View {
             // one was asked for as "process the selected photos", so it writes
             // on them — it ends in a flatten like every recipe, and Unflatten
             // is what takes that back.
-            Button(bwTargets.count > 1
-                   ? "\(PortraitRecipe.backgroundEnhanced.actionTitle) (\(bwTargets.count))"
-                   : PortraitRecipe.backgroundEnhanced.actionTitle) {
-                backgroundEnhancedRequest = BackgroundEnhancedRequest(targets: bwTargets)
+            ForEach([PortraitRecipe.backgroundEnhanced, .subjectEnhanced]) { recipe in
+                Button(bwTargets.count > 1
+                       ? "\(recipe.actionTitle) (\(bwTargets.count))"
+                       : recipe.actionTitle) {
+                    backgroundEnhancedRequest = BackgroundEnhancedRequest(targets: bwTargets,
+                                                                          recipe: recipe)
+                }
+                .disabled(isAIWorkingOnOpenPhoto)
             }
-            .disabled(isAIWorkingOnOpenPhoto)
 
             // ⚠️ Asked for on 12.09: *„When i want to undo enhanced backround i
             // need to be able to do so. No to be forces to restart all settings
@@ -12343,6 +12725,45 @@ struct DevelopView: View {
         for url in photoURLs where changed.contains(url) {
             loadFilmstripThumbnail(for: url, force: true)
         }
+        // A Sync onto forty photos re-renders forty tiles; the bar under the
+        // panel counts them down from this.
+        filmstripStore.preloadTotal = filmstripThumbnailsInFlight.count
+    }
+
+    /// The whole folder, asked for once, nearest the open photo first.
+    ///
+    /// Asked for 24.09: *„Verujem i da je filmstrip ucitan skroz sa slikama da
+    /// ne mora da se ucitavaju dok ja pomeram film strip ne bi kocilo nista"*.
+    /// Before this the strip decoded what scrolled into view, so every scroll
+    /// started a burst of decodes exactly while the client was moving it. Now
+    /// the decoding happens once, up front, on the .utility queue, with the
+    /// counted bar under the panel, and a scroll only shows what is there.
+    ///
+    /// The cache limit follows the folder (filmstripCacheLimit) so what was
+    /// preloaded is not thrown away again.
+    private func preloadFilmstrip() {
+        let urls = photoURLs
+        guard !urls.isEmpty else { return }
+        let center = selectedURL.flatMap { urls.firstIndex(of: $0) } ?? 0
+        let ordered = urls.indices
+            .sorted { abs($0 - center) < abs($1 - center) }
+            .prefix(filmstripCacheLimit)
+            .map { urls[$0] }
+        let missing = ordered.filter {
+            filmstripThumbnails[$0] == nil && !filmstripThumbnailsInFlight.contains($0)
+        }
+        guard !missing.isEmpty else { return }
+        filmstripStore.preloadTotal = missing.count + filmstripThumbnailsInFlight.count
+        for url in missing {
+            loadFilmstripThumbnail(for: url)
+        }
+    }
+
+    /// Enough for the whole folder, up to a ceiling: 384 px landscape is
+    /// ~0.4 MB decoded, so 600 is ~240 MB — the most this is allowed to take on
+    /// an 8 GB machine. Past 600 the far end is decoded on scroll as before.
+    private var filmstripCacheLimit: Int {
+        min(max(filmstripThumbnailCacheLimit, photoURLs.count), 600)
     }
 
     private func loadFilmstripThumbnail(for url: URL, force: Bool = false) {
@@ -12417,7 +12838,7 @@ struct DevelopView: View {
     // in the filmstrip's selection ring, so dropping it would visibly blank the
     // row the client is working from.
     private func evictOldestFilmstripThumbnailsIfNeeded() {
-        while filmstripThumbnailOrder.count > filmstripThumbnailCacheLimit {
+        while filmstripThumbnailOrder.count > filmstripCacheLimit {
             guard let oldest = filmstripThumbnailOrder.first else {
                 return
             }
@@ -12578,15 +12999,25 @@ struct DevelopView: View {
             // (refreshFilmstripThumbnails, ~67 ms) would flash this row for a
             // frame, and a bar that blinks on a finished edit reads as a fault.
             // Below three there is nothing to wait for anyway.
-            if filmstripThumbnailsInFlight.count >= 3 {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Loading photos… \(filmstripThumbnailsInFlight.count) left")
-                        .font(.custom("Figtree", size: 11))
-                        .foregroundColor(AppColors.muted)
+            //
+            // 24.09: the whole folder is now asked for up front
+            // (preloadFilmstrip), so the count HAS a total and the bar fills.
+            // Read through its own reader, so a landing tile does not redraw
+            // the panel this sits in.
+            FilmstripLoadingReader(store: filmstripStore) { store in
+                let left = store.inFlight.count
+                if left >= 3 {
+                    let total = max(store.preloadTotal, left)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Loading photos \(total - left) of \(total)")
+                            .font(.custom("Figtree", size: 11))
+                            .foregroundColor(AppColors.muted)
+                            .monospacedDigit()
 
-                    ProgressView()
-                        .progressViewStyle(.linear)
-                        .tint(accentColor)
+                        ProgressView(value: Double(total - left), total: Double(max(total, 1)))
+                            .progressViewStyle(.linear)
+                            .tint(accentColor)
+                    }
                 }
             }
         }
@@ -12890,7 +13321,7 @@ struct DevelopView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("AI Portrait")
 
-            Text("One press: find the people, put one look on them, and bake it in. Unflatten takes it back.")
+            Text("One press: find the people, put one look on them, on its own layer. The layers stay live — change them any time.")
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -12911,7 +13342,8 @@ struct DevelopView: View {
                             guard let selectedURL, canRunPortraitRecipe else { return }
                             backgroundEnhancedRequest =
                                 BackgroundEnhancedRequest(targets: [selectedURL],
-                                                          source: .openPhoto)
+                                                          source: .openPhoto,
+                                                          recipe: recipe)
                         } else {
                             runPortraitRecipe(recipe)
                         }
@@ -12982,21 +13414,16 @@ struct DevelopView: View {
             // If the bake fails, flattenErrorMessage shows in the panel footer,
             // which every tab carries.
 
-            recipeStepText = "flattening…"
-            // ⚠️ The record is handed over EXPLICITLY rather than left for
-            // flattenPhoto to read back out of `settings`. The write above and
-            // this call are in the same turn of the run loop, and a recipe that
-            // baked the pre-recipe settings would look exactly like a recipe
-            // that did nothing.
-            flattenPhoto(using: next) {
-                runningRecipe = nil
-                recipeStepText = ""
-                // The brush was put down at the start so it could not paint
-                // while this ran. The block is still open, so it comes back —
-                // the recipe borrowed it, it did not take it.
-                armAICleanUpBrush()
-                showTransientStatus("\(recipe.title) done")
-            }
+            // ⚠️ NO FLATTEN since 24.09 — see PortraitRecipeService.run. The
+            // photo's sliders stay where the client put them and the recipe's
+            // numbers are on the layer selected above, both still movable.
+            runningRecipe = nil
+            recipeStepText = ""
+            // The brush was put down at the start so it could not paint
+            // while this ran. The block is still open, so it comes back —
+            // the recipe borrowed it, it did not take it.
+            armAICleanUpBrush()
+            showTransientStatus("\(recipe.title) done")
         } onStopped: {
             // The notice Select People already wrote says what happened and
             // what to do instead; this only has to stop pretending to work.
@@ -13042,6 +13469,25 @@ struct DevelopView: View {
     //
     // `aiManipulationExpanded` is unchanged and still the same @AppStorage key,
     // so a client who left it open keeps it open across this build.
+    /// One of the two ticks above „Clean". Round, because they exclude each
+    /// other — a square box reads as „both can be on".
+    private func cleanEngineTick(_ title: String, engine: RemovalEngine, isOn: Bool,
+                                 action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(isOn ? accentColor : AppColors.ink.opacity(0.5))
+                Text(title)
+                    .font(.custom("Figtree", size: 12).weight(isOn ? .semibold : .regular))
+                    .foregroundColor(AppColors.ink)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PlainHoverButtonStyle())
+        .help(cleanUpUnavailableReason(engine)
+              ?? (engine == .quick ? "LaMa — about a second." : "Stable Diffusion over LaMa — slower, invents detail."))
+    }
+
     private var aiManipulationSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             if isAIManipulationVisible {
@@ -13068,26 +13514,31 @@ struct DevelopView: View {
                     Spacer(minLength: 0)
                 }
 
-                HStack(spacing: 6) {
-                    toolButton("Quick Clean Up", systemImage: "wand.and.rays",
-                               isActive: false,
-                               isEnabled: cleanUpUnavailableReason(.quick) == nil,
-                               help: cleanUpUnavailableReason(.quick),
-                               scale: Self.cleanUpButtonScale) {
-                        eraseMaskedArea(using: .quick)
+                // ⚠️ A CHOICE AND ONE BUTTON since 24.09: *„Ai kada se bira
+                // quick ili sd generative da se oznaci check box-om (kad je
+                // jedno ukljuceno drugo je iskljuceno) a jedno dugme da bude da
+                // execute to sta je checkinovano … i to dugme da se zove
+                // Clean"*. The two engines are the same two as before
+                // (eraseMaskedArea .quick / .generative), with the same reasons
+                // for being unavailable; only the way of choosing moved.
+                HStack(spacing: 14) {
+                    cleanEngineTick("Quick", engine: .quick, isOn: !cleanUsesGenerative) {
+                        cleanUsesGenerative = false
                     }
+                    cleanEngineTick("Generative", engine: .generative, isOn: cleanUsesGenerative) {
+                        cleanUsesGenerative = true
+                    }
+                    Spacer(minLength: 0)
+                }
 
-                    // "Generative Clean Up", not "AI Clean Up": the paint tool in
-                    // the row above now carries that name, and two buttons reading
-                    // the same in one strip is worse than either name on its own.
-                    // "Generative" is also the truer word — this is the Stable
-                    // Diffusion path (~13s), against LaMa's ~1s beside it.
-                    toolButton("Generative Clean Up", systemImage: "wand.and.stars",
+                HStack(spacing: 6) {
+                    let engine: RemovalEngine = cleanUsesGenerative ? .generative : .quick
+                    toolButton("Clean", systemImage: cleanUsesGenerative ? "wand.and.stars" : "wand.and.rays",
                                isActive: false,
-                               isEnabled: cleanUpUnavailableReason(.generative) == nil,
-                               help: cleanUpUnavailableReason(.generative),
+                               isEnabled: cleanUpUnavailableReason(engine) == nil,
+                               help: cleanUpUnavailableReason(engine),
                                scale: Self.cleanUpButtonScale) {
-                        eraseMaskedArea(using: .generative)
+                        eraseMaskedArea(using: engine)
                     }
 
                     Spacer(minLength: 0)
@@ -13725,7 +14176,7 @@ struct DevelopView: View {
                           // youtify, subject mono, mono backround backround enhanced"*.
                           // ⚠️ And in TWO lines, no more: the first try ran to three and
                           // was sent back — *„maximum dva"*. See headerHoverCaption.
-                          help: "AI - Clean Up paints out what should go. AI Portrait: Youthify, Subject Mono, Mono Background, Background Enhanced.",
+                          help: "AI - Clean Up paints out what should go. AI Portrait: Youthify, Subject Mono, Mono Background, Background Enhanced, Subject Enhanced.",
                           isActive: activeHeaderCellID == "ai",
                           isDisabled: noPhoto,
                           behaviour: .tap {
@@ -14113,8 +14564,9 @@ struct DevelopView: View {
                     // of the preview, but the crop tool's corner handles sit
                     // right on the image edge and a container-level clip would
                     // shave them off.
-                    Image(nsImage: displayedImage)
-                        .resizable()
+                    // A layer, not `Image` — see PreviewLayerImage for the
+                    // freeze that swap removes.
+                    PreviewLayerImage(image: displayedImage)
                         .frame(width: fitted.width, height: fitted.height)
                         .position(x: fitted.midX, y: fitted.midY)
                         .frame(width: proxy.size.width, height: proxy.size.height)
@@ -22097,15 +22549,34 @@ struct DevelopView: View {
     /// A released mouse button ends every drag, so it clears them here — one
     /// runloop turn later, after any `onEnded` that DID fire has run, which
     /// makes this a no-op whenever SwiftUI behaved.
+    ///
+    /// 24.09, same monitor: background loading HOLDS while a button is down.
+    /// *„ne treba nista da se loaduje dok se krop pomera sve dok ne stane drag
+    /// … sav loading staje daje se kropu da se ipak odradi"*. The filmstrip
+    /// decodes are the one background load that runs while the client works
+    /// (the folder preload especially), so a press suspends both of its queues
+    /// and the release resumes them. A decode already running finishes; nothing
+    /// new starts until the hand is off the button.
     private func installCropMouseUpMonitor() {
         guard cropMouseUpMonitor == nil else { return }
-        cropMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
-            DispatchQueue.main.async { resetCropDragState() }
+        cropMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { event in
+            let pressed = event.type == .leftMouseDown
+            filmstripThumbnailQueue.isSuspended = pressed
+            filmstripPlaceholderQueue.isSuspended = pressed
+            NeighborPrefetch.shared.queue.isSuspended = pressed
+            if !pressed {
+                DispatchQueue.main.async { resetCropDragState() }
+            }
             return event
         }
     }
 
     private func removeCropMouseUpMonitor() {
+        filmstripThumbnailQueue.isSuspended = false
+        filmstripPlaceholderQueue.isSuspended = false
+        NeighborPrefetch.shared.queue.isSuspended = false
+        // Create is closing: the neighbours' frames are ~100 MB each.
+        NeighborPrefetch.shared.clear()
         if let cropMouseUpMonitor {
             NSEvent.removeMonitor(cropMouseUpMonitor)
             self.cropMouseUpMonitor = nil
@@ -23297,22 +23768,22 @@ struct DevelopView: View {
                 Spacer()
             }
 
-            // Twenty-one rows and five headers do not fit a sheet on a 13"
-            // screen, so the list scrolls and the buttons below it stay put.
-            // Same rule as the update card: the thing you press must not be
-            // the thing that gets pushed off the bottom.
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(SyncItem.sections) { section in
-                        syncSection(section, modified: modified)
-                    }
+            // ⚠️ FIRST, and horizontal (24.09): *„U sync modalu enhance
+            // backround check in treba da bude gore na pocetku jer sad dok sam
+            // radio nisam ni video niti znao da je enhanced backround
+            // ukljucen … i taj modal je mozda najbolje da bude horizontalan"*.
+            // The recipes are kept ticked across openings, and at the bottom
+            // of a scrolling list a tick left from last time was invisible.
+            syncRecipeSection(targetCount: targetCount)
 
-                    syncRecipeSection(targetCount: targetCount)
+            // The sections side by side, so the whole dialog is one screen
+            // with nothing below the fold.
+            HStack(alignment: .top, spacing: 18) {
+                ForEach(SyncItem.sections) { section in
+                    syncSection(section, modified: modified)
+                        .frame(width: 158, alignment: .leading)
                 }
-                .padding(.trailing, 12)
             }
-            .scrollIndicators(.visible)
-            .frame(maxHeight: 360)
 
             Divider()
 
@@ -23358,7 +23829,7 @@ struct DevelopView: View {
             }
         }
         .padding(24)
-        .frame(width: 460)
+        .frame(width: 6 * 158 + 5 * 18 + 48)
         .background(AppColors.panel)
     }
 
@@ -24653,14 +25124,17 @@ struct DevelopView: View {
         guard !targets.isEmpty else { return }
 
         isFlattening = true
-        exportStatusText = "Flattening 1 of \(targets.count)…"
+        exportStatusText = "Flattening 1 of \(targets.count) · \(targets.count) left"
+        exportProgress = 0
 
         TemplateBatchFlatten.run(on: targets,
                                  catalogue: templateLibrary.templates,
                                  context: briefEditsCIContext) { done, total in
-            exportStatusText = "Flattening \(done + 1) of \(total)…"
+            exportStatusText = "Flattening \(done + 1) of \(total) · \(total - done) left"
+            exportProgress = Double(done) / Double(max(total, 1))
         } completion: { outcome in
             isFlattening = false
+            exportProgress = nil
             for (url, cleared) in outcome.settingsByURL {
                 PhotoEditStore.setSettings(cleared, for: url)
             }
@@ -24816,12 +25290,12 @@ struct DevelopView: View {
                 Spacer()
             }
 
-            Text("Runs on each of the \(targetCount) photo\(targetCount == 1 ? "" : "s") — finds its own people, applies the look, and bakes it in. Minutes, not seconds, on a big selection. Unflatten takes it back.")
+            Text("Runs on each of the \(targetCount) photo\(targetCount == 1 ? "" : "s") — finds its own people and puts the look on its Subjects or Background layer. The layers stay live. Minutes, not seconds, on a big selection.")
                 .font(.system(size: 10.5))
                 .foregroundColor(AppColors.ink.opacity(0.55))
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 18) {
                 ForEach(PortraitRecipe.allCases) { recipe in
                     let isChecked = syncRecipes.contains(recipe)
 
@@ -24843,8 +25317,6 @@ struct DevelopView: View {
                             Text("on \(recipe.targetLayerName)")
                                 .font(.system(size: 10))
                                 .foregroundColor(AppColors.ink.opacity(0.45))
-
-                            Spacer()
                         }
                         .contentShape(Rectangle())
                     }
@@ -24856,9 +25328,12 @@ struct DevelopView: View {
         }
         .padding(10)
         .background(AppColors.panelAlt)
+        // Outlined in the accent while anything is ticked, so a recipe left
+        // on from the last sync is the first thing seen, not the last.
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(AppColors.border, lineWidth: 1)
+                .stroke(syncRecipes.isEmpty ? AppColors.border : accentColor,
+                        lineWidth: syncRecipes.isEmpty ? 1 : 2)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -24904,12 +25379,23 @@ struct DevelopView: View {
         let label = ordered.map(\.title).joined(separator: " + ")
 
         isFlattening = true
-        exportStatusText = "\(label) 1 of \(targets.count)…"
+        // A bar that fills with the count beside it — 24.09: *„Syncing photos
+        // need as well loading real time bar with number how many photos left
+        // to sync"*.
+        exportStatusText = "\(label) 1 of \(targets.count) · \(targets.count) left"
+        exportProgress = 0
 
-        PortraitRecipeService.run(recipes, on: targets, tuning: tuning) { done, total in
-            exportStatusText = "\(label) \(done + 1) of \(total)…"
+        // One card asks for one recipe, so its numbers go to whichever of the
+        // two it was; a Sync with both ticked runs each at its own defaults.
+        let subjectTuning = recipes == [.subjectEnhanced] ? tuning : .subject
+        let backgroundTuning = recipes == [.subjectEnhanced] ? BackgroundEnhancedTuning() : tuning
+        PortraitRecipeService.run(recipes, on: targets, tuning: backgroundTuning,
+                                  subjectTuning: subjectTuning) { done, total in
+            exportStatusText = "\(label) \(done + 1) of \(total) · \(total - done) left"
+            exportProgress = Double(done) / Double(max(total, 1))
         } completion: { outcome in
             isFlattening = false
+            exportProgress = nil
 
             // ⚠️ Chosen out of `targets`, never out of the dictionary, which
             // has no order. Picking "the first" from it would open whichever
@@ -25482,6 +25968,26 @@ struct DevelopView: View {
         displayedImage = nil
         histogramBins = []
 
+        // Made ready while the previous photo was open — see NeighborPrefetch.
+        // The sharp frame goes up at once and nothing is rendered: it IS the
+        // refine, for exactly these settings.
+        if let ready = NeighborPrefetch.shared.take(url) {
+            fullBaseImage = ready.base
+            previewBaseImage = ready.preview
+            isLoadingPreview = false
+            if ready.settings == settings, let frame = ready.frame {
+                renderGeneration += 1
+                displayedImage = frame
+                histogramBins = ready.histogram
+                previewState.prefetchedFor = ready.settings
+            } else {
+                renderNow()
+            }
+            DevelopLaunchProgress.shared.finish()
+            NeighborPrefetch.shared.prefetch(around: url, in: photoURLs)
+            return
+        }
+
         DispatchQueue.global(qos: .userInitiated).tracked("Opening photo", qos: .userInitiated) {
             // Off the main thread, before the decode that is about to open the
             // file: a flattened copy written by an older build is LZW and costs
@@ -25510,6 +26016,7 @@ struct DevelopView: View {
                 previewBaseImage = preview
                 isLoadingPreview = false
                 renderNow()
+                NeighborPrefetch.shared.prefetch(around: url, in: photoURLs)
                 // The photo is on screen — this is the moment Create is
                 // genuinely usable, so it is the moment the opening card comes
                 // down. A no-op on every later photo switch, since the card is

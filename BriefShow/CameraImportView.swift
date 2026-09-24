@@ -101,6 +101,10 @@ struct CameraImportView: View {
     /// the whole sheet rather than this view mutating underneath itself.
     let onSourceChosen: (ImportSource) -> Void
 
+    /// The Refresh button: close this window, browse USB again from nothing,
+    /// open a new one. See CameraBrowser.restart.
+    var onHardRefresh: (() -> Void)?
+
     @StateObject private var session: CameraImportSession
     @ObservedObject private var themeManager = ThemeManager.shared
 
@@ -132,10 +136,12 @@ struct CameraImportView: View {
         initialDestination: URL?,
         onImported: @escaping (URL) -> Void,
         onClose: @escaping () -> Void,
-        onSourceChosen: @escaping (ImportSource) -> Void
+        onSourceChosen: @escaping (ImportSource) -> Void,
+        onHardRefresh: (() -> Void)? = nil
     ) {
         self.source = source
         self.onSourceChosen = onSourceChosen
+        self.onHardRefresh = onHardRefresh
         self.initialDestination = initialDestination
         self.onImported = onImported
         self.onClose = onClose
@@ -333,8 +339,11 @@ struct CameraImportView: View {
             // opet import"* — a camera switched on after it was plugged in
             // left this window on the dead device. It now rebinds by itself
             // (onReceive below); this is the way to ask for it by hand.
+            // 24.09: a HARD reset now — the soft one (rebinding to the device
+            // the browser already had) did nothing when the Z6 was plugged in.
             Button {
-                refreshSource()
+                session.close()
+                if let onHardRefresh { onHardRefresh() } else { refreshSource() }
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.clockwise")

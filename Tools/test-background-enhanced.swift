@@ -87,9 +87,10 @@ check("its title is the client's name for it",
 // The help string is what the Sync dialog and the grid's tooltip show, and it
 // is the only place a client is told what the button does before pressing it.
 let help = PortraitRecipe.backgroundEnhanced.help
-check("the help spells out all three numbers and the flatten",
+// 24.09: no flatten any more — the help says the layers stay live instead.
+check("the help spells out all three numbers and that the layers stay live",
       help.contains("Shadows") && help.contains("Saturation") && help.contains("Clarity")
-        && help.contains("30") && help.contains("Flatten"),
+        && help.contains("30") && help.contains("layers stay live") && !help.contains("Flatten"),
       help)
 
 // ⚠️ REGRESSION GUARD, and it is the reason this file tests the other three at

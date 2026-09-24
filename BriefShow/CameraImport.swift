@@ -95,6 +95,33 @@ final class CameraBrowser: NSObject, ObservableObject {
     func camera(withID id: String) -> ConnectedCamera? {
         cameras.first { $0.id == id }
     }
+
+    /// While true, a device the restart finds again is not announced as newly
+    /// connected — the Refresh that asked for the restart reopens the window
+    /// itself.
+    private var isRestarting = false
+
+    /// Forgets every device and browses USB again from nothing.
+    ///
+    /// ⚠️ The Refresh button's HARD reset, 24.09: *„Refresh dugme nije uradilo
+    /// nista kad sam konektovao Z6, morao sam opet na done pa opet da udjem
+    /// import, mozda bi trebalo da bude hard reset tog celog prozora"*. A
+    /// camera the browser already held a dead object for stayed dead; only a
+    /// fresh browse sees what is really on the cable. `completion` runs on the
+    /// main queue with the cameras found, after ImageCaptureCore has had time
+    /// to report them (it announces attached devices within ~1 s of start).
+    func restart(completion: @escaping ([ConnectedCamera]) -> Void) {
+        isRestarting = true
+        if hasStarted { browser.stop() }
+        cameras = []
+        hasStarted = false
+        start()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else { return }
+            self.isRestarting = false
+            completion(self.cameras)
+        }
+    }
 }
 
 extension CameraBrowser: ICDeviceBrowserDelegate {
@@ -113,7 +140,7 @@ extension CameraBrowser: ICDeviceBrowserDelegate {
             return
         }
         cameras.append(connected)
-        lastConnectedCamera = connected
+        if !isRestarting { lastConnectedCamera = connected }
     }
 
     func deviceBrowser(_ browser: ICDeviceBrowser, didRemove device: ICDevice, moreGoing: Bool) {

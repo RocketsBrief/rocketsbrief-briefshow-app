@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 24. septembar 2026 (KORAK 223, **v11.58 je gore**; koraci 219–223 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026 (KORAK 224, **nije objavljeno**, v11.58 je poslednje izdanje; korak 224 je na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -23834,3 +23834,78 @@ menjano, jer je deo zaključanog AI odeljka. **`v11.0` se i dalje NE SME brisati
 anon ključem, bez upisa: neispravan `kind` vraća `23514 check constraint`, dakle tabela postoji i INSERT je dozvoljen.
 Slanje radi čim se na mašini uključi profil ▸ **Send performance diagnostics**. Sledeće: klijent uključuje prekidač
 na Intel-u (v11.58), a ujutru šalje rezultat `select … from briefshow_diagnostics` za poslednji dan.
+
+---
+
+## KORAK 224 — Intel dijagnostika: zamrzavanje je bio PRIKAZ, ne učitavanje; filmstrip, susedi unapred, recepti bez Flatten-a, Subject Enhanced, okvir oko subjekta (24–25. septembar 2026)
+
+**Supabase, Intel (iMac19,2 x86_64, 32 GB, 12 jezgara, v11.58):** 44 s upisa (18:54:09–18:54:53), **24 zamrzavanja
+0,27–1,27 s, SVA na `mouseUp` u Edit-u ili Crop-u, nijedno tokom vučenja**. Memorija ~4,5 GB, nije problem.
+Čitano iz dashboard-a preko Safari-ja (snimak + klik, Export ▸ Copy as CSV). ⚠️ Pre `keystroke` UVEK
+`tell application "Safari" to activate` i proveriti frontmost — jednom je upit otišao u VS Code terminal.
+
+**1. Zamrzavanje posle svakog edita — UZROK NAĐEN I POPRAVLJEN.** Posle puštanja stiže refine u punoj
+rezoluciji (24 MP), a SwiftUI `Image(nsImage:)` ga na glavnoj niti kopira i konvertuje boje. Izmereno na M2,
+6048×4024: `Image` **132–138 ms** glavne niti po slici, `CALayer.contents` **0–1 ms**. Intel je nekoliko puta sporiji
+= klijentovih 0,3–1,3 s. `PreviewLayerImage` (NSViewRepresentable, sloj sa CGImage-om) zamenio je `Image` u centralnom
+pregledu. **Ista CGImage, ista rezolucija** (`NSImage.cgImage(forProposedRect:)` vraća isti objekat, 0,08 ms). Trilinear filter.
+
+**2. Učitavanje svih slika u full rezoluciji (klijentov predlog) — NE, i zašto:** jedan dekodiran Z6 RAW ≈ 190 MB,
+folder od 250 ≈ 48 GB. Umesto toga:
+- `NeighborPrefetch`: susedi otvorene slike (32 GB: ±2, inače ±1) se otvaraju I renderuju u punoj rezoluciji unapred,
+  na svom CIContext-u, jedan po jedan (`MachineBudget.prefetchWorkers`). Prelaz na suseda: oštar kadar odmah, bez
+  mekog pregleda i refine-a (ako su settings isti; inače samo base, pa normalan render). Briše se na `photoEditsChanged`
+  i pri zatvaranju Create-a.
+- Filmstrip: ceo folder se traži odmah (`preloadFilmstrip`, najbliže otvorenoj prvo), keš prati folder do 600,
+  traka „Loading photos X of N" se puni.
+
+**3. Filmstrip kočenje:** svaka sličica je bila upis u `@State` celog `DevelopView`-a = ceo editor ponovo po sličici.
+Sada `FilmstripThumbnailStore` (ObservableObject) koji gledaju samo ćelije (`FilmstripThumbReader`) i traka.
+
+**4. Crop / sve dok je miš dole:** `installCropMouseUpMonitor` sada sluša i `leftMouseDown`: filmstrip redovi i
+`NeighborPrefetch` su `isSuspended` dok je taster pritisnut (klijentova ideja: „sav loading staje dok drag ne stane").
+
+**5. Recepti BEZ Flatten-a** (klijent izabrao 24.09): Background Enhanced, Mono…, Youthify, Subject Enhanced ostavljaju
+Background i Subjects layere žive; klizači slike (preset/sync) ostaju, brojevi recepta su na layeru. Oba layera su već
+živa (Subjects `liveSource`, Background matte). `PortraitRecipeUndoStore.Entry.didFlatten` (false = undo je samo record,
+fajlovi se ne diraju; nil = staro, flatten-ovano).
+
+**6. Subject Enhanced** (`PortraitRecipe.subjectEnhanced`): klijent — *„samo da se enhancuje subject ne i backround"*.
+Ista kartica (`BackgroundEnhancedCard(recipe:)`), početak Exposure +0,10, Contrast +10, Clarity +15
+(`BackgroundEnhancedTuning.subject`). U grid meniju, filmstrip meniju, AI Portrait panelu i Sync-u.
+`PortraitRecipeService.run(…, subjectTuning:)`.
+
+**7. Sync prozor:** vodoravan (6 kolona), AI recepti **na vrhu**, okvir u akcent boji dok je ijedan čekiran (ostaju
+čekirani između otvaranja — zato ih klijent nije video). Traka + „3 of 12 · 9 left" za recepte i flatten (`exportProgress`).
+
+**8. AI: Quick / Generative su kružići, jedno dugme „Clean"** (`cleanUsesGenerative`, @AppStorage).
+
+**9. Kamera Refresh = hard reset:** zatvara prozor, `CameraBrowser.restart` (stop, zaboravi uređaje, start, 1,5 s),
+otvara prozor sa kamerom kakva je sada. Automatsko prebacivanje na novi uređaj ostaje meko (inače petlja).
+
+**10. Okvir oko subjekta — UZROK: Texture (negativan), ne layeri.** `Tools/run-subject-edge-test.py <NEF> [size] [out]`
+(env HEAVY=1, HEAVY_ONLY=, TUNE_ONLY=, NO_LAYERS=1). Nađeno redom: layeri bez izmena vs bez layera ≤1 nivo; klijentov panel
+BEZ layera već daje rub; izolovano na Texture −48: zaglađivanje meša nebo ~blur-radius od kose sa zamućenim (tamnim)
+→ siva linija, zaštita ivica pokrivala je samo samu ivicu. Popravka: mapa detalja proširena `CIMorphologyMaximum`
+za radius zamućenja (na ¼ rezolucije). Na C4S_9021 (2400 px): koža −0,04, daleko nebo 0,00, 3 % piksela >2 nivoa (uz ivice).
+Usput, za Background layer: lokalne izmene layera sada vide sliku sa popunjenim mestom subjekta (`matteFilled`, normalizovan
+blur na ~512 px), a matte se clamp-uje pre skaliranja (obod kadra). Bela matte = identično (layer-edit-parity zelen).
+
+**Lenjiri:** effect-extraction **pada namerno samo na Texture** (poredi sa kodom a096884; Texture je menjan).
+Ostalo v. „Stanje" ispod.
+
+**Viđeno na ekranu (25.09, 00:23–00:28, ova mašina, Release u /Applications):** Create sa C4S_8927: slika uspravna,
+filmstrip pun; 5 poteza Exposure/Contrast — **0 zamrzavanja ≥250 ms** u lokalnoj dijagnostici. Prelaz na suseda:
+prvo se pojavljivala „Full resolution" traka 1,3 s posle — `onChange(of: settings)` je posle prelaza pokretao render
+koji je gazio unapred spremljen kadar; popravljeno (`PreviewImageState.prefetchedFor`), posle toga 3 prelaza bez trake.
+AI blok: kružići Quick/Generative + Clean viđeni. **Sync prozor, Subject Enhanced kartica, kamera Refresh i Intel NISU viđeni.**
+
+**Stanje:** BUILD SUCCEEDED (Release), instalirano u /Applications i pokrenuto. Zeleni: slider-parity, header-bar, grid-shape,
+editsettings-decode, history-labels, selection-brush, thumbnail-cache, layer-edit-parity, clarity, clarity-layer,
+people-layer-strength, face-dehaze, background-enhanced (ažuriran na recepte bez flatten-a i dva recepta sa karticom),
+background-enhanced-preview, template-edge, enhance-edge. effect-extraction pada SAMO na Texture (namerno, v. 10).
+**NIJE OBJAVLJENO** — v11.58 je i dalje poslednje izdanje.
+
+**Sledeće:** klijent proba na Intel-u (posle paketa) — zamrzavanja posle slajdera/crop-a u Supabase-u treba da nestanu;
+i dalje čeka Dehaze snimak sa Intel-a (C4S_1773 +31, C4S_1819). Sync sa oba recepta koristi podrazumevane brojeve
+(kartica postoji samo za jedan recept odjednom).

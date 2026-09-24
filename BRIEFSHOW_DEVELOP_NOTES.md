@@ -23803,3 +23803,29 @@ Usput: 5 novih dugmića iz KORAKA 220–221 (History, Cut/Copy/✕) bilo je `.pl
 
 **Stanje:** BUILD SUCCEEDED, app restartovan. Zeleni: header-bar, grid-shape, thumbnail-cache.
 **Ništa nije viđeno na ekranu.**
+
+---
+
+## KORAK 223 — RELEASE v11.58 (24. septembar 2026)
+
+`python3 Tools/make-release.py 11.58 --small-only` — sadrži sve od 218 do 222. Verzija u projektu 11.51/51 → **11.58/58**
+(oznaka u app-i se čita iz bundle-a). Pre pakovanja zeleni: `run-grid-shape-test.py`, `run-thumbnail-cache-test.py`.
+
+| | |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.58 / 58** |
+| `LaMa.mlmodelc` | unutra |
+| `SD15-Inpainting` | **nema** — dugme u app-i, `v11.0/SD15-Inpainting.aar` HTTP 200 |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| veličina | 116850451 bajta |
+| SHA-256 | `263f94dce2560a8d7322dcf1daf7bf9cb15a2a593113174aa05747c422ed9fb6` |
+
+Klijent je tražio oba modela, pa u istoj poruci napisao *„ne moraš da uploaduješ 2gb"*. Zato je paket jedan, sa LaMa-om,
+kao u v11.51. SD na Intel-u: `computeUnits = .all` pod `#if !arch(arm64)` (CPU+GPU dele posao) već postoji i nije
+menjano, jer je deo zaključanog AI odeljka. **`v11.0` se i dalje NE SME brisati.**
+
+- stranica izdanja: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.58`
+- direktno preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.58/C4S-Suite-11.58.zip`

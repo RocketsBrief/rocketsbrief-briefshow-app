@@ -152,6 +152,11 @@ struct PhotoEditSettings: Codable, Equatable {
     var clarity: Double = 0         // -1...1 — Lightroom-style local (midtone) contrast: unsharp above zero, a mix toward a blur of the same radius below it. See PhotoEditRenderer.render.
     var dehaze: Double = 0          // -1...1 — contrast/saturation/black-point APPROXIMATION of Lightroom's Dehaze, not a real dark-channel-prior algorithm; negative adds haze rather than removing it. See PhotoEditRenderer.render.
     var faceDehaze: Double = 0      // 0...1 — the sun's white veil taken off faces only (24.09), see FaceDehaze.swift.
+    // The photo split in two by Vision's person mask (25.09) — see SubjectSplit
+    // in FaceDehaze.swift. EV like Exposure, and Dehaze's own −1…1.
+    var backgroundExposure: Double = 0
+    var subjectsExposure: Double = 0
+    var backgroundDehaze: Double = 0
     var softGlow: Double = 0        // 0...1 — diffusion/"soft focus" glow (blurred copy screen-blended back over the original), see PhotoEditRenderer.render.
     var vignette: Double = 0        // -1...1 — positive darkens the corners, negative lightens them.
     // The three shape controls Lightroom's Post-Crop Vignetting has beside its
@@ -260,6 +265,9 @@ struct PhotoEditSettings: Codable, Equatable {
         dehaze = try c.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0
         softGlow = try c.decodeIfPresent(Double.self, forKey: .softGlow) ?? 0
         faceDehaze = try c.decodeIfPresent(Double.self, forKey: .faceDehaze) ?? 0
+        backgroundExposure = try c.decodeIfPresent(Double.self, forKey: .backgroundExposure) ?? 0
+        subjectsExposure = try c.decodeIfPresent(Double.self, forKey: .subjectsExposure) ?? 0
+        backgroundDehaze = try c.decodeIfPresent(Double.self, forKey: .backgroundDehaze) ?? 0
         vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
         // Absent in anything saved before these existed, and the fallbacks are
         // the values that reproduce the old drawing — so an old record decodes
@@ -315,6 +323,7 @@ struct PhotoEditSettings: Codable, Equatable {
         case exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance
         case temperature, tint, sharpness, texture, clarity, dehaze, softGlow, vignette
         case faceDehaze
+        case backgroundExposure, subjectsExposure, backgroundDehaze
         case vignetteMidpoint, vignetteFeather, vignetteRoundness, sharpenRadius
         case colorMixer
         case rotationQuarterTurns, straightenDegrees, crop, cropAspect
@@ -330,6 +339,7 @@ struct PhotoEditSettings: Codable, Equatable {
             && saturation == 0 && vibrance == 0 && temperature == 0 && tint == 0
             && sharpness == 0 && texture == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
             && faceDehaze == 0
+            && backgroundExposure == 0 && subjectsExposure == 0 && backgroundDehaze == 0
             // The vignette's shape and the sharpening radius are deliberately
             // NOT counted. They are the SHAPE of an effect, not the effect: a
             // photo with Vignette at 0 is unvignetted whatever its midpoint
@@ -415,6 +425,9 @@ struct SyncItem: OptionSet {
     // whole list was rebuilt around.
     static let text = SyncItem(rawValue: 1 << 22)
     static let faceDehaze = SyncItem(rawValue: 1 << 23)
+    static let backgroundExposure = SyncItem(rawValue: 1 << 24)
+    static let subjectsExposure = SyncItem(rawValue: 1 << 25)
+    static let backgroundDehaze = SyncItem(rawValue: 1 << 26)
 
     /// One row of the dialog: one control, one checkbox.
     struct Row: Identifiable {
@@ -455,6 +468,8 @@ struct SyncItem: OptionSet {
             Row(item: .shadows, title: "Shadows", carries: nil),
             Row(item: .whites, title: "Whites", carries: nil),
             Row(item: .blacks, title: "Blacks", carries: nil),
+            Row(item: .backgroundExposure, title: "Background Exposure", carries: nil),
+            Row(item: .subjectsExposure, title: "Subjects Exposure", carries: nil),
         ]),
         Section(title: "Color", icon: "paintpalette", rows: [
             Row(item: .temperature, title: "Temperature", carries: "with its Kelvin"),
@@ -469,6 +484,7 @@ struct SyncItem: OptionSet {
             Row(item: .clarity, title: "Clarity", carries: nil),
             Row(item: .dehaze, title: "Dehaze", carries: nil),
             Row(item: .faceDehaze, title: "Face Dehaze", carries: nil),
+            Row(item: .backgroundDehaze, title: "Background Dehaze", carries: nil),
             Row(item: .softGlow, title: "Soft Glow", carries: nil),
             Row(item: .vignette, title: "Vignette", carries: "with its shape"),
         ]),
@@ -482,9 +498,9 @@ struct SyncItem: OptionSet {
         // be "simplified" into one rule later.
         Section(title: "Template", icon: "rectangle.on.rectangle.angled", rows: [
             Row(item: .template, title: "Print Template",
-                carries: "where the photo sits in it — and upright photos get the pair's other half"),
+                carries: "photo placement; upright photos get the pair"),
             Row(item: .text, title: "Text",
-                carries: "every line written on the picture, with its font, size, colour and place"),
+                carries: "font, size, colour and place"),
         ]),
     ]
 
@@ -517,6 +533,9 @@ struct SyncItem: OptionSet {
         case .clarity: return settings.clarity != 0
         case .dehaze: return settings.dehaze != 0
         case .faceDehaze: return settings.faceDehaze != 0
+        case .backgroundExposure: return settings.backgroundExposure != 0
+        case .subjectsExposure: return settings.subjectsExposure != 0
+        case .backgroundDehaze: return settings.backgroundDehaze != 0
         case .softGlow: return settings.softGlow != 0
         case .vignette: return settings.vignette != 0
         case .masks: return !settings.localAdjustments.isEmpty
@@ -3714,6 +3733,20 @@ enum PhotoEditRenderer {
                 of: owner, variant: "\(settings.rotationQuarterTurns)/\(settings.straightenDegrees)/\(decodeScale)",
                 in: faceGeometry)
             output = PhotoEditRenderer.applyFaceDehaze(settings.faceDehaze, to: output, faces: faces)
+        }
+
+        // Background / Subjects, split by Vision's person mask — see SubjectSplit.
+        if settings.backgroundExposure != 0 || settings.subjectsExposure != 0 || settings.backgroundDehaze != 0 {
+            let owner: AnyObject
+            switch base {
+            case .standard(let image): owner = image
+            case .raw(let filter, _, _): owner = filter
+            }
+            if let people = SubjectSplit.mask(
+                of: owner, variant: "\(settings.rotationQuarterTurns)/\(settings.straightenDegrees)",
+                in: faceGeometry, fitting: output.extent) {
+                output = SubjectSplit.apply(settings, to: output, people: people)
+            }
         }
 
         output = PhotoEditRenderer.applySoftGlow(settings.softGlow, to: output)
@@ -8139,6 +8172,41 @@ enum PhotoBakeService {
 /// the patch stroke are read off observed objects *„so that setting it does
 /// not touch the parent's body"* (KORAK 25 was that lag, with a brush). This is
 /// the same move applied to the frame itself.
+/// ⚠️ THE CROP TOOL OPENS ON A FRAME THAT IS ALREADY THERE (25.09).
+///
+/// *„Dok ulazim u crop laguje ceka se koji sekund na lightroom ne cekam
+/// uopste!"* and *„prvo se pokaze jedan krop pa onda drugi"*. The crop tool
+/// shows the WHOLE photo, and the frame on screen was the cropped one — so the
+/// tool drew its rectangle against the cropped picture (the first, wrong crop)
+/// and waited for a new render of the whole photo (the second, right one).
+///
+/// Lightroom always has the uncropped photo to hand. So does this, now: once
+/// the photo has sat still for a moment after a render, the same fast preview
+/// render is made once more with `applyCrop: false`, on the preview queue at
+/// utility priority, and held here. Opening the crop tool shows it at once;
+/// closing it without a change puts back the frame it replaced.
+/// Only for photos that have a crop, a template or text — for any other
+/// photo the frame on screen already is the whole photo.
+final class CropReadyFrame {
+    var url: URL?
+    var settings: PhotoEditSettings?
+    var image: NSImage?
+    var work: DispatchWorkItem?
+    /// The frame that was on screen when the tool opened, and what it showed.
+    var entryImage: NSImage?
+    var entrySettings: PhotoEditSettings?
+
+    func clear() {
+        work?.cancel()
+        work = nil
+        url = nil
+        settings = nil
+        image = nil
+        entryImage = nil
+        entrySettings = nil
+    }
+}
+
 final class PreviewImageState: ObservableObject {
     @Published var image: NSImage?
     @Published var histogram: [CGFloat] = []
@@ -8510,7 +8578,11 @@ struct PresetNameField: View {
 
 /// What the Sync sheet has ticked — see DevelopView.syncChoice.
 final class SyncChoice: ObservableObject {
-    @Published var items: SyncItem = .all
+    /// Everything but the Template section (25.09: *„template je oznacen a ne
+    /// treba"*). A print frame and the writing on a picture are chosen per
+    /// job, not copied along with the look because nobody unticked them.
+    static let defaultItems: SyncItem = SyncItem.all.subtracting([.template, .text])
+    @Published var items: SyncItem = SyncChoice.defaultItems
     @Published var recipes: Set<PortraitRecipe> = []
 }
 
@@ -9071,6 +9143,28 @@ private struct BrushCursorRing: View {
 /// Measured the way the buttons measure (`removalAreaPixels`): the longest side,
 /// in photo pixels, of the BIGGEST single repair. A mark far from the others is
 /// its own repair, so it can still be painted when one repair is full.
+/// `removalAreaPixels`, remembered for the strokes it was worked out from.
+/// Strokes are only ever appended or cleared, so count + last id identify them.
+final class RemovalAreaCache {
+    struct Key: Equatable {
+        var strokeCount: Int
+        var lastStroke: UUID?
+        var hasVisionMask: Bool
+        var visionBox: CGRect?
+        var extent: CGSize
+    }
+
+    private var key: Key?
+    private var cached: CGFloat?
+
+    func value(for key: Key, compute: () -> CGFloat?) -> CGFloat? {
+        if key == self.key { return cached }
+        cached = compute()
+        self.key = key
+        return cached
+    }
+}
+
 final class AIPaintBudget: ObservableObject {
     /// LaMa's measured limit (Quick's smear point, see RemovalEngine).
     static let lamaLimit: CGFloat = 2200
@@ -9113,7 +9207,10 @@ final class AIPaintBudget: ObservableObject {
             return false
         }
         strokeBox = grown
-        publish(max(settledPixels, pixels), refused: false)
+        // The bar is NOT refilled per point (25.09, *„Dok brushujem ai area
+        // nista ne kalkulisi"*): it moves on release, in `settle`. Only the
+        // refusal is shown at once, since that is the brush stopping.
+        if refused { refused = false }
         return true
     }
 
@@ -10240,6 +10337,8 @@ struct DevelopView: View {
     @State private var refineQueueWorkItem: DispatchWorkItem?
     /// Held in an object this view does NOT observe — see PreviewImageState.
     @State private var previewState = PreviewImageState()
+    /// The photo WITHOUT its crop, ready before the crop tool is opened. See CropReadyFrame.
+    @State private var cropReady = CropReadyFrame()
 
     /// The old names, so every reader and writer in this file is unchanged and
     /// none of them can drift back onto the path that redrew the whole editor.
@@ -10818,6 +10917,8 @@ struct DevelopView: View {
     // sliderToastDismissWork after a couple of seconds or immediately when
     // another slider is picked.
     @State private var sliderRegistry = SliderNudgeRegistry()
+    /// The number beside each slider while it is dragged. See SliderLiveReadout.
+    @State private var sliderReadouts = SliderReadoutStore()
     @State private var selectedSliderKey: String?
     @State private var sliderToast: SliderSelectionToast?
     @State private var sliderToastDismissWork: DispatchWorkItem?
@@ -10935,6 +11036,7 @@ struct DevelopView: View {
     /// How full the AI brush is — its own object so the bar can move on every
     /// drag event without redrawing the editor (the ActiveStrokePoints rule).
     @StateObject private var aiPaintBudget = AIPaintBudget()
+    @State private var removalAreaCache = RemovalAreaCache()
     // 0.02, not the 0.06 this shipped with: at 6 the smallest thing anyone
     // could select was already bigger than most of what this tool is for (a
     // mole, an insect, a cable), and every use started by dragging the size
@@ -12374,8 +12476,15 @@ struct DevelopView: View {
             // ⚠️ The open photo is IN VIEW in the strip. Reported 23.09: a
             // photo opened from the grid was open above, but the strip sat at
             // the start of the folder, so its thumbnail was somewhere off to
-            // the right. Centred on open, and again whenever the open photo
-            // changes (arrow keys walk off the edge otherwise).
+            // the right. CENTRED only when Create opens from the grid (every
+            // open from the grid builds this view anew, so that is onAppear).
+            //
+            // After that the strip stays where the client left it — 25.09:
+            // *„Kada biram na film stripu slike u create ne mora film strip da
+            // se pomera na sredinu, samo kada kliknem iz grida"*. A photo
+            // changed by the arrow keys scrolls only as far as it takes to
+            // bring it into view (no anchor = the least movement), and a click
+            // on a thumbnail that is already visible does not move it at all.
             .onAppear {
                 if let selectedURL {
                     DispatchQueue.main.async { strip.scrollTo(selectedURL, anchor: .center) }
@@ -12383,7 +12492,7 @@ struct DevelopView: View {
             }
             .onChange(of: selectedURL) { url in
                 guard let url else { return }
-                withAnimation(.easeInOut(duration: 0.2)) { strip.scrollTo(url, anchor: .center) }
+                withAnimation(.easeInOut(duration: 0.2)) { strip.scrollTo(url) }
             }
             }
 
@@ -13724,9 +13833,13 @@ struct DevelopView: View {
                                 isRemoveBrushErasing = erasing
                             } label: {
                                 HStack(spacing: 4) {
-                                    Image(systemName: erasing ? "eraser" : "plus")
+                                    // „−" and Subtract, 25.09: *„do niega pise Erase to
+                                    // je zbunjujuce neka pise minus kao znak prvo i neka
+                                    // pise Subtract"*. It takes area OUT of the marking;
+                                    // "Erase" read as erasing the photo.
+                                    Image(systemName: erasing ? "minus" : "plus")
                                         .font(.system(size: 10, weight: .semibold))
-                                    Text(erasing ? "Erase" : "Add")
+                                    Text(erasing ? "Subtract" : "Add")
                                         .font(.custom("Figtree", size: 11))
                                 }
                                 .frame(maxWidth: .infinity)
@@ -14956,9 +15069,14 @@ struct DevelopView: View {
     /// 12) plus room for the handle to be seen. Lightroom does the same thing
     /// — the picture steps back a little when the crop tool opens.
     ///
-    /// Only while cropping: the rest of the time the photograph should have
-    /// every pixel of the preview it can get.
-    private var cropInset: CGFloat { isCropping ? 28 : 0 }
+    /// ⚠️ 25.09 ALWAYS, not only while cropping: *„Slika koja se prikazuje u
+    /// creat-u je skroz dole i preklapa se malo sa filmstripom … da se odvoji
+    /// od filmstripa da ima free prostor!"*. The same 28 pt, so opening the
+    /// crop tool no longer makes the photo step back either — it is already
+    /// where the tool wants it. Zoomed in (and not cropping) the picture still
+    /// runs to the edges, because panning a photo inside a frame of empty
+    /// margin is not what zooming is for.
+    private var cropInset: CGFloat { (isCropping || zoomLevel <= 1) ? 28 : 0 }
 
     private func fittedImageFrame(imageSize: CGSize, in fullContainerSize: CGSize) -> CGRect {
         // Inset FIRST, so everything below — the fit, the pan clamps, and
@@ -18021,6 +18139,7 @@ struct DevelopView: View {
             // not. The mask never worked that way (it takes the maximum), so
             // this only ever misrepresented what was selected.
             ZStack {
+            ZStack {
                 ForEach(removalStrokes) { stroke in
                     strokePath(stroke.points, frame: frame)
                         .stroke(
@@ -18038,19 +18157,30 @@ struct DevelopView: View {
                         .blendMode(stroke.isErase ? .destinationOut : .normal)
                 }
 
-                // Always mounted, drawing nothing when there are no points.
-                // Mounting it conditionally would put the condition back in the
-                // parent's body, which is the invalidation this exists to avoid.
-                ActiveStrokeLayer(
-                    stroke: activeRemovalStroke,
-                    frame: frame,
-                    lineWidth: brushDiameter,
-                    color: ink,
-                    isErase: isRemoveBrushErasing
-                )
             }
             .compositingGroup()
             .opacity(0.45)
+            // ⚠️ The stroke being painted is OUTSIDE the group above (25.09).
+            // Inside it, every new point re-rasterised the whole group — every
+            // committed stroke, full preview size — and on the Intel iMac that
+            // was the brush lag: *„Dok brushujem ai area nista ne kalkulisi jer
+            // laguje"*. Now a point redraws one path. The price: while the
+            // mouse is down a stroke crossing an old one shows the overlap a
+            // shade darker, and an erase stroke shows where it goes instead of
+            // punching the hole; both settle into the group on release.
+            //
+            // Always mounted, drawing nothing when there are no points.
+            // Mounting it conditionally would put the condition back in the
+            // parent's body, which is the invalidation this exists to avoid.
+            ActiveStrokeLayer(
+                stroke: activeRemovalStroke,
+                frame: frame,
+                lineWidth: brushDiameter,
+                color: isRemoveBrushErasing ? Color.white : ink,
+                isErase: false
+            )
+            .opacity(isRemoveBrushErasing ? 0.35 : 0.45)
+            }
             // Clipped to the PHOTO, not to the preview. `frame` is the full
             // pre-crop image, which zoomed in (or under a tight crop) extends
             // well past the preview area, and unclipped strokes were painted
@@ -18775,6 +18905,14 @@ struct DevelopView: View {
             editSlider("Shadows", value: $settings.shadows, range: -1...1)
             editSlider("Whites", value: $settings.whites, range: -1...1)
             editSlider("Blacks", value: $settings.blacks, range: -1...1)
+            // ⚠️ PHOTO ONLY, and that is not a break of the MUST: a layer or a
+            // mask has no background and no subjects of its own to split into.
+            // Asked for 25.09: *„Mora da se dodaju dva slidera jedan da radi
+            // exposure za backround a drugi … exposure za subjects i naravno
+            // ovaj general ostaje"*. Same range, step and readout as Exposure,
+            // through the same applyExposure — see SubjectSplit.
+            editSlider("Background Exposure", value: $settings.backgroundExposure, range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
+            editSlider("Subjects Exposure", value: $settings.subjectsExposure, range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
         }
     }
 
@@ -19076,6 +19214,10 @@ struct DevelopView: View {
             editSlider("Clarity", value: $settings.clarity, range: -1...1)
             editSlider("Dehaze", value: $settings.dehaze, range: -1...1)
             editSlider("Face Dehaze", value: $settings.faceDehaze, range: 0...1) { String(format: "%.0f", $0 * 100) }
+            // 25.09: *„jos jedan slider poseban za backround da radi samo
+            // backround Dehaze"*. Dehaze's range and applyDehaze, behind the
+            // people. Photo only, like the two exposures in Light.
+            editSlider("Background Dehaze", value: $settings.backgroundDehaze, range: -1...1)
             editSlider("Soft Glow", value: $settings.softGlow, range: 0...1) { String(format: "%.0f", $0 * 100) }
             editSlider("Vignette", value: $settings.vignette, range: -1...1)
             // Same rule as Radius: the shape of a vignette of zero is nothing.
@@ -19558,9 +19700,9 @@ struct DevelopView: View {
                             isRemoveBrushErasing = erasing
                         } label: {
                             HStack(spacing: 5) {
-                                Image(systemName: erasing ? "eraser" : "plus")
+                                Image(systemName: erasing ? "minus" : "plus")
                                     .font(.system(size: 10, weight: .semibold))
-                                Text(erasing ? "Erase" : "Add")
+                                Text(erasing ? "Subtract" : "Add")
                                     .font(.custom("Figtree", size: 11))
                             }
                             .frame(maxWidth: .infinity)
@@ -19755,16 +19897,28 @@ struct DevelopView: View {
             return nil
         }
 
-        let boxes = briefShowRemovalJobs(
-            strokes: removalStrokes,
+        // Read by a dozen places in one body pass (every Clean Up button asks
+        // it twice). Worked out once per set of strokes, not per question —
+        // with many strokes and erasures the grouping is the slow part of the
+        // release of a brush stroke (25.09).
+        let key = RemovalAreaCache.Key(
+            strokeCount: removalStrokes.count,
+            lastStroke: removalStrokes.last?.id,
             hasVisionMask: removalMask != nil,
-            visionBox: removalMaskUnitBox
-        ).map(\.box).filter { !$0.isNull }
+            visionBox: removalMaskUnitBox,
+            extent: extent.size)
+        return removalAreaCache.value(for: key) {
+            let boxes = briefShowRemovalJobs(
+                strokes: removalStrokes,
+                hasVisionMask: removalMask != nil,
+                visionBox: removalMaskUnitBox
+            ).map(\.box).filter { !$0.isNull }
 
-        guard !boxes.isEmpty else {
-            return nil
+            guard !boxes.isEmpty else {
+                return nil
+            }
+            return boxes.map { max($0.width * extent.width, $0.height * extent.height) }.max()
         }
-        return boxes.map { max($0.width * extent.width, $0.height * extent.height) }.max()
     }
 
     // Measured, not guessed, on the user's own beach RAW (5176px wide):
@@ -23609,6 +23763,7 @@ struct DevelopView: View {
     ) -> some View {
         let sliderKey = key ?? title
         let isSelected = selectedSliderKey == sliderKey
+        let readout = sliderReadouts.readout(for: sliderKey)
 
         // Deliberately re-registered on EVERY body pass rather than in
         // .onAppear — see SliderNudgeRegistry for why the freshest binding
@@ -23657,16 +23812,16 @@ struct DevelopView: View {
 
                 Spacer()
 
-                Text(format(value.wrappedValue))
-                    .font(.custom("Figtree", size: 11))
-                    .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
-                    .monospacedDigit()
+                SliderReadoutText(readout: readout, value: value.wrappedValue, format: format,
+                                  isSelected: isSelected)
             }
 
             if let trackGradient {
-                GradientTrackSlider(value: value, range: range, step: step, gradient: trackGradient)
+                GradientTrackSlider(value: value, range: range, step: step, gradient: trackGradient,
+                                    readout: readout)
             } else {
-                EditTrackSlider(value: value, range: range, step: step, accent: accentColor)
+                EditTrackSlider(value: value, range: range, step: step, accent: accentColor,
+                                readout: readout)
             }
         }
         // padding(6) → highlight → padding(-6): the selected row's tint/
@@ -23987,13 +24142,23 @@ struct DevelopView: View {
                           : (some ? "minus.square.fill" : "square"))
                         .foregroundColor(some ? accentColor : AppColors.ink.opacity(0.5))
                     Image(systemName: section.icon)
-                        .foregroundColor(AppColors.ink)
+                        .foregroundColor(accentColor)
                         .frame(width: 16)
-                    Text(section.title)
-                        .font(.system(size: 12, weight: .semibold))
+                    // ⚠️ A HEADING, and it has to look like one (25.09: *„crop
+                    // light color detail masks se ne razlikuje da je tittle tj
+                    // glavna sekcija"*). Capitals, bigger, on its own band with
+                    // a rule under it — the rows below are plain text.
+                    Text(section.title.uppercased())
+                        .font(.system(size: 11.5, weight: .bold))
+                        .kerning(0.6)
                         .foregroundColor(AppColors.ink)
-                    Spacer()
+                        .lineLimit(1)
+                        .fixedSize()
+                    Spacer(minLength: 0)
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 6).fill(AppColors.panelAlt))
                 .contentShape(Rectangle())
             }
             .buttonStyle(ChecklistRowButtonStyle())
@@ -24003,7 +24168,7 @@ struct DevelopView: View {
                     syncRow(row, isSet: modified.contains(row.item))
                 }
             }
-            .padding(.leading, 24)
+            .padding(.leading, 8)
         }
     }
 
@@ -24017,21 +24182,30 @@ struct DevelopView: View {
                 syncItems.insert(row.item)
             }
         } label: {
-            HStack(spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: isChecked ? "checkmark.square.fill" : "square")
                     .foregroundColor(isChecked ? accentColor : AppColors.ink.opacity(0.5))
 
-                Text(row.title)
-                    .font(.system(size: 12))
-                    .foregroundColor(AppColors.ink)
+                // The note UNDER the name, on one line, instead of beside it —
+                // beside it, in a 158 pt column, it wrapped into a tall block of
+                // small print (25.09: *„text koji opisuje za templete je wrapovan
+                // i zgucen"*). The full wording is on hover.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(row.title)
+                        .font(.system(size: 12))
+                        .foregroundColor(AppColors.ink)
+                        .lineLimit(1)
 
-                if let carries = row.carries {
-                    Text(carries)
-                        .font(.system(size: 10))
-                        .foregroundColor(AppColors.ink.opacity(0.45))
+                    if let carries = row.carries {
+                        Text(carries)
+                            .font(.system(size: 10))
+                            .foregroundColor(AppColors.ink.opacity(0.5))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
 
-                Spacer()
+                Spacer(minLength: 0)
 
                 // "This photo has something here." Not a value — the value is
                 // in the panel two inches away, and printing it twice invites
@@ -24045,6 +24219,7 @@ struct DevelopView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(ChecklistRowButtonStyle())
+        .help(row.carries.map { "\(row.title) — \($0)" } ?? row.title)
     }
 
     // Shared by the header's "Reset" and the footer's "Reset All" so the two
@@ -25351,6 +25526,9 @@ struct DevelopView: View {
         if items.contains(.clarity) { result.clarity = source.clarity }
         if items.contains(.dehaze) { result.dehaze = source.dehaze }
         if items.contains(.faceDehaze) { result.faceDehaze = source.faceDehaze }
+        if items.contains(.backgroundExposure) { result.backgroundExposure = source.backgroundExposure }
+        if items.contains(.subjectsExposure) { result.subjectsExposure = source.subjectsExposure }
+        if items.contains(.backgroundDehaze) { result.backgroundDehaze = source.backgroundDehaze }
         if items.contains(.softGlow) { result.softGlow = source.softGlow }
         if items.contains(.vignette) {
             result.vignette = source.vignette
@@ -25398,10 +25576,11 @@ struct DevelopView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "sparkles")
-                    .foregroundColor(AppColors.ink)
+                    .foregroundColor(accentColor)
                     .frame(width: 16)
-                Text("AI Portrait")
-                    .font(.system(size: 12, weight: .semibold))
+                Text("AI PORTRAIT")
+                    .font(.system(size: 11.5, weight: .bold))
+                    .kerning(0.6)
                     .foregroundColor(AppColors.ink)
                 Spacer()
             }
@@ -25411,7 +25590,13 @@ struct DevelopView: View {
                 .foregroundColor(AppColors.ink.opacity(0.55))
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(alignment: .top, spacing: 18) {
+            // ⚠️ One equal column per recipe, the name on ONE line and the
+            // layer under it (25.09: *„background enhanced is going under mora
+            // da bude u jednom redu"*). In a plain HStack the last names ran out
+            // of room and wrapped under their own boxes.
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .leading),
+                                     count: PortraitRecipe.allCases.count),
+                      alignment: .leading, spacing: 8) {
                 ForEach(PortraitRecipe.allCases) { recipe in
                     let isChecked = syncRecipes.contains(recipe)
 
@@ -25422,17 +25607,23 @@ struct DevelopView: View {
                             syncRecipes.insert(recipe)
                         }
                     } label: {
-                        HStack(spacing: 8) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Image(systemName: isChecked ? "checkmark.square.fill" : "square")
                                 .foregroundColor(isChecked ? accentColor : AppColors.ink.opacity(0.5))
 
-                            Text(recipe.title)
-                                .font(.system(size: 12))
-                                .foregroundColor(AppColors.ink)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(recipe.title)
+                                    .font(.system(size: 12))
+                                    .foregroundColor(AppColors.ink)
+                                    .lineLimit(1)
+                                    .fixedSize()
 
-                            Text("on \(recipe.targetLayerName)")
-                                .font(.system(size: 10))
-                                .foregroundColor(AppColors.ink.opacity(0.45))
+                                Text("on \(recipe.targetLayerName)")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(AppColors.ink.opacity(0.5))
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
                         }
                         .contentShape(Rectangle())
                     }
@@ -25440,7 +25631,7 @@ struct DevelopView: View {
                     .help(recipe.help)
                 }
             }
-            .padding(.leading, 24)
+            .padding(.leading, 8)
         }
         .padding(10)
         .background(AppColors.panelAlt)
@@ -25908,6 +26099,15 @@ struct DevelopView: View {
             // section in the tree before it is asked to scroll to it.
             DispatchQueue.main.async { scrollToCropRequest += 1 }
             pendingCrop = settings.crop ?? .full
+            // The whole photo, on screen in the same turn — see CropReadyFrame.
+            cropReady.entryImage = nil
+            cropReady.entrySettings = nil
+            if photoHasCroppedLook, cropReady.url == selectedURL, cropReady.settings == settings,
+               let ready = cropReady.image {
+                cropReady.entryImage = displayedImage
+                cropReady.entrySettings = settings
+                displayedImage = ready
+            }
             isCropping = true
             selectedLocalAdjustmentID = nil
             activeSelection = nil
@@ -25936,7 +26136,14 @@ struct DevelopView: View {
                 selectedCropAspectRatio = .free
             }
             closeAICleanUp()
-            scheduleRender()
+            if cropReady.entryImage != nil {
+                // Already showing the right picture: only the sharp frame is
+                // still to come, and the held decode serves it (sharpScale).
+                renderGeneration += 1
+                scheduleRefinedRender()
+            } else {
+                scheduleRender()
+            }
         }
     }
 
@@ -25953,6 +26160,22 @@ struct DevelopView: View {
         // drags shouldn't override their choice anymore.
         cropIsAutoFitted = false
         isCropping = false
+        // Closed without a change: the frame that was there before is exactly
+        // right, so it goes back at once instead of the whole photo sitting
+        // there until the cropped render lands. See CropReadyFrame.
+        if let entry = cropReady.entryImage, cropReady.entrySettings == settings {
+            // Anything still rendering the uncropped photo is stale now.
+            renderGeneration += 1
+            refineWorkItem?.cancel()
+            refineQueueWorkItem?.cancel()
+            refineQueueWorkItem = nil
+            displayedImage = entry
+            cropReady.entryImage = nil
+            cropReady.entrySettings = nil
+            return
+        }
+        cropReady.entryImage = nil
+        cropReady.entrySettings = nil
         scheduleRender()
     }
 
@@ -26272,6 +26495,7 @@ struct DevelopView: View {
                 }
                 displayedImage = image
                 scheduleRefinedRender()
+                scheduleCropReadyFrame()
             }
 
             // Then the histogram, on the same queue, through the same context
@@ -26342,13 +26566,67 @@ struct DevelopView: View {
 
     /// See briefShowSharpScale. The preview area minus the crop inset, at the
     /// current zoom, on this window's screen.
+    ///
+    /// ⚠️ While the crop tool is open, never SMALLER than the frame before it
+    /// (25.09). The whole photo needs fewer pixels than its cropped part, and a
+    /// different scale meant a new read of the RAW — the „Loading sharp view"
+    /// second after every click on Crop. The held decode is larger than the
+    /// whole photo needs, which costs nothing but a few more pixels.
     private func sharpScale(for base: PhotoBaseImage) -> CGFloat {
         let view = previewState.viewPoints
         let backing = NSApp.keyWindow?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        return briefShowSharpScale(extent: base.extent, settings: settings, applyCrop: !isCropping,
-                                   view: CGSize(width: view.width - cropInset * 2,
-                                                height: view.height - cropInset * 2),
-                                   zoom: CGFloat(zoomLevel), backing: backing)
+        let needed = briefShowSharpScale(extent: base.extent, settings: settings, applyCrop: !isCropping,
+                                         view: CGSize(width: view.width - cropInset * 2,
+                                                      height: view.height - cropInset * 2),
+                                         zoom: CGFloat(zoomLevel), backing: backing)
+        if isCropping, previewState.lastSharpScale > needed {
+            return previewState.lastSharpScale
+        }
+        return needed
+    }
+
+    /// Whether the frame on screen differs from the whole photo, i.e. whether
+    /// the crop tool would need a different picture. See CropReadyFrame.
+    private var photoHasCroppedLook: Bool {
+        settings.crop != nil || settings.templateID != nil || !settings.templateTexts.isEmpty
+    }
+
+    /// See CropReadyFrame. Called each time a fast frame lands; the pending one
+    /// is cancelled, so a slider session costs one of these at its end.
+    private func scheduleCropReadyFrame() {
+        cropReady.work?.cancel()
+        cropReady.work = nil
+        guard !isCropping, !showOriginal, photoHasCroppedLook,
+              let previewBaseImage, let selectedURL else {
+            return
+        }
+        if cropReady.url == selectedURL, cropReady.settings == settings, cropReady.image != nil {
+            return
+        }
+        let generation = renderGeneration
+        let snapshot = settings
+        let work = DispatchWorkItem {
+            guard generation == renderGeneration, !isCropping, !isDrawingStroke else { return }
+            developPreviewRenderQueue.async(qos: .utility) {
+                guard generation == renderGeneration else { return }
+                let rendered = PhotoEditRenderer.render(snapshot, on: previewBaseImage,
+                                                        applyCrop: false, reusingRAWDecode: true)
+                guard generation == renderGeneration,
+                      let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent,
+                                                             context: briefEditsPreviewCIContext) else {
+                    return
+                }
+                let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                DispatchQueue.main.async {
+                    guard self.selectedURL == selectedURL, generation == renderGeneration else { return }
+                    cropReady.url = selectedURL
+                    cropReady.settings = snapshot
+                    cropReady.image = image
+                }
+            }
+        }
+        cropReady.work = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 
     private func scheduleRefinedRender() {
@@ -26927,52 +27205,67 @@ enum EditSliderDrag {
     }
 }
 
-/// ⚠️ A SLIDER DRAG TALKS TO THE EDITOR 30 TIMES A SECOND, NOT ON EVERY MOUSE
-/// MOVE. Reported 23.09 after a real shoot: *„kada pomeram slidebar … U C4S sve
-/// laguje!"* against Lightroom. Every write to the binding lands in
-/// DevelopView's `settings`, and that re-evaluates the whole editor — panel,
-/// every slider, layers, filmstrip — once per mouse event, which a trackpad
-/// sends at 60–120 Hz. The render itself is already throttled to 20 ms
-/// (scheduleRender); the body passes were not.
+/// One `SliderLiveReadout` per slider key, kept for the editor's lifetime so a
+/// row's readout survives the body passes around it.
+final class SliderReadoutStore {
+    private var readouts: [String: SliderLiveReadout] = [:]
+
+    func readout(for key: String) -> SliderLiveReadout {
+        if let existing = readouts[key] { return existing }
+        let made = SliderLiveReadout()
+        readouts[key] = made
+        return made
+    }
+}
+
+/// The value text of one slider row. Observes only its own readout, so a drag
+/// redraws this label and nothing else in the panel.
+private struct SliderReadoutText: View {
+    @ObservedObject var readout: SliderLiveReadout
+    let value: Double
+    let format: (Double) -> String
+    let isSelected: Bool
+
+    var body: some View {
+        Text(format(readout.value ?? value))
+            .font(.custom("Figtree", size: 11))
+            .foregroundColor(isSelected ? AppColors.ink : AppColors.muted)
+            .monospacedDigit()
+    }
+}
+
+/// ⚠️ A SLIDER DRAG DOES NOT TOUCH THE PHOTO UNTIL THE MOUSE IS RELEASED.
 ///
-/// The thumb is drawn from the slider's own `live` value, so it follows the
-/// pointer with no delay at all; only the hand-off is paced. Trailing, so the
-/// value where the pointer stops is sent even if it stops between ticks, and
-/// `finish` sends the last one exactly on release.
+/// 23.09 it was paced to 30 writes a second (*„kada pomeram slidebar … U C4S
+/// sve laguje!"*). 25.09, after trying v11.62 on the Intel iMac, the client
+/// asked for the next step outright: *„Dok pomeram slide bar nista da se ne
+/// menja na slici dok ne prestane drag da bi slide bar bio smooth!"* Every
+/// write lands in DevelopView's `settings`, which re-evaluates the whole
+/// editor and starts a render; on the Intel that is what made the thumb stutter.
+///
+/// So during a drag only the thumb (the slider's own `live`) and the number
+/// beside it (`SliderLiveReadout`) move. The binding is written ONCE, on
+/// release, with the exact value under the pointer. Arrow keys and − / + are
+/// untouched: they write the binding directly, one press = one render.
 final class SliderPush {
-    static let interval: TimeInterval = 1.0 / 30
-    private var last = Date.distantPast
     private var pending: Double?
-    private var work: DispatchWorkItem?
 
     func send(_ value: Double, to write: @escaping (Double) -> Void) {
         pending = value
-        let wait = Self.interval - Date().timeIntervalSince(last)
-        if wait <= 0 {
-            fire(write)
-        } else if work == nil {
-            let item = DispatchWorkItem { [weak self] in self?.fire(write) }
-            work = item
-            DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: item)
-        }
     }
 
     func finish(_ write: (Double) -> Void) {
-        work?.cancel()
-        work = nil
         if let pending { write(pending) }
         pending = nil
-        last = .distantPast
     }
+}
 
-    private func fire(_ write: (Double) -> Void) {
-        work?.cancel()
-        work = nil
-        guard let value = pending else { return }
-        pending = nil
-        last = Date()
-        write(value)
-    }
+/// The number beside a slider, while its thumb is being dragged. The row
+/// reads it so the readout follows the thumb even though the binding (and
+/// therefore the photo) waits for the release. One per row, owned by
+/// `EditSliderRowReadout`.
+final class SliderLiveReadout: ObservableObject {
+    @Published var value: Double?
 }
 
 private struct EditTrackSlider: View {
@@ -26981,6 +27274,8 @@ private struct EditTrackSlider: View {
     let step: Double
     let accent: Color
     var onEditingChanged: (Bool) -> Void = { _ in }
+    /// The thumb's value while a drag runs, nil when it ends. See SliderLiveReadout.
+    var readout: SliderLiveReadout? = nil
 
     private let trackHeight: CGFloat = 6
     private let thumbSize: CGFloat = 16
@@ -26996,7 +27291,7 @@ private struct EditTrackSlider: View {
     /// EditSliderDrag for what it is for.
     @State private var grab: EditSliderDrag.Grab?
     /// The thumb's position while a drag runs — drawn at once, handed to the
-    /// binding at most 30 times a second. See SliderPush.
+    /// binding only on release. See SliderPush.
     @State private var live: Double?
     @State private var push = SliderPush()
 
@@ -27089,12 +27384,14 @@ private struct EditTrackSlider: View {
                         let next = EditSliderDrag.value(at: drag.location.x, grab: grab,
                                                         usable: usable, range: range)
                         live = next
+                        readout?.value = next
                         push.send(next) { self.value = $0 }
                     }
                     .onEnded { _ in
                         // The last value always lands, and exactly.
                         push.finish { self.value = $0 }
                         live = nil
+                        readout?.value = nil
                         grab = nil
                         onEditingChanged(false)
                     }
@@ -27122,6 +27419,8 @@ private struct GradientTrackSlider: View {
     let step: Double
     let gradient: LinearGradient
     var onEditingChanged: (Bool) -> Void = { _ in }
+    /// The thumb's value while a drag runs, nil when it ends. See SliderLiveReadout.
+    var readout: SliderLiveReadout? = nil
 
     private let trackHeight: CGFloat = 6
     private let thumbSize: CGFloat = 16
@@ -27136,7 +27435,7 @@ private struct GradientTrackSlider: View {
     /// EditSliderDrag for what it is for.
     @State private var grab: EditSliderDrag.Grab?
     /// The thumb's position while a drag runs — drawn at once, handed to the
-    /// binding at most 30 times a second. See SliderPush.
+    /// binding only on release. See SliderPush.
     @State private var live: Double?
     @State private var push = SliderPush()
 
@@ -27214,12 +27513,14 @@ private struct GradientTrackSlider: View {
                         let next = EditSliderDrag.value(at: drag.location.x, grab: grab,
                                                         usable: usable, range: range)
                         live = next
+                        readout?.value = next
                         push.send(next) { self.value = $0 }
                     }
                     .onEnded { _ in
                         // The last value always lands, and exactly.
                         push.finish { self.value = $0 }
                         live = nil
+                        readout?.value = nil
                         grab = nil
                         onEditingChanged(false)
                     }

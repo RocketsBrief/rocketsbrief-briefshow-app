@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026 (KORAK 227: BriefContact dugme u C4S-u; **v11.62 je gore**; koraci 224–227 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026, noć (KORAK 228: brzina posle probe na Intel-u — slajder se piše na puštanje, crop bez čekanja, grid bez senki i bez posla dok se vuče, tri nova slajdera; **NIJE OBJAVLJENO**, v11.62 je i dalje gore; koraci 224–228 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -24026,4 +24026,50 @@ pa PayPal.
   nema ljudi). Pregled čeka masku i ne crta linije preko cele slike. **Create link** sačeka sve maske
   (natpis „Finding the people in the photos n / N") i šalje ih uz slike, pa kupac dobija linije preko
   ljudi odmah. Gore levo piše `finding people n / N` dok traje.
+
+---
+
+## KORAK 228 — proba na Intel-u (v11.62): slajder na puštanje, crop odmah, grid bez senki i bez posla dok se vuče, Background/Subjects slajderi (25. septembar 2026)
+
+Klijent je probao v11.62 na Intel iMac-u i poslao spisak (*„Uzas koliko laguje!! … ako ne mozemo da resimo da c4s suit
+bude brz kao lightroom onda nema poente"*). **Supabase: od v11.62 NIJEDAN red** — ni `launch`; poslednje je 24 zamrzavanja
+od 24.09 (v11.58). Prekidač „Send performance diagnostics" na Intel-u je isključen ili mašina nije bila na mreži —
+PITATI ga da ga uključi, bez toga se Intel ne vidi.
+
+| prijava | uzrok | šta je urađeno |
+|---|---|---|
+| slajder seče dok se vuče | svaki upis (30×/s) = ceo editor + render | `SliderPush` drži vrednost do **puštanja**; palac i broj (`SliderLiveReadout`, `SliderReadoutText`) idu odmah, slika jednom. Strelice i − / + nepromenjeni. Važi za SVE `EditTrackSlider`/`GradientTrackSlider` |
+| AI četkica laguje | potez u toku je bio UNUTAR `compositingGroup` sa svim potezima → ceo sloj pune veličine po tački; traka se objavljivala po tački; `removalAreaPixels` (grupisanje svih poteza) ~12× po prolazu | potez u toku je sopstveni sloj (dok traje: preklop malo tamniji, Subtract beli trag umesto rupe); traka se puni na puštanje (odbijanje odmah); `RemovalAreaCache` — jednom po skupu poteza |
+| crop čeka sekund, „prvo jedan crop pa drugi" | okvir se računao iz slike NA EKRANU (isečene) dok se ne renderuje cela; plus oštar kadar tražio drugu `decodeScale` = novo čitanje RAW-a | `CropReadyFrame`: 0,6 s posle rendera, brzi render bez crop-a (utility, preview red) se drži; Crop ga pokaže ISTOG trenutka; zatvaranje bez izmene vraća prethodni kadar bez rendera. `sharpScale` u crop-u nikad manji od prethodnog → zapamćeno dekodiranje. Samo za slike sa crop/template/tekstom |
+| slika dole preko filmstrip-a | `cropInset` 0 van crop-a | uvek 28 pt (i van crop-a) kad nije zumirano → i ulaz u crop više ne pomera sliku |
+| filmstrip se centrira na svaki klik | `scrollTo(anchor: .center)` na svaku promenu | centrira samo `onAppear` (otvaranje iz grida = nov prozor); posle toga `scrollTo(url)` bez sidra = najmanji pomeraj, vidljiva sličica se ne mrda |
+| „Erase" zbunjuje | — | **„− Subtract"** (ikonica minus), oba mesta |
+| Sync prozor neuredan | — | naslovi sekcija VELIKIM slovima na svojoj traci sa akcent ikonicom; AI Portrait u 5 jednakih kolona, ime u jednom redu, sloj ispod; napomena reda ISPOD imena u jednom redu (puna na hover); Template i Text **nisu podrazumevano štiklirani** (`SyncChoice.defaultItems`) |
+| 3 nova slajdera | — | **Background Exposure**, **Subjects Exposure** (Light, ±1 EV, korak 0,05, kao Exposure), **Background Dehaze** (Detail, −1…1). `SubjectSplit` (FaceDehaze.swift): Vision maska ljudi jednom po dekoderu+rotaciji, pooštrena (0,35…0,65 → 0…1) i omekšana 0,15 %, pa ISTI `applyExposure`/`applyDehaze` kroz masku. Samo na fotografiji (layer nema pozadinu/subjekte) — slider-parity ih navodi, ne pada. Sync, Copy, dekodiranje, istorija, LR izvoz |
+| strelica u sidebar-u otvara folder | strelica je bila samo ukras | sopstveni klik: samo otvara/zatvara podfoldere, grid ostaje gde je |
+| skrol sa selekcijom, klik posle ⌘A | `.shadow(radius: 10)` preko CELE sličice na svakoj selektovanoj + animacija selekcije | senka zamenjena drugim, širim prstenom (potez, ne zamućenje); animacija selekcije uklonjena |
+| prevlačenje 91 slike seče | dekodiranje foldera (zaglavlja, stand-in, sličice) nastavljalo, svaka grupa = novo iscrtavanje grida | `GridDragPause`: `onDrag` suspenduje sva tri reda i zadržava rezultate na putu ka gridu; nastavlja kad se taster pusti (tajmer u `.common` modu). Pregled je i dalje 2 kartice + broj |
+
+**Lenjiri:** zeleni slider-parity, header-bar, grid-shape (ažuriran: `GridDragPause.shared.onMain` se broji kao upis na
+glavnu nit), editsettings-decode (134 zapisa), history-labels, thumbnail-cache, layer-edit-parity, face-dehaze, clarity,
+people-layer-strength. **Nov:** `Tools/run-subject-split-test.py <NEF> [size] [out]` — svaki od tri pomera svoju polovinu
+(BG −0,5: −33,6 nivoa), druga polovina ≤ 1 nivo (8-bitni korak; pojas uz ivicu isključen), Vision 1×, sve na 0 = 0,0.
+Prva verzija maske (bez pooštravanja, omekšavanje 0,3 %) je na −0,5 ostavljala svetao rub od ~6–8 px uz majicu — viđeno
+na PNG-u; sada ~1–2 px.
+
+⚠️ **NIŠTA OD 228 NIJE VIĐENO NA EKRANU** — ekran je bio zaključan dok je klijent bio odsutan. Build Debug, app restartovan.
+Za proveru: slajder (palac glatko, slika na puštanje), crop na slici sa crop-om (odmah, bez skoka), AI četkica (Subtract),
+Sync prozor, tri nova slajdera, ⌘A pa klik, prevlačenje 90 slika u folder.
+
+### PREPORUKA — šta Lightroom ima, a mi još nemamo (NIJE URAĐENO)
+
+1. **Prikaz kroz Metal, bez povratka slike u RAM.** Svaki render se sada pretvara u `CGImage` (`briefEditsDisplayCGImage`)
+   = kopija sa GPU-a u RAM, pa u CALayer. Na M2 je memorija zajednička i to je jeftino; **na Intel iMac-u (zasebna AMD
+   grafika) svaki kadar ide preko PCIe tamo i nazad.** Lightroom crta direktno na GPU. Rešenje: `MTKView` +
+   `CIContext.render(to: drawable)` za centralni pregled. Najveći preostali dobitak za Intel; srednje velik posao (prikaz,
+   zum/pan geometrija, histogram posebno).
+2. **Sitnije stanje u editoru/gridu.** `DevelopView` i `ContentView` su po ~27 000 linija; svaki upis u `settings` ili
+   `selectedURLs` ponovo gradi ogroman `body`. Već izdvojeno: pregled, filmstrip, Sync, readout slajdera. Sledeće: panel
+   slajdera i selekcija u grid-u u svoje `ObservableObject`-e.
+3. **Merenje na Intel-u pre i posle** — bez Supabase reda sa te mašine svaka od ovih odluka je naslepo.
 

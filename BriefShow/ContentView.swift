@@ -24517,7 +24517,18 @@ struct PhotoShowSheet: View {
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(isSelected ? selectionBorderColor : AppColors.border.opacity(0.6), lineWidth: isSelected ? 3 : 1)
             )
-            .shadow(color: isSelected ? selectionBorderColor.opacity(0.35) : .clear, radius: isSelected ? 10 : 0)
+            // ⚠️ NO SHADOW ON A SELECTED TILE (25.09). It was a 10 pt blurred
+            // shadow of the whole picture — an offscreen blur per tile, redrawn
+            // on every frame of a scroll. With 91 photos selected on the Intel
+            // iMac: *„Isto dok su slike selektovane u gridu ja jedva skrolujem"*
+            // and *„kada kliknem na jednu sliku posle cmd all on laguje"* (the
+            // click animated twenty of those blurs away at once). The glow is
+            // now a second, wider, faint ring: a stroke, which costs nothing.
+            .overlay(
+                RoundedRectangle(cornerRadius: 13)
+                    .stroke(selectionBorderColor.opacity(isSelected ? 0.35 : 0), lineWidth: 3)
+                    .padding(-3)
+            )
             .contentShape(Rectangle())
             // ONE tap gesture, and that is the point.
             //
@@ -24541,7 +24552,8 @@ struct PhotoShowSheet: View {
             .contextMenu {
                 photoContextMenuItems(for: url)
             }
-            .animation(.easeOut(duration: 0.12), value: isSelected)
+            // No animation on selection any more: Cmd+A then one click turned
+            // every visible tile's border into its own animation (25.09).
 
             HStack(spacing: 0) {
                 starRating(for: url)
@@ -24563,7 +24575,10 @@ struct PhotoShowSheet: View {
         // Finder, where it copies. Inside BriefShow it MOVES, by the client's
         // decision.
         .onDrag {
-            NSItemProvider(object: url as NSURL)
+            // Everything in the background stops until the mouse comes up —
+            // see GridDragPause.
+            GridDragPause.shared.begin(pausing: [gridThumbnailQueue, gridPlaceholderQueue, gridAspectQueue])
+            return NSItemProvider(object: url as NSURL)
         } preview: {
             dragPreview(for: url)
         }
@@ -26607,7 +26622,7 @@ struct PhotoShowSheet: View {
                 guard let thumbnail = makeEditedShowGridThumbnail(from: url) else {
                     continue
                 }
-                DispatchQueue.main.async {
+                GridDragPause.shared.onMain {
                     gridThumbnails[url] = thumbnail
                 }
             }
@@ -26663,7 +26678,7 @@ struct PhotoShowSheet: View {
                     shapes[url] = ratio
                 }
                 guard !shapes.isEmpty else { return }
-                DispatchQueue.main.async {
+                GridDragPause.shared.onMain {
                     for (shapeURL, ratio) in shapes where gridAspectRatios[shapeURL] == nil {
                         gridAspectRatios[shapeURL] = ratio
                     }
@@ -26718,7 +26733,7 @@ struct PhotoShowSheet: View {
                     return
                 }
 
-                DispatchQueue.main.async {
+                GridDragPause.shared.onMain {
                     for (placeholderURL, image) in flushed {
                         // ⚠️ Only into an EMPTY tile. The real render is on
                         // another queue and nothing orders the two, so it can
@@ -26748,7 +26763,7 @@ struct PhotoShowSheet: View {
             guard !remainder.isEmpty else {
                 return
             }
-            DispatchQueue.main.async {
+            GridDragPause.shared.onMain {
                 for (placeholderURL, image) in remainder where gridThumbnails[placeholderURL] == nil {
                     gridThumbnails[placeholderURL] = image
                 }
@@ -26792,7 +26807,7 @@ struct PhotoShowSheet: View {
                     return
                 }
 
-                DispatchQueue.main.async {
+                GridDragPause.shared.onMain {
                     for (batchURL, thumbnail) in flushedBatch {
                         gridThumbnails[batchURL] = thumbnail
                     }
@@ -27568,10 +27583,25 @@ private struct OpenFolderShape: Shape {
                 }
             }
             .frame(width: 10)
-            // Decoration, not a second hit target: the row's own tap already
-            // opens and closes it (see onTapGesture below), and a gesture
-            // here would only add a way for the two to disagree.
-            .allowsHitTesting(false)
+            // ⚠️ ITS OWN HIT TARGET since 25.09: *„Kada kliknem na strelicu …
+            // ne mora da otvara taj folder, nego neka samo otvori sta je u tom
+            // folderu"*. A click on the arrow shows or hides the subfolders and
+            // nothing else — the grid stays on the folder it was showing, so no
+            // folder is read. A click anywhere else on the row still opens it.
+            // The hit area reaches a few points past the glyph, which is 9 pt.
+            .padding(.horizontal, 5)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard node.children != nil, node.url != rootNode.url else { return }
+                if expandedURLs.contains(node.url) {
+                    expandedURLs.remove(node.url)
+                } else {
+                    expandedURLs.insert(node.url)
+                }
+            }
+            .padding(.horizontal, -5)
+            .padding(.vertical, -4)
 
             // Open folders get an open folder, the way Finder's own sidebar
             // does — the disclosure triangle already says "expanded", but it
@@ -28119,6 +28149,67 @@ private struct GridAVPlayerView: NSViewRepresentable {
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
         if nsView.player !== player {
             nsView.player = player
+        }
+    }
+}
+
+/// ⚠️ NOTHING IN THE BACKGROUND WHILE PHOTOS ARE BEING DRAGGED (25.09).
+///
+/// *„kada selektujem slike ne mora da laguje i da radi proces dok dragujem
+/// slike u gridu, samo kad ih pustim u drugi folder tada moze da krene da radi
+/// informacije sve … dok dragujem nema nista da se radi u pozadini da ne bi
+/// seckalo, moze samo da mi kaze koliko slika i da pokaze 2 slike"* — 91
+/// photos dragged on the Intel iMac. The preview already was two cards and a
+/// count (dragPreview). What was still running was the folder's decoding:
+/// header reads, stand-ins and thumbnails, each batch landing as a redraw of
+/// the grid under the pointer.
+///
+/// So a drag SUSPENDS those three queues and HOLDS every result that is
+/// already on its way to the grid; both go on the moment the mouse button is
+/// up. `onDrag` has no "ended", so the button itself is watched, on a timer in
+/// the common run-loop modes (a drag runs the event-tracking mode, where a
+/// default-mode timer would never fire).
+final class GridDragPause {
+    static let shared = GridDragPause()
+
+    private(set) var isDragging = false
+    private var paused: [OperationQueue] = []
+    private var held: [() -> Void] = []
+    private var watch: Timer?
+
+    func begin(pausing queues: [OperationQueue]) {
+        guard !isDragging else { return }
+        isDragging = true
+        paused = queues
+        for queue in queues { queue.isSuspended = true }
+        let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
+            if NSEvent.pressedMouseButtons & 1 == 0 { self?.end() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watch = timer
+    }
+
+    func end() {
+        guard isDragging else { return }
+        isDragging = false
+        watch?.invalidate()
+        watch = nil
+        for queue in paused { queue.isSuspended = false }
+        paused = []
+        let waiting = held
+        held = []
+        for block in waiting { block() }
+    }
+
+    /// `DispatchQueue.main.async`, except that during a drag the block waits
+    /// for the drop.
+    func onMain(_ block: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            if self.isDragging {
+                self.held.append(block)
+            } else {
+                block()
+            }
         }
     }
 }

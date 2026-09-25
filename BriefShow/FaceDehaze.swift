@@ -298,3 +298,117 @@ enum FaceDehazeFaces {
         return (request.results ?? []).map(\.boundingBox).filter { $0.height > 0.03 }
     }
 }
+
+// MARK: - Background / Subjects
+
+/// Background Exposure, Subjects Exposure and Background Dehaze — the photo
+/// split in two by Vision's person mask.
+///
+/// Asked for 25.09: *„Mora da se dodaju dva slidera jedan da radi exposure za
+/// backround a drugi da bude poseban isto svoj i da radi exposure za subjects i
+/// naravno ovaj general ostaje koji je za celu sliku! I da imamo jos jedan
+/// slider poseban za backround da radi samo backround Dehaze"*.
+///
+/// The SAME `applyExposure` and `applyDehaze` the photo's own sliders run —
+/// only blended through the mask, so a value here means what it means on
+/// Exposure and Dehaze. The People/Background LAYERS do the same thing with a
+/// full panel each; these are the three that are wanted on every photo without
+/// making a layer.
+///
+/// ⚠️ The mask's edge is SOFTENED (about 0.3 % of the long side). A hard
+/// Vision edge between a lighter background and darker subjects is exactly the
+/// kind of line round a subject KORAK 224 took out of Texture.
+///
+/// ⚠️ Vision runs ONCE per photo decode and rotation, like the faces above;
+/// moving these sliders afterwards costs two filters and a blend.
+enum SubjectSplit {
+    /// The longest side Vision is given.
+    static let detectionSide: CGFloat = 1024
+    /// Edge softness, as a fraction of the picture's long side.
+    static let featherShare: CGFloat = 0.0015
+    /// How steeply Vision's own soft edge is turned into in/out before the
+    /// feather: its 0.35…0.65 becomes 0…1. Measured 25.09 on C4S_9021 at
+    /// Background Exposure −0.5: Vision's edge reaches several pixels into the
+    /// sky, and those pixels, counted half as "person", stayed bright — a light
+    /// rim along the shirt. See Tools/run-subject-split-test.py.
+    static let edgeContrast: CGFloat = 3.3
+
+    private static let lock = NSLock()
+    private static var byPhoto: [(owner: FaceDehazeFaces.Weak, variant: String, mask: CIImage?)] = []
+
+    /// How many times Vision actually ran — for a test to read.
+    private(set) static var detectionCount = 0
+
+    /// People = white, background = black, scaled onto `extent`. nil when
+    /// Vision found nobody — then there is no split and the sliders do nothing.
+    static func mask(of owner: AnyObject, variant: String, in geometry: CIImage,
+                     fitting extent: CGRect) -> CIImage? {
+        lock.lock()
+        byPhoto.removeAll { $0.owner.object == nil }
+        let hit = byPhoto.first(where: { $0.owner.object === owner && $0.variant == variant })
+        lock.unlock()
+
+        let found: CIImage?
+        if let hit {
+            found = hit.mask
+        } else {
+            detectionCount += 1
+            found = SubjectMasker.personMask(for: geometry, maxWorkingEdge: detectionSide)
+            lock.lock()
+            byPhoto.insert((FaceDehazeFaces.Weak(owner), variant, found), at: 0)
+            if byPhoto.count > 8 { byPhoto.removeLast() }
+            lock.unlock()
+        }
+        guard let found, found.extent.width > 0, found.extent.height > 0,
+              extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite else {
+            return nil
+        }
+
+        var mask = found
+            .transformed(by: CGAffineTransform(translationX: -found.extent.minX, y: -found.extent.minY))
+            .transformed(by: CGAffineTransform(scaleX: extent.width / found.extent.width,
+                                               y: extent.height / found.extent.height))
+            .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
+        let steep = CIFilter.colorMatrix()
+        steep.inputImage = mask
+        let k = edgeContrast, bias = 0.5 - 0.5 * edgeContrast
+        steep.rVector = CIVector(x: k, y: 0, z: 0, w: 0)
+        steep.gVector = CIVector(x: 0, y: k, z: 0, w: 0)
+        steep.bVector = CIVector(x: 0, y: 0, z: k, w: 0)
+        steep.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        steep.biasVector = CIVector(x: bias, y: bias, z: bias, w: 0)
+        let clamp = CIFilter.colorClamp()
+        clamp.inputImage = steep.outputImage
+        clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+        clamp.maxComponents = CIVector(x: 1, y: 1, z: 1, w: 1)
+        mask = (clamp.outputImage ?? mask).cropped(to: mask.extent)
+        let radius = max(extent.width, extent.height) * featherShare
+        if radius >= 0.5 {
+            mask = mask.clampedToExtent()
+                .applyingGaussianBlur(sigma: Double(radius))
+        }
+        return mask.cropped(to: extent)
+    }
+
+    static func apply(_ settings: PhotoEditSettings, to image: CIImage, people: CIImage) -> CIImage {
+        var output = image
+
+        if settings.subjectsExposure != 0 {
+            let lit = PhotoEditRenderer.applyExposure(settings.subjectsExposure, to: output)
+            output = lit.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: output,
+                kCIInputMaskImageKey: people,
+            ]).cropped(to: image.extent)
+        }
+
+        if settings.backgroundExposure != 0 || settings.backgroundDehaze != 0 {
+            var behind = PhotoEditRenderer.applyExposure(settings.backgroundExposure, to: output)
+            behind = PhotoEditRenderer.applyDehaze(settings.backgroundDehaze, to: behind)
+            output = output.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: behind,
+                kCIInputMaskImageKey: people,
+            ]).cropped(to: image.extent)
+        }
+        return output
+    }
+}

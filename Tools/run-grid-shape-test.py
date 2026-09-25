@@ -78,9 +78,12 @@ check("photos already measured are skipped", "gridAspectRatios[$0] == nil" in lo
 aspect_block = load[load.index("gridAspectQueue.cancelAllOperations()"):]
 aspect_block = aspect_block[:aspect_block.index("// Both passes hand the grid")] \
     if "// Both passes hand the grid" in aspect_block else aspect_block[:2000]
+# GridDragPause.shared.onMain is the same hop to the main thread, held while
+# photos are being dragged (25.09) — counted as a write like the plain one.
+main_writes = aspect_block.count("DispatchQueue.main.async") + aspect_block.count("GridDragPause.shared.onMain")
 check("the shapes reach the view in ONE write, not one per photo",
-      aspect_block.count("DispatchQueue.main.async") == 1,
-      f"found {aspect_block.count('DispatchQueue.main.async')} main-thread writes")
+      main_writes == 1,
+      f"found {main_writes} main-thread writes")
 
 print("\n2. the quality rule the client restated on 23.09, unchanged")
 check("the loupe still asks for the drawn size, never a flat number",

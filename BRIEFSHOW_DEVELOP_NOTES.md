@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026 (KORAK 226, **v11.62 je gore**; koraci 224–226 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026 (KORAK 227: BriefContact dugme u C4S-u; **v11.62 je gore**; koraci 224–227 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -23972,3 +23972,58 @@ sakriva ispod 0,15 s. Posao se sada zove „Loading sharp view"/„Updating view
 - stranica: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.62`
 - preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.62/C4S-Suite-11.62.zip`
 - **`v11.0` se i dalje NE SME brisati.**
+
+---
+
+## KORAK 227 — BriefContact u C4S Suite-u: upload, izgled, cenovnik, Create link, Orders (25. septembar 2026)
+
+Klijent: fotograf u C4S-u **upload-uje** slike klijenta, namesti kako izgledaju na webu i klikne **Create
+link**. Kupac na linku obeležava slike, plaća i ili odmah skida (put 1), ili ostavlja email pa mu
+kompanija pošalje link (put 2). Narudžbine vidi kompanija u listi **Orders**, bez slanja mejlova.
+Server je u BriefContact projektu (`~/Desktop/BriefContact`, v. `BRIEFCONTACT_NOTES.md` tamo).
+
+- **Dugme BriefContact** u headeru grida, gde je bio ViewThem (KORAK 216). Otvara poseban prozor,
+  `BriefShow/BriefContact.swift`.
+- **New gallery:** Add Photos (bilo koja slika koju ImageIO čita, i RAW), naziv klijenta, **sve kontrole
+  web galerije** pod istim id-jevima kao na stranici (linije, Black/Blurry, flicker, People only,
+  lampa, raspored, čuvar), cenovnik (valuta EUR/GBP/USD, cena po slici, paketi „N slika = X, pa Y
+  svaka"), tabela „šta kupac plaća" za 1…N slika i izbor puta posle uplate. Izgled, cenovnik, valuta
+  i put se pamte između galerija.
+- **Create link:** napravi galeriju, pa za svaku sliku pošalje **preview 1600 px** i **original**.
+  JPEG/PNG idu kakvi jesu, a ostalo kao pun JPEG 0,95. Traka `Uploading 3 / 10`, pa link sa Copy/Open.
+- **Orders:** plaćene narudžbine kompanije (prekidač „Show unpaid"): galerija, email kupca (Copy email),
+  iznos, put (za put 2 narandžasto „Send the link by email"), datum i slike po broju i imenu (Copy names).
+- **Kompanija** je C4S nalog. Server Supabase-u šalje `accessToken` iz sesije, a na 401 jednom osveži
+  token (`refreshSessionIfNeeded`) i pokuša ponovo.
+- `BriefContactPricing.total` je **isto pravilo** kao `price()` u BriefContact `public/pricing.js`.
+  Naplaćuje server, a ovo služi samo za tabelu.
+
+⚠️ **Na ovoj mašini je app usmeren na lokalni server** (defaults u kontejneru
+`com.rocketsbrief.BriefShow`): `briefContact.server = http://127.0.0.1:8765` i `briefContact.devToken =
+dev-vista`. Dev token radi **samo** kad je server na ovom Mac-u. Podrazumevana adresa je
+`https://briefcontact.pages.dev`, a tamo još ništa nije postavljeno. Kad se postavi na Cloudflare,
+obrisati oba ključa (`defaults delete …`).
+
+**Provereno 25.09 kroz pravi app:** Add Photos (2 slike) → naziv → Create link → link. Na serveru su
+obe slike, cenovnik u centima i podešavanja iz C4S-a. Orders prikazuje 3 plaćene test narudžbine
+(put 1 i put 2).
+
+**Stanje:** BUILD SUCCEEDED, app pokrenut. Nije commit-ovano. Sledeće: Cloudflare nalog (D1, R2, Pages),
+pa PayPal.
+
+### 227, dopuna — live preview i boje teme (25.09)
+
+- **Live preview** levo iznad sličica: `BriefContactPreview` (WKWebView) učitava BriefContact stranicu u
+  režimu `/?preview` i šalje joj prve dve slike i svaku promenu izgleda. Fotograf vidi flicker, linije,
+  zamućenje, People only i lampu ispod miša, tačno kao kupac. `isInspectable` je uključen, a poruke
+  modela idu u log („BriefContact preview: …").
+- **People only „samo preko lica"** — uzrok je bio na web strani (maska samo sa licima dok tela ne
+  stignu). Popravljeno tamo, v. BRIEFCONTACT_NOTES.md.
+- **Boje C4S teme:** pozadina, paneli, tekst i ivice iz `AppColors`. `window.appearance` prati
+  `ThemeManager.$current`, isto kao BriefShow prozor. Prozor se ponovo iscrta na promenu teme.
+- **Maske ljudi iz C4S-a:** čim se slike dodaju, `BriefContactPreview` šalje stranici jednu po jednu
+  (`bcPreview.mask`), a PNG maske se vraća preko `bcMask` u `gallery.masks` (prazan `Data` znači da
+  nema ljudi). Pregled čeka masku i ne crta linije preko cele slike. **Create link** sačeka sve maske
+  (natpis „Finding the people in the photos n / N") i šalje ih uz slike, pa kupac dobija linije preko
+  ljudi odmah. Gore levo piše `finding people n / N` dok traje.
+

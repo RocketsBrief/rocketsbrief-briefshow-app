@@ -23604,6 +23604,20 @@ struct PhotoShowSheet: View {
             .buttonStyle(ShowHeaderButtonStyle())
             .padding(.trailing, 10)
 
+            // BriefContact — upload a client's photos, set how they look on
+            // the web gallery, create the buyer's link, and see the orders.
+            // See BriefContact.swift. Asked for on 25.09, where ViewThem was.
+            Button {
+                BriefContactWindowController.shared.open()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "link")
+                    Text("BriefContact")
+                }
+            }
+            .buttonStyle(ShowHeaderButtonStyle())
+            .padding(.trailing, 10)
+
             // Opens Develop — a standalone, non-destructive photo editor in
             // its own window (see DevelopWindowController). Entirely
             // separate from this grid and from the slideshow pipeline

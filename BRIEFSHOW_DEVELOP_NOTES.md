@@ -729,6 +729,23 @@ animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
 
+### GDE SMO STALI — 26. septembar 2026 — **v11.69 OBJAVLJENA** (KORACI 228–231), sve commit-ovano i push-ovano (`f47f3f3`)
+
+| | |
+|---|---|
+| **228** | brzina posle Intel probe: slajder piše na puštanje, crop odmah (`CropReadyFrame`), AI četkica bez računanja dok traje, grid bez senki na selekciji i bez posla dok se vuče (`GridDragPause`), strelica u sidebar-u samo otvara, Sync prozor sređen, Background/Subjects Exposure + Background Dehaze |
+| **229** | slika u Create-u se renderuje u IOSurface i prikazuje sa grafičke kartice (bez kopije u RAM, 2× brže na M2, bajt-identično); isprani sused sa Dehaze-om popravljen (`NeighborPrefetch` kontekst u sRGB) |
+| **230** | svi slajderi izgleda: 100 na slajderu = 150 % starog efekta (`briefShowSliderDisplayScale`, bez migracije); Subjects/Background Clarity; Face Dehaze → Subjects Dehaze preko maske ljudi; jači Background Dehaze (`hazeCut`) |
+| **231** | RELEASE v11.69, univerzalan, macOS 13+, LaMa unutra, SD dugmetom (`v11.0` se NE SME brisati) |
+
+**SLEDEĆE (redom):**
+1. Klijent proba v11.69 na Intel-u sa uključenim **Send performance diagnostics** — od v11.62 u Supabase-u nije stigao nijedan red. Posle probe čitati `briefshow_diagnostics` (memorija: Safari, SQL editor).
+2. Na ekranu NIJE viđeno: Detail sekcija (Subjects/Background Clarity, Subjects Dehaze, jači Background Dehaze), Sync prozor, prevlačenje 90 slika, ⌘A pa klik. Viđeno: slajder, crop, strelica, Light redosled, GPU prikaz.
+3. **BriefContact dugme je u v11.69, a server `briefcontact.pages.dev` još ne postoji** — ili Cloudflare (D1, R2, Pages) pa PayPal, ili sakriti dugme u sledećem izdanju. Pitati klijenta.
+4. Dehaze snimak sa Intel-a (C4S_1773 +31, C4S_1819) i dalje se čeka.
+
+---
+
 ### GDE SMO STALI — 24. septembar 2026, noć — KORAK 218 (NIJE OBJAVLJENO, push-ovano na `briefshow-develop`)
 
 Klijentova proba sa pravog snimanja (3× sporije nego Lightroom) + 8 slika u `~/Desktop/C4S Problem Screenshots/`.

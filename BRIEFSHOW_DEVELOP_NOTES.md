@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026, noć (KORACI 228–230: brzina posle probe na Intel-u; slika u Create-u sa grafičke kartice; svi slajderi 100 = 150 % starog efekta, Subjects/Background Clarity, Subjects Dehaze; **v11.69 je gore** (KORAK 231); koraci 224–231 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 26. septembar 2026 (KORACI 228–231, vrh „GDE SMO STALI — 26. septembar"; KORACI 228–230: brzina posle probe na Intel-u; slika u Create-u sa grafičke kartice; svi slajderi 100 = 150 % starog efekta, Subjects/Background Clarity, Subjects Dehaze; **v11.69 je gore** (KORAK 231); koraci 224–231 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -24196,4 +24196,36 @@ C4S loga se čita iz bundle-a). Pre pakovanja zeleni svi lenjiri iz KORAKA 230.
 - **`v11.0` se i dalje NE SME brisati.**
 - ⚠️ BriefContact dugme je u ovom izdanju, ali `https://briefcontact.pages.dev` još nije postavljen — na klijentskim
   mašinama BriefContact ne radi dok se server ne podigne (KORAK 227). U release notes nije pomenut.
+
+**Release notes (poslate klijentu za BriefShow Control, i iste su na GitHub stranici izdanja):**
+
+    C4S Suite 11.69
+
+    The photo in Create is now calculated and shown directly on the graphics card, the way Lightroom does it. Every edit reaches the screen about twice as fast, and more on Intel Macs.
+
+    Sliders move smoothly while you drag them. The number follows your hand and the photo updates the moment you let go.
+
+    The crop tool opens instantly with the frame already in place, and closing it without a change brings the photo back at once.
+
+    Painting the AI Clean Up area no longer lags. The area is measured when you lift the brush.
+
+    In the grid, scrolling and clicking with many photos selected is smooth, and dragging photos into a folder no longer slows everything down.
+
+    Clicking the arrow next to a folder only shows what is inside it, without opening the folder.
+
+    Every editing slider now goes 50 percent further. 100 on the slider is 150 percent of the old effect, and photos you already edited look exactly the same.
+
+    New sliders: Subjects Exposure and Background Exposure under Exposure, Subjects Clarity and Background Clarity under Clarity, and Background Dehaze.
+
+    Face Dehaze is now Subjects Dehaze and clears the whole person, not only the face.
+
+    Background Dehaze is much stronger and now deepens a hazy sky and background.
+
+    The photo in Create has free space around it and no longer touches the filmstrip. The filmstrip stays where you left it when you pick a photo.
+
+    The Sync window is cleaner, with clear section titles, and Template and Text are no longer ticked by default.
+
+    In AI Clean Up, Erase is now called Subtract.
+
+    Fixed a milky, washed out look on the next photo when it had Dehaze.
 

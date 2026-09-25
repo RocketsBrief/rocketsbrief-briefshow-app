@@ -158,6 +158,9 @@ struct PhotoEditSettings: Codable, Equatable {
     var backgroundExposure: Double = 0
     var subjectsExposure: Double = 0
     var backgroundDehaze: Double = 0
+    // Clarity split the same way (25.09), Clarity's own −1…1 (now ±1.5).
+    var subjectsClarity: Double = 0
+    var backgroundClarity: Double = 0
     var softGlow: Double = 0        // 0...1 — diffusion/"soft focus" glow (blurred copy screen-blended back over the original), see PhotoEditRenderer.render.
     var vignette: Double = 0        // -1...1 — positive darkens the corners, negative lightens them.
     // The three shape controls Lightroom's Post-Crop Vignetting has beside its
@@ -269,6 +272,8 @@ struct PhotoEditSettings: Codable, Equatable {
         backgroundExposure = try c.decodeIfPresent(Double.self, forKey: .backgroundExposure) ?? 0
         subjectsExposure = try c.decodeIfPresent(Double.self, forKey: .subjectsExposure) ?? 0
         backgroundDehaze = try c.decodeIfPresent(Double.self, forKey: .backgroundDehaze) ?? 0
+        subjectsClarity = try c.decodeIfPresent(Double.self, forKey: .subjectsClarity) ?? 0
+        backgroundClarity = try c.decodeIfPresent(Double.self, forKey: .backgroundClarity) ?? 0
         vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
         // Absent in anything saved before these existed, and the fallbacks are
         // the values that reproduce the old drawing — so an old record decodes
@@ -325,6 +330,7 @@ struct PhotoEditSettings: Codable, Equatable {
         case temperature, tint, sharpness, texture, clarity, dehaze, softGlow, vignette
         case faceDehaze
         case backgroundExposure, subjectsExposure, backgroundDehaze
+        case subjectsClarity, backgroundClarity
         case vignetteMidpoint, vignetteFeather, vignetteRoundness, sharpenRadius
         case colorMixer
         case rotationQuarterTurns, straightenDegrees, crop, cropAspect
@@ -341,6 +347,7 @@ struct PhotoEditSettings: Codable, Equatable {
             && sharpness == 0 && texture == 0 && clarity == 0 && dehaze == 0 && softGlow == 0
             && faceDehaze == 0
             && backgroundExposure == 0 && subjectsExposure == 0 && backgroundDehaze == 0
+            && subjectsClarity == 0 && backgroundClarity == 0
             // The vignette's shape and the sharpening radius are deliberately
             // NOT counted. They are the SHAPE of an effect, not the effect: a
             // photo with Vignette at 0 is unvignetted whatever its midpoint
@@ -429,6 +436,8 @@ struct SyncItem: OptionSet {
     static let backgroundExposure = SyncItem(rawValue: 1 << 24)
     static let subjectsExposure = SyncItem(rawValue: 1 << 25)
     static let backgroundDehaze = SyncItem(rawValue: 1 << 26)
+    static let subjectsClarity = SyncItem(rawValue: 1 << 27)
+    static let backgroundClarity = SyncItem(rawValue: 1 << 28)
 
     /// One row of the dialog: one control, one checkbox.
     struct Row: Identifiable {
@@ -464,13 +473,13 @@ struct SyncItem: OptionSet {
         ]),
         Section(title: "Light", icon: "sun.max", rows: [
             Row(item: .exposure, title: "Exposure", carries: nil),
+            Row(item: .subjectsExposure, title: "Subjects Exposure", carries: nil),
+            Row(item: .backgroundExposure, title: "Background Exposure", carries: nil),
             Row(item: .contrast, title: "Contrast", carries: nil),
             Row(item: .highlights, title: "Highlights", carries: nil),
             Row(item: .shadows, title: "Shadows", carries: nil),
             Row(item: .whites, title: "Whites", carries: nil),
             Row(item: .blacks, title: "Blacks", carries: nil),
-            Row(item: .backgroundExposure, title: "Background Exposure", carries: nil),
-            Row(item: .subjectsExposure, title: "Subjects Exposure", carries: nil),
         ]),
         Section(title: "Color", icon: "paintpalette", rows: [
             Row(item: .temperature, title: "Temperature", carries: "with its Kelvin"),
@@ -483,8 +492,10 @@ struct SyncItem: OptionSet {
             Row(item: .sharpness, title: "Sharpness", carries: "with its radius"),
             Row(item: .texture, title: "Texture", carries: nil),
             Row(item: .clarity, title: "Clarity", carries: nil),
+            Row(item: .subjectsClarity, title: "Subjects Clarity", carries: nil),
+            Row(item: .backgroundClarity, title: "Background Clarity", carries: nil),
             Row(item: .dehaze, title: "Dehaze", carries: nil),
-            Row(item: .faceDehaze, title: "Face Dehaze", carries: nil),
+            Row(item: .faceDehaze, title: "Subjects Dehaze", carries: nil),
             Row(item: .backgroundDehaze, title: "Background Dehaze", carries: nil),
             Row(item: .softGlow, title: "Soft Glow", carries: nil),
             Row(item: .vignette, title: "Vignette", carries: "with its shape"),
@@ -537,6 +548,8 @@ struct SyncItem: OptionSet {
         case .backgroundExposure: return settings.backgroundExposure != 0
         case .subjectsExposure: return settings.subjectsExposure != 0
         case .backgroundDehaze: return settings.backgroundDehaze != 0
+        case .subjectsClarity: return settings.subjectsClarity != 0
+        case .backgroundClarity: return settings.backgroundClarity != 0
         case .softGlow: return settings.softGlow != 0
         case .vignette: return settings.vignette != 0
         case .masks: return !settings.localAdjustments.isEmpty
@@ -3697,16 +3710,15 @@ enum PhotoEditRenderer {
             let filter = CIFilter.colorControls()
             filter.inputImage = output
             filter.contrast = 1
-            filter.saturation = Float(1 + settings.saturation)
+            // Never under 0: at −100 the photo is already grey, and a negative
+            // factor past it (−150) would turn every colour into its opposite.
+            filter.saturation = Float(max(1 + settings.saturation, 0))
             filter.brightness = 0
             output = filter.outputImage ?? output
         }
 
         if settings.vibrance != 0 {
-            let filter = CIFilter.vibrance()
-            filter.inputImage = output
-            filter.amount = Float(settings.vibrance)
-            output = filter.outputImage ?? output
+            output = applyVibrance(settings.vibrance, to: output)
         }
 
         // The Colour Mixer sits here, after the basic tone and colour work and
@@ -3733,11 +3745,18 @@ enum PhotoEditRenderer {
             let faces = FaceDehazeFaces.faces(
                 of: owner, variant: "\(settings.rotationQuarterTurns)/\(settings.straightenDegrees)/\(decodeScale)",
                 in: faceGeometry)
-            output = PhotoEditRenderer.applyFaceDehaze(settings.faceDehaze, to: output, faces: faces)
+            // Subjects Dehaze (25.09): the whole people, from the same remembered
+            // person mask the Background/Subjects sliders use.
+            let people = SubjectSplit.mask(
+                of: owner, variant: "\(settings.rotationQuarterTurns)/\(settings.straightenDegrees)",
+                in: faceGeometry, fitting: output.extent)
+            output = PhotoEditRenderer.applyFaceDehaze(settings.faceDehaze, to: output, faces: faces,
+                                                       people: people ?? .emptyMask)
         }
 
         // Background / Subjects, split by Vision's person mask — see SubjectSplit.
-        if settings.backgroundExposure != 0 || settings.subjectsExposure != 0 || settings.backgroundDehaze != 0 {
+        if settings.backgroundExposure != 0 || settings.subjectsExposure != 0 || settings.backgroundDehaze != 0
+            || settings.subjectsClarity != 0 || settings.backgroundClarity != 0 {
             let owner: AnyObject
             switch base {
             case .standard(let image): owner = image
@@ -4058,6 +4077,26 @@ enum PhotoEditRenderer {
     /// second implementation to keep in step.
     ///
     /// See ExposureCurve for why this is a curve rather than a multiply.
+    /// Vibrance, for the photo, a layer and a mask alike (one function, the
+    /// MUST). CIVibrance stops at ±1 by itself, so past it (±1.5 since 25.09,
+    /// briefShowSliderDisplayScale) the rest is applied as a second pass.
+    static func applyVibrance(_ vibrance: Double, to image: CIImage) -> CIImage {
+        guard vibrance != 0 else { return image }
+        var output = image
+        let first = CIFilter.vibrance()
+        first.inputImage = output
+        first.amount = Float(min(max(vibrance, -1), 1))
+        output = first.outputImage ?? output
+        let rest = vibrance - min(max(vibrance, -1), 1)
+        if rest != 0 {
+            let second = CIFilter.vibrance()
+            second.inputImage = output
+            second.amount = Float(rest)
+            output = second.outputImage ?? output
+        }
+        return output
+    }
+
     static func applyExposure(_ ev: Double, to image: CIImage) -> CIImage {
         guard ev != 0 else { return image }
 
@@ -4406,7 +4445,11 @@ enum PhotoEditRenderer {
                 let spreadDetail = guardMap
                     .applyingFilter("CIMaximumCompositing", parameters: [kCIInputBackgroundImageKey: detail])
 
-                let amount = CGFloat(min(max(-texture, 0), 1) * 0.9)
+                // Up to 100 exactly as before (×0.9). Past it (the 25.09 +50 %
+                // range) the mix rises the last tenth to a full blend at 150 —
+                // a mix cannot go past 1 without inventing detail backwards.
+                let smoothing = min(max(-texture, 0), 1.5)
+                let amount = CGFloat(smoothing <= 1 ? smoothing * 0.9 : 0.9 + (smoothing - 1) * 0.2)
                 let mixMask = spreadDetail
                     .applyingFilter("CIColorInvert")
                     .applyingFilter("CIColorMatrix", parameters: [
@@ -4480,7 +4523,7 @@ enum PhotoEditRenderer {
               let negatedBase = scalingChannels(of: base, by: -1),
               let detail = adding(image, negatedBase),
               let amount = scalingChannels(of: detail,
-                                           by: CGFloat(min(max(clarity, -1), 1) * ClarityLocalContrast.strength)),
+                                           by: CGFloat(min(max(clarity, -1.5), 1.5) * ClarityLocalContrast.strength)),
               let boosted = adding(image, amount)
         else { return image }
 
@@ -4839,7 +4882,9 @@ enum PhotoEditRenderer {
                   lensVeil: dehaze > 0 ? (lensVeil(of: image, atmosphere: atmosphere) ?? 0) : 0)
         else { return image }
 
-        let strength = min(max(abs(dehaze), 0), 1)
+        // ±1.5 since 25.09 (every slider +50 %). Past 1 the map is read as
+        // hazier than measured — a stronger recovery, see scaledTransmission.
+        let strength = min(max(abs(dehaze), 0), 1.5)
 
         // A as a picture, for the two places the model needs it as one.
         let air = CIImage(color: CIColor(red: CGFloat(atmosphere.r),
@@ -5038,6 +5083,19 @@ enum PhotoEditRenderer {
             blend.backgroundImage = output
             blend.maskImage = mixMask
             output = blend.outputImage ?? output
+            // Past 100 (the 25.09 +50 % range) the glow is laid on a second
+            // time, by the part over 100 × 2: at 150 two full layers of glow.
+            if softGlow > 1 {
+                let more = CGFloat(min((softGlow - 1) * 2, 1))
+                let again = CIFilter.screenBlendMode()
+                again.inputImage = blurred
+                again.backgroundImage = output
+                let twice = CIFilter.blendWithMask()
+                twice.inputImage = again.outputImage
+                twice.backgroundImage = output
+                twice.maskImage = CIImage(color: CIColor(red: more, green: more, blue: more)).cropped(to: extent)
+                output = twice.outputImage?.cropped(to: extent) ?? output
+            }
         }
     }
 
@@ -5108,7 +5166,7 @@ enum PhotoEditRenderer {
             let halfW = extent.width / 2
             let halfH = extent.height / 2
             let darkens = vignette > 0
-            let amount = CGFloat(min(abs(vignette), 1))
+            let amount = CGFloat(min(abs(vignette), 1))  // a corner cannot go past black or white
             let centre: CGFloat = darkens ? 1 : 0
             let corner0: CGFloat = darkens ? 1 - amount : amount
 
@@ -5236,16 +5294,13 @@ enum PhotoEditRenderer {
             let filter = CIFilter.colorControls()
             filter.inputImage = output
             filter.contrast = 1
-            filter.saturation = Float(1 + local.saturation)
+            filter.saturation = Float(max(1 + local.saturation, 0))
             filter.brightness = 0
             output = filter.outputImage ?? output
         }
 
         if local.vibrance != 0 {
-            let filter = CIFilter.vibrance()
-            filter.inputImage = output
-            filter.amount = Float(local.vibrance)
-            output = filter.outputImage ?? output
+            output = applyVibrance(local.vibrance, to: output)
         }
 
         // ⚠️ From here down, a layer runs THE SAME FUNCTIONS the photo runs,
@@ -7189,12 +7244,13 @@ struct BackgroundEnhancedTuning: Equatable {
         /// the parity test can tell the card's rows from theirs.
         var key: String { "card.\(rawValue)" }
 
-        var range: ClosedRange<Double> { -1...1 }
+        var range: ClosedRange<Double> { -1.5...1.5 }
 
         var step: Double { self == .exposure ? 0.05 : 0.01 }
 
         func readout(_ value: Double) -> String {
-            self == .exposure
+            let value = value / briefShowSliderDisplayScale
+            return self == .exposure
                 ? String(format: "%+.2f", value)
                 : String(format: "%+.0f", value * 100)
         }
@@ -12389,7 +12445,12 @@ struct DevelopView: View {
         guard !changed.isEmpty else { return "Edit" }
         if changed.count == 1, let value = changed[0].value {
             let name = changed[0].name
-            let shown = name == "Exposure" ? String(format: "%+.2f", value) : String(format: "%+.0f", value * 100)
+            // Look sliders read in displayed units (briefShowSliderDisplayScale);
+            // the shape and geometry fields keep their own.
+            let own: Set<String> = ["Vignette Midpoint", "Vignette Feather", "Vignette Roundness",
+                                    "Sharpen Radius", "Straighten"]
+            let v = own.contains(name) ? value : value / briefShowSliderDisplayScale
+            let shown = name.hasSuffix("Exposure") ? String(format: "%+.2f", v) : String(format: "%+.0f", v * 100)
             return "\(name) \(shown)"
         }
         let names = changed.map(\.name)
@@ -12409,6 +12470,7 @@ struct DevelopView: View {
         case "temperatureKelvin": return "Temperature"
         case "tintAbsolute": return "Tint"
         case "colorMixer": return "Color Mixer"
+        case "faceDehaze": return "Subjects Dehaze"
         default:
             // camelCase → Title Case: "faceDehaze" → "Face Dehaze".
             var out = ""
@@ -18991,20 +19053,22 @@ struct DevelopView: View {
             // ⚠️ The Lightroom import still clamps to ±3 (DevelopLightroomPreset),
             // on purpose: a preset that asks for +2 EV must still LOOK like +2 EV.
             // Such a value sits at the end of the track until it is dragged.
-            editSlider("Exposure", value: $settings.exposure, range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
-            editSlider("Contrast", value: $settings.contrast, range: -1...1)
-            editSlider("Highlights", value: $settings.highlights, range: -1...1)
-            editSlider("Shadows", value: $settings.shadows, range: -1...1)
-            editSlider("Whites", value: $settings.whites, range: -1...1)
-            editSlider("Blacks", value: $settings.blacks, range: -1...1)
+            editSlider("Exposure", value: $settings.exposure, range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
             // ⚠️ PHOTO ONLY, and that is not a break of the MUST: a layer or a
             // mask has no background and no subjects of its own to split into.
             // Asked for 25.09: *„Mora da se dodaju dva slidera jedan da radi
             // exposure za backround a drugi … exposure za subjects i naravno
             // ovaj general ostaje"*. Same range, step and readout as Exposure,
             // through the same applyExposure — see SubjectSplit.
-            editSlider("Background Exposure", value: $settings.backgroundExposure, range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
-            editSlider("Subjects Exposure", value: $settings.subjectsExposure, range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
+            // Order asked for 25.09: *„Subjects Exposure stavi drugo po redu ispod
+            // exposure … a trece po redu … backround exposure"*.
+            editSlider("Subjects Exposure", value: $settings.subjectsExposure, range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
+            editSlider("Background Exposure", value: $settings.backgroundExposure, range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
+            editSlider("Contrast", value: $settings.contrast, range: -1.5...1.5)
+            editSlider("Highlights", value: $settings.highlights, range: -1.5...1.5)
+            editSlider("Shadows", value: $settings.shadows, range: -1.5...1.5)
+            editSlider("Whites", value: $settings.whites, range: -1.5...1.5)
+            editSlider("Blacks", value: $settings.blacks, range: -1.5...1.5)
         }
     }
 
@@ -19018,15 +19082,15 @@ struct DevelopView: View {
             editSlider("Temperature", value: Binding(
                 get: { settings.temperature },
                 set: { settings.temperature = $0; settings.temperatureKelvin = nil }
-            ), range: -1...1, trackGradient: DevelopView.temperatureTrack)
+            ), range: -1.5...1.5, trackGradient: DevelopView.temperatureTrack)
             whiteBalanceReadout
             editSlider("Tint", value: Binding(
                 get: { settings.tint },
                 set: { settings.tint = $0; settings.tintAbsolute = nil }
-            ), range: -1...1, trackGradient: DevelopView.tintTrack)
-            editSlider("Saturation", value: $settings.saturation, range: -1...1,
+            ), range: -1.5...1.5, trackGradient: DevelopView.tintTrack)
+            editSlider("Saturation", value: $settings.saturation, range: -1.5...1.5,
                        trackGradient: DevelopView.saturationTrack)
-            editSlider("Vibrance", value: $settings.vibrance, range: -1...1,
+            editSlider("Vibrance", value: $settings.vibrance, range: -1.5...1.5,
                        trackGradient: DevelopView.vibranceTrack)
         }
     }
@@ -19170,11 +19234,11 @@ struct DevelopView: View {
 
             let band = selectedColorBand
             editSlider("Hue", key: "mixer.hue",
-                       value: colorMixerBinding(band, \.hue), range: -1...1)
+                       value: colorMixerBinding(band, \.hue), range: -1.5...1.5)
             editSlider("Saturation", key: "mixer.saturation",
-                       value: colorMixerBinding(band, \.saturation), range: -1...1)
+                       value: colorMixerBinding(band, \.saturation), range: -1.5...1.5)
             editSlider("Luminance", key: "mixer.luminance",
-                       value: colorMixerBinding(band, \.luminance), range: -1...1)
+                       value: colorMixerBinding(band, \.luminance), range: -1.5...1.5)
         }
     }
 
@@ -19292,7 +19356,7 @@ struct DevelopView: View {
     private var detailSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Detail & Effects")
-            editSlider("Sharpness", value: $settings.sharpness, range: 0...1) { String(format: "%.0f", $0 * 100) }
+            editSlider("Sharpness", value: $settings.sharpness, range: 0...1.5) { String(format: "%.0f", $0 * 100) }
             // Shown only while there is sharpening for it to shape. A radius
             // with the amount at zero is a control that cannot do anything, and
             // Lightroom's own panel greys its sub-sliders the same way.
@@ -19302,16 +19366,24 @@ struct DevelopView: View {
                     String(format: "%.1f", $0)
                 }
             }
-            editSlider("Texture", value: $settings.texture, range: -1...1)
-            editSlider("Clarity", value: $settings.clarity, range: -1...1)
-            editSlider("Dehaze", value: $settings.dehaze, range: -1...1)
-            editSlider("Face Dehaze", value: $settings.faceDehaze, range: 0...1) { String(format: "%.0f", $0 * 100) }
+            editSlider("Texture", value: $settings.texture, range: -1.5...1.5)
+            editSlider("Clarity", value: $settings.clarity, range: -1.5...1.5)
+            // 25.09: *„ispod Calirty Subjects clarity i ispod subject clarity dodaj
+            // Backround clarity"*. applyClarity through the person mask — see
+            // SubjectSplit. Photo only, like the split exposures.
+            editSlider("Subjects Clarity", value: $settings.subjectsClarity, range: -1.5...1.5)
+            editSlider("Background Clarity", value: $settings.backgroundClarity, range: -1.5...1.5)
+            editSlider("Dehaze", value: $settings.dehaze, range: -1.5...1.5)
+            // Face Dehaze until 25.09; now on the whole people, not only faces —
+            // *„Face dehaze da se zove Subjects Dehaze i da radi nad ljudima"*.
+            // The stored field keeps its name so every edit made with it still reads.
+            editSlider("Subjects Dehaze", key: "subjectsDehaze", value: $settings.faceDehaze, range: 0...1.5) { String(format: "%.0f", $0 * 100) }
             // 25.09: *„jos jedan slider poseban za backround da radi samo
             // backround Dehaze"*. Dehaze's range and applyDehaze, behind the
             // people. Photo only, like the two exposures in Light.
-            editSlider("Background Dehaze", value: $settings.backgroundDehaze, range: -1...1)
-            editSlider("Soft Glow", value: $settings.softGlow, range: 0...1) { String(format: "%.0f", $0 * 100) }
-            editSlider("Vignette", value: $settings.vignette, range: -1...1)
+            editSlider("Background Dehaze", value: $settings.backgroundDehaze, range: -1.5...1.5)
+            editSlider("Soft Glow", value: $settings.softGlow, range: 0...1.5) { String(format: "%.0f", $0 * 100) }
+            editSlider("Vignette", value: $settings.vignette, range: -1.5...1.5)
             // Same rule as Radius: the shape of a vignette of zero is nothing.
             if settings.vignette != 0 {
                 editSlider("  Midpoint", key: "vignette.midpoint",
@@ -19632,17 +19704,17 @@ struct DevelopView: View {
             if adjustment.type != .patch {
                 Divider()
 
-                editSlider("Exposure", key: "mask.exposure", value: localAdjustmentBinding(\.exposure), range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
-                editSlider("Contrast", key: "mask.contrast", value: localAdjustmentBinding(\.contrast), range: -1...1)
-                editSlider("Highlights", key: "mask.highlights", value: localAdjustmentBinding(\.highlights), range: -1...1)
-                editSlider("Shadows", key: "mask.shadows", value: localAdjustmentBinding(\.shadows), range: -1...1)
-                editSlider("Whites", key: "mask.whites", value: localAdjustmentBinding(\.whites), range: -1...1)
-                editSlider("Blacks", key: "mask.blacks", value: localAdjustmentBinding(\.blacks), range: -1...1)
-                editSlider("Temperature", key: "mask.temperature", value: localAdjustmentBinding(\.temperature), range: -1...1)
-                editSlider("Tint", key: "mask.tint", value: localAdjustmentBinding(\.tint), range: -1...1)
-                editSlider("Saturation", key: "mask.saturation", value: localAdjustmentBinding(\.saturation), range: -1...1)
-                editSlider("Vibrance", key: "mask.vibrance", value: localAdjustmentBinding(\.vibrance), range: -1...1)
-                editSlider("Sharpness", key: "mask.sharpness", value: localAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
+                editSlider("Exposure", key: "mask.exposure", value: localAdjustmentBinding(\.exposure), range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
+                editSlider("Contrast", key: "mask.contrast", value: localAdjustmentBinding(\.contrast), range: -1.5...1.5)
+                editSlider("Highlights", key: "mask.highlights", value: localAdjustmentBinding(\.highlights), range: -1.5...1.5)
+                editSlider("Shadows", key: "mask.shadows", value: localAdjustmentBinding(\.shadows), range: -1.5...1.5)
+                editSlider("Whites", key: "mask.whites", value: localAdjustmentBinding(\.whites), range: -1.5...1.5)
+                editSlider("Blacks", key: "mask.blacks", value: localAdjustmentBinding(\.blacks), range: -1.5...1.5)
+                editSlider("Temperature", key: "mask.temperature", value: localAdjustmentBinding(\.temperature), range: -1.5...1.5)
+                editSlider("Tint", key: "mask.tint", value: localAdjustmentBinding(\.tint), range: -1.5...1.5)
+                editSlider("Saturation", key: "mask.saturation", value: localAdjustmentBinding(\.saturation), range: -1.5...1.5)
+                editSlider("Vibrance", key: "mask.vibrance", value: localAdjustmentBinding(\.vibrance), range: -1.5...1.5)
+                editSlider("Sharpness", key: "mask.sharpness", value: localAdjustmentBinding(\.sharpness), range: 0...1.5) { String(format: "%.0f", $0 * 100) }
             }
         }
     }
@@ -23449,12 +23521,12 @@ struct DevelopView: View {
                 .font(.custom("Figtree", size: 11))
                 .foregroundColor(AppColors.muted)
 
-            editSlider("Exposure", key: "layer.exposure", value: layerAdjustmentBinding(\.exposure), range: -1...1, step: 0.05) { String(format: "%+.2f", $0) }
-            editSlider("Contrast", key: "layer.contrast", value: layerAdjustmentBinding(\.contrast), range: -1...1)
-            editSlider("Highlights", key: "layer.highlights", value: layerAdjustmentBinding(\.highlights), range: -1...1)
-            editSlider("Shadows", key: "layer.shadows", value: layerAdjustmentBinding(\.shadows), range: -1...1)
-            editSlider("Whites", key: "layer.whites", value: layerAdjustmentBinding(\.whites), range: -1...1)
-            editSlider("Blacks", key: "layer.blacks", value: layerAdjustmentBinding(\.blacks), range: -1...1)
+            editSlider("Exposure", key: "layer.exposure", value: layerAdjustmentBinding(\.exposure), range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
+            editSlider("Contrast", key: "layer.contrast", value: layerAdjustmentBinding(\.contrast), range: -1.5...1.5)
+            editSlider("Highlights", key: "layer.highlights", value: layerAdjustmentBinding(\.highlights), range: -1.5...1.5)
+            editSlider("Shadows", key: "layer.shadows", value: layerAdjustmentBinding(\.shadows), range: -1.5...1.5)
+            editSlider("Whites", key: "layer.whites", value: layerAdjustmentBinding(\.whites), range: -1.5...1.5)
+            editSlider("Blacks", key: "layer.blacks", value: layerAdjustmentBinding(\.blacks), range: -1.5...1.5)
             // ⚠️ The SAME four tracks the photo's Color section uses, and they
             // belong here for the same reason they belong there: the colour on
             // the track is what the slider does. Left plain they were the one
@@ -23466,15 +23538,15 @@ struct DevelopView: View {
             // Safe to share: all four are static constants built from fixed
             // colours (see temperatureTrack below), so none of them reads the
             // photo. A layer gets the identical track, not a lookalike.
-            editSlider("Temperature", key: "layer.temperature", value: layerAdjustmentBinding(\.temperature), range: -1...1,
+            editSlider("Temperature", key: "layer.temperature", value: layerAdjustmentBinding(\.temperature), range: -1.5...1.5,
                        trackGradient: DevelopView.temperatureTrack)
-            editSlider("Tint", key: "layer.tint", value: layerAdjustmentBinding(\.tint), range: -1...1,
+            editSlider("Tint", key: "layer.tint", value: layerAdjustmentBinding(\.tint), range: -1.5...1.5,
                        trackGradient: DevelopView.tintTrack)
-            editSlider("Saturation", key: "layer.saturation", value: layerAdjustmentBinding(\.saturation), range: -1...1,
+            editSlider("Saturation", key: "layer.saturation", value: layerAdjustmentBinding(\.saturation), range: -1.5...1.5,
                        trackGradient: DevelopView.saturationTrack)
-            editSlider("Vibrance", key: "layer.vibrance", value: layerAdjustmentBinding(\.vibrance), range: -1...1,
+            editSlider("Vibrance", key: "layer.vibrance", value: layerAdjustmentBinding(\.vibrance), range: -1.5...1.5,
                        trackGradient: DevelopView.vibranceTrack)
-            editSlider("Sharpness", key: "layer.sharpness", value: layerAdjustmentBinding(\.sharpness), range: 0...1) { String(format: "%.0f", $0 * 100) }
+            editSlider("Sharpness", key: "layer.sharpness", value: layerAdjustmentBinding(\.sharpness), range: 0...1.5) { String(format: "%.0f", $0 * 100) }
             // Same rule the photo's panel uses: a radius with the amount at
             // zero is a control that cannot do anything.
             if selectedLayerAdjustments.sharpness > 0 {
@@ -23489,12 +23561,12 @@ struct DevelopView: View {
             // missing: *„nemam iste opcije za edit kao celokupan edit"*. Same
             // labels and same numbers on purpose, so a layer's Clarity of +40
             // is the photo's Clarity of +40 and not a second dialect.
-            editSlider("Texture", key: "layer.texture", value: layerAdjustmentBinding(\.texture), range: -1...1)
-            editSlider("Clarity", key: "layer.clarity", value: layerAdjustmentBinding(\.clarity), range: -1...1)
-            editSlider("Dehaze", key: "layer.dehaze", value: layerAdjustmentBinding(\.dehaze), range: -1...1)
-            editSlider("Face Dehaze", key: "layer.faceDehaze", value: layerAdjustmentBinding(\.faceDehaze), range: 0...1) { String(format: "%.0f", $0 * 100) }
-            editSlider("Soft Glow", key: "layer.softGlow", value: layerAdjustmentBinding(\.softGlow), range: 0...1) { String(format: "%.0f", $0 * 100) }
-            editSlider("Vignette", key: "layer.vignette", value: layerAdjustmentBinding(\.vignette), range: -1...1)
+            editSlider("Texture", key: "layer.texture", value: layerAdjustmentBinding(\.texture), range: -1.5...1.5)
+            editSlider("Clarity", key: "layer.clarity", value: layerAdjustmentBinding(\.clarity), range: -1.5...1.5)
+            editSlider("Dehaze", key: "layer.dehaze", value: layerAdjustmentBinding(\.dehaze), range: -1.5...1.5)
+            editSlider("Subjects Dehaze", key: "layer.faceDehaze", value: layerAdjustmentBinding(\.faceDehaze), range: 0...1.5) { String(format: "%.0f", $0 * 100) }
+            editSlider("Soft Glow", key: "layer.softGlow", value: layerAdjustmentBinding(\.softGlow), range: 0...1.5) { String(format: "%.0f", $0 * 100) }
+            editSlider("Vignette", key: "layer.vignette", value: layerAdjustmentBinding(\.vignette), range: -1.5...1.5)
             if selectedLayerAdjustments.vignette != 0 {
                 editSlider("  Midpoint", key: "layer.vignetteMidpoint",
                            value: layerAdjustmentBinding(\.vignetteMidpoint), range: 0...1) {
@@ -23553,11 +23625,11 @@ struct DevelopView: View {
 
             let band = selectedColorBand
             editSlider("Hue", key: "layer.mixer.hue",
-                       value: layerColorMixerBinding(band, \.hue), range: -1...1)
+                       value: layerColorMixerBinding(band, \.hue), range: -1.5...1.5)
             editSlider("Saturation", key: "layer.mixer.saturation",
-                       value: layerColorMixerBinding(band, \.saturation), range: -1...1)
+                       value: layerColorMixerBinding(band, \.saturation), range: -1.5...1.5)
             editSlider("Luminance", key: "layer.mixer.luminance",
-                       value: layerColorMixerBinding(band, \.luminance), range: -1...1)
+                       value: layerColorMixerBinding(band, \.luminance), range: -1.5...1.5)
         }
     }
 
@@ -23856,6 +23928,11 @@ struct DevelopView: View {
         let sliderKey = key ?? title
         let isSelected = selectedSliderKey == sliderKey
         let readout = sliderReadouts.readout(for: sliderKey)
+        // See briefShowSliderDisplayScale: the number and one arrow press are in
+        // the displayed units, the binding in the renderer's.
+        let displayScale = briefShowDisplayScale(for: range)
+        let step = step * displayScale
+        let shownFormat: (Double) -> String = { format($0 / displayScale) }
 
         // Deliberately re-registered on EVERY body pass rather than in
         // .onAppear — see SliderNudgeRegistry for why the freshest binding
@@ -23904,7 +23981,7 @@ struct DevelopView: View {
 
                 Spacer()
 
-                SliderReadoutText(readout: readout, value: value.wrappedValue, format: format,
+                SliderReadoutText(readout: readout, value: value.wrappedValue, format: shownFormat,
                                   isSelected: isSelected)
             }
 
@@ -25621,6 +25698,8 @@ struct DevelopView: View {
         if items.contains(.backgroundExposure) { result.backgroundExposure = source.backgroundExposure }
         if items.contains(.subjectsExposure) { result.subjectsExposure = source.subjectsExposure }
         if items.contains(.backgroundDehaze) { result.backgroundDehaze = source.backgroundDehaze }
+        if items.contains(.subjectsClarity) { result.subjectsClarity = source.subjectsClarity }
+        if items.contains(.backgroundClarity) { result.backgroundClarity = source.backgroundClarity }
         if items.contains(.softGlow) { result.softGlow = source.softGlow }
         if items.contains(.vignette) {
             result.vignette = source.vignette
@@ -27292,6 +27371,25 @@ enum EditSliderDrag {
         let moved = Double((x - grab.startX) / usable) * span
         return min(max(grab.startValue + moved, range.lowerBound), range.upperBound)
     }
+}
+
+/// ⚠️ 100 ON THE SLIDER IS 150 % OF THE OLD EFFECT (25.09). The client:
+/// *„i svi trenutno slideri da se uvecaju 50% od trenutne granice"*, then
+/// *„neka granica bude 100 ali to sto da ustvari po novom bude 150 … za sve"*.
+/// So every look slider's RANGE is the old one × 1.5 (−1.5…1.5, 0…1.5) and the
+/// renderer takes those numbers as they are, while every READOUT — the number
+/// beside the slider, the arrow step, the history label, the Background
+/// Enhanced card — divides by this. The end of the track reads 100.
+///
+/// Stored values are untouched, which is why nothing needed migrating: a photo
+/// edited before keeps its exact look and only its numbers read smaller
+/// (Contrast 0.41 was "+41", it is now "+27"). A range ending at exactly 1.5 is
+/// how a slider says it is one of these; tool sliders (brush, feather,
+/// opacity, straighten, the vignette's shape) keep their own numbers.
+let briefShowSliderDisplayScale = 1.5
+
+func briefShowDisplayScale(for range: ClosedRange<Double>) -> Double {
+    range.upperBound == briefShowSliderDisplayScale ? briefShowSliderDisplayScale : 1
 }
 
 /// One `SliderLiveReadout` per slider key, kept for the editor's lifetime so a

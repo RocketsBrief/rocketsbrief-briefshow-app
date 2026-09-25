@@ -38,8 +38,19 @@ extension PhotoEditRenderer {
     /// `faces` is given by `render`, which knows the photo (see
     /// FaceDehazeFaces.faces(of:variant:in:)); a layer leaves it nil and the
     /// faces are found in its own pixels.
-    static func applyFaceDehaze(_ amount: Double, to image: CIImage, faces known: [CGRect]? = nil) -> CIImage {
-        let strength = min(max(amount, 0), 1)
+    /// ⚠️ SUBJECTS DEHAZE since 25.09 — *„Face dehaze da se zove Subjects Dehaze
+    /// i da radi nad ljudima na slici"*. The same veil removal, laid through the
+    /// PERSON mask (whole people: hair, arms, clothes) instead of an ellipse
+    /// round each face. The photo passes its remembered mask as `people`; a
+    /// layer passes nothing and its own pixels are segmented (remembered by
+    /// content, SubjectSplit.mask(in:)). Where Vision finds nobody, the old face
+    /// ellipses are used, so a photo it cannot read still gets its faces done.
+    /// `people: .emptyMask` means "the photo looked and found nobody".
+    /// 0…1.5 since the same day (every slider +50 %); the veil itself stays
+    /// capped (`maximumVeil`), so past 100 it is the clarity that grows.
+    static func applyFaceDehaze(_ amount: Double, to image: CIImage, faces known: [CGRect]? = nil,
+                                people knownPeople: CIImage? = nil) -> CIImage {
+        let strength = min(max(amount, 0), 1.5)
         guard strength > 0 else { return image }
         let extent = image.extent
         guard extent.width > 8, extent.height > 8, extent.width.isFinite, extent.height.isFinite else {
@@ -47,16 +58,21 @@ extension PhotoEditRenderer {
         }
 
         let faces = known ?? FaceDehazeFaces.faces(in: image)
-        guard !faces.isEmpty else { return image }
+        let people: CIImage? = knownPeople.map { $0 === CIImage.emptyMask ? nil : $0 }
+            ?? SubjectSplit.mask(in: image)
+        guard !faces.isEmpty || people != nil else { return image }
 
         // Faces in this image's pixels (Vision and Core Image are both y-up).
         let boxes = faces.map {
             CGRect(x: extent.minX + $0.minX * extent.width, y: extent.minY + $0.minY * extent.height,
                    width: $0.width * extent.width, height: $0.height * extent.height)
         }
-        let faceWidth = boxes.map(\.width).sorted()[boxes.count / 2]
+        // The veil's patch follows the face size when there are faces; without
+        // them, a head is taken as about a twelfth of the frame's long side.
+        let faceWidth = boxes.isEmpty ? max(extent.width, extent.height) / 12
+            : boxes.map(\.width).sorted()[boxes.count / 2]
 
-        guard let mask = FaceDehazeFaces.mask(for: boxes, extent: extent),
+        guard let mask = people ?? FaceDehazeFaces.mask(for: boxes, extent: extent),
               let veil = FaceDehazeFaces.veil(of: image, faceWidth: faceWidth),
               let kernel = FaceDehazeFaces.veilKernel,
               let lifted = kernel.apply(extent: extent,
@@ -211,6 +227,10 @@ enum FaceDehazeFaces {
         return found
     }
 
+    /// The rank key and its match, for SubjectSplit.mask(in:).
+    static func contentKey(of image: CIImage) -> [UInt8]? { key(for: image) }
+    static func keysMatch(_ a: [UInt8], _ b: [UInt8]) -> Bool { matches(a, b) }
+
     private static func matches(_ a: [UInt8], _ b: [UInt8]) -> Bool {
         guard a.count == b.count, a.count > 2, a[0] == b[0], a[1] == b[1] else { return false }
         var same = 0
@@ -359,6 +379,35 @@ enum SubjectSplit {
             if byPhoto.count > 8 { byPhoto.removeLast() }
             lock.unlock()
         }
+        return shaped(found, onto: extent)
+    }
+
+    private static var byContent: [(key: [UInt8], mask: CIImage?)] = []
+
+    /// The person mask of an image with no photo behind it — a layer's own
+    /// pixels. Remembered by content (FaceDehazeFaces' rank key, which survives
+    /// tone changes), so moving a slider does not run Vision again.
+    static func mask(in image: CIImage) -> CIImage? {
+        let extent = image.extent
+        guard let key = FaceDehazeFaces.contentKey(of: image) else { return nil }
+        lock.lock()
+        let hit = byContent.first(where: { FaceDehazeFaces.keysMatch($0.key, key) })
+        lock.unlock()
+        let found: CIImage?
+        if let hit {
+            found = hit.mask
+        } else {
+            detectionCount += 1
+            found = SubjectMasker.personMask(for: image, maxWorkingEdge: detectionSide)
+            lock.lock()
+            byContent.insert((key, found), at: 0)
+            if byContent.count > 6 { byContent.removeLast() }
+            lock.unlock()
+        }
+        return shaped(found, onto: extent)
+    }
+
+    private static func shaped(_ found: CIImage?, onto extent: CGRect) -> CIImage? {
         guard let found, found.extent.width > 0, found.extent.height > 0,
               extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite else {
             return nil
@@ -393,17 +442,22 @@ enum SubjectSplit {
     static func apply(_ settings: PhotoEditSettings, to image: CIImage, people: CIImage) -> CIImage {
         var output = image
 
-        if settings.subjectsExposure != 0 {
-            let lit = PhotoEditRenderer.applyExposure(settings.subjectsExposure, to: output)
+        if settings.subjectsExposure != 0 || settings.subjectsClarity != 0 {
+            var lit = PhotoEditRenderer.applyExposure(settings.subjectsExposure, to: output)
+            lit = PhotoEditRenderer.applyClarity(settings.subjectsClarity, to: lit)
             output = lit.applyingFilter("CIBlendWithMask", parameters: [
                 kCIInputBackgroundImageKey: output,
                 kCIInputMaskImageKey: people,
             ]).cropped(to: image.extent)
         }
 
-        if settings.backgroundExposure != 0 || settings.backgroundDehaze != 0 {
+        if settings.backgroundExposure != 0 || settings.backgroundDehaze != 0 || settings.backgroundClarity != 0 {
             var behind = PhotoEditRenderer.applyExposure(settings.backgroundExposure, to: output)
+            behind = PhotoEditRenderer.applyClarity(settings.backgroundClarity, to: behind)
             behind = PhotoEditRenderer.applyDehaze(settings.backgroundDehaze, to: behind)
+            if settings.backgroundDehaze > 0 {
+                behind = hazeCut(settings.backgroundDehaze, on: behind)
+            }
             output = output.applyingFilter("CIBlendWithMask", parameters: [
                 kCIInputBackgroundImageKey: behind,
                 kCIInputMaskImageKey: people,
@@ -411,4 +465,38 @@ enum SubjectSplit {
         }
         return output
     }
+
+    /// ⚠️ WHAT BACKGROUND DEHAZE ADDS ON TOP OF DEHAZE (25.09). The client at
+    /// +100: *„nije bas nesto resio slucaj … backround je ostao manje vise
+    /// isti"*. Measured on C4S_9021: the Dehaze model reads a bright overcast
+    /// sky AS the atmosphere, so there is nothing for it to take away there —
+    /// physically right, and not what Lightroom's Dehaze looks like, which
+    /// deepens and colours exactly such a sky. So behind the people the look
+    /// is finished with the app's own tools, each at a share of the amount:
+    /// large-radius local contrast, contrast, saturation, and a small drop in
+    /// exposure (the haze is the bright part). Only for positive amounts;
+    /// negative Background Dehaze stays pure Dehaze (adding haze).
+    static let hazeCutClarity = 0.6
+    static let hazeCutContrast = 0.3
+    static let hazeCutSaturation = 0.3
+    static let hazeCutExposure = -0.25
+
+    static func hazeCut(_ amount: Double, on image: CIImage) -> CIImage {
+        let a = min(max(amount, 0), 1.5)
+        var out = PhotoEditRenderer.applyClarity(a * hazeCutClarity, to: image)
+        out = PhotoEditRenderer.applyContrast(a * hazeCutContrast, to: out)
+        out = PhotoEditRenderer.applyExposure(a * hazeCutExposure, to: out)
+        let colour = CIFilter.colorControls()
+        colour.inputImage = out
+        colour.saturation = Float(1 + a * hazeCutSaturation)
+        colour.brightness = 0
+        colour.contrast = 1
+        return (colour.outputImage ?? out).cropped(to: image.extent)
+    }
+}
+
+extension CIImage {
+    /// "The photo was segmented and nobody is in it" — passed as `people` so
+    /// applyFaceDehaze does not segment the same picture a second time.
+    static let emptyMask = CIImage.empty()
 }

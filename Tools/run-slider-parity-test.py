@@ -87,9 +87,11 @@ print(f"found {len(panels['photo'])} photo sliders, "
 # — the same stop Lightroom's +1.00 is. Narrowing the travel does not change
 # what a value means, it changes how far the thumb has to move to reach it.
 print("Exposure, the control that has moved twice")
+# ⚠️ 25.09 the client widened EVERY slider by half: *„i svi trenutno slideri da
+# se uvecaju 50% od trenutne granice"* — so Exposure is ±1.5 EV now, the third move.
 for panel in ("photo", "layer", "mask"):
     span, step = panels[panel].get("Exposure", (None, None))
-    check(f"{panel} Exposure is ±1 EV", span == (-1.0, 1.0), f"got {span}")
+    check(f"{panel} Exposure is ±1.5 EV", span == (-1.5, 1.5), f"got {span}")
     check(f"{panel} Exposure steps by 0.05", step == 0.05, f"got {step}")
 
 print("\nevery control the photo and a layer share, side by side")

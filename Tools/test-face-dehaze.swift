@@ -52,7 +52,19 @@ for (label, tweak) in [("Exposure +0.3", { (s: inout PhotoEditSettings) in s.exp
 // Face boxes in bitmap rows (top-down) and a generous outside test.
 let boxes = faces.map { CGRect(x: $0.minX * Double(w), y: (1 - $0.maxY) * Double(h), width: $0.width * Double(w), height: $0.height * Double(h)) }
 func inFace(_ x: Int, _ y: Int) -> Bool { boxes.contains { $0.insetBy(dx: $0.width * 0.15, dy: $0.height * 0.15).contains(CGPoint(x: x, y: y)) } }
-func farFromFace(_ x: Int, _ y: Int) -> Bool { !boxes.contains { $0.insetBy(dx: -$0.width * 1.6, dy: -$0.height * 1.9).contains(CGPoint(x: x, y: y)) } }
+// ⚠️ Subjects Dehaze since 25.09: the whole PEOPLE move, not only the faces.
+// "Outside" is now outside the person mask, grown by a band for its soft edge
+// (and still far from every face, for a photo Vision reads as nobody).
+let peopleMask = SubjectMasker.personMask(for: plain, maxWorkingEdge: SubjectSplit.detectionSide)
+let grown = peopleMask.map {
+    $0.clampedToExtent().applyingFilter("CIMorphologyMaximum",
+        parameters: ["inputRadius": Double(max(extent.width, extent.height)) * 0.02]).cropped(to: extent)
+}
+let grownPixels = grown.map { pixels($0) }
+func farFromFace(_ x: Int, _ y: Int) -> Bool {
+    if let grownPixels { return grownPixels[(y * w + x) * 4] < 3 }
+    return !boxes.contains { $0.insetBy(dx: -$0.width * 1.6, dy: -$0.height * 1.9).contains(CGPoint(x: x, y: y)) }
+}
 func luma(_ p: [UInt8], _ i: Int) -> Double { 0.2126 * Double(p[i*4]) + 0.7152 * Double(p[i*4+1]) + 0.0722 * Double(p[i*4+2]) }
 
 t0 = Date(); _ = pixels(render(0)); _ = pixels(render(0))
@@ -76,7 +88,7 @@ for amount in [0.5, 1.0] {
     print(String(format: "Face Dehaze %3.0f: face floor %5.1f -> %5.1f   face spread %5.1f -> %5.1f   far outside moved max %.1f   (%.0f ms)",
                  amount * 100, floor(a), floor(b), spread(a), spread(b), outsideMoved, ms))
     if !(floor(b) < floor(a) && spread(b) > spread(a)) { print("  FAIL the face did not clear"); failures += 1 }
-    if outsideMoved > 1 { print("  FAIL something far from every face moved"); failures += 1 }
+    if outsideMoved > 1 { print("  FAIL something outside the people moved"); failures += 1 }
     if let outDir, let cg = ctx.createCGImage(edited, from: extent) {
         try? NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])?
             .write(to: outDir.appendingPathComponent("face-dehaze-\(Int(amount * 100)).png"))

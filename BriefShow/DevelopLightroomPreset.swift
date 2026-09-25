@@ -451,8 +451,11 @@ enum LightroomPresetExport {
             let n = Int(value.rounded())
             put(key, n > 0 ? "+\(n)" : "\(n)")
         }
+        // Lightroom's own sliders end at ±100. Ours reach ±150 since 25.09
+        // (briefShowSliderDisplayScale); past its end the preset says ±100,
+        // the most Lightroom can be asked for.
         func hundredths(_ key: String, _ value: Double, invert: Bool = false) {
-            whole(key, (invert ? -value : value) * 100)
+            whole(key, min(max((invert ? -value : value) * 100, -100), 100))
         }
 
         put("crs:PresetType", "Normal")

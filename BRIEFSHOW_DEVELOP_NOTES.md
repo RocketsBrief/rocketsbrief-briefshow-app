@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026, noć (KORACI 228–229: brzina posle probe na Intel-u, pa slika u Create-u računa se i prikazuje sa grafičke kartice; **NIJE OBJAVLJENO**, v11.62 je i dalje gore; koraci 224–229 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026, noć (KORACI 228–230: brzina posle probe na Intel-u; slika u Create-u sa grafičke kartice; svi slajderi 100 = 150 % starog efekta, Subjects/Background Clarity, Subjects Dehaze; **NIJE OBJAVLJENO**, v11.62 je i dalje gore; koraci 224–230 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -24106,4 +24106,51 @@ isto u buildu pre KORAKA 229. Kontekst sada sRGB kao ostali; isti redosled posle
 
 ⚠️ Pri probi su se pojavila dva sistemska pitanja za Debug build: pristup Apple Music biblioteci (odgovoreno **Don't
 Allow** — app-u ne treba) i pristup Desktop folderu (**Allow**, kao i do sada). Oba se menjaju u System Settings ▸ Privacy.
+
+---
+
+## KORAK 230 — 100 na slajderu je 150 % starog efekta; Subjects/Background Clarity; Face Dehaze → Subjects Dehaze; jači Background Dehaze (25–26. septembar 2026)
+
+Klijent: *„Subjects Exposure stavi drugo po redu ispod exposure … trece … backround exposure"*, *„Face dehaze da se
+zove Subjects Dehaze i da radi nad ljudima na slici"*, *„backround dehaze +100 … backround je ostao manje vise isti"*,
+*„ispod Calirty Subjects clarity i … Backround clarity"*, *„svi trenutno slideri da se uvecaju 50% od trenutne granice"*,
+pa odmah: *„neka granica bude 100 ali to sto da ustvari po novom bude 150 … za sve ne samo dehaze!"*
+
+**Opseg (`briefShowSliderDisplayScale` = 1,5):** svaki slajder IZGLEDA (fotografija, layer, maska — MUST, sva tri odjednom; i
+kartica Background Enhanced) ima opseg starog × 1,5 (−1,5…1,5, 0…1,5), a renderer brojeve uzima takve kakvi su. SVE što se
+čita deli sa 1,5: broj pored slajdera, korak strelice, natpis u History-ju, kartica. Kraj staze piše **100**. **Sačuvane
+vrednosti se ne diraju → nema migracije**: stara fotografija izgleda identično, samo joj brojevi pišu manje (Contrast
+0,41 = bio „+41", sada „+27"). Prepoznaje se po opsegu koji se završava tačno na 1,5; alati (četke, Feather, Opacity,
+Straighten, oblik Vignette-a, Radius, Quality) zadržavaju svoje brojeve. Exposure: kraj piše +1,00, a to je 1,5 EV.
+LR izvoz preseta seče na ±100 (Lightroom dalje ne ide). slider-parity lenjir: Exposure sada ±1,5 („treći pomeraj").
+
+**Granice skinute u efektima** (bez toga bi 150 radilo isto što i 100): Contrast (`steepness` do 1,5), Clarity, Dehaze
+(`strength`, `scaledTransmission` čita mapu maglovitije → jači oporavak, pod `minimumTransmission` i dalje važi;
+`hazeMask`), Texture − (do 100 ×0,9 kao pre, do 150 raste do punog mešanja), Soft Glow (preko 100 drugi sloj sjaja),
+Vibrance (`applyVibrance` — CIVibrance sam staje na ±1, ostatak drugi prolaz; jedna funkcija za fotografiju i layer),
+Subjects Dehaze. Saturation nikad ispod 0 (−150 bi obrnulo boje). Vignette na 100 je već crn ugao — ne ide dalje.
+**Lenjir** `Tools/run-slider-reach-test.py <NEF> [size]`: 28 kontrola, novi kraj mora pomeriti sliku više od starog
+(C4S_9021: ×1,11 Shadows − do ×1,79 Vibrance) — pre popravki su pale Contrast ±, Vibrance, Shadows.
+
+**Redosled u Light-u:** Exposure, Subjects Exposure, Background Exposure, Contrast… (i u Sync-u).
+
+**Subjects/Background Clarity** (ispod Clarity-ja): `applyClarity` kroz masku ljudi (`SubjectSplit`), samo na fotografiji.
+
+**Subjects Dehaze** (bivši Face Dehaze, polje i dalje `faceDehaze` pa stari zapisi važe): isto skidanje koprene, ali kroz
+MASKU LJUDI (celi ljudi), ne elipse oko lica. Fotografija daje zapamćenu masku; layer segmentira svoje piksele
+(`SubjectSplit.mask(in:)`, zapamćeno po rang-ključu sadržaja kao lica). Ako Vision ne nađe nikog → stare elipse oko lica.
+
+**Background Dehaze jači (`SubjectSplit.hazeCut`):** izmereno na C4S_9021 da naš Dehaze (fizički model) svetlo oblačno
+nebo čita KAO atmosferu i tu nema šta da skine — pozadina se na +100 skoro nije menjala. Iza ljudi se sada posle Dehaze-a
+dodaje: lokalni kontrast ×0,6, Contrast ×0,3, Saturation ×0,3, Exposure ×−0,25 (sve × jačina, samo za pozitivno). Na PNG-u:
+nebo dobija oblake i plavu, pozadina dublja.
+
+**Popravljeno usput:** `NeighborPrefetch` kontekst (KORAK 229) i sada sRGB.
+
+**Lenjiri (svi zeleni):** slider-parity, header-bar, history-labels (ažuriran na prikaz ÷1,5 i „Subjects Dehaze"), grid-shape,
+thumbnail-cache, editsettings-decode, layer-edit-parity (MUST važi i za Subjects Dehaze), subject-split, display-frame,
+clarity, people-layer-strength, background-enhanced, slider-reach (nov), face-dehaze (ažuriran: „van" = van maske ljudi uz
+pojas 2 %, ne „daleko od lica" — lice 79 → 15 na 100, van ljudi 0,0). App restartovan; Light redosled viđen na ekranu.
+⚠️ Detail sekcija (Subjects/Background Clarity, Subjects Dehaze) i jači Background Dehaze nisu viđeni u app-i, samo na
+render-u (PNG, C4S_9021).
 

@@ -137,7 +137,8 @@ enum ContrastCurve {
         /// midtone slope and gets the `k` that delivers exactly it. There is no
         /// constant in this function that anybody chose.
         static func steepness(for amount: Double) -> Double {
-            let wanted = 1 + (ContrastCurve.midtoneSlopeAtFullTravel - 1) * min(max(amount, 0), 1)
+            // Up to 1.5 since 25.09 (every slider +50 %, briefShowSliderDisplayScale).
+            let wanted = 1 + (ContrastCurve.midtoneSlopeAtFullTravel - 1) * min(max(amount, 0), 1.5)
             guard wanted > 1 + 1e-12 else { return 0 }
 
             var low = 1e-6

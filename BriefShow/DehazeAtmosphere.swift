@@ -244,7 +244,10 @@ enum DehazeAtmosphere {
     /// says the picture is exactly what it is, and the whole chain is the
     /// identity by construction rather than by a guard.
     static func scaledTransmission(_ t: Double, strength: Double) -> Double {
-        1 - min(abs(strength), 1) * (1 - t)
+        // Past 1 (25.09, every slider +50 %) the map is read hazier than
+        // measured, so the recovery goes further; the gain is still floored by
+        // minimumTransmission in TransmissionGainCube.
+        max(1 - min(abs(strength), 1.5) * (1 - t), 0)
     }
 
     /// How much of the haze the LEFT half lays down everywhere, regardless of
@@ -267,7 +270,7 @@ enum DehazeAtmosphere {
     /// The mask the left half blends toward the atmospheric light with.
     static func hazeMask(_ t: Double, strength: Double) -> Double {
         let byTheMap = 1 - min(max(t, 0), 1)
-        let amount = min(abs(strength), 1) * (uniformHaze + (1 - uniformHaze) * byTheMap)
+        let amount = min(abs(strength), 1.5) * (uniformHaze + (1 - uniformHaze) * byTheMap)
         return 1 - min(max(amount, 0), 1)
     }
 }

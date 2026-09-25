@@ -18,6 +18,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import IOSurface
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import ImageIO
@@ -6909,6 +6910,82 @@ private func briefEditsDisplayCGImage(_ image: CIImage, from rect: CGRect,
                           deferred: false)
 }
 
+/// ⚠️ CREATE'S PICTURE IS RENDERED ON THE GRAPHICS CARD AND SHOWN FROM THERE
+/// (25.09) — Lightroom's way. Asked for in so many words: *„prebaci da se slika
+/// cita / izracuna u grafickoj i odmah prikaze odatle.. kao sto lightroom
+/// radi!"*.
+///
+/// `briefEditsDisplayCGImage` renders on the GPU and then READS THE RESULT BACK
+/// into ordinary memory, and Core Animation then sends it to the GPU again to
+/// put it on screen. On this Mac (M2) GPU and CPU share memory, and it still
+/// cost double. On the client's Intel iMac the graphics card is separate, so
+/// every frame crossed the bus twice.
+///
+/// Here the render goes into an IOSurface — the kind of buffer the window
+/// server composites from directly, the same thing a Metal layer draws into —
+/// and the layer shows that surface (`PreviewLayerImage`). Nothing is copied
+/// back. Measured on C4S_9021 at native (5496×3948): readback 356–389 ms,
+/// this 189 ms, and the bytes identical to the old path (max difference 0,
+/// same orientation). The render is WAITED for here, on the render queue, so
+/// no work is left for the main thread at commit time (the lazy-CGImage freeze
+/// described above cannot come back through this door).
+///
+/// Only for frames that go on screen in Create. Thumbnails, export, flatten
+/// and AI keep their CGImages — they need the bytes.
+func briefEditsDisplayFrame(_ image: CIImage, from rect: CGRect, context: CIContext) -> NSImage? {
+    let integral = rect.integral
+    let width = Int(integral.width), height = Int(integral.height)
+    guard width > 0, height > 0, integral.minX.isFinite, integral.minY.isFinite,
+          let surface = IOSurface(properties: [
+              .width: width, .height: height, .bytesPerElement: 4,
+              .pixelFormat: kCVPixelFormatType_32BGRA,
+          ]) else {
+        return briefEditsDisplayCGImage(image, from: rect, context: context).map {
+            NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
+        }
+    }
+    if let tag = briefEditsSRGBColorSpace.copyPropertyList() {
+        IOSurfaceSetValue(surface, kIOSurfaceColorSpace, tag)
+    }
+    let destination = CIRenderDestination(ioSurface: surface)
+    destination.colorSpace = briefEditsSRGBColorSpace
+    let moved = image.transformed(by: CGAffineTransform(translationX: -integral.minX, y: -integral.minY))
+    do {
+        let task = try context.startTask(toRender: moved,
+                                         from: CGRect(x: 0, y: 0, width: width, height: height),
+                                         to: destination, at: .zero)
+        _ = try task.waitUntilCompleted()
+    } catch {
+        return briefEditsDisplayCGImage(image, from: rect, context: context).map {
+            NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
+        }
+    }
+    return GPUFrameImage.make(surface: surface, size: NSSize(width: width, height: height))
+}
+
+/// A frame that lives on the graphics card. See briefEditsDisplayFrame.
+///
+/// A plain NSImage so everything that holds "the frame on screen" — the preview
+/// state, the crop-ready frame, the neighbours made ready ahead — keeps its
+/// type, and `size` stays the geometry every overlay is laid out against. The
+/// surface rides along as an associated object; its only representation is a
+/// lazy NSCIImageRep over the same surface, so anything that ever draws it or
+/// asks for a CGImage still gets the picture (read back only then).
+enum GPUFrameImage {
+    private static var key: UInt8 = 0
+
+    static func make(surface: IOSurface, size: NSSize) -> NSImage {
+        let image = NSImage(size: size)
+        image.addRepresentation(NSCIImageRep(ciImage: CIImage(ioSurface: surface)))
+        objc_setAssociatedObject(image, &key, surface, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        return image
+    }
+
+    static func surface(of image: NSImage) -> IOSurface? {
+        objc_getAssociatedObject(image, &key) as? IOSurface
+    }
+}
+
 // The interactive preview's own queue, separate from the heavy one below.
 //
 // They were one serial queue, and that was a real bug: the refine and the
@@ -8304,7 +8381,15 @@ final class NeighborPrefetch: @unchecked Sendable {
         return queue
     }()
 
-    private let context = CIContext(options: [.cacheIntermediates: false,
+    /// ⚠️ sRGB working space, like every other context the editor renders with
+    /// (makeBriefEditsCIContext). Found 25.09: this one had the DEFAULT (linear)
+    /// working space, and Dehaze — which is built on sRGB values — came out
+    /// washed grey through it: a neighbour with Dehaze +1.5 opened as a milky
+    /// picture (darkest pixels 175 instead of 3) until something re-rendered it.
+    /// The open photo never showed it because its own renders use sRGB contexts.
+    private let context = CIContext(options: [.workingColorSpace: briefEditsSRGBColorSpace,
+                                              .outputColorSpace: briefEditsSRGBColorSpace,
+                                              .cacheIntermediates: false,
                                               .name: "NeighborPrefetch"])
     private let lock = NSLock()
     private var entries: [URL: Entry] = [:]
@@ -8375,10 +8460,8 @@ final class NeighborPrefetch: @unchecked Sendable {
         // taking it would make the open photo's next edit decode again.
         let rendered = PhotoEditRenderer.render(settings, on: base, applyCrop: true,
                                                 decodeScale: scale, holdDecode: false)
-        var frame: NSImage?
-        if let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent, context: context) {
-            frame = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        }
+        // On the graphics card, like the open photo's frame — briefEditsDisplayFrame.
+        let frame = briefEditsDisplayFrame(rendered, from: rendered.extent, context: context)
         let bins = PhotoEditRenderer.luminanceHistogram(of: rendered, context: context)
 
         lock.lock()
@@ -8470,6 +8553,15 @@ struct PreviewLayerImage: NSViewRepresentable {
     }
 
     private func set(_ image: NSImage, on view: LayerView) {
+        // Straight from the graphics card — see briefEditsDisplayFrame.
+        if let surface = GPUFrameImage.surface(of: image) {
+            if (view.layer?.contents as AnyObject?) === surface { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            view.layer?.contents = surface
+            CATransaction.commit()
+            return
+        }
         var rect = CGRect(origin: .zero, size: image.size)
         guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
             return
@@ -26479,11 +26571,10 @@ struct DevelopView: View {
             guard generation == renderGeneration else {
                 return
             }
-            guard let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent,
-                                                        context: briefEditsPreviewCIContext) else {
+            guard let image = briefEditsDisplayFrame(rendered, from: rendered.extent,
+                                                     context: briefEditsPreviewCIContext) else {
                 return
             }
-            let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
 
             // The PICTURE is committed first, on its own, before anything else
             // is computed. It is what the client is waiting for, and nothing
@@ -26612,11 +26703,10 @@ struct DevelopView: View {
                 let rendered = PhotoEditRenderer.render(snapshot, on: previewBaseImage,
                                                         applyCrop: false, reusingRAWDecode: true)
                 guard generation == renderGeneration,
-                      let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent,
-                                                             context: briefEditsPreviewCIContext) else {
+                      let image = briefEditsDisplayFrame(rendered, from: rendered.extent,
+                                                         context: briefEditsPreviewCIContext) else {
                     return
                 }
-                let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
                 DispatchQueue.main.async {
                     guard self.selectedURL == selectedURL, generation == renderGeneration else { return }
                     cropReady.url = selectedURL
@@ -26706,11 +26796,10 @@ struct DevelopView: View {
             let rendered = PhotoEditRenderer.render(effectiveSettings, on: fullBaseImage,
                                                     applyCrop: cropEnabled, decodeScale: scale)
             guard generation == renderGeneration,
-                  let cgImage = briefEditsDisplayCGImage(rendered, from: rendered.extent,
-                                                         context: briefEditsCIContext) else {
+                  let image = briefEditsDisplayFrame(rendered, from: rendered.extent,
+                                                     context: briefEditsCIContext) else {
                 return
             }
-            let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
 
             DispatchQueue.main.async {
                 guard selectedURL == photoAtRenderTime, generation == renderGeneration else {

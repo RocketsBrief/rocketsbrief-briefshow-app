@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026, noć (KORAK 228: brzina posle probe na Intel-u — slajder se piše na puštanje, crop bez čekanja, grid bez senki i bez posla dok se vuče, tri nova slajdera; **NIJE OBJAVLJENO**, v11.62 je i dalje gore; koraci 224–228 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026, noć (KORACI 228–229: brzina posle probe na Intel-u, pa slika u Create-u računa se i prikazuje sa grafičke kartice; **NIJE OBJAVLJENO**, v11.62 je i dalje gore; koraci 224–229 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -24072,4 +24072,38 @@ Sync prozor, tri nova slajdera, ⌘A pa klik, prevlačenje 90 slika u folder.
    `selectedURLs` ponovo gradi ogroman `body`. Već izdvojeno: pregled, filmstrip, Sync, readout slajdera. Sledeće: panel
    slajdera i selekcija u grid-u u svoje `ObservableObject`-e.
 3. **Merenje na Intel-u pre i posle** — bez Supabase reda sa te mašine svaka od ovih odluka je naslepo.
+
+---
+
+## KORAK 229 — slika u Create-u se računa i prikazuje sa GRAFIČKE KARTICE, kao u Lightroom-u; isprani sused (25. septembar 2026)
+
+Klijent: *„prebaci da se slika cita / izracuna u grafickoj i odmah prikaze odatle.. kao sto lightroom radi!"*
+
+**Pre:** `briefEditsDisplayCGImage` — render na GPU-u, pa KOPIJA u RAM (`createCGImage`, `deferred: false`), pa Core
+Animation šalje nazad na GPU. Na Intel iMac-u (posebna AMD grafika) svaki kadar dvaput preko magistrale.
+
+**Sada:** `briefEditsDisplayFrame` renderuje u **IOSurface** (bafer iz kog window server crta direktno, isto što koristi
+Metal sloj) preko `CIRenderDestination`, sačeka kraj na render niti (`waitUntilCompleted` — nikakav posao ne ostaje glavnoj
+niti, KORAK „lenji CGImage" ne može da se vrati), a `PreviewLayerImage` stavlja surface u `layer.contents`. Zum, pan, crop
+geometrija, trilinear — sve isto, jer je i dalje CALayer. `GPUFrameImage` = običan NSImage sa surface-om kao pridruženim
+objektom i lenjim `NSCIImageRep` (ako bi iko tražio CGImage, dobije ga). Tri mesta: `renderNow`, `refinedRenderNow`,
+`CropReadyFrame`, plus `NeighborPrefetch`. Sličice, izvoz, flatten, AI — nepromenjeno (njima trebaju bajtovi).
+
+**Izmereno** (M2, C4S_9021 native 5496×3948): stari put **356–389 ms**, novi **189 ms**; bajtovi **identični** (max razlika 0,
+ista orijentacija, ista alfa i na providnim uglovima). Lenjir: `Tools/run-display-frame-test.py <NEF> [size]` — 5 izgleda
+(plain, Dehaze, Clarity, Straighten sa providnim uglovima) × sRGB i podrazumevani kontekst, sve 0. Na Intel-u NIJE mereno;
+očekivano više od 2×, jer tamo kopija ide preko PCIe.
+
+**Viđeno na ekranu (ova mašina):** Create sa GPU kadrom, boje ispravne; slajder: usred vučenja broj −0,58 i palac pomeren,
+slika ista, posle puštanja potamni; Crop: za 0,2 s cela slika sa okvirom na pravom mestu, Done bez izmene vraća isečenu
+za < 0,2 s; strelica u sidebar-u otvara podfoldere bez otvaranja foldera. Test izmene (Exposure, crop) na C4S_8927 vraćene
+(⌘Z, Reset Crop) — zapis proveren: crop nil, exposure 0,419.
+
+**Usput nađeno i popravljeno — isprani sused (greška iz KORAKA 224, u v11.62):** `NeighborPrefetch` je imao CIContext sa
+PODRAZUMEVANIM (linearnim) radnim prostorom; svi ostali su sRGB. Dehaze kroz njega daje mlečnu sliku: C4S_8928 (Dehaze +1,5)
+otvorena kao sused imala je najtamnije piksele **175 umesto 3**, i histogram sa jednim šiljkom. Potvrđeno da nije GPU prikaz:
+isto u buildu pre KORAKA 229. Kontekst sada sRGB kao ostali; isti redosled posle popravke — slika i histogram ispravni.
+
+⚠️ Pri probi su se pojavila dva sistemska pitanja za Debug build: pristup Apple Music biblioteci (odgovoreno **Don't
+Allow** — app-u ne treba) i pristup Desktop folderu (**Allow**, kao i do sada). Oba se menjaju u System Settings ▸ Privacy.
 

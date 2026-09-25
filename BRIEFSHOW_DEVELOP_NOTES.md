@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026, noć (KORACI 228–230: brzina posle probe na Intel-u; slika u Create-u sa grafičke kartice; svi slajderi 100 = 150 % starog efekta, Subjects/Background Clarity, Subjects Dehaze; **NIJE OBJAVLJENO**, v11.62 je i dalje gore; koraci 224–230 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 25. septembar 2026, noć (KORACI 228–230: brzina posle probe na Intel-u; slika u Create-u sa grafičke kartice; svi slajderi 100 = 150 % starog efekta, Subjects/Background Clarity, Subjects Dehaze; **v11.69 je gore** (KORAK 231); koraci 224–231 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -24153,4 +24153,30 @@ clarity, people-layer-strength, background-enhanced, slider-reach (nov), face-de
 pojas 2 %, ne „daleko od lica" — lice 79 → 15 na 100, van ljudi 0,0). App restartovan; Light redosled viđen na ekranu.
 ⚠️ Detail sekcija (Subjects/Background Clarity, Subjects Dehaze) i jači Background Dehaze nisu viđeni u app-i, samo na
 render-u (PNG, C4S_9021).
+
+---
+
+## KORAK 231 — RELEASE v11.69 (26. septembar 2026)
+
+`python3 Tools/make-release.py 11.69 --small-only` — sadrži KORAKE 227–230. Verzija 11.62/62 → **11.69/69** (oznaka ispod
+C4S loga se čita iz bundle-a). Pre pakovanja zeleni svi lenjiri iz KORAKA 230.
+
+| | |
+|---|---|
+| `lipo -archs` | **arm64 x86_64** |
+| `LSMinimumSystemVersion` | **13.0** |
+| verzija / build | **11.69 / 69** |
+| `LaMa.mlmodelc` | unutra |
+| `SD15-Inpainting` | **nema** — dugme u app-i, `v11.0/SD15-Inpainting.aar` HTTP 200; ko ga već ima, zadržava ga |
+| SD na Intel-u | `computeUnits = .all` (CPU+GPU dele posao), nepromenjeno |
+| lične fotografije | **0** |
+| `codesign -v` | ok |
+| veličina | 117660860 bajta |
+| SHA-256 | `a7ed18f80621aff1531f3fda0ceeba604f4d069e5aec774535d1051407517ec5` |
+
+- stranica: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/tag/v11.69`
+- preuzimanje: `https://github.com/RocketsBrief/rocketsbrief-briefshow-app/releases/download/v11.69/C4S-Suite-11.69.zip`
+- **`v11.0` se i dalje NE SME brisati.**
+- ⚠️ BriefContact dugme je u ovom izdanju, ali `https://briefcontact.pages.dev` još nije postavljen — na klijentskim
+  mašinama BriefContact ne radi dok se server ne podigne (KORAK 227). U release notes nije pomenut.
 

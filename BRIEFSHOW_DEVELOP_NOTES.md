@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 26. septembar 2026 (KORACI 232–233, vrh „GDE SMO STALI — 26. septembar, veče"; 232: grid se stvarno zatvara, Background Saturation, Subjects Contrast; 233: **AI Assistant** — modal pri svakom otvaranju Create-a; **nije objavljeno**, v11.69 je gore; koraci 224–233 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 26. septembar 2026, veče (KORACI 232–235, vrh „GDE SMO STALI — 26. septembar, kraj dana"; grid se stvarno zatvara, Background Saturation, Subjects Contrast, **AI Assistant**, brza selekcija u filmstripu; **nije objavljeno**, push-ovano na `briefshow-develop`, v11.69 je gore; koraci 224–235 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -728,6 +728,30 @@ mogu videti na ekranu**: da prozor ostaje 834 posle promene teme, i hover
 animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 26. septembar 2026, kraj dana — KORACI 232–235 (NIJE OBJAVLJENO, push-ovano na `briefshow-develop`)
+
+| | |
+|---|---|
+| **232** | grid se **zatvara** (ne sakriva) za Create/BriefShow, pamti folder/selekciju/stablo, uvek jedan grid (Dock, bez ⌘N i tabova); **Background Saturation**, **Subjects Contrast** |
+| **233** | **AI Assistant** (`AIAssistant.swift`): modal pri svakom otvaranju Create-a + dugme sa štapićem u traci (posle Skip). Zatvorene oči/mutne → Reject, duplikati netaknuti; isti izgled ljudi (koža: svetlina + balans bele), izbor Brightness/Contrast/Background colour/Dehaze; Youthify; horizont; crop. Undo All dok je kartica otvorena |
+| **234** | ⌘A u filmstripu više ne koči: zapis za poništavanje recepata i flatten zapis dekodiraju se jednom (bili su dekodirani na svako čitanje, po sličici). Klijent: *„da sad je brze"* |
+| **235** | svetlina ljudi sa **kože lica** (portret u tamnoj haljini je pregorevao); merenje brže |
+
+**Probao klijent na ekranu:** grid/Create/BriefShow zatvaranje, brza selekcija, AI Assistant na 108 slika (većina „full", portreti
+presvetli → popravljeno u 235, klijent to još NIJE video).
+
+**SLEDEĆE (redom):**
+1. Restart app-e na build iz 235 (kartica je bila otvorena pa se app nije ugasila) i ponovo AI Assistant — na `~/Desktop/C4S AI Test`
+   (10 kopija `AITEST_…`) ili na RAW Check sa Contrast Natural / colour 0 / Dehaze 0 (ta tri se DODAJU preko postojećih).
+2. Proveriti na ekranu: boje padajućih lista u kartici (tema), dugme sa štapićem, izveštaj „Worth a look".
+3. **Memorija do 3,8 GB** u Create-u posle AI-ja (`diagnostics.jsonl`, `memory_mb`) — istražiti.
+4. Zamrzavanje 5–7 s pri svakom pokretanju Debug build-a — potvrditi da je keychain (klijent to ne bi imao) ili naći uzrok.
+5. AI Assistant na Intel-u nije meren (~0,6 s po slici na M2); Background Dehaze u rešavaču je skup — razmisliti da se ne renderuje u probama.
+6. Iz liste v11.69: Supabase dijagnostika sa Intel-a, BriefContact server, Dehaze snimak.
+7. Pa paket (novo izdanje) — `v11.0` se i dalje NE SME brisati.
+
+---
 
 ### GDE SMO STALI — 26. septembar 2026, veče — KORAK 233 (NIJE OBJAVLJENO, commit lokalan)
 

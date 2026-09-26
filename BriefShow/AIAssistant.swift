@@ -954,6 +954,7 @@ struct AIAssistantCard: View {
 
     @State private var options = AIAssistantOptions()
     @StateObject private var run = AIAssistantRun()
+    @ObservedObject private var theme = ThemeManager.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -967,6 +968,11 @@ struct AIAssistantCard: View {
         }
         .padding(18)
         .frame(width: 500)
+        // ⚠️ The system controls in here (the three pop-up menus, the
+        // checkboxes, the sliders) draw in the WINDOW's appearance, and a sheet
+        // does not get the app's theme — their text came out near black on this
+        // dark panel (reported 26.09). Told the theme explicitly.
+        .environment(\.colorScheme, theme.current == .dark ? .dark : .light)
         .background(AppColors.panel)
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColors.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -1071,12 +1077,28 @@ struct AIAssistantCard: View {
             tick("Straighten the horizon", "Only a small tilt that looks like a mistake — up to 8°.", $options.straighten)
             tick("Crop with the people in the centre", "Faces a little above the middle, room around everyone.",
                  $options.crop)
-            Picker("", selection: $options.cropShape) {
-                ForEach(AIAssistantCropShape.allCases) { Text($0.label).tag($0) }
+            // Own pills, not a segmented Picker: the system control draws its
+            // unselected labels in the system's colour, which on this app's
+            // dark panel came out black (reported 26.09 with a screenshot).
+            HStack(spacing: 6) {
+                ForEach(AIAssistantCropShape.allCases) { shape in
+                    let picked = options.cropShape == shape
+                    Button { options.cropShape = shape } label: {
+                        Text(shape.label)
+                            .font(.custom("Figtree", size: 11).weight(picked ? .semibold : .regular))
+                            .foregroundColor(picked ? AppColors.ink : AppColors.inkSecondary)
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(RoundedRectangle(cornerRadius: 6)
+                                .fill(picked ? AppColors.panelAlt : Color.clear))
+                            .overlay(RoundedRectangle(cornerRadius: 6)
+                                .stroke(AppColors.border.opacity(picked ? 0.9 : 0.5), lineWidth: 1))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PlainHoverButtonStyle())
+                }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .disabled(!options.crop)
+            .opacity(options.crop ? 1 : 0.5)
             .padding(.leading, 20)
         }
     }

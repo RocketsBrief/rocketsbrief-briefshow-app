@@ -24323,3 +24323,23 @@ slider-parity, header-bar, grid-shape, history-labels. `CardButtonStyle` i `Deve
 
 ⚠️ **Modal nije viđen u app-i** (video poziv na ekranu). Nije mereno na Intel-u; 681 ms na M2 → za 200 slika oko 2–3 min na M2.
 
+---
+
+## KORAK 234 — selekcija u filmstripu spora posle recepata; boje AI Assistant kartice (26. septembar 2026)
+
+Klijent: *„zasto moram da cekam dugu da se sve selektuje u filmstripu?"*. `sample` 10 s tokom ⌘A (108 slika): glavna nit 100 % u
+`DevelopView.filmstripThumbnail`, 60 % u `PortraitRecipeUndoStore.entries` — **ceo zapis za poništavanje recepata (214 KB, sa
+layerima) dekodiran iz UserDefaults na SVAKO čitanje**. Meni na desni klik svake sličice pita `undoableTitle`/`canUndo` za celu
+selekciju → posle ⌘A hiljade dekodiranja po iscrtavanju. Zapis je narastao posle recepata, pa je postalo vidljivo tek sada.
+
+- `PortraitRecipeUndoStore.entries` i `FlattenedImageStore.storedSettings`: dekodirani jednom i držani u memoriji (brava — recept
+  piše iz pozadine), upis ide i u keš i na disk. Isti obrazac koji `PhotoEditStore.allSettings` već ima.
+- Klijent potvrdio: *„da sad je brze"*.
+
+AI Assistant kartica: crop oblici kao sopstvena dugmad u bojama teme (sistemska segmentirana kontrola je crtala crn tekst), i kartica
+dobija temu app-e (`.environment(\.colorScheme…)`) — padajuće liste su bile skoro crne. ⚠️ Padajuće liste posle popravke nisu viđene
+na ekranu.
+
+Usput: AI Assistant je pokrenut od strane klijenta na 108 pravih slika u `BriefShow RAW Check/2026-09-01` (izmene su u zapisu,
+Undo All više nije dostupan posle restarta — vraćanje bi bilo ručno ili Reset po slici).
+

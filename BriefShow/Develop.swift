@@ -2145,12 +2145,23 @@ enum FlattenedImageStore {
         try? FileManager.default.removeItem(at: aside)
     }
 
+    /// Decoded once and held, like PortraitRecipeUndoStore's — see the note
+    /// there (26.09): a store decoded from UserDefaults on every read is a
+    /// store decoded once per filmstrip tile per redraw.
+    private static let cacheLock = NSLock()
+    private static var cached: [String: PhotoEditSettings]?
+
     private static var storedSettings: [String: PhotoEditSettings] {
         get {
-            guard let data = UserDefaults.standard.data(forKey: settingsKey) else { return [:] }
-            return (try? JSONDecoder().decode([String: PhotoEditSettings].self, from: data)) ?? [:]
+            cacheLock.lock(); defer { cacheLock.unlock() }
+            if let cached { return cached }
+            let decoded = UserDefaults.standard.data(forKey: settingsKey)
+                .flatMap { try? JSONDecoder().decode([String: PhotoEditSettings].self, from: $0) } ?? [:]
+            cached = decoded
+            return decoded
         }
         set {
+            cacheLock.lock(); cached = newValue; cacheLock.unlock()
             UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: settingsKey)
         }
     }
@@ -7920,12 +7931,28 @@ enum PortraitRecipeUndoStore {
 
     private static let key = "com.rocketsbrief.briefshow.portraitRecipeUndo"
 
+    /// ⚠️ DECODED ONCE, then held (26.09). Every filmstrip tile asks
+    /// `undoableTitle` on every redraw, and this used to decode the WHOLE store
+    /// from UserDefaults each time — every entry carries a full record with its
+    /// layers. Reported: *„zasto moram da cekam dugu da se sve selektuje u
+    /// filmstripu?"*; a `sample` during ⌘A had the main thread 100 % in
+    /// `filmstripThumbnail`, 60 % of it in this decode. Written through on every
+    /// change, read from disk only the first time. Locked: `record` runs on the
+    /// recipe queue while the filmstrip reads on the main thread.
+    private static let cacheLock = NSLock()
+    private static var cached: [String: Entry]?
+
     private static var entries: [String: Entry] {
         get {
-            guard let data = UserDefaults.standard.data(forKey: key) else { return [:] }
-            return (try? JSONDecoder().decode([String: Entry].self, from: data)) ?? [:]
+            cacheLock.lock(); defer { cacheLock.unlock() }
+            if let cached { return cached }
+            let decoded = UserDefaults.standard.data(forKey: key)
+                .flatMap { try? JSONDecoder().decode([String: Entry].self, from: $0) } ?? [:]
+            cached = decoded
+            return decoded
         }
         set {
+            cacheLock.lock(); cached = newValue; cacheLock.unlock()
             UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: key)
         }
     }

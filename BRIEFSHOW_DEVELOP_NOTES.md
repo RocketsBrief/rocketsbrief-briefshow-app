@@ -24272,5 +24272,5 @@ glavni Saturation (isti bajtovi, samo premešten kod) i pozadina iza ljudi (`Sub
 Subjects Contrast +0,75 pomera ljude +7,1, pozadinu ≤ 0,7; Vision 1×; sve na 0 = 0,0. slider-reach: novi kraj ×1,45 / ×1,34.
 PNG pogledan: −50 siva pozadina uz netaknutog momka, +50 plav bazen i nebo.
 
-⚠️ Novi potpis Debug build-a je jednom tražio keychain lozinku (`com.rocketsbrief.briefshow.session`) — kliknuo ju je klijent.
+⚠️ Novi potpis Debug build-a je jednom tražio keychain lozinku (`com.rocketsbrief.briefshow.session`) — posle toga je prošao, lozinka nije dirana odavde.
 

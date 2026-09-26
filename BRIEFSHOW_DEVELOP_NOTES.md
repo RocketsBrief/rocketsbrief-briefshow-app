@@ -24343,3 +24343,29 @@ na ekranu.
 Usput: AI Assistant je pokrenut od strane klijenta na 108 pravih slika u `BriefShow RAW Check/2026-09-01` (izmene su u zapisu,
 Undo All više nije dostupan posle restarta — vraćanje bi bilo ručno ili Reset po slici).
 
+---
+
+## KORAK 235 — AI Assistant: svetlina ljudi se meri sa kože; praćenje probe (26. septembar 2026)
+
+Klijent posle probe na 108 slika: *„vecina slika je full ali recimo kod ovih single subject je bas bio mnogo bright??"* (snimak:
+devojka u tamnoplavoj haljini na krovu, pregorelo lice i pozadina).
+
+**Uzrok:** svetlina ljudi (`subjectL`) je bila medijana CELE osobe. Kod portreta jedne osobe to je uglavnom tamna haljina → merilo
+tamno → Exposure je dizan dok haljina ne stigne do nivoa seta. Grupe izdaleka to nemaju, pa lenjir na 12 slika to nije uhvatio.
+**Popravka:** `AIAssistantLook.skinL` — medijana svetline kože u sredini lica (ista maska kao za balans bele); Exposure se rešava na
+kožu kad obe strane imaju lica, inače cela osoba, inače kadar. Brightness diže i `skinL`.
+**Lenjir** (sada 24 slike, i portreti): svetlina kože 5,61 → 0,46 (cilj 70,95, set 71,94), toplina 4,05 → 1,52, tint 2,70 → 0,74;
+nova provera: nijedna koža > cilj + 6. Kontakt-list pogledan — portret na krovu normalan.
+
+**Praćenje probe** (`sample` na 20 s dok je CPU > 150 %, lokalni `diagnostics.jsonl`):
+- 16:04–16:08 ~400 % CPU = AI Assistant na 108 slika; vreme u probnim renderima rešavača i u merenju. Merenje je trošilo trećinu na
+  `pow` po pikselu → tabela od 256 vrednosti (`linearTable`). ~587 ms po slici na M2 (bilo 681).
+- Posle toga u Create-u zakočenja 0,3–0,7 s na klik: puni render sa Background Dehaze (`SubjectSplit.apply` + `applyDehaze` +
+  `atmosphericLight`) — cena Dehaze-a, ne AI-ja. Memorija do 3,8 GB (`memory_mb` u dnevniku) — NIJE istraženo.
+- Svako pokretanje Debug build-a: zamrzavanje 5,5–6,8 s + 2,2–2,8 s. Sumnja: keychain (novi potpis pri svakom buildu). NIJE
+  potvrđeno.
+
+⚠️ 108 slika u `BriefShow RAW Check/2026-09-01` nose izmene iz probe (i stare, presvetle). Ponovno pokretanje ih ispravlja jer se
+svetlina/balans rešavaju apsolutno — ALI Contrast, Background colour i Background Dehaze se DODAJU, pa pri ponovnom pokretanju
+njih držati na Natural / 0 / 0.
+

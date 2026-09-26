@@ -61,12 +61,12 @@ func mean(_ v: [Double]) -> Double { v.reduce(0, +) / Double(max(v.count, 1)) }
 var failures = 0
 // Only the people are solved to one target (see AIAssistantMatcher.knobs).
 let measures: [(String, (AIAssistantLook) -> Double, Double)] = [
-    ("people L", { $0.subjectL }, 2.5), ("warmth b*", { $0.b }, 1.5), ("tint a*", { $0.a }, 1.5),
+    ("skin L", { $0.skinL }, 2.5), ("warmth b*", { $0.b }, 1.5), ("tint a*", { $0.a }, 1.5),
 ]
 let people = items.filter { $0.before.hasPeople }.count
 print("people found in \(people) of \(items.count)")
 for (name, read, near) in measures {
-    let usable = zip(items.map(\.before), after).filter { $0.0.hasPeople || !name.contains("background") && !name.contains("people") }
+    let usable = zip(items.map(\.before), after).filter { name == "skin L" ? $0.0.hasSkin : true }
     let b = usable.map { read($0.0) }, a = usable.map { read($0.1) }
     let miss = abs(mean(a) - read(target))
     print(String(format: "%-18@ spread across the set %6.2f -> %5.2f   target %6.2f, set lands at %6.2f",
@@ -82,6 +82,11 @@ for (item, a) in zip(items, after) where item.before.hasPeople {
     print(String(format: "  background %@: %.1f -> %.1f%@", item.url.lastPathComponent as NSString,
                  item.before.backgroundL, a.backgroundL, note as NSString))
     if !note.isEmpty { failures += 1 }
+}
+// Nobody burned out: the brightest photo's skin may not run far past the target.
+for (item, a) in zip(items, after) where a.hasSkin && a.skinL > target.skinL + 6 {
+    print(String(format: "  FAIL %@ skin %.1f, target %.1f", item.url.lastPathComponent as NSString, a.skinL, target.skinL))
+    failures += 1
 }
 print(String(format: "solve: %.0f ms a photo at %.0f px", perPhoto * 1000, AIAssistantMatcher.side))
 for (item, s) in zip(items, solved) {

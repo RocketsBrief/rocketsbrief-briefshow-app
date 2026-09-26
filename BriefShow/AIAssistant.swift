@@ -288,6 +288,10 @@ struct AIAssistantLook {
     var hasPeople = false
     /// How much of the frame the people fill, 0…1.
     var peopleShare = 0.0
+    /// Lightness of the skin in the middle of the faces — what the people's
+    /// brightness is judged by when there are faces (see `knobs`).
+    var skinL = 0.0
+    var hasSkin = false
 }
 
 enum AIAssistantMatcher {
@@ -356,7 +360,7 @@ enum AIAssistantMatcher {
         let hasPeople = Double(peopleCount) / Double(max(w * h, 1)) >= peopleShare
         let useSkin = frame.skin.reduce(0) { $0 + ($1 ? 1 : 0) } >= 30
 
-        var all = [Double](), subject = [Double](), behind = [Double]()
+        var all = [Double](), subject = [Double](), behind = [Double](), skinValues = [Double]()
         all.reserveCapacity(w * h)
         var aSum = 0.0, bSum = 0.0, abCount = 0.0
         var chromaSum = 0.0, bgChromaSum = 0.0, bgCount = 0.0
@@ -378,9 +382,10 @@ enum AIAssistantMatcher {
             if wbSource, lab.l > 15, lab.l < 95 {
                 aSum += lab.a; bSum += lab.b; abCount += 1
             }
+            if useSkin, frame.skin[i] { skinValues.append(lab.l) }
         }
         guard !all.isEmpty else { return AIAssistantLook() }
-        all.sort(); subject.sort(); behind.sort()
+        all.sort(); subject.sort(); behind.sort(); skinValues.sort()
         func pick(_ values: [Double], _ q: Double) -> Double {
             values.isEmpty ? 0 : values[min(values.count - 1, Int(Double(values.count - 1) * q))]
         }
@@ -391,6 +396,8 @@ enum AIAssistantMatcher {
         look.spread = pick(all, 0.95) - pick(all, 0.05)
         look.subjectL = hasPeople ? pick(subject, 0.5) : look.medianL
         look.backgroundL = hasPeople ? pick(behind, 0.5) : look.medianL
+        look.hasSkin = useSkin
+        look.skinL = useSkin ? pick(skinValues, 0.5) : look.subjectL
         look.a = abCount > 0 ? aSum / abCount : 0
         look.b = abCount > 0 ? bSum / abCount : 0
         look.chroma = chromaSum / Double(all.count)
@@ -399,12 +406,15 @@ enum AIAssistantMatcher {
     }
 
     /// sRGB bytes to CIE Lab (D65).
+    /// sRGB byte to linear, once for all 256 values. The `pow` per pixel per
+    /// channel was a third of every measurement (sample, 26.09).
+    private static let linearTable: [Double] = (0..<256).map { v in
+        let c = Double(v) / 255
+        return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+    }
+
     static func lab(_ r8: UInt8, _ g8: UInt8, _ b8: UInt8) -> (l: Double, a: Double, b: Double) {
-        func linear(_ v: UInt8) -> Double {
-            let c = Double(v) / 255
-            return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
-        }
-        let r = linear(r8), g = linear(g8), b = linear(b8)
+        let r = linearTable[Int(r8)], g = linearTable[Int(g8)], b = linearTable[Int(b8)]
         let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
         let y = 0.2126 * r + 0.7152 * g + 0.0722 * b
         let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
@@ -438,9 +448,18 @@ enum AIAssistantMatcher {
     static let smallPeople = 0.12
 
     static func knobs(people: Bool, target: AIAssistantLook, own: AIAssistantLook, lift: Double) -> [Knob] {
+        // ⚠️ THE PEOPLE'S BRIGHTNESS IS THEIR SKIN (26.09). Judged over the
+        // whole person it was mostly clothes: a single woman in a dark blue
+        // dress filling the frame measured dark, Exposure went up until the
+        // DRESS reached the set's level, and face and background burned out —
+        // reported with a screenshot. Groups far away were fine, which is why
+        // the 12-photo ruler did not see it. Faces on both sides → skin;
+        // otherwise the whole person, otherwise the frame.
+        let skin = own.hasSkin && target.hasSkin
+        let read: (AIAssistantLook) -> Double = skin ? { $0.skinL } : (people ? { $0.subjectL } : { $0.medianL })
+        let goal = skin ? target.skinL : (people ? target.subjectL : target.medianL)
         var list: [Knob] = [
-            Knob(key: \.exposure, read: { people ? $0.subjectL : $0.medianL },
-                 goal: people ? target.subjectL : target.medianL, tolerance: 1.0, range: -1.0...1.0),
+            Knob(key: \.exposure, read: read, goal: goal, tolerance: 1.0, range: -1.0...1.0),
         ]
         if people {
             let keep = min(own.backgroundL + lift / 2, max(own.backgroundL, backgroundCeiling))
@@ -527,6 +546,10 @@ enum AIAssistantMatcher {
             return values.isEmpty ? mid(read) : values[values.count / 2]
         }
         look.subjectL = midOf(\.subjectL)
+        let withSkin = looks.filter(\.hasSkin)
+        look.hasSkin = withSkin.count * 2 >= looks.count && !withSkin.isEmpty
+        let skins = withSkin.map(\.skinL).sorted()
+        look.skinL = skins.isEmpty ? look.subjectL : skins[skins.count / 2]
         look.backgroundL = midOf(\.backgroundL)
         look.medianL = mid(\.medianL)
         look.spread = mid(\.spread)
@@ -543,6 +566,7 @@ enum AIAssistantMatcher {
     static func adjusted(_ look: AIAssistantLook, by options: AIAssistantOptions) -> AIAssistantLook {
         var out = look
         out.subjectL += options.brightness.lift
+        out.skinL += options.brightness.lift
         out.medianL += options.brightness.lift
         return out
     }

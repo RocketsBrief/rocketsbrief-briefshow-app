@@ -7326,7 +7326,7 @@ struct BackgroundEnhancedTuning: Equatable {
 ///
 /// Everything the client can read in this app is painted from `AppColors`, and
 /// this is that rule reaching the last two buttons that were not.
-private struct CardButtonStyle: ButtonStyle {
+struct CardButtonStyle: ButtonStyle {
     var isProminent: Bool = false
     @Environment(\.isEnabled) private var isEnabled
 
@@ -10826,6 +10826,10 @@ struct DevelopView: View {
     @State private var backgroundEnhancedRequest: BackgroundEnhancedRequest?
 
     @State private var showSyncDialog = false
+    /// AI Assistant — comes up every time Create opens, over the filmstrip's
+    /// photos (26.09: *„da izadje kao modal na svaki prvi ulazak u create i da
+    /// se odnosi za te slike sto su u filmstripu"*). See AIAssistant.swift.
+    @State private var showAIAssistant = false
 
     // Right-click "Delete" / ⌫ in the filmstrip, routed through a
     // confirmation the same way ShowGrid's is — the photos leave the
@@ -11500,6 +11504,10 @@ struct DevelopView: View {
             installScrollWheelMonitor()
             installMergeClickMonitor()
             installCropMouseUpMonitor()
+            // A beat after the window, so the photo is on screen behind it.
+            if !photoURLs.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showAIAssistant = true }
+            }
         }
         .onDisappear {
             removeEditingKeyMonitor()
@@ -11555,6 +11563,14 @@ struct DevelopView: View {
                 )
             }
         )
+        .sheet(isPresented: $showAIAssistant) {
+            AIAssistantCard(targets: photoURLs, reference: selectedURL,
+                            onSelectPhoto: { url in
+                                showAIAssistant = false
+                                selectPhoto(url)
+                            },
+                            onClose: { showAIAssistant = false })
+        }
         .sheet(isPresented: $showSyncDialog) {
             SyncDialogHost(choice: syncChoice) { syncDialogView }
         }
@@ -25675,7 +25691,7 @@ struct DevelopView: View {
     // `static` + explicit params (no implicit access to `settings`/instance
     // state) so this is a pure, independently testable function — same
     // reasoning as PhotoEditRenderer's math helpers throughout this file.
-    private static func mergedSyncSettings(
+    static func mergedSyncSettings(
         source: PhotoEditSettings,
         target: PhotoEditSettings,
         items: SyncItem,

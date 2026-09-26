@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 26. septembar 2026 (KORAK 232, vrh „GDE SMO STALI — 26. septembar, posle podne"; grid se stvarno zatvara za Create/BriefShow i uvek je samo jedan; Background Saturation i Subjects Contrast; **nije objavljeno**, v11.69 je gore; koraci 224–232 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 26. septembar 2026 (KORACI 232–233, vrh „GDE SMO STALI — 26. septembar, veče"; 232: grid se stvarno zatvara, Background Saturation, Subjects Contrast; 233: **AI Assistant** — modal pri svakom otvaranju Create-a; **nije objavljeno**, v11.69 je gore; koraci 224–233 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -728,6 +728,19 @@ mogu videti na ekranu**: da prozor ostaje 834 posle promene teme, i hover
 animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 26. septembar 2026, veče — KORAK 233 (NIJE OBJAVLJENO, commit lokalan)
+
+| | |
+|---|---|
+| **233** | **AI Assistant** (`AIAssistant.swift`): modal pri svakom otvaranju Create-a, nad slikama iz filmstripa. Zatvorene oči i mutne → Reject (nesigurne samo u spisak), duplikati se NE diraju; svetlina i boja kože isti na svakoj slici (Brightness / Contrast / Background colour / Background Dehaze biraju fotograf); Youthify (isti recept); horizont; crop sa ljudima u centru. Undo All vraća sve |
+
+- ⚠️ **Modal NIJE viđen u app-i** — pri probi je fotograf bio u video pozivu, a keychain prozor je čekao lozinku; ekran nije diran. Build prolazi.
+- Izmereno van app-e (`Tools/run-ai-assistant-test.py`, 12 RAW-ova): svetlina ljudi 5,37 → 0,88, toplina 4,35 → 2,13, tint 2,63 → 1,44; pozadina nigde ne izgori; horizont znak tačan; ~0,65 s po slici na M2.
+- Probni folder `~/Desktop/C4S AI Test` (10 kopija `AITEST_…`) — za probu modala; posle probe obrisati.
+- **SLEDEĆE:** proba modala u app-i (Run, izveštaj, „Worth a look", Undo All), pa klijent.
+
+---
 
 ### GDE SMO STALI — 26. septembar 2026, posle podne — KORAK 232 (NIJE OBJAVLJENO, commit lokalan)
 
@@ -24273,4 +24286,40 @@ Subjects Contrast +0,75 pomera ljude +7,1, pozadinu ≤ 0,7; Vision 1×; sve na 
 PNG pogledan: −50 siva pozadina uz netaknutog momka, +50 plav bazen i nebo.
 
 ⚠️ Novi potpis Debug build-a je jednom tražio keychain lozinku (`com.rocketsbrief.briefshow.session`) — posle toga je prošao, lozinka nije dirana odavde.
+
+---
+
+## KORAK 233 — AI Assistant: probir, isti izgled, Youthify, horizont, crop (26. septembar 2026)
+
+Klijent: *„da ai sam odradi od ponudjenog da rejectuje blinks … da svaka slika izgleda indenticno, da equalizuje light … crop da
+se centriraju ljudi … da fotograf ne mora ni da pipne"*, pa *„ne i duplikate … ovaj prozor da izadje kao modal na svaki prvi
+ulazak u create i da se odnosi za te slike sto su u filmstripu"*, pa *„fotograf da izabere backround vise u boji ljudi da budu
+youtify, vise kontrasta, … vise svetlije, srednje svetlije manje svetlije, ali na kraju da svaka izgleda slicno ili isto"*.
+
+**Bez novog modela** — samo Apple Vision (tačke lica, lica, maska ljudi, horizont) i naš renderer. Nema preuzimanja, licence,
+radi na Intel-u. Zaključani AI odeljak (LaMa, SD) nije diran. **Ništa se ne briše**: Reject je isti kao ručni, izgled i crop su
+obične vrednosti u zapisu, `AIAssistantRun.undo()` vraća zapise i Reject oznake tačno kakvi su bili. Duplikati se ne diraju.
+
+| deo | kako |
+|---|---|
+| gde | `DevelopView.showAIAssistant`: sheet 0,4 s posle otvaranja Create-a, `targets = photoURLs` (filmstrip), referenca = otvorena slika |
+| oči | `VNDetectFaceLandmarksRequest` na pregledu 2048 px (ugrađeni JPEG kod RAW-a, 10× brže); otvorenost = visina/širina obrisa oka, prosek oba. **Izmereno** na 108 RAW-ova + 561 fotografija: zatvorene 0,08–0,11, pogled nadole/smeh 0,13–0,17, osmeh sa stisnutim očima 0,17–0,20 → Reject < 0,12, „za proveru" < 0,16. Lica < 50 px i < 40 % najvećeg se ne sude |
+| fokus | varijansa Laplasijana na licima, **u odnosu na medijanu seta** (≥ 5 slika): < 0,2× Reject (samo sa licima), < 0,35× za proveru |
+| izgled | svaka slika se meri (512 px, naš renderer), cilj = medijana seta ili otvorena slika, pa se svaka REŠAVA ka istom cilju (koordinatni spust, nagib iz druge rendere, 3 kruga) |
+| šta se izjednačava | **samo ljudi**: svetlina (Exposure) i balans bele **sa kože lica** (Temperature/Tint). Pozadina zadržava svoju svetlinu (+½ Brightness, Background Exposure je čuva ispod 88 L). Contrast i Background colour su izbor fotografa, isti iznos na svakoj slici |
+| Youthify | isti `PortraitRecipeService` recept, **poslednji** — layer ljudi zamrzne piksele, pa mora posle izgleda |
+| horizont | `VNDetectHorizonRequest`, 0,5°–8°; **znak izmeren**: slika okrenuta +4° čita se +4,13 → ispravka je −čitanje; posle ispravke auto-crop bez providnih uglova |
+| crop | maska ljudi + lica: lica na 38 % od vrha, 4 % margine, oblik prati sliku (4:3 ↔ 3:4), unutar dela bez providnih uglova; ako neko ne stane → za proveru |
+
+**Tri pogrešna pokušaja, zapisana da se ne ponove** (sve na 12 RAW-ova sa snimanja, kontakt-list pre/posle):
+1. Sve na jedan cilj (i svetlina pozadine, boja pozadine, kontrast): trava posivela, plaža izgorela, kontrast na +1,5 na 9/12. Bašta
+   prirodno ima više boje od neba — **pozadina i kontrast se ne izjednačavaju preko različitih scena**.
+2. Balans bele sa celih ljudi: par u pletenom krugu (7 % kadra) → Tint +0,57, ljubičasto. Sužen opseg (±0,35, ±0,15 za male).
+3. I dalje +0,35: plava haljina i siva majica u različitom udelu od slike do slike vuku balans. **Čita se sa kože lica** → +0,08.
+
+**Lenjir** `Tools/run-ai-assistant-test.py <folder> [n] [out]`: svetlina ljudi 5,37 → 0,88 (cilj 58,16, set 58,49), toplina
+4,35 → 2,13, tint 2,63 → 1,44; nijedna pozadina preko granice; horizont −4,13 za +4°; 681 ms po slici na M2. Zeleni i
+slider-parity, header-bar, grid-shape, history-labels. `CardButtonStyle` i `DevelopView.mergedSyncSettings` više nisu private.
+
+⚠️ **Modal nije viđen u app-i** (video poziv na ekranu). Nije mereno na Intel-u; 681 ms na M2 → za 200 slika oko 2–3 min na M2.
 

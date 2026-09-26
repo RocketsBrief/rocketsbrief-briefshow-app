@@ -51,6 +51,8 @@ let controls: [(String, Set_)] = [
     ("Subjects Exposure +", { $0.subjectsExposure = $1 }), ("Background Exposure +", { $0.backgroundExposure = $1 }),
     ("Subjects Clarity +", { $0.subjectsClarity = $1 }), ("Background Clarity +", { $0.backgroundClarity = $1 }),
     ("Background Dehaze +", { $0.backgroundDehaze = $1 }),
+    ("Background Saturation +", { $0.backgroundSaturation = $1 }),
+    ("Subjects Contrast +", { $0.subjectsContrast = $1 }), ("Subjects Contrast −", { $0.subjectsContrast = -$1 }),
 ]
 // Already at their physical end at the old 100: a corner that is black, a
 // picture that is grey. Reported, not failed.

@@ -1,6 +1,6 @@
 # BriefShow Develop — status i plan
 
-Beleška za nastavak rada. Poslednja izmena: 26. septembar 2026 (KORACI 228–231, vrh „GDE SMO STALI — 26. septembar"; KORACI 228–230: brzina posle probe na Intel-u; slika u Create-u sa grafičke kartice; svi slajderi 100 = 150 % starog efekta, Subjects/Background Clarity, Subjects Dehaze; **v11.69 je gore** (KORAK 231); koraci 224–231 su na dnu beleške).
+Beleška za nastavak rada. Poslednja izmena: 26. septembar 2026 (KORAK 232, vrh „GDE SMO STALI — 26. septembar, posle podne"; grid se stvarno zatvara za Create/BriefShow i uvek je samo jedan; Background Saturation i Subjects Contrast; **nije objavljeno**, v11.69 je gore; koraci 224–232 su na dnu beleške).
 
 ## 🟢 ZAKLJUČANO — rezolucija slike u LumenoLab-u
 
@@ -728,6 +728,18 @@ mogu videti na ekranu**: da prozor ostaje 834 posle promene teme, i hover
 animacije. App je ostavljena pokrenuta, pa je dovoljan jedan klik.
 
 ## TL;DR — gde smo stali
+
+### GDE SMO STALI — 26. septembar 2026, posle podne — KORAK 232 (NIJE OBJAVLJENO, commit lokalan)
+
+| | |
+|---|---|
+| **232** | grid se **zatvara** (ne sakriva) kad se otvori Create ili BriefShow; pamti folder, selekciju, stablo, veličinu sličica i mesto prozora (`ShowGridMemory`); uvek najviše jedan grid (`ShowGridWindowController.adopt`, Dock klik, bez ⌘N i tabova); Create i BriefShow pri zatvaranju puštaju ceo SwiftUI sadržaj. Novi slajderi **Background Saturation** (ispod Saturation) i **Subjects Contrast** (ispod Contrast) |
+
+- Viđeno na ekranu (Debug, M2): grid→Create→Grid (isti folder, stablo, selektovana slika), grid→BriefShow→Grid, ⌘N ne pravi prozor, Create minimizovan + ponovno otvaranje app-e vraća samo Create. Subjects Contrast viđen u Light panelu.
+- Lenjiri zeleni: subject-split (+2 nova slučaja, zasićenost se meri bojom), slider-reach, slider-parity, header-bar, grid-shape, history-labels, thumbnail-cache, layer-edit-parity, editsettings-decode (132), display-frame.
+- **SLEDEĆE:** klijent proba; pa paket. Tačke 1–4 iz gornje liste (v11.69) i dalje važe.
+
+---
 
 ### GDE SMO STALI — 26. septembar 2026 — **v11.69 OBJAVLJENA** (KORACI 228–231), sve commit-ovano i push-ovano (`f47f3f3`)
 
@@ -24228,4 +24240,37 @@ C4S loga se čita iz bundle-a). Pre pakovanja zeleni svi lenjiri iz KORAKA 230.
     In AI Clean Up, Erase is now called Subtract.
 
     Fixed a milky, washed out look on the next photo when it had Dehaze.
+
+---
+
+## KORAK 232 — grid se stvarno zatvara, uvek je jedan; Background Saturation i Subjects Contrast (26. septembar 2026)
+
+Klijent: *„Kada zatvorim create ostaje drugi grid uvek … mora da se zatvori grid kada otvaram create grid totalno da se
+zatvori a kada zatvaram create create ne sme da ostane bilo gde uključen … kada otvaram grid iz briefshow-a briefshow mora
+totalno da se zatvori!!"*, pa *„Backround Saturation (da zahvata samo backround…)"* i *„ispod contrast … subjects contrast"*.
+
+**Uzrok „drugog grida":** od KORAKA 218/222 grid se za Create/BriefShow samo SAKRIVAO (`orderOut`). SwiftUI-jev WindowGroup za
+sakriven prozor ne zna — ⌘N (File ▸ New Window), Dock klik kad ništa nije vidljivo, spajanje u tabove ili vraćanje prozora pri
+pokretanju prave NOV grid, a zatvaranje Create-a zatim vraća i onaj sakriveni. Na ovoj mašini osnovni putevi (Grid dugme, crveno
+dugme) nisu pravili duplikat; greška je u ivičnim putevima, pa je popravljeno tako da duplikat ne može da postoji.
+
+| | |
+|---|---|
+| `ShowGridSuspension.suspend()` | `ShowGridWindowController.closeCompletely()`: zapamti mesto prozora, zatvori SVAKI grid prozor (naslov „C4S Suite"), a našem skine `contentView` → SwiftUI stvarno ruši grid (onDisappear, key monitor) |
+| `ShowGridMemory` | pre zatvaranja grid upisuje folder (ili ručno dodate slike), selekciju, redosled, sidro, veličinu sličica (`rememberGridState` — Create dugme, dupli klik, BriefShow dugme); nov grid to čita jednom (`restoreGridState`) i skroluje do sidra. Otvorene grane stabla se pišu stalno (`FolderTreeSidebar.expandedURLs`) |
+| `adopt(_:)` | svaki grid prozor (i onaj koji SwiftUI napravi sam) prolazi kroz ovo: dok je Create/BriefShow otvoren — zatvara se i dovodi Create/BriefShow napred; ako grid već postoji — nov se zatvara. Crveno dugme na gridu briše referencu |
+| `applicationShouldHandleReopen` | Dock klik nikad ne prepušta SwiftUI-ju: Create ili BriefShow napred dok je grid zatvoren za njih, inače jedan grid (`showOrOpen`) |
+| meni | `CommandGroup(replacing: .newItem) {}` (nema ⌘N), `NSWindow.allowsAutomaticWindowTabbing = false` |
+| Create / BriefShow `close()` | posle zatvaranja `contentView = nil` — ništa od njih ne ostaje živo iza zatvorenog prozora. Create `open()` sa zastarelim (nevidljivim) prozorom ga zatvara BEZ vraćanja grida (`close(resumingGrid: false)`) |
+
+**Background Saturation** (Color, ispod Saturation): `PhotoEditRenderer.applySaturation` — izdvojena JEDNA funkcija, koju koriste i
+glavni Saturation (isti bajtovi, samo premešten kod) i pozadina iza ljudi (`SubjectSplit.apply`, pre Clarity-ja). Pod 0 ne ide.
+**Subjects Contrast** (Light, ispod Contrast): `applyContrast` kroz masku ljudi, uz Subjects Exposure. Oba samo na fotografiji
+(layer nema pozadinu/subjekte — slider-parity ih navodi, ne pada), u Sync-u, Copy, dekodiranju, LR izvozu (u spisku nepodržanih).
+
+**Izmereno (C4S_9021, 1600 px):** Background Saturation ±0,75 pomera boju pozadine +5,2 / −6,3 (max−min kanal), ljude ≤ 1,0;
+Subjects Contrast +0,75 pomera ljude +7,1, pozadinu ≤ 0,7; Vision 1×; sve na 0 = 0,0. slider-reach: novi kraj ×1,45 / ×1,34.
+PNG pogledan: −50 siva pozadina uz netaknutog momka, +50 plav bazen i nebo.
+
+⚠️ Novi potpis Debug build-a je jednom tražio keychain lozinku (`com.rocketsbrief.briefshow.session`) — kliknuo ju je klijent.
 

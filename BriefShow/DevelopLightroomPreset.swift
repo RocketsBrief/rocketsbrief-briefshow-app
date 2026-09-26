@@ -417,6 +417,8 @@ enum LightroomPresetExport {
         if settings.backgroundExposure != 0 { parts.append("Background Exposure") }
         if settings.subjectsExposure != 0 { parts.append("Subjects Exposure") }
         if settings.backgroundDehaze != 0 { parts.append("Background Dehaze") }
+        if settings.backgroundSaturation != 0 { parts.append("Background Saturation") }
+        if settings.subjectsContrast != 0 { parts.append("Subjects Contrast") }
         if settings.crop != nil { parts.append("Crop") }
         if settings.rotationQuarterTurns != 0 || settings.straightenDegrees != 0 {
             parts.append("Rotation / Straighten")

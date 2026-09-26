@@ -32,6 +32,13 @@ func pixels(_ i: CIImage) -> [UInt8] {
     return out
 }
 func luma(_ p: [UInt8], _ i: Int) -> Double { 0.2126 * Double(p[i*4]) + 0.7152 * Double(p[i*4+1]) + 0.0722 * Double(p[i*4+2]) }
+/// Saturation barely moves luma, so its cases are measured on colour: the
+/// spread between the strongest and weakest channel.
+func chroma(_ p: [UInt8], _ i: Int) -> Double {
+    let r = Double(p[i*4]), g = Double(p[i*4+1]), b = Double(p[i*4+2])
+    return max(r, g, b) - min(r, g, b)
+}
+var measure: ([UInt8], Int) -> Double = luma
 
 guard let mask = SubjectMasker.personMask(for: plain, maxWorkingEdge: SubjectSplit.detectionSide) else {
     print("nobody in \(url.lastPathComponent)"); exit(1)
@@ -51,8 +58,8 @@ for i in 0..<(w * h) {
 print("people \(people.count) px, background \(behind.count) px of \(w * h)")
 
 let before = pixels(plain)
-func mean(_ p: [UInt8], _ idx: [Int]) -> Double { idx.reduce(0.0) { $0 + luma(p, $1) } / Double(max(idx.count, 1)) }
-func maxMove(_ a: [UInt8], _ b: [UInt8], _ idx: [Int]) -> Double { idx.reduce(0.0) { max($0, abs(luma(a, $1) - luma(b, $1))) } }
+func mean(_ p: [UInt8], _ idx: [Int]) -> Double { idx.reduce(0.0) { $0 + measure(p, $1) } / Double(max(idx.count, 1)) }
+func maxMove(_ a: [UInt8], _ b: [UInt8], _ idx: [Int]) -> Double { idx.reduce(0.0) { max($0, abs(measure(a, $1) - measure(b, $1))) } }
 
 var failures = 0
 let cases: [(String, (inout PhotoEditSettings) -> Void, Bool)] = [
@@ -60,8 +67,12 @@ let cases: [(String, (inout PhotoEditSettings) -> Void, Bool)] = [
     ("Background Exposure -0.5", { $0.backgroundExposure = -0.5 }, true),
     ("Subjects Exposure +0.5", { $0.subjectsExposure = 0.5 }, false),
     ("Background Dehaze +0.6", { $0.backgroundDehaze = 0.6 }, true),
+    ("Background Saturation +0.75", { $0.backgroundSaturation = 0.75 }, true),
+    ("Background Saturation -0.75", { $0.backgroundSaturation = -0.75 }, true),
+    ("Subjects Contrast +0.75", { $0.subjectsContrast = 0.75 }, false),
 ]
 for (label, tweak, movesBackground) in cases {
+    measure = label.contains("Saturation") ? chroma : luma
     var s = PhotoEditSettings(); tweak(&s)
     let t0 = Date()
     let edited = PhotoEditRenderer.render(s, on: base, applyCrop: false)
@@ -85,6 +96,7 @@ if SubjectSplit.detectionCount != 1 {
     print("  FAIL Vision ran \(SubjectSplit.detectionCount) times, not once"); failures += 1
 }
 // Negative control: all three at zero must be the plain photo, to the pixel.
+measure = luma
 let zero = pixels(PhotoEditRenderer.render(PhotoEditSettings(), on: base, applyCrop: false))
 let drift = maxMove(before, zero, Array(0..<(w * h)))
 print(String(format: "all three at 0: max difference from the plain photo %.1f", drift))

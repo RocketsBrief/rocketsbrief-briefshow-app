@@ -43,6 +43,25 @@ final class ExternalFolderOpen: ObservableObject {
 /// the drop and this is never called, and without this the drop is accepted and
 /// nothing happens.
 final class BriefShowAppDelegate: NSObject, NSApplicationDelegate {
+    /// A Dock click. Left to SwiftUI, a click with no window on screen builds a
+    /// NEW grid from the WindowGroup — next to Create, or next to a grid that
+    /// was only minimised. Here it brings back what is open instead: Create or
+    /// BriefShow while the grid is closed for them, otherwise the one grid.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if ShowGridSuspension.shared.isSuspended {
+            if DevelopWindowController.shared.bringForward()
+                || BriefShowWindowController.shared.bringForward() {
+                return false
+            }
+            // Neither is there any more, yet the grid is still waiting for
+            // them: bring it back rather than leave the app with no window.
+            ShowGridSuspension.shared.resume()
+            return false
+        }
+        ShowGridWindowController.shared.showOrOpen()
+        return false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Edits are encoded off the main thread now; quitting waits for them.
         PhotoEditStore.waitForPendingWrites()
@@ -99,6 +118,9 @@ struct BriefShowApp: App {
 
     init() {
         Self.registerBundledFonts()
+        // No window tabs: "Merge All Windows" and "Show Tab Bar" were two more
+        // ways to end up with a second grid. See ShowGridSuspension.
+        NSWindow.allowsAutomaticWindowTabbing = false
 
         // ⚠️ THE FONTS THE CLIENT DOWNLOADED, AT LAUNCH — not when the text
         // tool is first opened. A print is drawn in three places that never go
@@ -296,6 +318,10 @@ struct BriefShowApp: App {
             //
             // `.newItem` is where Open… lives, which is where a photographer
             // looks for Import.
+            // ⚠️ No File ▸ New Window (⌘N). WindowGroup puts it there on its
+            // own, and every press built another grid — see ShowGridSuspension:
+            // there is one grid, or none while Create or BriefShow is open.
+            CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .newItem) {
                 Button("Import…") {
                     let panel = NSOpenPanel()

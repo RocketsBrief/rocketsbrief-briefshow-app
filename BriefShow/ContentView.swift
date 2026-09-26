@@ -22021,12 +22021,17 @@ struct FlowLayout: Layout {
 /// still queued — all of it competing with Create for the same cores and the
 /// same RAM.
 ///
-/// Suspended rather than closed: the window is ordered out and the grid view is
-/// taken out of the tree, its pictures dropped and its queues cancelled, but the
-/// folder, the selection and the tree stay in @State — so Grid lands the client
-/// exactly where they left, and resuming costs a disk-cache read of the tiles
-/// (the edited ones were invalidated by `PhotoEditStore.flushNow`, so they come
-/// back re-rendered).
+/// ⚠️ CLOSED, NOT HIDDEN (26.09). Until then the window was only ordered out,
+/// with its state kept in @State. Reported: *„Kada zatvorim create ostaje drugi
+/// grid uvek … mora da se zatvori grid kada otvaram create grid totalno da se
+/// zatvori … (ne minimizuje)"*. A hidden window still counts as the app's one
+/// grid, and SwiftUI's WindowGroup does not know it is there: ⌘N, a Dock click
+/// with nothing visible, or window restoration build a SECOND grid next to it,
+/// and closing Create then brought the hidden one back beside that. Now the
+/// window is closed and its SwiftUI tree torn down; what the client was looking
+/// at is written to `ShowGridMemory` first and read back by the fresh grid.
+/// `ShowGridWindowController.adopt` closes any grid that appears while this is
+/// suspended, or next to one that already exists.
 final class ShowGridSuspension: ObservableObject {
     static let shared = ShowGridSuspension()
     @Published private(set) var isSuspended = false
@@ -22035,7 +22040,7 @@ final class ShowGridSuspension: ObservableObject {
     func suspend() {
         guard !isSuspended else { return }
         isSuspended = true
-        ShowGridWindowController.shared.orderOut()
+        ShowGridWindowController.shared.closeCompletely()
     }
 
     func resume() {
@@ -22045,12 +22050,116 @@ final class ShowGridSuspension: ObservableObject {
     }
 }
 
+/// What the grid was showing when it was closed for Create or BriefShow — the
+/// folder, the photos, the selection, the tile size, the open branches of the
+/// folder tree and where the window stood. Written by PhotoShowSheet just
+/// before it goes (`rememberGridState`), read once by the next grid to appear.
+final class ShowGridMemory {
+    static let shared = ShowGridMemory()
+    private init() {}
+
+    struct Snapshot {
+        var folder: URL?
+        /// Only used when no folder is open — photos added by hand or dropped.
+        var photoURLs: [URL]
+        var selectedURLs: Set<URL>
+        var selectionOrder: [URL]
+        var selectionAnchor: URL?
+        var thumbnailSize: CGFloat
+    }
+
+    var snapshot: Snapshot?
+    /// Kept up to date by FolderTreeSidebar itself, so it survives any close.
+    var expandedURLs: Set<URL> = []
+    var windowFrame: NSRect?
+
+    func take() -> Snapshot? {
+        defer { snapshot = nil }
+        return snapshot
+    }
+}
+
 final class ShowGridWindowController {
     static let shared = ShowGridWindowController()
 
-    /// Hides the grid without closing it — see ShowGridSuspension.
-    func orderOut() {
-        windowController?.window?.orderOut(nil)
+    /// Closes the grid for real — see ShowGridSuspension. Every grid window,
+    /// not only the tracked one, so a stray second grid cannot outlive it.
+    /// The content view goes too: that is what makes SwiftUI tear the grid
+    /// down (onDisappear, key monitor, queues) rather than keep it alive in a
+    /// window that is merely off screen.
+    func closeCompletely() {
+        if let frame = windowController?.window?.frame {
+            ShowGridMemory.shared.windowFrame = frame
+        }
+        let tracked = windowController?.window
+        windowController = nil
+        for window in NSApp.windows where window === tracked || Self.isGridWindow(window) {
+            Self.discard(window)
+        }
+    }
+
+    /// Closes a grid window and lets its SwiftUI tree go. A window SwiftUI's
+    /// WindowGroup made tears its own tree down on close; one this controller
+    /// made would keep the hosting view alive for as long as anything held
+    /// the window, so that one gives up its content explicitly.
+    private static func discard(_ window: NSWindow) {
+        window.close()
+        if window.contentView is NSHostingView<PhotoShowSheet> {
+            window.contentView = nil
+        }
+    }
+
+    /// A grid window is one whose title is ours and which is neither Create
+    /// nor BriefShow — both of those have titles of their own.
+    private static func isGridWindow(_ window: NSWindow) -> Bool {
+        window.title == windowTitle && window.contentView != nil
+    }
+
+    /// Every grid that comes up — ours, or one SwiftUI's WindowGroup builds on
+    /// its own (launch, ⌘N, a Dock click with nothing visible, window
+    /// restoration) — passes through here. There is only ever one grid, and
+    /// none while Create or BriefShow is open.
+    func adopt(_ window: NSWindow) {
+        if ShowGridSuspension.shared.isSuspended {
+            Self.discard(window)
+            _ = DevelopWindowController.shared.bringForward()
+                || BriefShowWindowController.shared.bringForward()
+            return
+        }
+        if let existing = windowController?.window, existing !== window {
+            Self.discard(window)
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
+        guard windowController == nil else { return }
+        windowController = NSWindowController(window: window)
+        watchUserClose(of: window)
+    }
+
+    /// The red button on the grid: forget the window, so the next open builds
+    /// a new one instead of reviving a closed one.
+    private var userCloseObserver: NSObjectProtocol?
+
+    private func watchUserClose(of window: NSWindow) {
+        if let userCloseObserver { NotificationCenter.default.removeObserver(userCloseObserver) }
+        userCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.windowController?.window === window else { return }
+            ShowGridMemory.shared.windowFrame = window.frame
+            self.windowController = nil
+        }
+    }
+
+    /// Dock click: the one grid comes forward, or is built if there is none.
+    func showOrOpen() {
+        if let window = windowController?.window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            open()
+        }
     }
 
     /// ⚠️ A CONSTANT, and the keyboard monitor reads it — see the guard that
@@ -22098,10 +22207,16 @@ final class ShowGridWindowController {
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 700, height: 480)
-        window.center()
+        window.tabbingMode = .disallowed
+        if let frame = ShowGridMemory.shared.windowFrame {
+            window.setFrame(frame, display: false)
+        } else {
+            window.center()
+        }
 
         let controller = NSWindowController(window: window)
         windowController = controller
+        watchUserClose(of: window)
 
         window.contentView = NSHostingView(
             rootView: PhotoShowSheet(initialPhotoURLs: initialPhotoURLs, onClose: { [weak self] in
@@ -22125,11 +22240,7 @@ final class ShowGridWindowController {
     // controller to find, so it always spawned a brand new second ShowGrid
     // window instead of returning to the original one.
     func registerIfNeeded(_ window: NSWindow) {
-        guard windowController == nil else {
-            return
-        }
-
-        windowController = NSWindowController(window: window)
+        adopt(window)
     }
 
     /// How many physical pixels this window paints per point — 2 on Retina,
@@ -22382,10 +22493,22 @@ final class BriefShowWindowController {
         appearanceObserver = nil
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
         closeObserver = nil
+        let window = windowController?.window
         windowController?.close()
         windowController = nil
+        // Torn down, not kept behind the closed window — see ShowGridSuspension.
+        window?.contentView = nil
         // Grid, or the red button: BriefShow is gone, the grid comes back.
         ShowGridSuspension.shared.resume()
+    }
+
+    /// Brings an open BriefShow forward; false when there is none.
+    func bringForward() -> Bool {
+        guard let window = windowController?.window else { return false }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        return true
     }
 
     /// The red button closes the window without calling close(); this turns
@@ -22726,6 +22849,8 @@ struct PhotoShowSheet: View {
     // new photo, so the grid can scroll that thumbnail into view even when
     // it's off-screen — see the ScrollViewReader in `thumbnailGrid`.
     @State private var scrollToPhotoURL: URL?
+    /// Where to scroll once a grid restored by `restoreGridState` has its photos.
+    @State private var pendingScrollAfterRestore: URL?
     @State private var isLoadingPhotos: Bool = false
     @State private var loadedThumbnailCount: Int = 0
     @State private var keyMonitor: Any?
@@ -23138,7 +23263,7 @@ struct PhotoShowSheet: View {
             Task { await ExportCounter.flushAll() }
             Task { await remoteStatus.refresh() }
 
-            if photoURLs.isEmpty, !initialPhotoURLs.isEmpty {
+            if !restoreGridState(), photoURLs.isEmpty, !initialPhotoURLs.isEmpty {
                 importShowPhotos(initialPhotoURLs)
             }
 
@@ -23588,6 +23713,7 @@ struct PhotoShowSheet: View {
             // reads as a mistake rather than as branding. The big wordmark in
             // the header above still carries the identity.
             Button {
+                rememberGridState()
                 BriefShowWindowController.shared.open(initialPhotoURLs: photoURLs)
                 // The grid goes off while BriefShow is up, exactly as it does
                 // for Create (24.09): *„kada udjem u briefshow iskljcujes grid
@@ -23624,6 +23750,7 @@ struct PhotoShowSheet: View {
             // above: editing a photo here never touches the file on disk
             // and never changes what the slideshow renders.
             Button {
+                rememberGridState()
                 DevelopWindowController.shared.open(
                     photoURLs: photoURLs,
                     initialSelection: selectedURLs.first ?? photoURLs.first
@@ -25095,8 +25222,39 @@ struct PhotoShowSheet: View {
         }
 
         if isDouble {
+            rememberGridState(scrollingTo: url)
             DevelopWindowController.shared.open(photoURLs: photoURLs, initialSelection: url)
         }
+    }
+
+    /// Written just before Create or BriefShow closes this grid — see
+    /// ShowGridSuspension and ShowGridMemory.
+    private func rememberGridState(scrollingTo url: URL? = nil) {
+        ShowGridMemory.shared.snapshot = ShowGridMemory.Snapshot(
+            folder: selectedFolderURL,
+            photoURLs: selectedFolderURL == nil ? photoURLs : [],
+            selectedURLs: selectedURLs,
+            selectionOrder: selectionOrder,
+            selectionAnchor: gridSelectionAnchor ?? url,
+            thumbnailSize: thumbnailSize
+        )
+    }
+
+    /// The other half: a grid that opens after Create or BriefShow picks up
+    /// where the closed one was. Returns false when there is nothing to pick up.
+    private func restoreGridState() -> Bool {
+        guard let memory = ShowGridMemory.shared.take() else { return false }
+        thumbnailSize = memory.thumbnailSize
+        selectedURLs = memory.selectedURLs
+        selectionOrder = memory.selectionOrder
+        gridSelectionAnchor = memory.selectionAnchor
+        pendingScrollAfterRestore = memory.selectionAnchor ?? memory.selectionOrder.last
+        if let folder = memory.folder {
+            selectedFolderURL = folder
+        } else if !memory.photoURLs.isEmpty {
+            importShowPhotos(memory.photoURLs)
+        }
+        return true
     }
 
     // The only three ways `selectedURLs` ever changes — routed through
@@ -26479,6 +26637,12 @@ struct PhotoShowSheet: View {
         forgetCaches(outside: Set(sortedURLs))
         applyPersistedLabels(for: sortedURLs)
         loadGridThumbnails(for: sortedURLs)
+
+        if let target = pendingScrollAfterRestore, sortedURLs.contains(target) {
+            pendingScrollAfterRestore = nil
+            // A turn later, once the grid that holds it is in the tree.
+            DispatchQueue.main.async { scrollToPhotoURL = target }
+        }
     }
 
     /// Lets go of every cached picture for a photograph that is not in `keep`.
@@ -27265,7 +27429,9 @@ private struct FolderTreeSidebar: View {
     // dragging a folder onto the grid rather than by clicking through the
     // tree — the same "reveal in sidebar" behavior Adobe Bridge/Finder
     // give you.
-    @State private var expandedURLs: Set<URL> = []
+    /// Starts from ShowGridMemory and writes back to it, so a grid closed for
+    /// Create or BriefShow comes back with the same branches open.
+    @State private var expandedURLs: Set<URL> = ShowGridMemory.shared.expandedURLs
 
     // Which row the pointer is currently over, so its name can scale up —
     // a single shared var (rather than per-row @State, which `row(for:)`
@@ -27389,6 +27555,7 @@ private struct FolderTreeSidebar: View {
         .background(AppColors.background)
         .onAppear { expandPathToSelection() }
         .onChange(of: selectedURL) { _ in expandPathToSelection() }
+        .onChange(of: expandedURLs) { ShowGridMemory.shared.expandedURLs = $0 }
     }
 
     // A folder with subfolders renders as an expandable disclosure group

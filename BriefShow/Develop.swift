@@ -161,6 +161,11 @@ struct PhotoEditSettings: Codable, Equatable {
     // Clarity split the same way (25.09), Clarity's own −1…1 (now ±1.5).
     var subjectsClarity: Double = 0
     var backgroundClarity: Double = 0
+    // Saturation behind the people only (26.09), Saturation's own ±1.5 and the
+    // same floor at grey — see PhotoEditRenderer.applySaturation.
+    var backgroundSaturation: Double = 0
+    // Contrast on the people only (26.09), Contrast's own ±1.5 and the same curve.
+    var subjectsContrast: Double = 0
     var softGlow: Double = 0        // 0...1 — diffusion/"soft focus" glow (blurred copy screen-blended back over the original), see PhotoEditRenderer.render.
     var vignette: Double = 0        // -1...1 — positive darkens the corners, negative lightens them.
     // The three shape controls Lightroom's Post-Crop Vignetting has beside its
@@ -274,6 +279,8 @@ struct PhotoEditSettings: Codable, Equatable {
         backgroundDehaze = try c.decodeIfPresent(Double.self, forKey: .backgroundDehaze) ?? 0
         subjectsClarity = try c.decodeIfPresent(Double.self, forKey: .subjectsClarity) ?? 0
         backgroundClarity = try c.decodeIfPresent(Double.self, forKey: .backgroundClarity) ?? 0
+        backgroundSaturation = try c.decodeIfPresent(Double.self, forKey: .backgroundSaturation) ?? 0
+        subjectsContrast = try c.decodeIfPresent(Double.self, forKey: .subjectsContrast) ?? 0
         vignette = try c.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
         // Absent in anything saved before these existed, and the fallbacks are
         // the values that reproduce the old drawing — so an old record decodes
@@ -331,6 +338,7 @@ struct PhotoEditSettings: Codable, Equatable {
         case faceDehaze
         case backgroundExposure, subjectsExposure, backgroundDehaze
         case subjectsClarity, backgroundClarity
+        case backgroundSaturation, subjectsContrast
         case vignetteMidpoint, vignetteFeather, vignetteRoundness, sharpenRadius
         case colorMixer
         case rotationQuarterTurns, straightenDegrees, crop, cropAspect
@@ -348,6 +356,7 @@ struct PhotoEditSettings: Codable, Equatable {
             && faceDehaze == 0
             && backgroundExposure == 0 && subjectsExposure == 0 && backgroundDehaze == 0
             && subjectsClarity == 0 && backgroundClarity == 0
+            && backgroundSaturation == 0 && subjectsContrast == 0
             // The vignette's shape and the sharpening radius are deliberately
             // NOT counted. They are the SHAPE of an effect, not the effect: a
             // photo with Vignette at 0 is unvignetted whatever its midpoint
@@ -438,6 +447,8 @@ struct SyncItem: OptionSet {
     static let backgroundDehaze = SyncItem(rawValue: 1 << 26)
     static let subjectsClarity = SyncItem(rawValue: 1 << 27)
     static let backgroundClarity = SyncItem(rawValue: 1 << 28)
+    static let backgroundSaturation = SyncItem(rawValue: 1 << 29)
+    static let subjectsContrast = SyncItem(rawValue: 1 << 30)
 
     /// One row of the dialog: one control, one checkbox.
     struct Row: Identifiable {
@@ -476,6 +487,7 @@ struct SyncItem: OptionSet {
             Row(item: .subjectsExposure, title: "Subjects Exposure", carries: nil),
             Row(item: .backgroundExposure, title: "Background Exposure", carries: nil),
             Row(item: .contrast, title: "Contrast", carries: nil),
+            Row(item: .subjectsContrast, title: "Subjects Contrast", carries: nil),
             Row(item: .highlights, title: "Highlights", carries: nil),
             Row(item: .shadows, title: "Shadows", carries: nil),
             Row(item: .whites, title: "Whites", carries: nil),
@@ -485,6 +497,7 @@ struct SyncItem: OptionSet {
             Row(item: .temperature, title: "Temperature", carries: "with its Kelvin"),
             Row(item: .tint, title: "Tint", carries: nil),
             Row(item: .saturation, title: "Saturation", carries: nil),
+            Row(item: .backgroundSaturation, title: "Background Saturation", carries: nil),
             Row(item: .vibrance, title: "Vibrance", carries: nil),
             Row(item: .colorMixer, title: "Color Mixer", carries: "all eight colours"),
         ]),
@@ -550,6 +563,8 @@ struct SyncItem: OptionSet {
         case .backgroundDehaze: return settings.backgroundDehaze != 0
         case .subjectsClarity: return settings.subjectsClarity != 0
         case .backgroundClarity: return settings.backgroundClarity != 0
+        case .backgroundSaturation: return settings.backgroundSaturation != 0
+        case .subjectsContrast: return settings.subjectsContrast != 0
         case .softGlow: return settings.softGlow != 0
         case .vignette: return settings.vignette != 0
         case .masks: return !settings.localAdjustments.isEmpty
@@ -3706,16 +3721,7 @@ enum PhotoEditRenderer {
         // both ends, chroma held back at high settings. See ContrastCurve.
         output = PhotoEditRenderer.applyContrast(settings.contrast, to: output)
 
-        if settings.saturation != 0 {
-            let filter = CIFilter.colorControls()
-            filter.inputImage = output
-            filter.contrast = 1
-            // Never under 0: at −100 the photo is already grey, and a negative
-            // factor past it (−150) would turn every colour into its opposite.
-            filter.saturation = Float(max(1 + settings.saturation, 0))
-            filter.brightness = 0
-            output = filter.outputImage ?? output
-        }
+        output = applySaturation(settings.saturation, to: output)
 
         if settings.vibrance != 0 {
             output = applyVibrance(settings.vibrance, to: output)
@@ -3756,7 +3762,8 @@ enum PhotoEditRenderer {
 
         // Background / Subjects, split by Vision's person mask — see SubjectSplit.
         if settings.backgroundExposure != 0 || settings.subjectsExposure != 0 || settings.backgroundDehaze != 0
-            || settings.subjectsClarity != 0 || settings.backgroundClarity != 0 {
+            || settings.subjectsClarity != 0 || settings.backgroundClarity != 0
+            || settings.backgroundSaturation != 0 || settings.subjectsContrast != 0 {
             let owner: AnyObject
             switch base {
             case .standard(let image): owner = image
@@ -4095,6 +4102,20 @@ enum PhotoEditRenderer {
             output = second.outputImage ?? output
         }
         return output
+    }
+
+    /// Saturation, ONE function for the whole photo and for Background
+    /// Saturation behind the people, so the two cannot drift apart.
+    static func applySaturation(_ saturation: Double, to image: CIImage) -> CIImage {
+        guard saturation != 0 else { return image }
+        let filter = CIFilter.colorControls()
+        filter.inputImage = image
+        filter.contrast = 1
+        // Never under 0: at −100 the photo is already grey, and a negative
+        // factor past it (−150) would turn every colour into its opposite.
+        filter.saturation = Float(max(1 + saturation, 0))
+        filter.brightness = 0
+        return filter.outputImage ?? image
     }
 
     static func applyExposure(_ ev: Double, to image: CIImage) -> CIImage {
@@ -8918,7 +8939,9 @@ final class DevelopWindowController {
                 controller.window?.makeKeyAndOrderFront(nil)
                 return
             }
-            close()
+            // Not resuming the grid on the way: it would come up only to be
+            // closed again a moment later by openNow.
+            close(resumingGrid: false)
         }
 
         isOpening = true
@@ -9023,7 +9046,16 @@ final class DevelopWindowController {
         }
     }
 
-    func close() {
+    /// Brings an open Create forward; false when there is none.
+    func bringForward() -> Bool {
+        guard let window = windowController?.window else { return false }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    func close(resumingGrid: Bool = true) {
         // Anything still sitting in the debounced write goes out now. The
         // window that owns the edits must not be able to disappear with work
         // unwritten, and this is also what makes ShowGrid's thumbnails correct
@@ -9033,11 +9065,19 @@ final class DevelopWindowController {
         // and run the whole thing a second time.
         windowController?.window?.delegate = nil
         closeWatcher = nil
+        let window = windowController?.window
         windowController?.close()
         windowController = nil
+        // Create goes completely (26.09): *„kada zatvaram create create ne sme
+        // da ostane bilo gde uključen"*. The editor's SwiftUI tree is let go
+        // here rather than whenever the last reference to the window happens
+        // to drop.
+        window?.contentView = nil
         isOpening = false
         // Grid, or the red button: the editor is gone, the grid comes back.
-        ShowGridSuspension.shared.resume()
+        if resumingGrid {
+            ShowGridSuspension.shared.resume()
+        }
     }
 }
 
@@ -19065,6 +19105,9 @@ struct DevelopView: View {
             editSlider("Subjects Exposure", value: $settings.subjectsExposure, range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
             editSlider("Background Exposure", value: $settings.backgroundExposure, range: -1.5...1.5, step: 0.05) { String(format: "%+.2f", $0) }
             editSlider("Contrast", value: $settings.contrast, range: -1.5...1.5)
+            // Right under Contrast (26.09): *„subjects contrast.. da efektuje
+            // samo subjects"*.
+            editSlider("Subjects Contrast", value: $settings.subjectsContrast, range: -1.5...1.5)
             editSlider("Highlights", value: $settings.highlights, range: -1.5...1.5)
             editSlider("Shadows", value: $settings.shadows, range: -1.5...1.5)
             editSlider("Whites", value: $settings.whites, range: -1.5...1.5)
@@ -19089,6 +19132,10 @@ struct DevelopView: View {
                 set: { settings.tint = $0; settings.tintAbsolute = nil }
             ), range: -1.5...1.5, trackGradient: DevelopView.tintTrack)
             editSlider("Saturation", value: $settings.saturation, range: -1.5...1.5,
+                       trackGradient: DevelopView.saturationTrack)
+            // Right under Saturation (26.09): *„Backround Saturation (da zahvata
+            // samo backround kada neko hoce da poveca boju backrounda)"*.
+            editSlider("Background Saturation", value: $settings.backgroundSaturation, range: -1.5...1.5,
                        trackGradient: DevelopView.saturationTrack)
             editSlider("Vibrance", value: $settings.vibrance, range: -1.5...1.5,
                        trackGradient: DevelopView.vibranceTrack)
@@ -25700,6 +25747,8 @@ struct DevelopView: View {
         if items.contains(.backgroundDehaze) { result.backgroundDehaze = source.backgroundDehaze }
         if items.contains(.subjectsClarity) { result.subjectsClarity = source.subjectsClarity }
         if items.contains(.backgroundClarity) { result.backgroundClarity = source.backgroundClarity }
+        if items.contains(.backgroundSaturation) { result.backgroundSaturation = source.backgroundSaturation }
+        if items.contains(.subjectsContrast) { result.subjectsContrast = source.subjectsContrast }
         if items.contains(.softGlow) { result.softGlow = source.softGlow }
         if items.contains(.vignette) {
             result.vignette = source.vignette

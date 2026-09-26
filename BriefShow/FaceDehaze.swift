@@ -442,8 +442,9 @@ enum SubjectSplit {
     static func apply(_ settings: PhotoEditSettings, to image: CIImage, people: CIImage) -> CIImage {
         var output = image
 
-        if settings.subjectsExposure != 0 || settings.subjectsClarity != 0 {
+        if settings.subjectsExposure != 0 || settings.subjectsClarity != 0 || settings.subjectsContrast != 0 {
             var lit = PhotoEditRenderer.applyExposure(settings.subjectsExposure, to: output)
+            lit = PhotoEditRenderer.applyContrast(settings.subjectsContrast, to: lit)
             lit = PhotoEditRenderer.applyClarity(settings.subjectsClarity, to: lit)
             output = lit.applyingFilter("CIBlendWithMask", parameters: [
                 kCIInputBackgroundImageKey: output,
@@ -451,8 +452,10 @@ enum SubjectSplit {
             ]).cropped(to: image.extent)
         }
 
-        if settings.backgroundExposure != 0 || settings.backgroundDehaze != 0 || settings.backgroundClarity != 0 {
+        if settings.backgroundExposure != 0 || settings.backgroundDehaze != 0 || settings.backgroundClarity != 0
+            || settings.backgroundSaturation != 0 {
             var behind = PhotoEditRenderer.applyExposure(settings.backgroundExposure, to: output)
+            behind = PhotoEditRenderer.applySaturation(settings.backgroundSaturation, to: behind)
             behind = PhotoEditRenderer.applyClarity(settings.backgroundClarity, to: behind)
             behind = PhotoEditRenderer.applyDehaze(settings.backgroundDehaze, to: behind)
             if settings.backgroundDehaze > 0 {

@@ -14708,6 +14708,15 @@ struct DevelopView: View {
                           isDisabled: noPhoto,
                           behaviour: .history),
 
+            // AI Assistant, again (26.09): *„mora da ima da se ukljuci na dugme
+            // ako fotograf pogresno klikne skip"*. The same card that comes up
+            // when Create opens, over the same filmstrip.
+            HeaderBarItem(id: "assistant",
+                          glyph: .symbol("wand.and.stars"),
+                          help: "AI Assistant - reject closed eyes and soft photos, give every photo in the filmstrip the same look, Youthify, straighten and crop.",
+                          isDisabled: photoURLs.isEmpty || showAIAssistant,
+                          behaviour: .tap { showAIAssistant = true }),
+
             tabItem(.retouch),
             tabItem(.layers),
             tabItem(.templates),
